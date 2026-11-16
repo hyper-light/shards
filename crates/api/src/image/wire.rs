@@ -1388,10 +1388,15 @@ pub enum NetRefusal {
     PairedElsewhere = 10,
     /// The network has IPv6 (D99), which a network shared by runs does not carry yet.
     Ipv6 = 11,
-    /// A grant that is none, as kiln's `NetworkGrant::check` refuses one: a name or peer that
-    /// is no host's name, its peer its own name, port 0, or a first port past its last; or a
-    /// name other than the member's on that network already.
+    /// A grant that is none: a name or peer of no name's grammar (Docker's, a host's name
+    /// among them), its peer its own name, port 0, or a first port past its last, as kiln's
+    /// `NetworkGrant::check` refuses one; or a name other than the member's on that network
+    /// already.
     Grant = 12,
+    /// The network's subnet meets another of the microVM's networks: its own, another shared
+    /// one, or its link-local addresses (D285 slice 5's `SHARED_OVERLAPS`, slice 3's
+    /// `Overlaps`).
+    Overlaps = 13,
 }
 
 fn net_refusal(tag: u8) -> Result<NetRefusal, WireError> {
@@ -1409,6 +1414,7 @@ fn net_refusal(tag: u8) -> Result<NetRefusal, WireError> {
         10 => NetRefusal::PairedElsewhere,
         11 => NetRefusal::Ipv6,
         12 => NetRefusal::Grant,
+        13 => NetRefusal::Overlaps,
         tag => {
             return Err(WireError::Tag {
                 what: "a network change's refusal",
@@ -1442,9 +1448,9 @@ pub enum Way {
 
 /// A member's grant on a network shared by runs (version 50, D285), as kiln's `NetworkGrant`
 /// names one (kiln bb9ffcea1, crates/kiln-seams/src/sandbox.rs): the member's name on the
-/// network and its peer's, a member of another run, each a host's name compared lowercased
-/// (RFC 4343); a range of one protocol's ports, its peer's where it opens `Out`, its member's
-/// where it opens `In`; and which way.
+/// network and its peer's, a member of another run (its name or an alias), each by Docker's
+/// grammar compared lowercased (RFC 4343); a range of one protocol's ports, its peer's where
+/// it opens `Out`, its member's where it opens `In`; and which way.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NetworkGrant {
     pub name: String,
@@ -1456,13 +1462,16 @@ pub struct NetworkGrant {
 }
 
 impl NetworkGrant {
-    /// Why it is no grant, as kiln's `NetworkGrant::check` refuses one: a name or peer that is
-    /// no host's name (RFC 1035 §2.3.1, RFC 1123 §2.1), its peer its own name, port 0, which
-    /// names no port, or a first port past its last. None where it is one.
+    /// Why it is no grant: a name or peer of no name's grammar, Docker's
+    /// (`[a-z0-9][a-z0-9_.-]*` lowercased, at most 253 bytes, `shards_abi::run::shared::name_ok`,
+    /// as a network's leases, its guest and its network process take one: ROOT, 2026-11-16),
+    /// its peer its own name, port 0, which names no port, or a first port past its last, as
+    /// kiln's `NetworkGrant::check` refuses one, whose host's names are among Docker's. None
+    /// where it is one.
     pub fn refused(&self) -> Option<String> {
         for (what, name) in [("name", &self.name), ("peer", &self.peer)] {
-            if !shards_dns::host_name(name) {
-                return Some(format!("its {what} {name:?} is no host's name"));
+            if !shards_abi::run::shared::name_ok(name.to_ascii_lowercase().as_bytes()) {
+                return Some(format!("its {what} {name:?} is no name"));
             }
         }
         if self.name.eq_ignore_ascii_case(&self.peer) {
@@ -5026,6 +5035,7 @@ mod tests {
             NetRefusal::PairedElsewhere,
             NetRefusal::Ipv6,
             NetRefusal::Grant,
+            NetRefusal::Overlaps,
             NetRefusal::Unheld,
             NetRefusal::NoNetwork,
             NetRefusal::Widening,
@@ -5053,7 +5063,7 @@ mod tests {
             Err(WireError::Tag { .. })
         ));
         assert!(matches!(
-            NetAnswer::decode(&[0, 0, 0, 9, 1, 13, 0, 0, 0, 0]),
+            NetAnswer::decode(&[0, 0, 0, 9, 1, 14, 0, 0, 0, 0]),
             Err(WireError::Tag { .. })
         ));
         // A count of bindings past the bytes left is refused, allocating nothing.
@@ -5063,9 +5073,9 @@ mod tests {
         );
     }
 
-    /// A grant on a shared network is one as kiln's `NetworkGrant::check` takes one (D285): its
-    /// names hosts' names, its peer not its own name whatever the case, its ports from 1, its
-    /// first not past its last; and lowered as a network holds it.
+    /// A grant on a shared network is one as kiln's `NetworkGrant::check` takes one (D285), its
+    /// names by Docker's grammar (`_` and `.` among it): its peer not its own name whatever the
+    /// case, its ports from 1, its first not past its last; and lowered as a network holds it.
     #[test]
     fn a_shared_networks_grant_is_refused_as_kiln_refuses_one() {
         let grant = NetworkGrant {
@@ -5079,8 +5089,17 @@ mod tests {
         assert_eq!(grant.refused(), None);
         assert_eq!(grant.lowered().name, "web");
         let refused = |g: NetworkGrant| g.refused().is_some();
+        assert!(!refused(NetworkGrant {
+            name: "Web_1".into(),
+            peer: "db.proj".into(),
+            ..grant.clone()
+        }));
         assert!(refused(NetworkGrant {
-            name: "web_1".into(),
+            name: "_web".into(),
+            ..grant.clone()
+        }));
+        assert!(refused(NetworkGrant {
+            name: "a".repeat(254),
             ..grant.clone()
         }));
         assert!(refused(NetworkGrant {

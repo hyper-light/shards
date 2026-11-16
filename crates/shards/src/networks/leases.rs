@@ -26,7 +26,8 @@
 //! Names follow Docker's rules (ROOT, 2026-11-16): a member's own name, a container's, is one
 //! member's; an alias is shared, Compose's scaled replicas answering to one each at its own
 //! address (moby f78c987a, daemon/names/names.go's grammar; libnetwork's service records, a
-//! name to every address that has it).
+//! name to every address that has it). Their grammar is the guest's and the network
+//! process's, `shards_abi::run::shared::name_ok`.
 
 use std::fs::File;
 use std::io::{self, Read as _, Write as _};
@@ -57,10 +58,6 @@ const ALIASES: &str = "alias";
 /// The leases of an orchestrator's run hosts that link a network's members, each by its
 /// holder's ID, saying its orchestrator's token.
 const PAIRERS: &str = "pairers";
-/// The longest name a lease holds: a whole name in the DNS (RFC 1035 §2.3.4, 255 octets on
-/// the wire, 253 in text), so that every name a network's resolver could be asked fits, and
-/// with `@` its file's name fits each supported filesystem's 255 bytes.
-const NAME_LEN: usize = 253;
 /// What begins a name lease's file: Windows takes a base name of `CON`, `PRN`, `AUX`, `NUL`,
 /// `COM1`-`COM9` or `LPT1`-`LPT9`, with any extension, for a device (Microsoft, "Naming Files,
 /// Paths, and Namespaces"), each of them a host's name too; `@` begins none, nor any host's
@@ -88,9 +85,11 @@ pub enum Refused {
     /// The name is a live lease's on the network, whatever its case: a member's, or an alias
     /// its address answers to already.
     NameTaken(String),
-    /// Neither a host's name (RFC 1035 §2.3.1, RFC 1123 §2.1) nor a container's (Docker's
-    /// `[a-zA-Z0-9][a-zA-Z0-9_.-]+`), or longer than [`NAME_LEN`], or ending in `.`, which
-    /// Windows drops from a file's name (Microsoft, "Naming Files, Paths, and Namespaces").
+    /// No name by Docker's grammar, `[a-z0-9][a-z0-9_.-]*` lowercased, a host's name among
+    /// them, at most a whole DNS name's 253 bytes, so that with `@` its file's name fits each
+    /// supported filesystem's 255 (`shards_abi::run::shared::name_ok`); or one ending in `.`,
+    /// which Windows drops from a file's name (Microsoft, "Naming Files, Paths, and
+    /// Namespaces").
     NotAName(String),
     /// An ID (a holder's, a network's) that is not a microVM ID's form.
     NotAnId,
@@ -111,7 +110,7 @@ impl std::fmt::Display for Refused {
             Refused::NameTaken(name) => write!(f, "{name}: another member's name on the network"),
             Refused::NotAName(name) => write!(
                 f,
-                "{name:?}: not a host's name nor a container's ([a-zA-Z0-9][a-zA-Z0-9_.-]+, 253 bytes at most, no last dot)"
+                "{name:?}: no name ([a-z0-9][a-z0-9_.-]*, 253 bytes at most, no last dot)"
             ),
             Refused::NotAnId => write!(f, "not an ID: {ID_LEN} lowercase hex digits"),
             Refused::InUse => f.write_str("in use: a lease of it lives, or a process links its members"),
@@ -240,11 +239,10 @@ impl Leases {
             .collect())
     }
 
-    /// Each name held now, with the address it names (none where its record is not one):
-    /// each member's, then each alias at each address that answers to it; each lease no
-    /// process holds removed.
+    /// Each member's name held now, with the address it names (none where its record is not
+    /// one); each lease no process holds removed.
     pub fn names(&self, _held: &Held) -> Result<Vec<(String, Option<Ipv4Addr>)>, Refused> {
-        let mut names: Vec<(String, Option<Ipv4Addr>)> = live(&self.dir.join(NAMES), ADDRESS_LEN)?
+        Ok(live(&self.dir.join(NAMES), ADDRESS_LEN)?
             .into_iter()
             .filter_map(|(file, said)| {
                 let name = file.strip_prefix(NAME_MARK)?.to_string();
@@ -253,7 +251,13 @@ impl Leases {
                     .and_then(|s| s.parse::<Ipv4Addr>().ok());
                 Some((name, ip))
             })
-            .collect();
+            .collect())
+    }
+
+    /// Each alias held now, at each address that answers to it (none where its file names no
+    /// address); each lease no process holds removed.
+    pub fn aliases(&self, _held: &Held) -> Result<Vec<(String, Option<Ipv4Addr>)>, Refused> {
+        let mut names = Vec::new();
         let aliases = match std::fs::read_dir(self.dir.join(ALIASES)) {
             Ok(aliases) => aliases,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(names),
@@ -452,6 +456,7 @@ impl Leases {
         if !self.addresses(held)?.is_empty()
             || !self.addresses6(held)?.is_empty()
             || !self.names(held)?.is_empty()
+            || !self.aliases(held)?.is_empty()
             || !live(&self.dir.join(PAIRERS), ID_LEN)?.is_empty()
         {
             return Err(Refused::InUse);
@@ -480,12 +485,12 @@ fn is_id(id: &str) -> bool {
     lower_hex(id, ID_LEN)
 }
 
-/// `name` as a lease holds it, lowercased (RFC 4343): a host's name or a container's, at most
-/// [`NAME_LEN`] bytes, its last not `.`; refused [`Refused::NotAName`] otherwise.
+/// `name` as a lease holds it, lowercased (RFC 4343): a name by Docker's grammar, as the guest
+/// and the network process take one, its last not `.`; refused [`Refused::NotAName`]
+/// otherwise.
 fn named(name: &str) -> Result<String, Refused> {
     let name = name.to_ascii_lowercase();
-    let container = !name.starts_with('/') && crate::containers::valid_name(&name);
-    if (shards_net::dns::host_name(&name) || container) && name.len() <= NAME_LEN && !name.ends_with('.') {
+    if shards_abi::run::shared::name_ok(name.as_bytes()) && !name.ends_with('.') {
         Ok(name)
     } else {
         Err(Refused::NotAName(name))
@@ -848,7 +853,7 @@ mod tests {
             leases.names(&held).unwrap(),
             vec![("db".to_string(), Some(a.ip()))]
         );
-        let long = "a".repeat(NAME_LEN + 1);
+        let long = "a".repeat(shards_abi::run::egress::HOST_MOST + 1);
         for bad in ["", "-db", "_db", "db.", "/db", "a/b", "a\\b", long.as_str()] {
             assert_eq!(
                 leases.name(&held, &b, bad).unwrap_err(),
@@ -891,26 +896,26 @@ mod tests {
             leases.alias(&held, &a, "web").unwrap_err(),
             Refused::NameTaken("web".into())
         );
-        let own = leases.name(&held, &a, "proj-web-1").unwrap();
+        let own = leases.name(&held, &a, "proj_web_1").unwrap();
         assert_eq!(
-            leases.name(&held, &b, "proj-web-1").unwrap_err(),
-            Refused::NameTaken("proj-web-1".into())
+            leases.name(&held, &b, "proj_web_1").unwrap_err(),
+            Refused::NameTaken("proj_web_1".into())
         );
         assert_eq!(
-            sorted(leases.names(&held).unwrap()),
+            leases.names(&held).unwrap(),
+            vec![("proj_web_1".to_string(), Some(a.ip()))]
+        );
+        assert_eq!(
+            sorted(leases.aliases(&held).unwrap()),
             vec![
-                ("proj-web-1".to_string(), Some(a.ip())),
                 ("web".to_string(), Some(a.ip())),
                 ("web".to_string(), Some(b.ip())),
             ]
         );
         drop(web_b);
         assert_eq!(
-            sorted(leases.names(&held).unwrap()),
-            vec![
-                ("proj-web-1".to_string(), Some(a.ip())),
-                ("web".to_string(), Some(a.ip())),
-            ]
+            leases.aliases(&held).unwrap(),
+            vec![("web".to_string(), Some(a.ip()))]
         );
         assert_eq!(leases.clear(&held).unwrap_err(), Refused::InUse);
         drop((own, web_a));

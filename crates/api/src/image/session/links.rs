@@ -295,3 +295,67 @@ fn hand(
     drop(end);
     answered
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A run's shared state with no host behind it.
+    fn run() -> Arc<Shared> {
+        Arc::new(Shared {
+            state: Mutex::new(super::super::State::default()),
+            changed: std::sync::Condvar::new(),
+            to_host: Mutex::new(None),
+            lessor: Mutex::new(None),
+            granted: Mutex::new(Vec::new()),
+            sign_ins: Mutex::new(Vec::new()),
+            said_to: Mutex::new(None),
+            timed: false,
+            #[cfg(unix)]
+            links: None,
+        })
+    }
+
+    /// This process's token is a microVM ID's form, as a lease's holder is, and the same for
+    /// each of its connections.
+    #[test]
+    fn this_processs_token_is_an_ids_form_and_its_own() {
+        let t = token();
+        assert_eq!(t.len(), 64);
+        assert!(
+            t.bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        );
+        assert_eq!(token(), t);
+    }
+
+    /// Do register two runs on a network, look for each one's others, have one's host say its
+    /// end, look again, then unregister the other. Expect: each run linked there, the other its
+    /// one other with its host and address; the ended run let go of at the next look; the
+    /// network forgotten with its last run.
+    #[test]
+    fn a_networks_runs_are_linked_until_they_leave_or_end() {
+        let (a, b) = (run(), run());
+        let id = "f".repeat(64);
+        let (at_a, at_b) = (Ipv4Addr::new(10, 89, 0, 2), Ipv4Addr::new(10, 89, 0, 3));
+        lock(&ON).register(&a, 1, &id, at_a);
+        lock(&ON).register(&b, 2, &id, at_b);
+        assert!(registered(&a, &id) && registered(&b, &id));
+        let of_a = others(&a, &id);
+        assert_eq!(of_a.len(), 1);
+        assert!(Arc::ptr_eq(&of_a[0].0, &b));
+        assert_eq!((of_a[0].1.host, of_a[0].1.address), (2, at_b));
+        drop(of_a);
+        lock(&b.state).end = Some(wire::RunEnded::unused(
+            wire::RunEnd::Stopped,
+            wire::Unused::Killed,
+        ));
+        assert!(others(&a, &id).is_empty());
+        assert!(!registered(&b, &id), "an ended run let go of");
+        lock(&ON).unregister(&a, &id);
+        assert!(
+            !lock(&ON).0.iter().any(|l| l.id == id),
+            "the network forgotten with its last run"
+        );
+    }
+}

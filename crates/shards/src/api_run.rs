@@ -5699,6 +5699,10 @@ mod hosted {
             .map_err(|why| (R::Network, why))?;
         match shards_net::shared::decode_answer(&said) {
             Some(Ok(())) => Ok(()),
+            Some(Err(shards_net::shared::Refusal::Overlaps)) => Err((
+                R::Overlaps,
+                "its network process: the network's subnet meets another of the run's".into(),
+            )),
             Some(Err(refused)) => Err((R::Network, format!("its network process refused it: {refused:?}"))),
             None => Err((
                 R::Network,
@@ -5707,54 +5711,63 @@ mod hosted {
         }
     }
 
-    /// Every member on shared network `on`, as its network process is told them whole: each
-    /// name the home's leases hold there with the address it names, `leaving` left out. Each
-    /// told once, a host's name at an address of the network's subnet other than its gateway,
-    /// as `shared::Join` takes one, so that no lease of another's making has a join refused as
-    /// malformed, which would end this run's control; a container's name or an alias other
-    /// than that, which its network process answers not, is no member there.
-    fn members_whole(
+    /// Who is on shared network `on` as the home's leases hold them: each member's name, then
+    /// each alias, at the address it names, the names `leaving` left out. Each of the grammar
+    /// the guest and the network process take (`shards_abi::run::shared::name_ok`), at an
+    /// address of the network's subnet other than its gateway, an alias where no member's name
+    /// is at its address, each list sorted: no lease of another's making has a join refused
+    /// as malformed, which would end the run's control, nor the guest's built-in.
+    fn on_now(
         home: &Path,
         on: &OnShared,
-        leaving: Option<&str>,
-    ) -> Result<Vec<(String, std::net::Ipv4Addr)>, (wire::NetRefusal, String)> {
-        let names = {
+        leaving: &[&str],
+    ) -> Result<(Named, Named), (wire::NetRefusal, String)> {
+        let (names, aliases) = {
             let held = crate::networks::leases::hold(home).map_err(lease_refused)?;
-            crate::networks::leases::Leases::of(home, &on.network.id)
-                .and_then(|ledger| ledger.names(&held))
-                .map_err(lease_refused)?
+            let ledger = crate::networks::leases::Leases::of(home, &on.network.id).map_err(lease_refused)?;
+            let names = ledger.names(&held).map_err(lease_refused)?;
+            (names, ledger.aliases(&held).map_err(lease_refused)?)
         };
-        let mut members: Vec<(String, std::net::Ipv4Addr)> = Vec::new();
-        for (name, at) in names {
-            let Some(at) = at else { continue };
-            let told = leaving != Some(name.as_str())
-                && shards_net::dns::host_name(&name)
-                && at != on.pool.gateway
-                && crate::networks::contains(on.pool.subnet, at)
-                && !members.iter().any(|(n, _)| *n == name);
-            if told {
-                members.push((name, at));
-            }
-        }
-        Ok(members)
+        let kept = |held: Vec<(String, Option<std::net::Ipv4Addr>)>| {
+            let mut kept: Named = held
+                .into_iter()
+                .filter_map(|(name, at)| Some((name, at?)))
+                .filter(|(name, at)| {
+                    !leaving.contains(&name.as_str())
+                        && shards_abi::run::shared::name_ok(name.as_bytes())
+                        && *at != on.pool.gateway
+                        && crate::networks::contains(on.pool.subnet, *at)
+                })
+                .collect();
+            kept.sort_unstable();
+            kept
+        };
+        let names = kept(names);
+        let mut aliases = kept(aliases);
+        aliases.retain(|alias| !names.contains(alias));
+        Ok((names, aliases))
     }
 
+    /// Names on a shared network, each at an address.
+    type Named = Vec<(String, std::net::Ipv4Addr)>;
+
     /// Shared network `on` told its network process whole (`NET_JOIN`): the run's address, the
-    /// network's prefix, gateway and name, and its members (`members_whole`), `leaving` left
-    /// out.
+    /// network's prefix, gateway and name, and who is on it ([`on_now`]), names before aliases,
+    /// the names `leaving` left out.
     fn tell_join(
         home: &Path,
         net: &super::NetControl<'_>,
         on: &OnShared,
-        leaving: Option<&str>,
+        leaving: &[&str],
     ) -> Result<(), (wire::NetRefusal, String)> {
+        let (names, aliases) = on_now(home, on, leaving)?;
         let join = shards_net::shared::Join {
             network: on.id,
             address: on.lease.ip(),
             prefix: on.pool.subnet.1,
             gateway: on.pool.gateway,
             name: on.network.name.clone(),
-            members: members_whole(home, on, leaving)?,
+            members: names.into_iter().chain(aliases).collect(),
         };
         let payload = join.encode().ok_or_else(|| {
             (
@@ -5798,12 +5811,94 @@ mod hosted {
         shared_ask(net, kind::NET_PEER_GRANT, &payload, &[])
     }
 
+    /// `on`'s members as its guest takes them (`shards_abi::run::shared::Member`), member
+    /// `except.0`'s grant `except.1` taken out: a member left with no grant is left out, off
+    /// the network.
+    fn guest_members(
+        on: &OnShared,
+        except: Option<(u32, &wire::NetworkGrant)>,
+    ) -> Vec<protocol::shared::Member> {
+        use protocol::shared;
+        on.members
+            .iter()
+            .filter_map(|m| {
+                let grants: Vec<shared::Grant> = m
+                    .grants
+                    .iter()
+                    .filter(|g| except.is_none_or(|(i, e)| i != m.index || e != *g))
+                    .map(|g| shared::Grant {
+                        way: match g.way {
+                            wire::Way::In => shared::Way::In,
+                            wire::Way::Out => shared::Way::Out,
+                        },
+                        peer: g.peer.clone(),
+                        ports: (g.proto as u8, g.first, g.last),
+                    })
+                    .collect();
+                (!grants.is_empty()).then(|| shared::Member {
+                    index: m.index,
+                    name: m.name.name().to_string(),
+                    grants,
+                })
+            })
+            .collect()
+    }
+
+    /// The run's guest told its place on shared network `on` as it is to stand, whole (D285
+    /// slice 5's `SHARED`, as D278's `EGRESS` tells a member's reach): `members`, its own members
+    /// there and their grants, with who is on it; or the run off it where none is left.
+    /// Refused by its guest's word, which changed nothing: past a member's image and its
+    /// ceiling `Widening`, no such member linked `Unknown`, a subnet that meets another of the
+    /// microVM's `Overlaps`; else `Network`.
+    fn tell_guest(
+        live: &Live<'_>,
+        on: &OnShared,
+        members: Vec<protocol::shared::Member>,
+    ) -> Result<(), (wire::NetRefusal, String)> {
+        use protocol::shared;
+        use wire::NetRefusal as R;
+        let args = if members.is_empty() {
+            shared::args_off(&on.id.0)
+        } else {
+            let leaving: Vec<&str> = on
+                .members
+                .iter()
+                .filter(|m| !members.iter().any(|s| s.index == m.index))
+                .map(|m| m.name.name())
+                .collect();
+            let (names, aliases) = on_now(live.home, on, &leaving)?;
+            shared::args(&shared::Shared {
+                id: on.id.0,
+                name: on.network.name.clone(),
+                address: on.lease.ip(),
+                prefix: on.pool.subnet.1,
+                gateway: on.pool.gateway,
+                names,
+                aliases,
+                members,
+            })
+        };
+        let said = builtin(live, protocol::builtin::SHARED, args)
+            .map_err(|e| (R::Network, format!("its guest: {e}")))?;
+        if said.status == Some(0) {
+            return Ok(());
+        }
+        let words = String::from_utf8_lossy(&said.err).trim().to_string();
+        Err(match said.status {
+            Some(protocol::builtin::SHARED_PAST) => (R::Widening, words),
+            Some(protocol::builtin::SHARED_UNKNOWN) => (R::Unknown, words),
+            Some(protocol::builtin::SHARED_OVERLAPS) => (R::Overlaps, words),
+            _ => (R::Network, format!("its guest: {words}")),
+        })
+    }
+
     /// Member `member` given `grant` on network `network` shared by runs (D285 slice 4), in
     /// place: checked as a member's reach is (D278: within what its image and its ceiling let
     /// it be given, `Widening` past them, nothing told); on the network from its first grant,
-    /// under its grant's name, then each grant told its network process (`NET_PEER_GRANT`).
-    /// A grant held already is done already; one naming the member otherwise than its name
-    /// there is refused `Grant`. The guest's side is slice 5's built-in.
+    /// under its grant's name; each grant told as D278 widens a reach, its network process
+    /// first (`NET_PEER_GRANT`), then its guest (`SHARED`), the network process's put back
+    /// where the guest refuses. A grant held already is done already; one naming the member
+    /// otherwise than its name there is refused `Grant`.
     fn connect_live(
         live: &Live<'_>,
         member: u32,
@@ -5836,54 +5931,91 @@ mod hosted {
             on.push(place);
             return Ok(());
         };
-        if let Some(m) = place.members.iter_mut().find(|m| m.index == member) {
-            if m.name.name() != grant.name {
-                return Err((
-                    R::Grant,
-                    format!(
-                        "member {member} is on network {} as {}, not {}",
-                        place.network.name,
-                        m.name.name(),
-                        grant.name
-                    ),
-                ));
-            }
-            if !m.grants.contains(&grant) {
-                tell_grant(net, &place.id, &grant, true)?;
-                m.grants.push(grant);
-            }
-            return Ok(());
+        let held = place
+            .members
+            .iter()
+            .find(|m| m.index == member)
+            .map(|m| (m.name.name().to_string(), m.grants.contains(&grant)));
+        match held {
+            Some((name, _)) if name != grant.name => Err((
+                R::Grant,
+                format!(
+                    "member {member} is on network {} as {name}, not {}",
+                    place.network.name, grant.name
+                ),
+            )),
+            Some((_, true)) => Ok(()),
+            Some((_, false)) => grant_more(live, net, place, member, &grant),
+            None => member_joins(live, net, place, member, &grant),
         }
-        // Another member of the run on it: its name leased, the network told whole with it,
-        // then its grant; its name let go and the network told again without it where either
-        // is refused.
-        let name = {
-            let held = crate::networks::leases::hold(live.home).map_err(lease_refused)?;
-            crate::networks::leases::Leases::of(live.home, &place.network.id)
-                .and_then(|ledger| ledger.name(&held, &place.lease, &grant.name))
-                .map_err(lease_refused)?
-        };
-        let told =
-            tell_join(live.home, net, place, None).and_then(|()| tell_grant(net, &place.id, &grant, true));
-        if let Err(refused) = told {
-            drop(name);
-            let _ = tell_join(live.home, net, place, None);
+    }
+
+    /// Member `member`, on shared network `on` already, given `grant` more: its network process
+    /// first, then its guest, the network process's put back where the guest refuses.
+    fn grant_more(
+        live: &Live<'_>,
+        net: &super::NetControl<'_>,
+        on: &mut OnShared,
+        member: u32,
+        grant: &wire::NetworkGrant,
+    ) -> Result<(), (wire::NetRefusal, String)> {
+        tell_grant(net, &on.id, grant, true)?;
+        if let Some(m) = on.members.iter_mut().find(|m| m.index == member) {
+            m.grants.push(grant.clone());
+        }
+        if let Err(refused) = tell_guest(live, on, guest_members(on, None)) {
+            if let Some(m) = on.members.iter_mut().find(|m| m.index == member) {
+                m.grants.retain(|g| g != grant);
+            }
+            let _ = tell_grant(net, &on.id, grant, false);
             return Err(refused);
         }
-        place.members.push(OnMember {
+        Ok(())
+    }
+
+    /// Member `member` on shared network `on`, where its run is already, with its first grant
+    /// `grant`: its name leased, the network told whole with it, the grant, then its guest;
+    /// where a step is refused, those before it put back, its name let go and the network told
+    /// again without it.
+    fn member_joins(
+        live: &Live<'_>,
+        net: &super::NetControl<'_>,
+        on: &mut OnShared,
+        member: u32,
+        grant: &wire::NetworkGrant,
+    ) -> Result<(), (wire::NetRefusal, String)> {
+        let name = {
+            let held = crate::networks::leases::hold(live.home).map_err(lease_refused)?;
+            crate::networks::leases::Leases::of(live.home, &on.network.id)
+                .and_then(|ledger| ledger.name(&held, &on.lease, &grant.name))
+                .map_err(lease_refused)?
+        };
+        on.members.push(OnMember {
             index: member,
             name,
-            grants: vec![grant],
+            grants: vec![grant.clone()],
         });
-        Ok(())
+        let told = (|| {
+            tell_join(live.home, net, on, &[])?;
+            tell_grant(net, &on.id, grant, true)?;
+            tell_guest(live, on, guest_members(on, None)).inspect_err(|_| {
+                let _ = tell_grant(net, &on.id, grant, false);
+            })
+        })();
+        if told.is_err() {
+            on.members.retain(|m| m.index != member);
+            let _ = tell_join(live.home, net, on, &[]);
+        }
+        told
     }
 
     /// The run's first member on shared network `network` (D285): under the home's networks
     /// lock, the network found, its pairing shared with the other run hosts of `pairer`'s
     /// process, the run's address (the lowest free, D46) and the member's name leased; that lock
     /// let go, as no caller holds it across another process's answer, its network process told
-    /// the network whole (`NET_JOIN`), then the grant. Each refused by its cause, a step that
-    /// fails undoing those before it.
+    /// the network whole (`NET_JOIN`), then the grant, then its guest (`SHARED`: eth0's second
+    /// address, the member's gate and tables). Each refused by its cause, a step that fails
+    /// undoing those before it.
     fn join_first(
         live: &Live<'_>,
         net: &super::NetControl<'_>,
@@ -5915,11 +6047,11 @@ mod hosted {
             let name = ledger.name(&held, &lease, &grant.name).map_err(lease_refused)?;
             (pairing, lease, name)
         };
-        let mut place = OnShared {
+        let place = OnShared {
             members: vec![OnMember {
                 index: member,
                 name,
-                grants: Vec::new(),
+                grants: vec![grant.clone()],
             }],
             lease,
             _pairing: pairing,
@@ -5927,23 +6059,26 @@ mod hosted {
             id,
             pool,
         };
-        tell_join(live.home, net, &place, None)?;
-        if let Err(refused) = tell_grant(net, &place.id, grant, true) {
+        tell_join(live.home, net, &place, &[])?;
+        let told = tell_grant(net, &place.id, grant, true).and_then(|()| {
+            tell_guest(live, &place, guest_members(&place, None)).inspect_err(|_| {
+                let _ = tell_grant(net, &place.id, grant, false);
+            })
+        });
+        if let Err(refused) = told {
             let _ = shared_ask(net, kind::NET_LEAVE, &place.id.0, &[]);
             return Err(refused);
-        }
-        if let Some(m) = place.members.first_mut() {
-            m.grants.push(grant.clone());
         }
         Ok(place)
     }
 
     /// `grant` of member `member` taken back on shared network `network` (D285 slice 4), in
-    /// place: its network process told first (`NET_PEER_GRANT`), which ends each flow it no
-    /// longer admits; the member off the network with its last grant there, the network told
-    /// whole without it before its name is let go, or, the run's last member there, left
-    /// (`NET_LEAVE`, its links dropped) before its address and pairing are. A grant not held is
-    /// done already. The guest's side, first where it is told, is slice 5's built-in.
+    /// place, as D278 narrows a reach: its guest first (`SHARED`: its gate shut on what it lost,
+    /// its open flows to it reset), then its network process (`NET_PEER_GRANT`), which ends
+    /// each flow it no longer admits; the member off the network with its last grant there,
+    /// the network told whole without it as its name is let go, or, the run's last member
+    /// there, left (`NET_LEAVE`, its links dropped) as its address and pairing are. A grant not
+    /// held is done already.
     fn disconnect_live(
         live: &Live<'_>,
         member: u32,
@@ -5959,27 +6094,33 @@ mod hosted {
         let Some(place) = joined.on.get_mut(at) else {
             return Ok(());
         };
-        let Some(m) = place.members.iter_mut().find(|m| m.index == member) else {
+        let Some(name) = place
+            .members
+            .iter()
+            .find(|m| m.index == member && m.grants.contains(&grant))
+            .map(|m| m.name.name().to_string())
+        else {
             return Ok(());
         };
-        if !m.grants.contains(&grant) {
-            return Ok(());
-        }
+        tell_guest(live, place, guest_members(place, Some((member, &grant))))?;
         tell_grant(net, &place.id, &grant, false)?;
-        m.grants.retain(|g| *g != grant);
-        if !m.grants.is_empty() {
+        let mut last = false;
+        if let Some(m) = place.members.iter_mut().find(|m| m.index == member) {
+            m.grants.retain(|g| *g != grant);
+            last = m.grants.is_empty();
+        }
+        if !last {
             return Ok(());
         }
-        let name = m.name.name().to_string();
         if place.members.len() > 1 {
-            tell_join(live.home, net, place, Some(name.as_str()))?;
+            let told = tell_join(live.home, net, place, &[name.as_str()]);
             place.members.retain(|m| m.index != member);
-            return Ok(());
+            return told;
         }
         let id = place.id;
-        shared_ask(net, kind::NET_LEAVE, &id.0, &[])?;
+        let left = shared_ask(net, kind::NET_LEAVE, &id.0, &[]);
         joined.on.retain(|n| n.id != id);
-        Ok(())
+        left
     }
 
     /// A link to the run at `peer` on shared network `network`, by its ID (D285 slice 4): its
@@ -6052,16 +6193,18 @@ mod hosted {
             .map_err(|e| (wire::NetRefusal::Network, format!("a link's socket: {e}")))
     }
 
-    /// Shared network `network`'s members, by its ID, told its network process whole again
-    /// (D285 slice 4): another run's member came or went. A network the run has left is done
-    /// already.
+    /// Shared network `network`'s members, by its ID, told the run whole again (D285 slice 4):
+    /// another run's member came or went. Its network process first, where flows cross, then
+    /// its guest, whose gates and resolver hold its members to their peers by these names. A
+    /// network the run has left is done already.
     fn rejoin_live(live: &Live<'_>, network: &str) -> Result<(), (wire::NetRefusal, String)> {
         let net = live.net.ok_or_else(no_network)?;
         let joined = lock(&live.joined);
-        match joined.on.iter().find(|n| n.network.id == network) {
-            Some(place) => tell_join(live.home, net, place, None),
-            None => Ok(()),
-        }
+        let Some(place) = joined.on.iter().find(|n| n.network.id == network) else {
+            return Ok(());
+        };
+        tell_join(live.home, net, place, &[])?;
+        tell_guest(live, place, guest_members(place, None))
     }
 
     /// The port the run publishes at `host` for `proto` let go of (D269): its network process
@@ -10013,26 +10156,32 @@ mod hosted {
             network
         }
 
-        /// Do, on a run whose member 1 (agent `web`) may open TCP to any port (its ceiling), with
-        /// a stand-in network process answering every ask taken (D285 slice 4): give it a grant
-        /// out to `db`'s 5432 on network `shared`; give it again; give it another under another
-        /// name; give it a UDP grant; give it one on a network the home has not; hand it a link
-        /// to 10.89.0.3 on its links socket and ask it; ask its members told again; take its
-        /// grant back. Expect: the run's address leased (10.89.0.2, the lowest free) and its
-        /// member's name; its network process told the network whole (`NET_JOIN`, the run's
-        /// member at its address), then the grant (`NET_PEER_GRANT`, added); its owner answered
-        /// with its place there; the same grant done already, nothing told; the other name
-        /// refused `Grant`, the UDP grant `Widening` and the unknown network `NoSuchNetwork`,
-        /// each with nothing told; the link handed on with its socket (`NET_LINK`); the network
-        /// told whole again; the grant taken back (`NET_PEER_GRANT`), then the network left
+        /// Do, on a run whose member 1 (agent `web`) may open TCP to and take TCP from any port
+        /// (its ceiling), with a stand-in network process answering every ask taken and a
+        /// stand-in VM answering its guest's `SHARED` (D285 slices 4 and 5): give it a grant out
+        /// to `db`'s 5432 on network `shared`; give it again; give it another under another name;
+        /// give it a UDP grant; give it one on a network the home has not; hand it a link to
+        /// 10.89.0.3 on its links socket and ask it; ask its members told again (its network
+        /// process, then its guest); give it a grant in from `db` that its guest refuses as past
+        /// its image; take its first grant back.
+        /// Expect: the run's address leased (10.89.0.2, the lowest free) and its member's name;
+        /// its network process told the network whole (`NET_JOIN`, the run's member at its
+        /// address), then the grant (`NET_PEER_GRANT`), then its guest the run's place whole
+        /// (`SHARED`); its owner answered with its place there; the same grant done already,
+        /// nothing told; the other name refused `Grant`, the UDP grant `Widening` and the unknown
+        /// network `NoSuchNetwork`, each with nothing told; the link handed on with its socket
+        /// (`NET_LINK`); the network told whole again; the refused grant `Widening`, its network
+        /// process's grant put back; the grant taken back with its guest told first (the run
+        /// off the network), then its network process (`NET_PEER_GRANT`), then the network left
         /// (`NET_LEAVE`), its leases let go and the run on no network.
         #[test]
         fn a_members_grants_on_a_shared_network_lease_join_grant_link_and_leave() {
+            use shards_abi::run::shared::{self as guest, Told};
             let dir = shards_testdir::TempDir::new("api-xnet").unwrap();
             let network = shared_record(dir.path());
             let (mut orchestrator, out) = std::io::pipe().unwrap();
             let answers = super::super::Answers(Mutex::new(Box::new(out)));
-            let (link, _vm) = Stream::pair().unwrap();
+            let (link, vm) = Stream::pair().unwrap();
             let (netproc, run_host) = std::os::unix::net::UnixStream::pair().unwrap();
             netproc
                 .set_read_timeout(Some(std::time::Duration::from_secs(120)))
@@ -10104,6 +10253,21 @@ mod hosted {
                     }
                     told
                 });
+                // The stand-in VM: each of its guest's `SHARED` recorded and exited as asked.
+                let guested = s.spawn(|| {
+                    let mut guested = Vec::new();
+                    for status in [0, 0, protocol::builtin::SHARED_PAST, 0] {
+                        let m = shards_ipc::recv(&vm).unwrap().unwrap();
+                        assert_eq!(m.kind, kind::EXEC_RUN);
+                        let (_, rest) = m.payload.split_first_chunk::<8>().unwrap();
+                        let spec = protocol::Spec::decode(&rest[1..]).unwrap();
+                        assert_eq!(spec.builtin, protocol::builtin::SHARED);
+                        guested.push(guest::parse_args(&spec.argv).unwrap());
+                        let conn = Stream::from(m.fds.into_iter().next().unwrap());
+                        shards_ipc::send(&conn, kind::EXIT, &[status], &[]).unwrap();
+                    }
+                    guested
+                });
                 net_change(&live, connect(1, "shared", &grant));
                 let changed = answered(1).unwrap();
                 let lowered = grant.lowered();
@@ -10167,10 +10331,18 @@ mod hosted {
                     },
                 );
                 answered(7).unwrap();
+                let inward = wire::NetworkGrant {
+                    way: wire::Way::In,
+                    first: 8080,
+                    last: 8080,
+                    ..grant.clone()
+                };
+                net_change(&live, connect(8, "shared", &inward));
+                assert!(matches!(answered(8), Err((wire::NetRefusal::Widening, _))));
                 net_change(
                     &live,
                     wire::NetAsk {
-                        id: 8,
+                        id: 9,
                         change: wire::NetChange::Disconnect {
                             member: 1,
                             network: "shared".into(),
@@ -10178,7 +10350,33 @@ mod hosted {
                         },
                     },
                 );
-                assert!(answered(8).unwrap().networks.is_empty());
+                assert!(answered(9).unwrap().networks.is_empty());
+                let guested = guested.join().unwrap();
+                let Told::On(on) = &guested[0] else {
+                    panic!("{guested:?}");
+                };
+                assert_eq!(
+                    (on.address, on.prefix, on.names.as_slice()),
+                    (here, 24, [("web".to_string(), here)].as_slice())
+                );
+                assert_eq!(
+                    on.members,
+                    vec![guest::Member {
+                        index: 1,
+                        name: "web".into(),
+                        grants: vec![guest::Grant {
+                            way: guest::Way::Out,
+                            peer: "db".into(),
+                            ports: (6, 5432, 5432),
+                        }],
+                    }]
+                );
+                assert_eq!(guested[1], guested[0], "told again whole as its members are");
+                let Told::On(refused) = &guested[2] else {
+                    panic!("{guested:?}");
+                };
+                assert_eq!(refused.members[0].grants.len(), 2, "both grants asked of it");
+                assert_eq!(guested[3], Told::Off(id.0), "its guest off the network first");
                 let told = told.join().unwrap();
                 let kinds: Vec<u8> = told.iter().map(|(k, _, _)| *k).collect();
                 assert_eq!(
@@ -10188,6 +10386,8 @@ mod hosted {
                         kind::NET_PEER_GRANT,
                         kind::NET_LINK,
                         kind::NET_JOIN,
+                        kind::NET_PEER_GRANT,
+                        kind::NET_PEER_GRANT,
                         kind::NET_PEER_GRANT,
                         kind::NET_LEAVE,
                     ]
@@ -10204,9 +10404,15 @@ mod hosted {
                     (told[2].1.as_slice(), told[2].2),
                     (shards_net::shared::encode_link(&id, peer).as_slice(), 1)
                 );
-                let removed = shards_net::shared::decode_grant(&told[4].1).unwrap();
-                assert!(matches!(removed, (_, shards_net::shared::Change::Remove(_))));
-                assert_eq!(told[5].1, id.0);
+                for (i, added) in [(4, true), (5, false), (6, false)] {
+                    let (_, change) = shards_net::shared::decode_grant(&told[i].1).unwrap();
+                    assert_eq!(
+                        matches!(change, shards_net::shared::Change::Add(_)),
+                        added,
+                        "grant {i}: in added, put back, then out taken back"
+                    );
+                }
+                assert_eq!(told[7].1, id.0);
                 netproc.shutdown(std::net::Shutdown::Both).unwrap();
                 reading.join().unwrap();
             });
