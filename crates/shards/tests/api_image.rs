@@ -2711,6 +2711,7 @@ fn an_orchestrators_members_are_signaled_and_their_mcp_connections_reached_on_it
     s.control = Some(ControlAsk {
         controller: hex.fingerprint(),
         sockets: None,
+        stdio: false,
     });
     let guest = boot(&home, &s);
     let index = |name: &MemberName| {

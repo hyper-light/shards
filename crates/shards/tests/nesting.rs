@@ -778,6 +778,7 @@ fn a_nested_workloads_sockets_are_lanes_of_its_orchestrators_controller() {
                 lanes,
                 window,
             }),
+            stdio: false,
         }),
         gpu_devices: Vec::new(),
         sign_ins: Vec::new(),
@@ -891,6 +892,7 @@ fn over_lanes(home: &str, case: impl FnOnce(&shards_api::control::Sockets, &[u8]
                 lanes,
                 window,
             }),
+            stdio: false,
         }),
         gpu_devices: Vec::new(),
         sign_ins: Vec::new(),
@@ -1078,6 +1080,7 @@ fn an_orchestrators_run_binds_its_own_agent_control_endpoint() {
                 lanes: admission.lanes,
                 window: admission.window,
             }),
+            stdio: false,
         })
     };
     let subscriptions = || Subscriptions {
