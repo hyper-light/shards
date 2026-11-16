@@ -925,9 +925,8 @@ impl Conn {
     /// once, its reset owed: what its host has not taken yet is held past its end
     /// ([`Conn::end`]). A ring is the guest's memory, drained while its connection lasts.
     fn flush(&mut self) -> io::Result<()> {
-        let n = self
-            .stream
-            .forwarded_at_once(self.tx_buf.flush_to(&mut self.stream)?);
+        let flushed = self.tx_buf.flush_to(&mut self.stream)?;
+        let n = self.stream.forwarded_at_once(flushed);
         self.fwd_cnt += n as u32;
         self.tx_buf.fit(self.exposure() as usize);
         if !self.tx_buf.is_empty() || !self.ring_drained()? {
