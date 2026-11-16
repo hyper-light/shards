@@ -3642,7 +3642,8 @@ pub struct Looked {
     pub daemon_ran: Option<String>,
     /// Whether it saw its party's own processes run or rest unheld: none of them held from
     /// running, stopped, starved of a CPU (`shards_api::Watch::starved`), ending or found
-    /// anew, no run of its home in its stop grace, its daemon saying nothing (words are
+    /// anew, its daemon within no deadline of its own ([`Party::graced`]: a run's stop grace,
+    /// a log's next try), its daemon saying nothing (words are
     /// progress its CPU does not show), and no progress of this process's servers', which it
     /// may be waiting on. Only such looks' windows are its judge's rate's
     /// (`shards_api::Span::work`, D215).
@@ -3775,8 +3776,9 @@ impl Party {
     /// stalled on its memory, and so running nothing), or stopped or suspended one, which
     /// D215's look finds `Still` on Linux and a test's wait counts as its host's hold: a kiln
     /// runner's headroom guard suspends a run's processes as it paces them (ROOT,
-    /// 2026-11-13); or, a process of it live, held where a run of its home is in its stop
-    /// grace ([`graced`](Self::graced)), the daemon's own deadline; else still; and gone where no process of it runs and its daemon said
+    /// 2026-11-13); or, a process of it live, held where its daemon is within a deadline of
+    /// its own, a run of its home in its stop grace or its log's shipper paused until its
+    /// next try ([`graced`](Self::graced)); else still; and gone where no process of it runs and its daemon said
     /// nothing, its liveness ended. A process found anew is judged from the look after. A
     /// machine of this process's is never gone: its liveness is its caller's. Its daemon's own
     /// run is said apart ([`Looked::daemon_ran`]), its waiter's to weigh. A look that found
@@ -3950,11 +3952,11 @@ impl Party {
             looked.found = Found::Held;
             looked.what = format!("its VM process {pid} in its launch, the host's to admit (PM M166)");
         }
-        if live && let Some((run, left)) = self.graced() {
+        if live && let Some((run, what, left)) = self.graced() {
             looked.vouched = false;
             if looked.found == Found::Still {
                 looked.found = Found::Held;
-                looked.what = format!("its daemon in run {run}'s stop grace, {left:?} more");
+                looked.what = format!("its daemon in run {run}'s {what}, {left:?} more");
             }
         }
         if !live && looked.found == Found::Still && !matches!(self.members, Members::Machine) {
@@ -3967,20 +3969,33 @@ impl Party {
         looked
     }
 
-    /// The run of its home whose stop grace has longest to go, and how long (`shards_ipc::
-    /// GRACE`): the daemon's own deadline, its SIGKILL, before which it and that run may run
-    /// nothing at all, as a command that ignores its stop signal keeps them, and are not
-    /// stalled (D209). None past every grace, nor where none is kept.
-    fn graced(&self) -> Option<(String, Duration)> {
+    /// The deadline of its home's daemon that has longest to go: the run it is of, what it
+    /// is, and how long. The daemon keeps each in its run's directory while it holds, and
+    /// before it nothing need run, so none is a stall (D209): a run's stop grace
+    /// (`shards_ipc::GRACE`), its SIGKILL, before which the daemon and that run may run
+    /// nothing at all, as a command that ignores its stop signal keeps them; and its log's
+    /// shipper's next try (`shards_ipc::RETRY`), before which the shipper sleeps, its
+    /// receiver having failed it, as a server not yet up does. None past every one, nor
+    /// where none is kept.
+    fn graced(&self) -> Option<(String, &'static str, Duration)> {
         let now = std::time::SystemTime::now();
+        let deadlines = [
+            (shards_ipc::GRACE, "stop grace"),
+            (shards_ipc::RETRY, "log's pause before its next try"),
+        ];
         std::fs::read_dir(self.home.as_ref()?.join("containers"))
             .ok()?
-            .filter_map(|run| {
-                let run = run.ok()?;
-                let left = shards_ipc::grace_until(&run.path())?.duration_since(now).ok()?;
-                Some((run.file_name().to_string_lossy().into_owned(), left))
+            .filter_map(Result::ok)
+            .flat_map(|run| {
+                deadlines.map(|(name, what)| {
+                    let left = shards_ipc::deadline_in(&run.path(), name)?
+                        .duration_since(now)
+                        .ok()?;
+                    Some((run.file_name().to_string_lossy().into_owned(), what, left))
+                })
             })
-            .max_by_key(|(_, left)| *left)
+            .flatten()
+            .max_by_key(|(_, _, left)| *left)
     }
 
     /// What each process it follows is doing now, as its OS gives it, for a wait's account of
