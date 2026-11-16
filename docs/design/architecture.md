@@ -29988,7 +29988,7 @@ keeps:
 
 So, for step 11:
 - The endpoint runs in the daemon, on D180's QUIC beside the managed owner endpoint, under its
-  own protocol (`shards-control/1`).
+  own protocol (`shards-control/1`; `/2` since its report names its bridges, D254's amendment).
 - It makes each run's key after the run's restore. The key is never in guest memory, so no
   template carries one.
 - The key's SHA-256 reaches the controller and the orchestrator in the run's managed metadata,
@@ -30034,7 +30034,7 @@ the daemon keeps every member's output (D240, "Every member's log").
 
 *The connection.* QUIC over D180's driver and TLS (`net.rs`, `tls.rs`): TLS 1.3 alone, D239's
 provider (TLS13_AES_256_GCM_SHA384 alone, the hybrid ML-KEM groups), early data off, on an
-application protocol of its own, `shards-control/1` (RFC 7301), which a context's endpoint and
+application protocol of its own, `shards-control/2` (RFC 7301; `/1` until D254's amendment), which a context's endpoint and
 the managed output's refuse, as it refuses theirs. The endpoint is the server and the controller
 its client in both arms, as the controller dials. Every lane is a bidirectional stream the
 controller opens; the endpoint opens none.
@@ -30659,10 +30659,11 @@ sums. Through the controller over loopback:
   ask of more than its tag refused alone and the next answered, and the controller's `Link` the
   same at both ends, its member's lanes going on beside it (`tls::tests`: a negotiation the
   provider's for that suite alone, AES-128-GCM and ChaCha20-Poly1305 not);
-- what it was granted as it dialed named as Shards names its lanes (`Dialed::lanes`,
+- what it was granted named as Shards names its lanes (`Linked::report`'s `LinkReport::lanes`,
   `Granted::name`: `control`, `stdout:N`, `stderr:N`, `stdin:N`, `exec`, `socket`, `mcp:N`, N
   the member's index), what a session's report of its link says (goal 60's `lanes`); `mcp:N`
-  comes with D254's run side, where a run asks a member's bridge.
+  for each member whose bridge its endpoint's report names, where execs are granted (D254's
+  amendment; `Dialed::lanes` named them as it dialed until then, `mcp:N` never).
 
 In the daemon (`daemon::managed::tests`): the annotation asked for by its last value, any value
 but `true` or `false` refused; a run's endpoint of a key its own, two runs two keys, serving
@@ -30750,7 +30751,7 @@ goes on from where it got to, byte for byte.
   log is read in its order, so a read channel has had all of itself before each record), where a
   later lane goes on, inside a record too. A `Log` let go before its end abandons its lane
   (`Ask::Hangup`), which hangs its host up as a connection's end does. A record that does not
-  read as one breaks its lane's protocol, as any frame does. `Dialed::lanes` names `log:run`,
+  read as one breaks its lane's protocol, as any frame does. `LinkReport::lanes` names `log:run`,
   and `log:N` for each member its subscriptions name, where execs are granted; another
   member's log is read the same way, unnamed, as the controller knows no more of the run's
   members.
@@ -30832,7 +30833,7 @@ buffer, chunk, keep-alive or idle value is set here: `control::endpoint` and
 
 | Literal | Source |
 |---|---|
-| ALPN `shards-control/1` | its own protocol's name (RFC 7301), apart from a context's (`shards/1`) and the managed output's |
+| ALPN `shards-control/2` | its own protocol's name (RFC 7301), apart from a context's (`shards/1`) and the managed output's; version 2 since its report names its bridges (D254's amendment) |
 | A key: Ed25519 | D180's identity (RFC 8032), the only kind the verifiers take (`identity::is_ed25519`) |
 | A microVM's name: 32 bytes | the SHA-256 of its key's SubjectPublicKeyInfo (FIPS 180-4) |
 | `LANE_MOST` 58 | step 5's subscription: a frame's head (5), the run (32), its generation (8), the member (4), the channel (1), the offset (8) |
@@ -34685,7 +34686,7 @@ share process's start, its binaries' check, its network's decision.
   launch's former wait, or Restored's or Warm's rises (the thread's file system work beside a
   restore's own).
 
-### D254. kiln's MCP rides the agent-control link: a stdio bridge in the harness's member, one lane of the link per connection, no network grant (decided; its asks built at the endpoint and the controller, the member's listener and bridge and its VM's hand-off built; the runs' asking and the run hosts' pairing built, the daemon's and an orchestrator's; its orchestrator's real-VM test passing on HVF and KVM x86-64, PM M605; kiln's side and every other real-VM run owed)
+### D254. kiln's MCP rides the agent-control link: a stdio bridge in the harness's member, one lane of the link per connection, no network grant (decided; its asks built at the endpoint and the controller, the member's listener and bridge and its VM's hand-off built; the runs' asking and the run hosts' pairing built, the daemon's and an orchestrator's; its orchestrator's real-VM test passing on HVF and KVM x86-64, PM M605; the endpoint's report naming the bridges it serves, `mcp:N` among a controller's lanes, built, `shards-control/2`; kiln's side and every other real-VM run owed)
 
 **Why.** A harness kiln drives in a microVM calls kiln's MCP server (kiln serves `/api/mcp`
 in-process). ROOT's first call was plain HTTP from the microVM to the runner's loopback
@@ -34782,6 +34783,9 @@ one form all nine take, and no other.
 | `MemberSpec::mcp`, `MemberStage::mcp`, image channel version 25 | an orchestrator's member spec (D231, D252), a flag per member appended last; the channel's next version above step 8's sign-ins (24) |
 | A held connection's charge | its connection's kernel queues as an exec's connection is measured (`ipc_buffers`: `SO_SNDBUF` and `SO_RCVBUF` on Unix, `GetNamedPipeInfo`'s in and out on Windows), the record its first read takes (an exec output's, `run::CHUNK`) and its entry, charged to the run's budget: the daemon's managed budget, or an orchestrator's run host's own, each held to the host's available memory (`build::host_available`); one it has no room for is let go |
 | An MCP lane's charge | an exec's of one output and a stdin (D238): its lanes' windows (`exec::lane_bytes`), its output's record and its pump's buffer, its stdin's room and its host's record |
+| The endpoint's report: `Negotiated` 39's payload, its suite and group (u16 each), then each bridge's member (a big-endian u32, ascending) | the control lane's report (D238), its TLS's word first as before; a member as `member-mcp=` and the preamble name it, by its declared index |
+| A report's bridges, at most `run::MAX_PAYLOAD` bytes (`BRIDGES_MOST`) | each a member its run's spec names in a `member-mcp=` entry (11 bytes and at least a digit), longer than its 4 bytes here, in a spec that is one run-protocol payload of at most `MAX_PAYLOAD` (`kind::SPEC`); the endpoint refuses more at its bind (`Window`), the controller a report naming more (`Protocol`), its buffer grown only as the report comes |
+| ALPN `shards-control/2` | the protocol's next version: a version-1 controller reads a report naming bridges as a broken lane and closes its connection, so the two are refused at their handshake instead (`Ended::Protocol`), whatever the run's bridges |
 
 **Built** (step 11). The endpoint's `Mcp` asks, on the exec lanes' machinery (`exec::Kind::Mcp`:
 one stream each way, no stderr, any steering let go by its host), and the controller's
@@ -34945,6 +34949,61 @@ connection through shards-api alone (`tests/control_lanes.rs`). That run passed 
 x86-64 (PM M605, 2026-11-15, `SHARDS_REQUIRE_VMS=1`), in api_image's whole runs: 33 of 33 at
 6a0adfc09 (KVM twice) and 32 of 32 at the vendor point 4124d8c70. It is owed on WHP and KVM arm64,
 as is every other run above.
+
+**Amended: the endpoint's report names the bridges it serves** (2026-11-16, lane ctl-lanes,
+kiln plan step 35's `/runs/control` check, found by lane s35-gaps2).
+- *Why.* kiln's step 35 E2E reads a session's agent-control link: both ends' suite and its
+  lanes, an `mcp:<member>` among them (kiln `tests/vm_e2e` `MCP_LANE`, `check_mcp_lane`), named
+  as Shards names them (`Granted::name`). A controller named its lanes from its own
+  subscriptions as it dialed (`Dialed::lanes`) and never `mcp:N`: which members have a bridge
+  is the run's to say, by its annotation or its spec, not its controller's. kiln reads a link
+  once, as it is made (kiln `Run::link`), so the name has to be in the endpoint's first report.
+- *Decided.*
+  - The endpoint is bound with the members whose bridge its host serves (`control::Streams::bridges`:
+    the daemon's from `shards.mcp`, `bind_agent`; api-run's from its request's `MemberSpec::mcp`,
+    `bind_control`), each once, ascending, and only where it admits execs, which carry their
+    connections; refused `Scope` otherwise, and `Window` past `BRIDGES_MOST`.
+  - Its report on every control lane names them after its TLS's word (Literals). The report's
+    head goes as before; its bridges follow on the same lane, written as its stream has room.
+  - The controller's report, `Linked::report`, is a `LinkReport { link, lanes }`: both ends'
+    `Link`, and the lanes it was granted: those its subscriptions grant, in the order they
+    did, then `Granted::Mcp(N)` for each bridge its endpoint names, where it dialed for execs
+    (a controller without execs can ask for no MCP connection). `Linked::wait` still gives the
+    `Link` alone, unchanged for its callers (Hex's node lanes). `Dialed::lanes`, which named
+    lanes before the endpoint had spoken, is gone.
+  - shards-api re-exports `LinkReport`, `Granted` and `Negotiated`, so that an orchestrator
+    reads the report through `shards_api::control` alone.
+  - The protocol is `shards-control/2` (Literals).
+- *Alternatives* (R02). (a) The controller names `mcp:N` from what its orchestrator asked
+  (`MemberSpec::mcp`): no wire change, but the asker's claim, not the endpoint's word, and a
+  daemon's run's controller has no spec to read. (b) The run host tells its orchestrator over
+  the image channel, `ImageGuest`: the endpoint knows its own TLS's word alone, the
+  controller's is the orchestrator's own process's, a daemon's run has no image channel, and a
+  second dial for a report would supersede the orchestrator's own connection (D238's
+  `CONNECTIONS`). (c) `mcp:N` named as each MCP lane opens: kiln reads its link as it is made,
+  before any harness has connected. (d) A frame of its own after `Negotiated`: the same version
+  bump, and a second state of the lane where one serves.
+- *What an orchestrator calls* (Hex, for kiln's `Run::link`): keep `Dialed::link` (a `Linked`)
+  beside the box's `execs` and `hangup`, and answer with `Linked::report()`: each end's
+  `suite_name()` and `group_name()` (IANA's codes in `suite` and `group`), and `lanes` by
+  `Granted::name`. Its wait is the link's first report, then the same at once.
+- *Tested* (unit, written, not run: the person's rule of 2026-11-16, no builds or tests on
+  this lane): shards-remote `control::tests::lanes::the_control_lane_names_the_mcp_bridges_its_endpoint_serves`
+  (an endpoint of two bridges names them on every control lane, after its TLS's word; a report
+  reads back whole, one cut short is not yet one, one of a length no bridges make or naming
+  more than `BRIDGES_MOST` is refused), `a_dials_lanes_are_named_as_granted` (no `mcp:N` without
+  execs; with them, `mcp:0` and `mcp:2` after the logs; none from an endpoint of no bridge;
+  `wait`'s `Link` the report's), `an_endpoint_serves_bridges_once_ascending_and_only_with_execs`;
+  the daemon's `a_runs_mcp_connections_are_held_and_paired_with_its_controllers_asks` (its
+  owner's report names `mcp:0`, both ends TLS13_AES_256_GCM_SHA384); api-run's
+  `an_orchestrators_run_hosts_its_lanes_as_the_daemons_runs` (`mcp:1`); shards-api's
+  `tests/control_lanes.rs` (the report's types through shards-api alone).
+- *Owed* (ROOT). Those suites (shards-remote `control::`, shards `daemon::managed::` and
+  `api_run::`, shards-api `--test control_lanes`), clippy on the seven targets,
+  `agent-control-v1/mutate.py`'s ALPN mutant (its pattern now `/2`), and on real VMs (HVF, KVM,
+  WHP): an orchestrator's run with a member's bridge whose controller's report names `mcp:N`
+  (`api_image`'s MCP test, to assert it), and kiln's step 35 `check_mcp_lane` once Hex answers
+  with the report.
 
 **What would falsify it.** A harness that takes MCP and no stdio server; a byte of an MCP
 connection reaching the microVM's network; a member's connection told to the controller as

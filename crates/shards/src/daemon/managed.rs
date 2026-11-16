@@ -715,13 +715,15 @@ struct Agent {
 /// The run's agent-control endpoint (D238, plan step 11): a key of the microVM's own, made for
 /// this run as its scope begins, which no template carries and only the endpoint holds; serving
 /// `outputs` and `inputs` as lanes of one connection to the run's owner `key` alone, and the
-/// execs its owner asks for in its members with `execs`' streams, bound on loopback as step 5's
+/// execs its owner asks for in its members with `execs`' streams, and naming in its report the
+/// members its run gave an MCP bridge (`bridges`, D254), bound on loopback as step 5's
 /// endpoints are.
 fn bind_agent(
     key: Fingerprint,
     outputs: &[(Scope, Admitted)],
     inputs: &[(input::Scope, Admitted)],
     execs: control::exec::Admissions,
+    bridges: &[u32],
 ) -> Result<(control::Endpoint, control::Served), Failure> {
     let vm = identity::Identity::generate().map_err(|e| Failure::Endpoint(e.into()))?;
     control::Endpoint::bind(
@@ -733,6 +735,7 @@ fn bind_agent(
             inputs,
             execs: Some(execs),
             sockets: None,
+            bridges,
         },
     )
     .map_err(Failure::Endpoint)
@@ -1674,7 +1677,7 @@ impl<D: Disk> Daemon<D> {
                 input_lanes.push((scope, input_admitted));
             }
             let exec_admitted = exec_admissions();
-            let (endpoint, served) = bind_agent(key, &lanes, &input_lanes, exec_admitted)?;
+            let (endpoint, served) = bind_agent(key, &lanes, &input_lanes, exec_admitted, mcps)?;
             // One driver's socket, and the waker every stream's control shares.
             let mut kernel = endpoint.kernel_buffer_bytes().map_err(Failure::Endpoint)?;
             if let Some((_, control)) = served.outputs.first() {
@@ -3349,9 +3352,9 @@ mod tests {
         };
         let out = admitted(64);
         let (endpoint, served) =
-            bind_agent(owner.fingerprint(), &[(scope, out)], &[], exec_admitted()).unwrap();
+            bind_agent(owner.fingerprint(), &[(scope, out)], &[], exec_admitted(), &[]).unwrap();
         let (other, _other_served) =
-            bind_agent(owner.fingerprint(), &[(scope, out)], &[], exec_admitted()).unwrap();
+            bind_agent(owner.fingerprint(), &[(scope, out)], &[], exec_admitted(), &[]).unwrap();
         assert_ne!(endpoint.fingerprint, other.fingerprint, "two runs share a key");
         assert_ne!(endpoint.fingerprint, owner.fingerprint());
         let (vm, address) = (endpoint.fingerprint, endpoint.address);
@@ -3431,7 +3434,8 @@ mod tests {
         };
         let out = admitted(64);
         let admissions = exec_admitted();
-        let (endpoint, served) = bind_agent(owner.fingerprint(), &[(scope, out)], &[], admissions).unwrap();
+        let (endpoint, served) =
+            bind_agent(owner.fingerprint(), &[(scope, out)], &[], admissions, &[]).unwrap();
         let (vm, address) = (endpoint.fingerprint, endpoint.address);
         let starts = served.execs.unwrap();
         let serving = std::thread::spawn(move || endpoint.run());
@@ -3652,7 +3656,8 @@ mod tests {
         };
         let out = admitted(64);
         let admissions = exec_admitted();
-        let (endpoint, served) = bind_agent(owner.fingerprint(), &[(scope, out)], &[], admissions).unwrap();
+        let (endpoint, served) =
+            bind_agent(owner.fingerprint(), &[(scope, out)], &[], admissions, &[]).unwrap();
         let (vm, address) = (endpoint.fingerprint, endpoint.address);
         let starts = served.execs.unwrap();
         let serving = std::thread::spawn(move || endpoint.run());
@@ -3779,7 +3784,7 @@ mod tests {
     #[test]
     fn a_runs_mcp_connections_are_held_and_paired_with_its_controllers_asks() {
         use shards_remote::control::exec::Unstarted;
-        use shards_remote::control::{Controller, Fault, Got, McpConnection, Subscriptions};
+        use shards_remote::control::{Controller, Fault, Got, Granted, McpConnection, Subscriptions};
         use std::io::{Read as _, Write as _};
         let owner = identity::Identity::generate().unwrap();
         let scope = |member| Scope {
@@ -3795,6 +3800,7 @@ mod tests {
             &[(scope(0), out), (scope(1), out)],
             &[],
             admissions,
+            &[0],
         )
         .unwrap();
         let (vm, address) = (endpoint.fingerprint, endpoint.address);
@@ -3842,7 +3848,7 @@ mod tests {
             let mut harness = held(first + 1);
             harness.write_all(request).unwrap();
             s.spawn(move || bridges.watch(first + 1));
-            let (controller, dialed) = Controller::dial(
+            let (controller, mut dialed) = Controller::dial(
                 &owner,
                 vm,
                 address,
@@ -3855,6 +3861,18 @@ mod tests {
             )
             .unwrap();
             let driver = s.spawn(move || controller.run());
+            // Its endpoint's report names member 0's bridge among its lanes (D254).
+            let report = dialed.link.report().unwrap();
+            let lanes: Vec<String> = report.lanes.iter().map(Granted::name).collect();
+            assert_eq!(
+                lanes,
+                ["control", "stdout:0", "exec", "log:run", "log:0", "mcp:0"]
+            );
+            assert_eq!(
+                report.link.controller.suite_name(),
+                Some("TLS13_AES_256_GCM_SHA384")
+            );
+            assert_eq!(report.link.endpoint, report.link.controller);
             let execs = dialed.execs.as_ref().unwrap();
             let McpConnection {
                 mut from,
@@ -3950,6 +3968,7 @@ mod tests {
             &[(scope(0), out), (scope(1), out)],
             &[],
             admissions,
+            &[],
         )
         .unwrap();
         let (vm, address) = (endpoint.fingerprint, endpoint.address);

@@ -5,7 +5,11 @@
 //! controller's own key, whose [`Identity::fingerprint`] [`crate::image::ControlAsk`] names.
 //!
 //! - **Its link.** TLS 1.3 under `TLS13_AES_256_GCM_SHA384` alone, both ways (D239): a
-//!   connection's [`Linked::wait`] says what each end negotiated.
+//!   connection's [`Linked::wait`] says what each end negotiated ([`Link`], a [`Negotiated`]
+//!   each, its suite and group by IANA's codes and rustls' names), and [`Linked::report`] that
+//!   beside every lane the connection was granted ([`LinkReport`]), named as Shards names them
+//!   ([`Granted::name`]): `mcp:N` among them for each member whose MCP bridge the run's
+//!   endpoint serves, where the controller asked for execs (D254).
 //! - **Its waits** (D238). Each ask below goes at once and gives a pending handle whose `wait`
 //!   takes its caller's patience (`Duration::MAX`: until the answer): `Ok(None)` while it is
 //!   unanswered, the ask still pending for a later wait, never sent again.
@@ -30,10 +34,10 @@
 
 pub use shards_remote::control::exec::{Admissions, Unstarted, Unsteered};
 pub use shards_remote::control::{
-    Controller, Dialed, Ended, ExecControl, Execs, Fault, Got, Hangup, Input, Link, Linked, McpConnection,
-    Member, MemberControl, MemberEnd, MemberSteering, Output, PendingExec, PendingLog, PendingMcp,
-    PendingMember, PendingSocket, Socket, SocketAdmission, SocketReader, SocketWriter, Sockets,
-    Subscriptions, exec,
+    Controller, Dialed, Ended, ExecControl, Execs, Fault, Got, Granted, Hangup, Input, Link, LinkReport,
+    Linked, McpConnection, Member, MemberControl, MemberEnd, MemberSteering, Negotiated, Output, PendingExec,
+    PendingLog, PendingMcp, PendingMember, PendingSocket, Socket, SocketAdmission, SocketReader,
+    SocketWriter, Sockets, Subscriptions, exec,
 };
 pub use shards_remote::identity::{Fingerprint, Identity};
 pub use shards_remote::managed::input::Scope as InputScope;
