@@ -414,11 +414,7 @@ impl Steps {
     fn refusal(&mut self, message: String) -> BuildRefusal {
         let lines = self.lines.take().unwrap_or_default();
         if let Some(said) = self.policy.take() {
-            return BuildRefusal::Policy {
-                said,
-                lines,
-                message,
-            };
+            return BuildRefusal::Policy { said, lines, message };
         }
         match self.failed.take() {
             Some((index, error)) => BuildRefusal::Step {
@@ -1265,7 +1261,10 @@ mod tests {
         assert_eq!(answer(kind, &bytes).unwrap(), Answer::Built("sha256:ab".into()));
         let (kind, bytes) = payload(&end(&Err("no".into())).unwrap());
         assert_eq!(answer(kind, &bytes).unwrap(), Answer::Failed("no".into()));
-        let said = vec!["bucket agents is not trusted".to_string(), "and another".to_string()];
+        let said = vec![
+            "bucket agents is not trusted".to_string(),
+            "and another".to_string(),
+        ];
         let (kind, bytes) = payload(&wire::policy(&said).unwrap());
         assert_eq!(answer(kind, &bytes).unwrap(), Answer::Policy(said));
         let lines = vec![2..=2, 4..=6];
@@ -1379,7 +1378,7 @@ mod tests {
                 how: StepEnd::Failed("exit code: 1".into()),
             })
             .unwrap(),
-            wire::at(&[2..=2]).unwrap(),
+            wire::at(&[RangeInclusive::new(2, 2)]).unwrap(),
             end(&Err(
                 "process \"/bin/sh -c false\" did not complete successfully: exit code: 1".into(),
             ))
@@ -1392,7 +1391,7 @@ mod tests {
                 name: "[2/2] RUN false".into(),
                 error: "exit code: 1".into(),
                 message: "process \"/bin/sh -c false\" did not complete successfully: exit code: 1".into(),
-                lines: vec![2..=2],
+                lines: vec![RangeInclusive::new(2, 2)],
             })
         );
     }
@@ -1403,13 +1402,17 @@ mod tests {
     #[test]
     fn a_syntax_error_is_refused_at_its_line() {
         let (dir, spec) = context();
-        let message = "failed to build: failed to solve: dockerfile parse error on line 2: unknown instruction: FOO";
-        let frames = [wire::at(&[2..=2]).unwrap(), end(&Err(message.into())).unwrap()];
+        let message =
+            "failed to build: failed to solve: dockerfile parse error on line 2: unknown instruction: FOO";
+        let frames = [
+            wire::at(&[RangeInclusive::new(2, 2)]).unwrap(),
+            end(&Err(message.into())).unwrap(),
+        ];
         assert_eq!(
             answered_by(dir.path(), &frames).build(&spec, &mut |_| {}),
             Err(BuildRefusal::Failed {
                 message: message.into(),
-                lines: vec![2..=2],
+                lines: vec![RangeInclusive::new(2, 2)],
             })
         );
     }

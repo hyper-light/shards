@@ -75,14 +75,11 @@ fn an_agentfile_builds_through_the_api_into_the_callers_home() {
     };
     match builds.build(&broken, &mut |_| {}) {
         Err(BuildRefusal::Step {
-            name,
-            message,
-            lines,
-            ..
+            name, message, lines, ..
         }) => {
             println!("refused at {name:?}: {message}");
             assert!(name.contains("COPY missing"), "{name}");
-            assert_eq!(lines, [2..=2], "{message}");
+            assert_eq!(lines, [std::ops::RangeInclusive::new(2, 2)], "{message}");
         }
         other => panic!("{other:?}"),
     }
@@ -117,7 +114,7 @@ fn a_build_refused_comes_back_typed_in_its_words() {
         Err(BuildRefusal::Failed { message, lines }) => {
             println!("refused: {message}, at {lines:?}");
             assert!(message.contains("dockerfile parse error on line 2"), "{message}");
-            assert_eq!(lines, [2..=2], "{message}");
+            assert_eq!(lines, [std::ops::RangeInclusive::new(2, 2)], "{message}");
         }
         other => panic!("{other:?}"),
     }

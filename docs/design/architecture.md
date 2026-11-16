@@ -35834,9 +35834,20 @@ its line in its words could not be found at all.
 - Light, a real `shards` and no VM (`build_real.rs`, `SHARDS_API_BUILD=1`):
   `a_build_refused_comes_back_typed_in_its_words`, a syntax error refused `Failed` at line 2 and
   an `Agentfile.rego` that trusts nothing refused `Policy` with its message. The broken COPY is
-  refused at its line 2.
-- **Owed** (ROOT): `api_image.rs` `an_image_built_through_the_api_boots_by_its_digest` (built
-  through `Builds`, booted by its `sha256:` ID as an `ImageSpec`'s image) on HVF, KVM and WHP.
+  refused at its line 2. On adas-mac-studio.local (macOS arm64) at af07ec039 with a debug
+  `shards` (kiln run r47): 3 passed. The syntax error: `… dockerfile parse error on line 2:
+  unknown instruction: FOO (did you mean FROM?)`, lines `[2..=2]`. The policy: said
+  `["no source is trusted here"]`, `… source "local://dockerfile" not allowed by policy: action
+  DENY`. The broken COPY: `[1/1] COPY missing /missing`, lines `[2..=2]`. shards-api's unit tests
+  there: 280 passed, 9 ignored; `scripts/check-development-policy` passed.
+- **Owed** (ROOT):
+  - `api_image.rs` `an_image_built_through_the_api_boots_by_its_digest` (built through
+    `Builds`, booted by its `sha256:` ID as an `ImageSpec`'s image) on HVF, KVM and WHP.
+  - `cargo test -p shards --profile test-release --lib build::` (this slice's `mod.rs`, D54's new
+    git and http tests). Its debug-profile run in r47 exited 101 with no test-result line and no
+    failed test named. Its cause is unread.
+  - clippy of `shards-api` and `shards` at the revision that fixed r47's
+    `single_range_in_vec_init` in these tests.
 
 ### D264. A guest's end has no deadline: what its host has not taken is held past it, within the window it had (built; real-VM runs owed)
 

@@ -1247,11 +1247,7 @@ mod tests {
         let (refused, _d1) = fetched(pinned(digest(b"agent v1")));
         assert_eq!(
             refused.unwrap_err(),
-            format!(
-                "digest mismatch {}: {}",
-                digest(b"agent v2"),
-                digest(b"agent v1")
-            )
+            format!("digest mismatch {}: {}", digest(b"agent v2"), digest(b"agent v1"))
         );
         let (got, _d2) = fetched(pinned(digest(b"agent v2")));
         assert_eq!(got.unwrap().digest.to_string(), digest(b"agent v2"));
