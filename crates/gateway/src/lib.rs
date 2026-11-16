@@ -6,6 +6,7 @@
 pub mod gateway;
 pub mod grpc;
 pub mod h2;
-pub mod hpack;
-mod hpack_tables;
+/// HTTP/2's field compression (RFC 7541), whose fields a response carries: shards-http2's,
+/// the credential injector's too (R12).
+pub use shards_http2::hpack;
 pub mod wire;

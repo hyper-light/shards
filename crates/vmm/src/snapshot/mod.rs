@@ -34,6 +34,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use codec::{DecodeError, Reader, Writer};
+use shards_abi::run::members::KEY_LEN;
 
 use crate::hv::Touch;
 use crate::memory::GuestMemory;
@@ -120,7 +121,10 @@ const MAGIC: [u8; 8] = *b"SHRDSNAP";
 /// 35: and its components' window's length in MiB, 0 for none (D270): guest addresses past
 ///     its DAX windows that a guest saved in 34 had no window at, and is refused
 ///     ([`ResumeRefused::OlderMachine`]).
-const VERSION: u32 = 35;
+/// 36: and the components plugged into it as it ran (D270 slice 5), each its function's place
+///     on its bus, its range of its components' window and its key, which a restore plugs
+///     back from its image before its devices' state is put back.
+const VERSION: u32 = 36;
 /// The first format whose state says who saved it ([`decode_saved_by`]).
 const VERSION_WITH_SAVER: u32 = 30;
 /// The version of shards this build is (crates/shards/Cargo.toml, by build.rs): what a
@@ -314,6 +318,9 @@ pub struct Snapshot {
     /// The memory a virtio-mem device had plugged, `(gpa, len)` run by run in the order of
     /// their addresses, whose bytes follow the RAM's in the memory file (D176).
     pub plugged: Vec<(u64, u64)>,
+    /// The components plugged into it as it ran (D270 slice 5), in the order of their places:
+    /// what a restore plugs back from each one's image, which its restorer is given by key.
+    pub components: Vec<crate::devices::virtio::pmem::Kept>,
     /// The runs of the memory file's RAM that hold data, `(offset, len)` in order, each of
     /// whole [`DATA_BLOCK`](crate::memory::DATA_BLOCK)s but at a region's end
     /// ([`GuestMemory::save`]): what a restore maps from the file, the rest zeros (D151).
@@ -655,6 +662,12 @@ fn encode(s: &Snapshot, generation: &str, identities: &[Identity]) -> Result<Vec
     });
     w.u8(s.config.pci_slots);
     w.u64(s.config.component_window_mib);
+    w.seq(&s.components, |w, k| {
+        w.u8(k.devfn);
+        w.u64(k.gpa);
+        w.u64(k.len);
+        w.bytes(k.key.as_bytes());
+    });
     w.bool(s.data.is_some());
     w.seq(s.data.as_deref().unwrap_or_default(), |w, (at, len)| {
         w.u64(*at);
@@ -841,6 +854,16 @@ fn decode_body(mut r: Reader<'_>, generation: String, vcpus: u32, memory_mib: u6
     let plugged = r.seq(plugged_most, 16, |r| Ok((r.u64()?, r.u64()?)))?;
     let pci_slots = r.u8()?;
     let component_window_mib = r.u64()?;
+    // One for each slot at most, each its place, range, and key with its length.
+    let components = r.seq(usize::from(pci_slots), 1 + 8 + 8 + 4 + KEY_LEN, |r| {
+        let (devfn, gpa, len) = (r.u8()?, r.u64()?, r.u64()?);
+        let key = std::str::from_utf8(r.bytes(KEY_LEN)?)
+            .ok()
+            .filter(|key| key.len() == KEY_LEN)
+            .ok_or_else(|| DecodeError(format!("a component's key that is not {KEY_LEN} bytes of UTF-8")))?
+            .to_owned();
+        Ok(crate::devices::virtio::pmem::Kept { devfn, gpa, len, key })
+    })?;
     let data = {
         let said = r.bool()?;
         let data_most = most_data_runs(memory_mib).ok_or_else(|| past("guest memory"))?;
@@ -874,6 +897,7 @@ fn decode_body(mut r: Reader<'_>, generation: String, vcpus: u32, memory_mib: u6
                 component_window_mib,
             },
             plugged,
+            components,
             data,
             arch: arch_state,
             devices,
@@ -1983,6 +2007,7 @@ mod tests {
                 component_window_mib: 0,
             },
             plugged: Vec::new(),
+            components: Vec::new(),
             data: None,
             arch: vec![marker, 2, 3],
             devices: vec![9; 100],
@@ -2199,6 +2224,39 @@ mod tests {
         assert!(decode(&encode(&snap, "g-1", &ids).unwrap()).is_err());
         snap.config.hotplug_mib = 2;
         assert!(decode(&encode(&snap, "g-1", &ids).unwrap()).is_ok());
+    }
+
+    /// D270 slice 5: a state keeps each component plugged into its machine, by its function's
+    /// place, its range of the window and its key, a digest's hex digits as its owner keys it
+    /// ([`KEY_LEN`]); no more of them than its machine has slots, and no key of another length.
+    #[test]
+    fn a_state_keeps_its_components_no_more_than_its_slots() {
+        let ids = vec![Identity::default(); 3];
+        let mut snap = sample(&nowhere(), 1);
+        snap.config.pci_slots = 1;
+        snap.config.component_window_mib = 64;
+        let kept = |key: String| crate::devices::virtio::pmem::Kept {
+            devfn: 3 << 3,
+            gpa: 1 << 36,
+            len: 2 << 20,
+            key,
+        };
+        snap.components = vec![kept("0123456789abcdef".repeat(KEY_LEN / 16))];
+        let decoded = decode(&encode(&snap, "g-1", &ids).unwrap()).unwrap();
+        assert_eq!(decoded.snapshot.components, snap.components);
+        snap.config.pci_slots = 0;
+        assert!(
+            decode(&encode(&snap, "g-1", &ids).unwrap()).is_err(),
+            "past its slots"
+        );
+        snap.config.pci_slots = 1;
+        for len in [KEY_LEN - 1, KEY_LEN + 1] {
+            snap.components = vec![kept("a".repeat(len))];
+            assert!(
+                decode(&encode(&snap, "g-1", &ids).unwrap()).is_err(),
+                "a key of {len} bytes"
+            );
+        }
     }
 
     #[test]

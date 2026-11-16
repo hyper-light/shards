@@ -23429,7 +23429,8 @@ and BuildKit build an Agentfile, no shards installed. The frontend is `shards` i
   written. Tests build the image in `shards-dind` and push it only to a registry
   container there.
 - **The gateway client** (`crates/gateway`): HPACK, HTTP/2, gRPC's unary call and
-  protobuf, written here rather than taken from h2, tonic and prost. shards links no async
+  protobuf, written here rather than taken from h2, tonic and prost (its HPACK and HTTP/2
+  shards-http2's since D242's step 7, the credential injector's own: R12). shards links no async
   runtime, and the gateway needs one peer's unary calls over one pipe. Frames are bounded
   by 16 KiB, header lists by 1 MiB and messages by grpcclient's 16 MiB. The client is held
   to BuildKit's own traffic, captured by a spy relaying docker/dockerfile:1's stdio in
@@ -29871,7 +29872,7 @@ Shards carried and without (kiln's `docs/research/s16-vendor/`).
 `shards` runs from; a macOS that refuses a carrier's own identity the entitlements it allows ad
 hoc (then ad hoc, as shards signs them).
 
-### D238. Agent control over hyper-transport (its transport, suite, lanes and identity decided; where its TLS ends decided at the host from HVF's and KVM's runs, plan step 10, WHP owed; its endpoint building, step 11: its connection, refusals, stdio lanes, their controller, the daemon's endpoint per run, exec lanes at the endpoint, the controller and the daemon, each end's word on its TLS, and members' own lanes (a member's state, its end, its signals and its own terminal's size, goal 58's steps 5 and 6) built, the daemon's runs' and an orchestrator's (api-run); log lanes built, goal 58's step 7: the lane, its controller, the daemon's log host, and the keeper of every member's log within the run's one log cap)
+### D238. Agent control over hyper-transport (its transport, suite, lanes and identity decided; where its TLS ends decided at the host from HVF's and KVM's runs, plan step 10, WHP owed; its endpoint built, step 11: its connection, refusals, stdio lanes, their controller, the daemon's endpoint per run, exec lanes at the endpoint, the controller and the daemon, each end's word on its TLS, and members' own lanes (a member's state, its end, its signals and its own terminal's size, goal 58's steps 5 and 6) built, the daemon's runs' and an orchestrator's (api-run); log lanes built, goal 58's step 7: the lane, its controller, the daemon's log host, and the keeper of every member's log within the run's one log cap; its real-VM runs and its measurement against arm g owed)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d runs every kiln harness in a microVM of
 its own, booted for Hex under shards-init (D231). The person decided how such a harness is
@@ -29983,7 +29984,8 @@ So, for step 11:
   as the managed endpoints' `server` fingerprint does (the microVM's identity, point 2, below).
 - Step 11 serves each microVM from an endpoint of its own, bound where its caller says ("The
   stdio lanes' service", below). A controller dials that microVM's endpoint and meets its key
-  there. Where the daemon binds each endpoint is step 11's to build.
+  there. The daemon binds each on loopback ("Where the daemon binds it", below), as an
+  orchestrator's run host does (D252).
 - Each lane reaches its microVM over vsock, as a host reaches a guest's service in Firecracker:
   an AF_UNIX connection to the VMM, then `CONNECT PORT` (Firecracker edb60617, `docs/vsock.md`,
   "Host-Initiated Connections"). Inside the microVM, shards-init's relay carries it on. The
@@ -30012,12 +30014,12 @@ callers of it:
 
 Until step 10 decided, only what both arms share was built (ROOT, 2026-11-12): the connection,
 the microVM's identity, who is refused, and what a lane says. The control lane (exec, signal,
-inspect) and the terminal lane (attach, TTY) wait on step 6's member exec, attach and TTY. Step
-10 has decided for the host (above). The endpoint runs in the daemon and holds each microVM's
-own key, and the key's SHA-256 reaches the controller in the run's managed metadata. Exec lanes,
-members' own lanes (signal, inspect, a terminal's size) and the log lane, which also waited on
-step 10, are built now, below; a log lane of an owned member waits on the daemon keeping that
-member's output (D240).
+inspect) and the terminal lane (attach, TTY) waited on step 6's member exec, attach and TTY
+(D243, D244). Step 10 has decided for the host (above). The endpoint runs in the daemon and
+holds each microVM's own key, and the key's SHA-256 reaches the controller in the run's managed
+metadata. Exec lanes, members' own lanes (signal, inspect, a terminal's size) and the log lane,
+which also waited on step 10, are built now, below, an owned member's log lane among them, as
+the daemon keeps every member's output (D240, "Every member's log").
 
 *The connection.* QUIC over D180's driver and TLS (`net.rs`, `tls.rs`): TLS 1.3 alone, D239's
 provider (TLS13_AES_256_GCM_SHA384 alone, the hybrid ML-KEM groups), early data off, on an
@@ -31182,18 +31184,24 @@ held within the least and short of it, no budget answered none) and
 guest time; a member's, none). Record:
 [orchestrator-room-v1](../research/measurements/orchestrator-room-v1/README.md).
 
-**Owed.** The real-VM tests on KVM, HVF and WHP (ROOT). Hex's adoption: Hex builds against
-version 6's shards-api, so its re-vendor of Shards, then its learner telling each Shards guest
-its C5 budget's room each window and reading each vCPU's guest time from the run's stats. D188's
-give-back at the host's pressure (`RECLAIM`) for an orchestrator's runs: no run host watches its
-host's pressure; an orchestrator gives one back by telling it a room short of what it holds.
+**Owed.** The real-VM tests on KVM, HVF and WHP (ROOT). D188's give-back at the host's pressure
+(`RECLAIM`) for an orchestrator's runs: no run host watches its host's pressure; an orchestrator
+gives one back by telling it a room short of what it holds.
+
+**Landed** (s37). This entry at `3ce473b31` to `c9430828c`, via `9bf25f367`. Hex's adoption, on
+Hex main: its re-vendor of Shards past it (Shards `1389dc0b6` at Hex `025aae6d`; `9975d1f55` at
+Hex `1969a423`); a Shards image VM told its room and read for its host cost, each vCPU's guest
+time among it, through its runtime, and learned by its charge learner (Hex `2e482c5b`,
+`2a399d82`); a node VM's guest under shards-init told its room as an image VM's (Hex
+`6a8c6da8`). A managed microVM is told none (D255), so Hex's Shards guest class still awaits
+`GuestRoom`. `docs/research/s37-decision-inventory.md` lists each landing (rows A7 and 14).
 
 **What would falsify it.** A run told its room through its host whose host still takes back
 memory its guest holds before its guest drops its page cache (D188's measure, PM M309, on an
 image run); an orchestrator that needs D188's pressure give-back through its run host to keep
 its runs within its budget.
 
-### D242. Credentials in Veil's shape: a credential is named, never carried, and filled in at the VM's egress (the contract decided and built; the run's CA in its network process and in its granted members' trust built, step 2; its leases built, step 4; kiln's broker built, step 5; every harness's trust surveyed, step 9; the injector built, step 3: TLS ended for granted hosts, HTTP/1.1 heads filled in, echoes masked; Hex filling a harness VM's grants and answering its leases from kiln's broker built, step 6, kiln's half on kiln main and Hex's with the Hex lead; the leak scan's harness built, step 10's first part, D259; the injector's A/B harness built, step 10's second part; the Claude Code and Codex sign-in profiles built, step 8's first slice; HTTP/2's layer built, step 7's first slice; the injector's capture and its run host's relay built, step 8's second slice; HTTP/2 in the injector's connections built, step 7's second slice; a sign-in's token host over HTTP/2 built, its token handling per stream; the injector's upstream roots made explicit, the same on every OS, and never taken from its environment; kiln's broker answering sign-ins and the real-VM runs owed)
+### D242. Credentials in Veil's shape: a credential is named, never carried, and filled in at the VM's egress (the contract decided and built; the run's CA in its network process and in its granted members' trust built, step 2; its leases built, step 4; kiln's broker built, step 5; every harness's trust surveyed, step 9; the injector built, step 3: TLS ended for granted hosts, HTTP/1.1 heads filled in, echoes masked; Hex filling a harness VM's grants and answering its leases from kiln's broker built, step 6, on Hex's main and kiln's, though no kiln harness launch grants a credential yet; the leak scan's harness built, step 10's first part, D259; the injector's A/B harness built, step 10's second part; the Claude Code and Codex sign-in profiles built, step 8's first slice; HTTP/2's layer built, step 7's first slice; the injector's capture and its run host's relay built, step 8's second slice; HTTP/2 in the injector's connections built, step 7's second slice; a sign-in's token host over HTTP/2 built, its token handling per stream; the injector's upstream roots made explicit, the same on every OS, and never taken from its environment; HTTP/2's codec made one crate, the gateway's client's too (R12); kiln's broker answering sign-ins built, step 8's third slice, on kiln main (its build and tests ROOT's), though kiln grants no sign-in yet; the real-VM runs owed)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 33: every kiln harness runs in a
 Shards microVM, and a harness needs its model-provider credential without the credential
@@ -31505,9 +31513,9 @@ VM failing. On the orchestrator's side
   next frame read whole (red before the wipe and with it removed, STEP4.md).
 - *Owed (ROOT).* A real run with a credential grant through `shards api-run` (KVM x86_64, HVF,
   WHP): the lease asked on first use and released at each end, with the run host's diagnostics
-  saying each and no value. That needs the injector (step 3), the first caller of
-  `Leases::ask`; until it lands, nothing in a run asks. Hex's vendored shards-api takes
-  `ImageSpec::lessor` (step 6). The daemon's runs have no credential grants: their lease relay
+  saying each and no value. The injector (step 3) asks it now (`Leases::ask`), and Hex's image
+  class gives each granted run its `ImageSpec::lessor` (step 6, on Hex's main). The daemon's
+  runs have no credential grants: their lease relay
   and a move's release there are owed by the first change that gives a daemon's run grants.
   No step brings them: not this plan's ten, nor the 39 of kiln plan
   01a1cd8e862e7169a074db3d5fa33f3d, whose harness runs are all an orchestrator's, through
@@ -31570,8 +31578,10 @@ Owed: none beyond CI on main.
   placeholders; two refreshes at once make one call to the provider. Every broker test runs over
   `SimSecrets` and `KilnSecrets` alike, each guard removed in turn failing its test. clippy
   `-D warnings` clean.
-- *Owed.* Hex answering a run's lease asks from the broker, and telling it of a move (step 6);
-  Shards' run host asking them (step 4). ROOT's real runs (step 10).
+- *Owed.* ROOT's real runs (step 10). Built since: Shards' run host asking (step 4), and Hex
+  answering a run's asks from the broker through kiln's lessors (step 6). A move told to the
+  broker (`Broker::moved`) has no caller: an orchestrator's run, every run Hex boots, moves
+  nowhere (step 4).
 
 **Built: step 3's first slice, each grant's placeholder** (kiln plan
 01a1d2b88be57304b972761e2a5c6781 step 3; research f27, f32, f33, f60; record
@@ -31641,8 +31651,9 @@ stands (above, "Who"), so it must know which placeholder stands for which creden
   bad ones refused. `shards_net`: the grants' codec round-trips them and refuses one past two
   bytes; the network process takes a run's grants with their placeholders checked again. Each
   of 9 guards removed in turn fails its test (`scripts/step3-reds.py`).
-- *Owed.* Hex fills each grant's placeholder as it stages the credential into its member (step
-  6), with its vendored shards-api at version 22.
+- *Built since.* Hex carries each grant's placeholder (Hex 1d60abada, its vendored Shards at
+  image channel 23), and kiln's sandbox passes it to Hex (kiln b2fc6cebb). No kiln harness
+  launch grants a credential yet (step 6, below).
 
 **Built: step 3's second slice, the injector** (`crates/net/src/inject.rs`, its handoff in
 `tcp.rs` and `lib.rs`; research f16, f20, f21, f26, f27, f32–f34, f42–f44, f56, f65; record
@@ -31870,7 +31881,7 @@ docs/research/s33-veil-creds/STEP3.md).
 **Built: step 6, Hex fills a harness VM's credential grants and answers its leases from kiln's broker** (kiln plan
 01a1d2b88be57304b972761e2a5c6781 step 6; docs/research/s33-veil-creds/STEP6.md). Hex boots harness images through
 shards-api (D231) and is their orchestrator; kiln is Hex's.
-- *Hex* (a local branch given to the Hex lead, on its main cf535152 at Shards 740fa372; nothing pushed; Hex's
+- *Hex* (built on its main cf535152 at Shards 740fa372, merged to Hex's main by its lead, 29284333; Hex's
   docs/design/credential-grants.md): a box's credential grants ride its image class's spec (`ShardsImage::credentials`,
   each `{member, reference, toward}`), its durable record and its node's wire, and `inspect` shows every one
   (`BoxInfo::credentials`). One check (`check_credentials`) refuses, typed, a grant that could not be filled in exactly
@@ -31892,9 +31903,10 @@ shards-api (D231) and is their orchestrator; kiln is Hex's.
   channel of its own (256 random bits in a key fingerprint's form, which names no other run), each lease given back
   alone (`Broker::release_lease`), the run's end revoking the rest (`RunLessor::ended`).
 - *Since 740fa372:* step 3's injector moved the grant to `shards_dns::credential` and gave it its member's
-  `placeholder`, filling a value only where that placeholder stands. Hex's re-vendor past it carries each grant's
-  placeholder (kiln mints it where it stages the credential into its member) and drops the one-credential-per-host
-  rule, which Shards holds by placeholder (`Refused::Shared`).
+  `placeholder`, filling a value only where that placeholder stands. Hex's re-vendor past it (1d60abada, Shards
+  db4168345) carries each grant's placeholder, which its launch's maker mints (kiln), and dropped the
+  one-credential-per-host rule, which Shards holds by placeholder (`Refused::Shared`; Hex's
+  `w33_two_credentials_toward_one_host_are_taken_each_by_its_own_placeholder`).
 - *Literals.* A reference's grammar is the store's (1 to 512 of A-Za-z0-9/_+=.@-, Secrets Manager's, as kiln-seams'
   `check_name` keeps it); a life of none is the u64 of nanoseconds this entry's channel carries at its most; 256 random
   bits are a key fingerprint's form (D238). No learned value enters this step.
@@ -31905,10 +31917,17 @@ shards-api (D231) and is their orchestrator; kiln is Hex's.
   stops, an ungranted host passed bare, a grant beyond its egress or on a node with no lessors refused before any
   record, the wire both ways, the lease contract), the record's and the release's removal each failing its test, and
   clippy clean for Linux, macOS and Windows.
-- *Owed.* The Hex lead's merge and re-vendor (past 740fa372: placeholders); kiln's implementation of Hex's lease seam
-  over `secrets::lessor` once kiln vendors that Hex, and its sandbox's grants carried to `ShardsImage::credentials`;
-  a remote node's lessors (a node reached over its wire has none, and refuses grants `Unconfigured`); ROOT's real runs
-  (step 10).
+- *Built since* (each on its repository's main, read 2026-11-16). Hex: its image runtime takes its orchestrator's
+  lessors (`ImageRuntime::leasing`, be3935f2b); a node reached over its wire leases a box's credentials from the
+  connection that created it (credential-grants.md C7, 9b208bff1); a run's sign-in asks go to its lessor (C8,
+  9e83d4cff). kiln: its lessors are Hex's lease seam (80f1270b6, red 69383e5bd), held to Hex's lease contract over
+  `SimSecrets` and kiln's store alike (`cp_t8_3_kilns_lessors_pass_hexs_lease_contract`); its server gives them to its
+  own runner, whose sandbox carries each launch's credential grants, by reference with their placeholders, to
+  `ShardsImage::credentials` (458a8df23, b2fc6cebb).
+- *Owed.* No kiln harness launch grants a credential yet: `sandbox::isolated::launch_of` gives `credentials:
+  Vec::new()`, its harness signing in natively, its tokens in the microVM, until step 8's capture reaches kiln; kiln's
+  sandbox gives Hex no sign-in grant (`ShardsImage::sign_ins`); a kiln runner other than the server's own holds no
+  broker and refuses a granted launch (`hexvm::NO_BROKER`). ROOT's real runs (step 10).
 
 **Built: step 9, every harness's trust and token checks surveyed** (docs/research/s33-veil-creds/
 harness-survey.md, its evidence `evidence/survey/<harness>.txt`). Each of kiln's ten harnesses was read from its own
@@ -31918,9 +31937,10 @@ checks, with no vendor CLI run. Every build reaches the run's CA, through a vari
 `SSL_CERT_DIR` for goose and Antigravity; `CODEX_CA_CERTIFICATE` or `SSL_CERT_FILE` for Codex) or through the system
 bundle step 2 lays it in (Devin's alone). None carries a pinning API's names. So no harness is tmpfs-fallback on its
 trust, and each is injected. Claude Code's bundle carries an OIDC `at_hash` check, the hazard of a placeholder access
-token beside a real ID token; whether its Anthropic sign-in runs it is step 8's to settle from its source, as are
-sender-constrained tokens. A string found says the build carries the code, not that every path runs it; ROOT's real
-runs (step 10) confirm each harness's trust of the run's CA.
+token beside a real ID token; step 8 settled it from its source (its first slice's questions 5 and 7, below): its
+Anthropic sign-in never runs it, while the LLM gateway's and XAA's sign-ins, which do, and Bedrock's `aws login`, whose
+refresh carries a DPoP proof, are tmpfs-fallback. A string found says the build carries the code, not that every
+path runs it; ROOT's real runs (step 10) confirm each harness's trust of the run's CA.
 
 **Built: step 10's first part, the leak scan's harness (D259, docs/research/measurements/
 s33-leak-scan).**
@@ -32216,6 +32236,62 @@ record docs/research/s33-veil-creds/STEP8.md).
   `Debug`.
 - *Owed.* Step 8's third slice: kiln's `RunLessor` answering `capture`, `refresh` and `revoked` from its broker, and
   Hex forwarding the three. ROOT: the real sign-ins (below).
+
+**Built: step 8's third slice, kiln's run lessor answering a run's sign-ins from its broker** (kiln main
+bd2565641, its commits 4672dbd14 and 07b0962b9: `crates/kiln/src/secrets/lessor.rs`,
+`broker.rs`, `signin.rs`; kiln plan 01a1d2b88be57304b972761e2a5c6781 step 8; research f47, f53, f55, f63, f64; record
+docs/research/s33-veil-creds/STEP8.md). Hex already forwarded the three asks to its orchestrator's lessor
+(`hex_api::lease::Lessor`, Hex's C8, vendored in kiln at Hex e19198bd); kiln's took their defaults, `Unanswered`,
+a 503 in the guest. No Shards code changes in this slice.
+- *Capture.* kiln's lessor keeps the tokens through step 5's broker (`sign-ins/<sign_in>/access` and `/refresh`,
+  marked placeholders of 256 random bits) and now the scope they were granted beside them (`/scope`), which Claude
+  Code asks again at each refresh; it answers the access token's reference and the placeholders. The inert ID token
+  is not kept: no kiln path stages a CLI's file yet.
+- *Which provider.* A refresh names the sign-in alone (`REFRESH`; `Lessor::refresh(sign_in, key)`), so kiln reads
+  the provider from the name it gave the sign-in: `claude/…` is Claude Code's, `codex/…` Codex's (kiln's harness
+  kinds, its `accounts.rs`). A name naming neither is refused `Denied` at capture, nothing kept, so nothing is kept
+  that could not be refreshed. The grant kiln makes must name the CLI its name says. Considered: the CLI carried in
+  the capture and refresh asks (Shards' image channel, Hex's wire and trait: three repositories' versions for a
+  fact the orchestrator chose when it granted the sign-in); a record kiln keeps as it grants a sign-in, which no
+  kiln path does yet (owed below).
+- *The refresh, the broker's alone* (question 1). Made under the broker's `Turn` (one at a time for a sign-in across
+  every run, step 5) with kiln's own HTTP client, as each CLI's build makes it. Claude Code 2.1.311 posts JSON
+  `grant_type`, `refresh_token`, `client_id` and `scope` to `https://platform.claude.com/v1/oauth/token` (offsets
+  238938203, 242103577). Codex rust-v0.167.2 posts JSON `client_id`, `grant_type` and `refresh_token` to
+  `https://auth.openai.com/oauth/token` (login/src/oauth/client.rs:97-113; auth/manager.rs:230, 1863). A 200's
+  tokens are kept under the same references, so the VM's placeholders stay (question 2). A scope its response
+  leaves out keeps the one asked (RFC 6749 §5.1), and a refresh token it leaves out keeps the old one (§6). A 400 or
+  401 (§5.2's error response) is `Denied`, which the injector answers `invalid_grant` so the CLI signs in anew.
+  Anything else is `Unavailable` (503). Its words are the provider's `error` and `error_description`, with any that
+  repeat the refresh token left out, as a 503's words reach the guest's body.
+- *The answer.* The token response the CLI reads, built from what the broker kept: `access_token` and
+  `refresh_token` placeholders; `token_type` `Bearer` (RFC 6749 §5.1; both providers' tokens are RFC 6750 bearer
+  tokens, question 7); `expires_in` from the access token's kept end; and `scope`. These are what Claude Code's
+  refresh reads (`{access_token:G,refresh_token:j=e,expires_in:Q}=H`, `H.scope`, offset 242103577) and what Codex's
+  reads (`id_token`, `access_token`, `refresh_token`, each kept only where it comes: manager.rs:1758-1766). Nothing
+  else of the provider's response passes. The network process reads the broker's placeholders as the tokens, so a
+  token repeated in an unread field would pass it unseen. Codex's new ID token is left out, and it keeps the inert
+  one its capture gave. A scope that repeats a token is refused. Left out: `refresh_token_expires_in`, which Claude
+  Code reads as unknown when absent.
+- *Revocation* (question 6). Said in kiln's log with the run and the sign-in; the tokens kept.
+- *Literals.* The two client ids and token endpoints, each its CLI's build's (above). `Bearer`, RFC 6750's. A token
+  response read within 4 MiB, the window the run's injector reads the same provider's responses within
+  (`tcp::TO_GUEST`, question 3). The request's 30 s timeout is kiln-http's default (`DEFAULT_TIMEOUT`), which is
+  Claude Code's own refresh's (`timeout:30000`, offset 242103577). No learned value.
+- *Tests* (kiln `secrets::`, light, no VM; written and not run: the person's rule of 2026-11-16 holds lanes to no
+  builds or tests, and ROOT builds and runs them). Through Hex's seam, over `SimSecrets` and
+  kiln's store, against one local stand-in for both token endpoints (`ci::integrations::endpoint`'s override):
+  a capture kept and its access token leased by reference; each provider asked exactly its CLI's body (Claude
+  Code's with the captured scope); the answer holding placeholders and no token, its five or three fields alone;
+  the rotated access token kept under its reference; a revocation keeping the sign-in; refusals by kind (a name
+  naming no provider, never captured, refused 400, unavailable 503 with no token in its words); two refreshes at
+  once one call to the provider. Pure tests of the bodies, the token response's reading and the answer.
+- *Owed.* kiln granting a run's sign-ins: its sandbox carrying them to `ShardsImage::sign_ins` (name and CLI from
+  one value), and staging a later run's CLI file with the captured placeholders, inert ID token and scope. The
+  broker keeping a sign-in's placeholders across refreshes and restarts: it mints new ones at each refresh, which
+  nothing passes on, as the network process writes the sign-in's own. ROOT: kiln's build, clippy (`-D warnings`)
+  and these tests, none run yet; the real sign-ins and refreshes (step 10); and whether platform.claude.com answers
+  a refresh asking the captured scope as it answers Claude Code's.
 
 **Built: step 7's first slice, HTTP/2's layer** (`crates/net/src/http2.rs`, `crates/net/src/hpack.rs`; kiln plan
 01a1d2b88be57304b972761e2a5c6781 step 7; research f10, f22, f41, f42, f58, f67; record
@@ -32532,8 +32608,61 @@ lease answered 503").
       shards.
     - shards-api's `upstream_roots`, `a_grants_fields`, `image::wire::tests` and `image::tests`: 38 of 38 at
       fd61d46da and on the tree merged with main 3b3c6e019 (b6e6f4b9c); fmt clean.
-- *Owed.* ROOT runs the three api_image injector tests on KVM, HVF and WHP (the first runs on HVF and WHP), and CI's
-  matrix on main.
+- *Owed.* ROOT runs the three api_image injector tests on HVF, KVM arm64 and WHP arm64, and CI's matrix on main
+  green. CI on main 1b8d1cddd (run 43876891053) ran them with VMs, each passing, on x86_64 Linux (gnu and musl, KVM)
+  and x86_64 Windows (WHP); its arm64 Linux runners have no /dev/kvm and its macOS runners no nested virtualization,
+  so they skipped there, and its arm64 Windows job did not reach them.
+
+**Built: one HTTP/2 in the tree, the injector's and the gateway's client's (R12)** (`crates/http2`, shards-http2:
+`lib.rs`, `hpack.rs`; `crates/net/src/http2.rs`; `crates/gateway/src/h2.rs`, `grpc.rs`; `crates/testguest/src/tls_ask.rs`;
+lane inject-h2 of kiln plan 01a1d2b88be57304b972761e2a5c6781 step 7).
+- *Before.* Step 7's first slice wrote the injector's frame codec and HPACK in crates/net; its survey (above) weighed
+  crates.io's crates alone. The tree held a second already: BuildKit's gateway client (D113: `crates/gateway`'s `h2.rs`,
+  `hpack.rs`, and `hpack_tables.rs` generated from golang.org/x/net's sources by `scripts/gateway/gen-tables`), with
+  its own frame reader and writer, SETTINGS checks and windows, for one blocking client of one stream at a time. It
+  could not serve the injector: its decoder reads a never-indexed literal as one without indexing (both its
+  `(4, false)`), so a forwarding hop loses how the field came (RFC 7541 §7.1.3, f42), and its encoder writes literals
+  without indexing alone. The injector's serves both: a superset. testguest's `tls-ask` compiled the injector's
+  `hpack.rs` by `#[path]`.
+- *Decision.* One implementation (R12, R13): the injector's, moved unchanged into `crates/http2`, with no I/O and one
+  dependency (zeroize, the injector's already): frames (`frame`, `Head`, `headers`, `data`, `rst_stream`, `goaway`),
+  settings and flow control (`Settings`, `Hop`), field blocks (`Block`) and HPACK (`hpack`). crates/net keeps the
+  injector's request rewrite (`request`, `Go`, `Filled`) and re-exports the rest (`http2::*`, `hpack`), so inject.rs'
+  paths and api_image's `shards_net::hpack` stand; the network process links the same code. The gateway's client is
+  a blocking driver over `Hop`; its codec, its tables and their generator are deleted. testguest depends on the
+  crate. Not chosen: crates/net depending on crates/gateway (the confined network process linking BuildKit's frontend
+  client), the gateway on crates/net (a frontend linking the network stack, rustls and AWS-LC with it), and keeping
+  both.
+- *Added for the gateway's client.* `Head::read`: a frame's header, checked against this side's
+  SETTINGS_MAX_FRAME_SIZE before its payload is read (`frame` is it and the payload). `ping`: inject.rs' PING check,
+  moved. `Hop::released_on_connection`: the credit of octets on a stream this side closes with them goes to the
+  connection's window alone, as nothing but PRIORITY goes on a closed stream (RFC 9113 §5.1), as the gateway's client
+  gave it before. `released` is the stream's credit and then that, unchanged.
+- *What changes for the gateway's client (D113).* Its frames, settings and windows are the injector's. DATA past the
+  window it grants (`WINDOW`, 32 MiB) is a FLOW_CONTROL_ERROR, where it was taken. Credit goes back once a frame's
+  worth or half the window is owed (RFC 9113 §6.9.1's advice, above), not at 16 MiB. Its request fields are still
+  literals without indexing, now Huffman-coded where shorter, and a peer's changed SETTINGS_HEADER_TABLE_SIZE is said at
+  its next block's start (RFC 7541 §4.2). It no longer advertises SETTINGS_MAX_HEADER_LIST_SIZE, which is advisory (RFC
+  9113 §6.5.2). A header list past its 1 MiB is still refused, now once the block is decoded whole (§10.5.1); a grpc-go
+  server told the limit would have reset the stream instead of sending it. Where the codec refuses, the error's text is
+  its `why`.
+- *Literals.* None new. `Head::read`'s bound is its caller's; the gateway's `WINDOW` and `MAX_HEADER_LIST` are D113's.
+- *Tests.* shards-http2: the tests that moved with the code (hpack's, and the two of flow control), every Huffman
+  symbol decoded (the gateway's test), a closed stream's credit to the connection alone, a PING answered on the
+  connection alone, and a header read before its payload and refused past the frame size. shards-gateway: the client
+  replaying BuildKit v0.28.1's recorded half (`recorded_gateway_answers_are_read`), and a body held at the peer's first
+  65,535 octets until it grants more, its last DATA's credit to the connection alone. shards: the frontend's and
+  spiffe's fakes, each encoding with its own connection's encoder. shards-net: its http2 and inject tests, unchanged.
+  - *Not run.* By the person's rule of 2026-11-16 this lane built and ran nothing (`cargo fmt --all` alone); every
+    check is ROOT's, after the merge (*Owed*).
+- *Owed.* ROOT: `cargo test -p shards-http2 -p shards-gateway`; `cargo test -p shards-net --lib -- hpack:: http2::
+  inject::`; `SHARDS_HELPERS=skip cargo test -p shards --lib -- frontend:: spiffe::`; `cargo test -p shards --profile
+  test-release --test api_image --no-run` (it names `shards_net::hpack`); `scripts/lint` on every target, testguest's
+  musl ones included; CI's matrix on main. The guard mutation of `released_on_connection`: the gateway's `data()` calling
+  `released` for its stream's last DATA fails `a_body_waits_for_its_windows_and_a_closed_streams_credit_goes_to_the_connection`.
+  The gateway's client against a live BuildKit: shards' frontend image from this revision driven by `docker buildx
+  build` in `shards-dind` (D113), and the SPIFFE Workload API's against a live SPIRE agent. The injector's real-VM
+  HTTP/2 runs, as before.
 
 **Owed (later slices of step 33, this plan's steps 7, 8 and 10).** Kiln's broker answering the sign-ins' words (step 8's third slice;
 the network process telling its run host of a capture, a refresh and a revocation, the run host its
@@ -32548,7 +32677,8 @@ are bounded by `shards_dns`'s RFC 1035/1123 rules (a label 63 bytes, a name 253)
 The channel version `8` is a sequence number, not a tuned value. A placeholder's format is
 not fixed here. It is minted where a credential is given to a member: by the orchestrator
 for a value it stages into a member (carried to the injector with the run's grants), and by
-the injector for a token it captures at sign-in. It exists before the value's lease, which
+the orchestrator's broker for a sign-in's tokens the injector captures (step 8; kiln's: a visible
+marker and 256 random bits, step 5). It exists before the value's lease, which
 is asked just in time at its first use. Its format is derived where it is minted: Codex's own
 egress broker keeps over 128 bits of randomness after a visible marker, and a sentinel the
 same length as the value is another option (Claude Code's sandbox mask does this). The
@@ -33248,10 +33378,15 @@ period, checks it is its build's hold's, and holds the run to two periods past a
 where it took 100 ms as known.
 
 **Owed.** The real-VM test on KVM, HVF and WHP (ROOT); the seven guard-removal mutants above,
-these light tests on Linux and Windows, and `scripts/lint` on the 7 targets (ROOT). Hex's
-adoption: its re-vendor of Shards past D241 and this, then its learner telling each Shards
-image VM its rate each window (kiln plan step 14). How far past its rate a VM runs at each rate
-and vCPU count, measured, as D191 owes for its marks.
+these light tests on Linux and Windows, and `scripts/lint` on the 7 targets (ROOT). How far past
+its rate a VM runs at each rate and vCPU count, measured, as D191 owes for its marks.
+
+**Landed** (s37). This entry at `81049eaf6`, `bc395685f`, `e34176b54` and `2d3da286c`, via
+`4c5341a3d`; its period at `b8fe24750`, told with each `RATED` answer since `f54dbfe34`. Hex's
+adoption, on Hex main: each Shards image VM capped through its rate by its charge learner (Hex
+`2e482c5b`, `2a399d82`), over a window the longest of its platform's and each held image VM's
+rate period (Hex `48cafffc7`), at Shards `9975d1f55` (Hex `1969a423`).
+`docs/research/s37-decision-inventory.md` lists each landing (rows P3 and 14).
 
 **What would falsify it.** A run held to a rate whose guest time over a window passes the rate
 by more than a period's share and its vCPUs' overrun; a daemon run, its whole CPUs held in
@@ -36308,7 +36443,7 @@ bind after; `Unknown`, `Widening`, `NoNetwork`); the lease and sign-in relay tes
 `a_port_published_live_answers_and_is_gone_after_unpublish` (the run's `started_from` and VM
 process pid unchanged, no build and no save across it).
 
-### D270. Components swapped into running image VMs, sans rebuild: built alone once, attached by digest (slices 1 to 4 built, 3 and 4 run on HVF: the component build, its image plugged in and mapped DAX, a member's next generation, its restart from its orchestrator, and a swap by digest; saves following)
+### D270. Components swapped into running image VMs, sans rebuild: built alone once, attached by digest (slices 1 to 5 built, 3 and 4 run on HVF: the component build, its image plugged in and mapped DAX, a member's next generation, its restart from its orchestrator, a swap by digest, and a save of a run holding components, slice 5's real-VM test owed)
 
 **Asked.** The person, 2026-11-15: "although agentfiles allow for static specification of
 agents. I'd love for the ability to hot-swap agents, harnesses, and mcps at given paths in
@@ -36655,6 +36790,55 @@ and `Artifact`, nothing asked).
   Linux (x86_64 glibc, aarch64 musl for init) and Windows (x86_64, and arm64 for the VMM); shards-api's
   lib 276, the run host's 76, the VM process's workload 42, the VMM's pmem 13. KVM and WHP are owed.
 
+**Slice 5: a run holding components saved with them** (the VMM, the VM process and the run host,
+snapshot format 36; built, its real-VM test owed).
+- *A save*: a machine whose plugged functions are each a component's saves. Its hotplug window
+  keeps each component's function as it is plugged (`Window::saves`) and refuses a save while
+  anything else is plugged (a disk's, a share's, a host's function, whose host side no snapshot
+  holds); its bus refuses only for the functions it was made with (`Ecam::unsaved`). Its snapshot
+  keeps each component by its function's place on the bus, its range of the components' window
+  and its key; its devices' state keeps each such function's state by its place: its
+  configuration space as its guest left it (its command, its BAR where its guest placed it, its
+  MSI-X control: `Header::save`), its MSI-X table and pending bits, its vectors, what virtio's
+  common configuration keeps of its own, and its transport's state, its device's among it.
+- *A restore*, given each component's image by its key (`RestoreConfig::components`,
+  `Hosts::components`; one missing, or one the snapshot holds none of, refused, naming it), maps
+  each back at its range and plugs its function back at its place (`Components::place_at`,
+  `Hotplug::plug_at`, `runtime::plug_component`) before the devices' state is put back on each.
+  Refused: an image of another length than its range, a range not free in the window or a place
+  with no free slot, a function plugged back whose state the snapshot keeps none of or a state
+  with no function plugged back at its place, and a configuration space of another function (its
+  vendor, device, revision and class, PCI Local Bus 3.0 §6.1; the command and status between them
+  are its guest's to write).
+- *Its key*: a component's plug says it (`device::PMEM`'s step, then its digest's 64 lowercase
+  hex digits), which the window keeps with its range; a key of another length is refused
+  (`Refusal::InvalidRequest`), as no snapshot's decoding reads one.
+- *Its bounds*, each the format's own: one component at most for each of the machine's slots,
+  each its place, its range and its key of `shards_abi::run::members::KEY_LEN` bytes (a SHA-256
+  digest's 32 bytes in hex, FIPS 180-4); one function's state at most for each function plugged
+  back, each its place and its length; an MSI-X table, and a virtio function's queues, as many
+  as the function's own.
+- *Templates* hold none: an image's template is saved as its first run gets ready (D25), before
+  its run is handed to its orchestrator and so before any swap, and a run restored from it lays
+  each member's components at its starts as its orchestrator swaps them (`Start.components`,
+  slice 3a): the desired set is the run's, laid again at every start. A template that held one
+  would be refused by its restore, given no image, and replaced, as any that does not restore is.
+- *Not yet*: no save of an orchestrator's run is restored by Shards (D259); the images a restore
+  needs come with that path (the roadmap's moves, 7a). Until then the VM process's restore gives
+  none, and a snapshot holding a component is refused before its guest runs, naming it.
+
+**Tests** (slice 5, light): the VMM's `a_functions_space_and_msix_table_are_saved_and_put_back_whole`,
+`a_virtio_function_set_up_is_saved_and_put_back_whole` (a function set up by its driver put back
+whole on a fresh one, refused for another device's queues),
+`a_window_saves_the_functions_it_keeps_by_their_places_and_puts_them_back`,
+`a_state_keeps_its_components_no_more_than_its_slots`,
+`a_restore_gives_each_component_its_snapshot_holds_and_no_other`, `ecam_reaches_the_functions_there`
+(a function plugged in is its window's to save) and the window's placement test with keys; the run
+host's `a_component_swapped_is_plugged_mounted_laid_at_its_members_start_and_let_go_of_unused` (its
+plug says its key). Real-VM (api_image.rs), owed on HVF, KVM and WHP:
+`a_run_holding_a_component_is_saved_with_it` (a harness swapped to its component, its run saved,
+its snapshot keeping the component's key, its member running on).
+
 **A known limit, for moves across hosts** (ROOT, 2026-11-15): the components' window is as long
 as its host's address reach when its microVM is made, and is kept with its save, so a restore
 onto a host of shorter reach is refused (`window_kept`) rather than laid out otherwise. Until a
@@ -36717,7 +36901,7 @@ back, ro refusing the member's write with EROFS, a home volume made by its plug,
 across it) and `a_project_is_plugged_into_the_running_harness` on the new call; the test guest's
 `plugged-volumes` mode is new, so the test guests are rebuilt.
 
-### D272. A vsock connection's Windows host side is a named pipe each way (decided 2026-11-15; S0 and S0b measured, S1-S5 owed)
+### D272. A vsock connection's Windows host side is a named pipe each way (decided 2026-11-15; S0 and S0b measured, S1 built, S2-S5 owed)
 
 **Why.** D251's amendment holds that every byte a guest sent before its end is its host's,
 and ROOT's second invariant that a host's write after the guest's end fails at once. Windows'
@@ -36790,12 +36974,56 @@ and `OwnedSocket` types become handles) and the tests' helpers; S5, the vsock te
 first `a_guest_that_ends_its_stream_gives_its_host_every_byte_first`'s host write after the
 guest's close failing at once on Windows: red on AF_UNIX, green on pipes.
 
+**S1, built** (`shards_vmm::platform::Pipes`, platform/windows_pipes.rs): a connection's two
+server ends. Reads: one overlapped ReadFile at a time into the connection's own buffer, kept
+under way while nothing read is held, so that its client's next bytes or its end finish it
+(`Reading`: under way, holding, ended, failed). Writes: one overlapped WriteFile at a time of
+bytes copied from the caller (no reference into guest memory), the connection's until it
+finishes (`Writing`: idle, under way, closing, shut, failed), their count said by `look` as it
+finishes, so that a caller counts the guest's bytes forwarded only then and the guest's credit
+bounds what it holds. `shut_down` closes the way down once its write under way has finished,
+never DisconnectNamedPipe, which drops what its client has not read. A connection dropped
+cancels its calls and waits for them (GetOverlappedResult) before their OVERLAPPEDs and buffers
+go. `look` reads each call's OVERLAPPED without waiting (GetOverlappedResult, bWait 0): whatever
+tells of a finish (S2's completion port, a test's loop) only makes it look, and a stale telling
+finds nothing.
+- *Its one size* (R03): the read buffer is the way up's inbound quota, read back from the
+  instance (GetNamedPipeInfo): a read takes at most what the pipe holds. The quota is its
+  maker's, S3's spawner's; an instance of none is refused. No literal.
+- *Tests* (Windows, no VM): `platform::windows_pipes::tests`, seven, over real byte-mode
+  instances and clients opened as `std` opens a file, as Hex's are: a write past the pipe under
+  way until its reader takes it, its count said once; the client's bytes in order, a line a
+  byte at a time leaving what follows it held, then its end; the way down shut as the client's
+  end, its writes up going on (M609 (h)); a shut behind a write under way; the whole end failing
+  the client's write up at once, ERROR_NO_DATA, after every byte down; the client's write up
+  while its read down waits; a drop with both calls under way.
+- *For S2*, found building S1: a completion port's packet comes once, so the poller takes each
+  connection's readiness from `readable` and `writable` before it waits (one already ready
+  waits for nothing); one key per connection, never reused, so that a packet of a connection
+  gone names none; the waker a posted packet. `Conn` counts the guest's bytes forwarded at
+  `look`'s count, its `send_host` check counting `in_flight` with `tx_buf`, and not the
+  `OK <port>` line's bytes. The device's served ports are AF_UNIX pairs on Windows (`serve`'s
+  `UnixStream::pair`, `VsockHost`'s `ports` and `rate` senders of `UnixStream`): pipe pairs
+  (`shards_ipc::pipe::byte_pair`) keep one kind of host end there. A connection holds two
+  handles where `slots` counts one.
+- *For S2 and S3*, found reading the grants: a pair is two names opened one after the other,
+  so two clients dialling at once could each open one instance of the same pair, one its way
+  down and the other its way up, and each be served the other's stream. None can where every
+  client opens its way down first, as Hex's must (a client's change, below), and the VM holds
+  one pair unconnected at a time, asking its spawner for the next only once both of the last
+  are connected: a second client waits on the way down (ERROR_PIPE_BUSY, WaitNamedPipeW) until
+  the first holds its way up too. A pair whose way down's client goes before its way up is
+  connected (a read of no bytes on the way down, ERROR_BROKEN_PIPE) is dropped and replaced,
+  so that a client that dies there stops no other. The same holds of a host port's own pair,
+  which the spawner opens for its VM's dial (S3).
+
 **A client's change** (Hex's on Windows): read the file at the VM's socket path for its
 pipes' names and open both (CreateFileW, SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION),
-reading the way down and writing the way up, each a byte-mode file as `std` opens one (no
-mode to set, nothing to cancel), in place of an AF_UNIX connect; the line protocol over them
-(`CONNECT <port>`, `RATE`, `USE`) is unchanged. A client that dials through `shards_api` takes
-it with its pin.
+its way down first and then its way up, each waited for while busy (ERROR_PIPE_BUSY,
+WaitNamedPipeW), reading the way down and writing the way up, each a byte-mode file as `std`
+opens one (no mode to set, nothing to cancel), in place of an AF_UNIX connect; the line
+protocol over them (`CONNECT <port>`, `RATE`, `USE`) is unchanged. A client that dials through
+`shards_api` takes it with its pin.
 
 **What would falsify it.** A guest byte its host never read where it read on to its end; a
 host's write after the guest's end taken without an error; a process other than its user's

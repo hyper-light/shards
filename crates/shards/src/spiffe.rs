@@ -319,6 +319,7 @@ mod tests {
     /// frame's END_STREAM), its settings, the response's headers, its message and its
     /// status; then whatever the client says, to its end, so that nothing it reads is cut.
     fn workload_api(mut r: impl Read, mut w: impl Write, token: &str) {
+        use shards_gateway::hpack::{Encoder, Field, Indexing};
         let mut preface = [0u8; 24];
         r.read_exact(&mut preface).unwrap();
         assert_eq!(&preface, b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n");
@@ -346,7 +347,17 @@ mod tests {
             out.extend_from_slice(&stream.to_be_bytes());
             out.extend_from_slice(payload);
         };
-        let encode = shards_gateway::hpack::encode;
+        // The server's encoder, one for its connection (RFC 9113 §4.3.1).
+        let mut encoder = Encoder::new(4096, 4096);
+        let mut encode = |fields: &[(&str, &str)]| {
+            let fields: Vec<Field> = fields
+                .iter()
+                .map(|(n, v)| Field::new(n.as_bytes(), v.as_bytes(), Indexing::Without))
+                .collect();
+            let mut block = Vec::new();
+            encoder.encode(&fields, &mut block);
+            block
+        };
         frame(4, 0, 0, &[]);
         frame(
             1,

@@ -4563,6 +4563,47 @@ fn a_harness_swapped_now_runs_its_component_and_restored_runs_its_images_own() {
     guest.stop().unwrap();
 }
 
+/// D270 slice 5: a run holding a component is saved whole, where a run with anything plugged
+/// was refused ("it has PCI functions plugged into it"): its snapshot keeps the component by
+/// its key (its function's place and its range of the window beside it), and its member runs
+/// on its component after the save as before it.
+#[test]
+fn a_run_holding_a_component_is_saved_with_it() {
+    if cannot_run_vms() {
+        return;
+    }
+    let home = TempDir::new("api-swap-save-home");
+    let digest = component(&home, "harness", "local/codex-v4:1", "v4", "{}");
+    let guest = swap_run(&home, "api-swap-save:1");
+    let stdout =
+        |generation| BufReader::new(guest.take_output(&codex(), generation, Channel::Stdout).unwrap());
+    let (first, line) = line_within(&*guest, stdout(0));
+    assert_eq!(line, "none\n");
+    let patience = Duration::from_secs(60);
+    let swapped = ask(&*guest, |g| {
+        g.swap("/harness/codex", &digest, SwapWhen::Now, patience)
+    })
+    .unwrap();
+    assert_eq!(swapped.started.map(|(_, g)| g), Some(1));
+    assert_eq!(rest_within(&*guest, first), "ready\ngot 15\n");
+    let (_, line) = line_within(&*guest, stdout(1));
+    assert_eq!(line, "v4\n", "its component, laid at its path");
+    let saved = home.join("component-save");
+    ask(&*guest, |g| g.save(&saved, Duration::MAX)).unwrap();
+    let state = std::fs::read(common::snapshot_file(&saved, "state")).unwrap();
+    let key = digest.strip_prefix("sha256:").unwrap();
+    assert!(
+        state.windows(key.len()).any(|w| w == key.as_bytes()),
+        "its snapshot keeps the component by its key"
+    );
+    assert_eq!(
+        guest.wait_member(&codex(), 1, Duration::ZERO),
+        Ok(None),
+        "its member runs on its component after the save"
+    );
+    guest.stop().unwrap();
+}
+
 /// D270 slice 4: a harness swapped at its next start keeps running its image's own until it
 /// starts again; its restart lays the component; its components say it wanted, then held.
 #[test]
