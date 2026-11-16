@@ -38110,6 +38110,47 @@ plugged it used them.
   api_image.rs `an_agents_volume_outlives_its_session_and_is_listed_and_cleared`, now also
   refused `InUse` while its second session runs, its files kept; cleared once both have ended.
 
+**Amended (P6-fix-2, 2026-11-16): every run that mounts or plugs a named volume holds it, a
+daemon's run as an orchestrator's.**
+- *Before.* Only an orchestrator's plug held its volume (api_run `source_dir`). A volume mounted
+  as a run starts held nothing, in a daemon's run or an orchestrator's: `-v NAME:PATH`,
+  `--mount`, `--volumes-from`, or an image's named `VOLUME`. Nor did one that `shards plug volume`
+  plugs into a daemon's run. `clear_volume` removed their files under them.
+- *Decided: one hold, taken where every run's volumes pass* (R12).
+  - `volumes::Holds` is a run's holds, each named volume once, by name. `take` holds a name
+    (`Store::hold`, try_share). `found` reads the volume as the store has it, holds it where it is
+    named, then looks again: refused where a clearing took it meanwhile; none where it is not there,
+    and then no lock file is made. `extend` takes in another's holds.
+  - `volumes::open_for` opens every run's mount points for its start: a daemon's run, its visit,
+    an orchestrator's boot or warm host. It holds each named volume before its files are opened
+    (`Opened::held`). A start while a clearing holds one is refused ("volume NAME is being
+    cleared"), as a plug is.
+  - The daemon carries a start's holds in the run's `Keep`, then its `Inbox`, and lets go of them
+    as the run ends (`run_ended`, a visit's too). A start that fails before a VM takes the run
+    drops them. `shards plug volume MICROVM NAME:PATH` (devices.rs `plug_share`) holds its volume
+    (`found`) before its files are opened, in the run's `Inbox`, until the run ends.
+  - The run host keeps its boot's holds in its plan, then in its live state (`Live::volumes_held`,
+    now `Holds`), where its plugs' join them (`source_dir`'s `take`, kept once the store took the
+    plug). Its own map and its own hold-and-refuse, the duplicate path, are removed.
+  - Not held: an anonymous volume, its run's own and gone with it, whose name is never asked again
+    and whose lock file would outlive it; a bind of a host directory. A named volume of a host
+    directory (`o=bind`) is held.
+  - A run keeps a plug's hold past its unplug, until it ends, a daemon's as an orchestrator's.
+- No literal; no wait: each hold is taken or refused at once.
+- *Still open* (ROOT's call): the daemon's `volume rm` and `volume prune` judge a volume's use by
+  the daemon's own records (`volume_refs`), not by the holds, so they remove a volume an
+  orchestrator's run holds.
+- **Tests** (written, not run: the person's rule of 2026-11-16): the binary's `volumes`
+  `a_starts_named_volumes_are_held_until_its_run_lets_go`: a named volume mounted twice is held
+  once, and its clearing refused until what was opened drops; an anonymous one is not held and
+  gets no lock file; a start while a clearing holds one is refused. The run host's
+  `a_plugs_source_is_a_host_directory_or_its_homes_volume_beneath_granted_roots` and
+  `api_volumes`' `a_volume_a_run_holds_is_refused_its_clearing_until_it_lets_go` are unchanged.
+  Owed (ROOT): the binary's daemon tests (the `Keep` and `Inbox` fields) and Windows clippy. Real
+  VM (HVF, KVM, WHP), not yet written: a daemon run with `-v NAME:/data`, its volume refused
+  `InUse` by `clear_volume` while it runs and cleared once it stops; the same for a volume
+  `shards plug volume` plugged into it.
+
 ### D285. Networks shared by runs: a member of one microVM reaches a member of another on a named network, each flow granted at both of its ends (designed 2026-11-16; slice 1, a network's leases held across processes, built; slices 2 to 6 owed)
 
 **Asked.** The person's live changes, with no rebuild or restart (kiln plan 01a1dd2e… P6b.1, its

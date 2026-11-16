@@ -862,10 +862,14 @@ impl<D: Disk> Daemon<D> {
         let dir = if Path::new(source).is_absolute() {
             PathBuf::from(source)
         } else {
+            // Held before its files are opened, and kept with what its run mounts until the
+            // run ends (D281): no clearing removes them under it.
             let store = crate::volumes::Store::new(&self.home);
-            store
-                .get(source)
+            let mut held = crate::volumes::Holds::default();
+            held.found(&store, source)?
                 .ok_or_else(|| format!("no volume {source}: a volume is made first, or a host directory given by its absolute path"))?;
+            let inbox = self.inbox_of(id).ok_or_else(|| format!("{id} is not running"))?;
+            lock(&inbox).volumes.extend(held);
             store.data(source)
         };
         // A directory opens on Windows only with backup semantics (`platform::open_dir`).

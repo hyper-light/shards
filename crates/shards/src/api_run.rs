@@ -3094,6 +3094,9 @@ mod hosted {
         /// Its sign-in grants, whose asks its host relays (D242, step 8).
         signing: Vec<wire::SignInGrant>,
         dirs: Vec<(OwnedFd, bool, OsString)>,
+        /// The named volumes among them, held since they were opened (D281): its live state's
+        /// once it is served ([`Live::volumes_held`]).
+        volumes: crate::volumes::Holds,
         /// The anonymous volumes its `VOLUME`s made, removed as it ends (`--rm`'s).
         made: Vec<String>,
         bridge: Option<shards_net::bridge::Bridge>,
@@ -3649,6 +3652,7 @@ mod hosted {
             granted: request.credentials.iter().map(|g| g.reference.clone()).collect(),
             signing: request.sign_ins.clone(),
             dirs: opened.dirs,
+            volumes: opened.held,
             made,
             address: bridge
                 .as_ref()
@@ -5527,9 +5531,9 @@ mod hosted {
         /// A plug/unplug's ownership turn, held through device and guest completion;
         /// replies never need this lock. The mounted registry stays readable meanwhile.
         plug_turn: Mutex<()>,
-        /// Each volume of its home it plugged, by name, held for its life (D281): a clearing
-        /// of one is refused while it runs.
-        volumes_held: Mutex<HashMap<String, shards_image::store::Locked>>,
+        /// Each named volume of its home it mounts or plugged, held for its life (D281): a
+        /// clearing of one is refused while it runs.
+        volumes_held: Mutex<crate::volumes::Holds>,
         /// The pipe the run's share process tells what its host changes on (D235), until
         /// its guest's NOTICE built-in is given it as the run starts; and the streams each
         /// of those built-ins' ends are told on, held while the run is.
@@ -6536,6 +6540,7 @@ mod hosted {
         // Its share process's notices (D235), given its guest as its run starts.
         let due = launched.shares.as_mut().and_then(|s| s.notices.take());
         let listeners = std::mem::take(&mut plan.listeners);
+        let volumes = std::mem::take(&mut plan.volumes);
         let served = (|| -> Result<(), No> {
             // Its published ports, each held under a number of its own (D269), by which its
             // owner may let it go as the run goes.
@@ -6657,7 +6662,7 @@ mod hosted {
                 next_lane: std::sync::atomic::AtomicU64::new(0),
                 plugged: Mutex::new(HashMap::new()),
                 plug_turn: Mutex::new(()),
-                volumes_held: Mutex::new(HashMap::new()),
+                volumes_held: Mutex::new(volumes),
                 notices_due: Mutex::new(due),
                 notices: Mutex::new(Vec::new()),
                 leasing,
@@ -8574,12 +8579,10 @@ mod hosted {
                 let store = crate::volumes::Store::new(live.home);
                 crate::volumes::Store::valid(name).map_err(|e| (R::Volume, e))?;
                 // Held before it is made or found, so that no clearing removes it under the
-                // run, and kept for the run's life once taken (D281); refused at once while a
-                // clearing holds it, never waited for.
-                let hold = store
-                    .hold(name)
-                    .map_err(|e| (R::Volume, e))?
-                    .ok_or_else(|| (R::Volume, format!("volume {name} is being cleared")))?;
+                // run, and kept with what the run mounts for its life once taken (D281);
+                // refused at once while a clearing holds it, never waited for.
+                let mut hold = crate::volumes::Holds::default();
+                hold.take(&store, name).map_err(|e| (R::Volume, e))?;
                 {
                     let _held = crate::volumes::lock();
                     let (volume, _) = store
@@ -8593,7 +8596,7 @@ mod hosted {
                     crate::volumes::scoped_to(&volume, at, live.agentfile.map(|a| a.volumes.as_slice()))
                         .map_err(|e| (R::Volume, e))?;
                 }
-                lock(&live.volumes_held).entry(name.clone()).or_insert(hold);
+                lock(&live.volumes_held).extend(hold);
                 Ok(store.data(name))
             }
         }
@@ -9027,7 +9030,7 @@ mod hosted {
                 next_lane: std::sync::atomic::AtomicU64::new(0),
                 plugged: Mutex::new(HashMap::new()),
                 plug_turn: Mutex::new(()),
-                volumes_held: Mutex::new(HashMap::new()),
+                volumes_held: Mutex::default(),
                 notices_due: Mutex::new(None),
                 notices: Mutex::new(Vec::new()),
                 leasing: None,
