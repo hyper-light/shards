@@ -139,6 +139,13 @@ impl Locked {
         let tried = file.try_lock_shared();
         tried_on(tried, file)
     }
+
+    /// `file` held shared, as [`Locked::try_share`] holds one, once no exclusive hold has it:
+    /// waited for while one does, as a kernel's lock wakes its waiters, never polled.
+    pub fn shared(file: File) -> std::io::Result<Locked> {
+        file.lock_shared()?;
+        Ok(Locked(file))
+    }
 }
 
 /// `file` as [`Locked`] where its try took the lock, none where another holds it.
