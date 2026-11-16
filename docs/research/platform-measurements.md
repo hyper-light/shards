@@ -25744,3 +25744,52 @@ the counts are a process's, not a thread's. n is one run of each child.
 - **Owed.** (f) to (h) on hex-winvm, nested under KVM on adacachy2, once its file system has
   room to allocate again (it has 1 MiB unallocated, 2026-11-15).
 
+### M610. A share at its host path given the members its orchestrator names, before their commands start (D277)
+
+- **Where.** adas-mac-studio.local-2 (Apple M3 Ultra, macOS 26.4), kiln runs of the Hex lead's,
+  2026-11-15: one source tree from a `git archive` tarball of 198fc204f with the change as a patch, its
+  own target (`docs/research/measurements/vendor-point-1115/svp.sh`), test-release,
+  `SHARDS_REQUIRE_VMS=1`. Logs: `~/.cache/hex-lead/svp/logs/{hp-1,…,hp-6,m1,…,m5}/` on that Studio.
+  The patch tested is 325457a88's code byte for byte (its `crates/` diff from 198fc204f, `index` lines
+  aside); c5d0a56af after it is rustfmt's alone.
+- **Found.** kiln's P1.4 on HVF (kiln 76738d566 with 9dc625f72's typed step): every member launch
+  "harness claude: its launch: Setup (entering its working directory): errno 2", from a fresh boot and
+  a template restore alike.
+- **Reproduced** (R09, at 198fc204f): `a_project_shared_at_its_host_path_starts_its_harness`, its
+  harness's working directory a share at its host path, red (hp-1, hp-3; hp-2 and hp-4 with
+  9dc625f72's step), while `a_share_at_a_granted_volume_reaches_the_harness`, a share where its image's
+  `VOLUME` lies, passed (hp-1). The same at a path through macOS's `/var` link, from its real path and
+  at a plain one, the run's plug roots kiln's (hp-5: three of three red). The harness's own
+  `/proc/self/mountinfo` held no mount at its share's path (hp-6, a diagnostic test not kept).
+- **Cause.** An image run's shares became `-v HOST:AT` binds, which a member is given only where the
+  image's own `VOLUME` lies (D109), so the project reached the run's own root alone; a plug (D235, D271)
+  lands after the exec that fixes a member's working directory.
+- **After** (325457a88's code):
+  - m2: `cargo test -p shards-api --lib -- image`: 112 passed (its image and wire tests). The run
+    host's tests in that pass failed on clippy's `temp_dir` lint and a misplaced `mut`, fixed for m3.
+  - m3: `cargo clippy -p shards-vmm -p shards -p shards-api --all-targets -- -D warnings` clean;
+    `cargo test -p shards --bin shards -- api_run::tests agentfile::tests volumes::tests`: 66 passed;
+    `cargo test -p shards --test api_image -- give` on HVF: 5 passed.
+  - m5: init's `cargo clippy -p shards-init -p shards-testguest --all-targets --target
+    aarch64-unknown-linux-musl -- -D warnings` clean; on HVF, `cargo test -p shards --no-fail-fast
+    --test api_image --test nesting --test member_exec --test managed_output --test tty --test
+    engine_ring --test guest_time`: 35, 14, 6, 29, 7, 8 and 1 passed, none failed (129 s);
+    `scripts/check-development-policy` passed.
+  - Mutation (m4, the run host's `give_members` call removed): `a_project_given_its_harness_is_where_it_works`
+    red, "its command never started (status 128): harness codex: its launch: Setup (entering its working
+    directory): errno 2", kiln's launch's own failure.
+  - `cargo fmt --all --check` clean at c5d0a56af (macOS arm64).
+- **R01 to R16.** R01: no new panic path; each refusal is a value (`ImageRefusal::Spec`, `Widening`,
+  `WireError::ShareMembers`, `Cause::Image`), clippy's panic lints clean. R02: D277's alternatives
+  (every share every member's; given by being beneath a plug root; a plug as the member starts), each
+  rejected with its reason. R03: no literal. R04: whom a share reaches is its typed `PlugFor`, none by
+  default; a member it names that the image doesn't declare or that is files alone is refused by name.
+  R05/R06/R12/R13: `PlugFor` shared with plugs; one `give_members` for every share; init's
+  `given_share` beside `given_volume`, the mount a `VOLUME`'s is; no wait or cache touched. R07: doc comments
+  say whom a share reaches and when. R08/R14: one pass over a run's shares before its boot; not
+  profiled, no hot path changed. R09/R10: above. R11: macOS arm64 on HVF here. R15: the coordinator's
+  own change, merged on this batch. R16: not applicable.
+- **Unrun or owed.** init's `a_share_given_members_is_theirs_alone` (a Linux unit test; it builds for
+  `aarch64-unknown-linux-musl` here and passed clippy) and the real-VM suites on KVM and WHP: CI's
+  backends at the merge, and the next vendor point's batch. Linux (glibc, musl) and Windows builds:
+  CI's.
