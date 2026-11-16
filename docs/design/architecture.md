@@ -37954,7 +37954,7 @@ clearing's files gone, `Unknown` again, `Name` for names the store refuses) and
 session and written there, read by the next session's member; listed with its files' bytes;
 cleared, gone from the list and the home, `Unknown` again).
 
-### D285. Networks shared by runs: a member of one microVM reaches a member of another on a named network, each flow granted at both of its ends (designed 2026-11-16; slice 1, a network's leases held across processes, built; slices 2 to 6 owed)
+### D285. Networks shared by runs: a member of one microVM reaches a member of another on a named network, each flow granted at both of its ends (designed 2026-11-16; slices 1 and 2, a network's leases held across processes and the daemon's runs on them, built; slices 3 to 6 owed)
 
 **Asked.** The person's live changes, with no rebuild or restart (kiln plan 01a1dd2e… P6b.1, its
 third criterion; kiln goal 394cd57a): "Connect and disconnect a member (harness, agent, MCP server)
@@ -38062,7 +38062,9 @@ reach past its microVM (b, D278).
    member of a network to every other, and netavark isolates networks from one another and nothing
    within one (src/firewall/nft.rs:266-330). A member joins with its name on the network (one
    member's, whatever its case), the ports it receives (TCP and UDP ranges; each port of its run's
-   address one member's, D122), and the flows it may open (a peer's name and its ports). A flow
+   address one member's, D122), and the flows it may open (a peer's name and its ports), each
+   within its image's grants and its ceiling, as D278 bounds a member's reach past its microVM
+   (ROOT's decision, 2026-11-16): a join asking past both is refused `Widening`, D278's. A flow
    exists where its sender's grant names its receiver and port and its receiver's grant takes that
    port: each network process holds its own guest's side, neither guest trusted with the other's.
    A reply is let by its flow's state, made as its first packet was admitted: dockerd's links let
@@ -38081,10 +38083,28 @@ join until 4 and 5 have landed):
    lowercased; `NameTaken`, `NotAName`); the stale removed at each look (`addresses`, `names`); the
    pairing (`Leases::pair`, `PairedElsewhere`); a network's leases removed with it (`Leases::clear`,
    `InUse`); on `shards_image::store::Locked`, given `try_hold` and `try_share`.
-2. *The daemon's members as leases*: D46's join takes its run's address and names from them (their
-   holder the daemon); `networks::lock` becomes the home's (`hold`); `network inspect` lists every
-   live lease's member; `network rm` refuses a network in use (`InUse`, in dockerd's words: "has
-   active endpoints"); the daemon pairs its runs' networks.
+2. *The daemon's members as leases* (built: `daemon::networks`): D46's join takes its run's
+   addresses from them, IPv4's and, on a network with IPv6 (D99), IPv6's (`Leases::take6`), held by
+   the daemon while the run lasts, each saying the run's ID; an asked one anywhere in the subnet,
+   the range bounding only those given unasked, as libnetwork gives them (moby f78c987a,
+   ipams/defaultipam/address_space.go:350-353, allocator.go:315-319; slice 1 had refused one outside
+   the range, `--ip` beside `--ip-range`), each refusal by its cause in dockerd's words where it has
+   them ("Address already in use", "requested address is out of range": ipamapi/contract.go:35-36).
+   The daemon pairs a network from its first run's join to its last's leaving, under its members'
+   lock, its entry there while, and only while, it pairs; a join where another process pairs it is
+   refused ("network N: another process links its members"). `networks::lock`, a process's `static
+   Mutex`, is gone: its address work is the home's lock's (`hold`), held for file operations alone,
+   and its other, the order in which the daemon tells its network processes their links and names
+   (D46), the daemon's own turn (`telling`), held across their answers and never with the home's
+   lock. `network inspect` lists each live lease of another process's run as a member, its holder's
+   ID and address; `ls`' `dangling` counts them; `network rm` refuses a network in use (`InUse`:
+   "another process's runs are on it") and `prune` keeps it; a network removed, its leases go with
+   it. Names are not leased by the daemon, where this said they would be: a daemon's run answers to
+   its name, aliases, short ID and host name (D46), names Docker's grammar gives `_` and `.`
+   (`[a-zA-Z0-9][a-zA-Z0-9_.-]+`) and that Compose's scaled services share (one alias, each
+   replica's address), which a name lease, one member's host name, cannot hold; and a network the
+   daemon pairs has no other process's run on it, so its names meet none of another's. Name leases
+   are slice 4's members'.
 3. *The network process's networks* (the net crate): `NET_JOIN` (a network's slot, the guest's
    address, prefix and gateway, the ports it receives) and `NET_LEAVE`; `NET_PEER` with its
    network's slot and the ports its guest may open to that peer; each network's names; a table of
@@ -38093,11 +38113,11 @@ join until 4 and 5 have landed):
 4. *The wire, the API and the run host*: `ImageGuest::join(member, &Join, patience)` and
    `leave(member, network, patience)`, `Join { network, name, ingress, egress }`; `NetAsk::Join` and
    `Leave`, refused typed (`NoSuchNetwork`, `AddressTaken`, `NameTaken`, `Exhausted`,
-   `PairedElsewhere`, `Ipv6`); the run host's leases (their holder the run host, its run's ID a
-   microVM ID's form), its network process's and its guest's asks; shards-api's pairings and each
-   run host's links socket; a network made beforehand, with `network create`'s pool and words
-   (`Networks::create`), never by a join. The image channel's version one past main's at landing
-   (43 over today's 42).
+   `PairedElsewhere`, `Ipv6`, `Widening`); the run host's leases (their holder the run host, its
+   run's ID a microVM ID's form), its network process's and its guest's asks; shards-api's pairings
+   and each run host's links socket; a network made beforehand, with `network create`'s pool and
+   words (`Networks::create`), never by a join. The image channel's version one past main's at
+   landing (43 over today's 42).
 5. *The guest*: a built-in (26, the next free at landing), `join` and `leave` of a member: eth0's
    second address and a route to the network's subnet from it, set as `address=` sets eth0's;
    init's translation of the member's flows to that subnet from that address, its gate letting out
@@ -38148,6 +38168,10 @@ join until 4 and 5 have landed):
   address in dotted decimal; an address lease says its holder's ID, 64. A lease's record is read no
   further than its kind's longest, so that no file of another's making has a look allocate past
   it.
+- An IPv6 address lease's file is the address's 128 bits as 32 lowercase hex digits, 2 ×
+  `size_of::<u128>()`, four bits a digit: Windows takes no `:` in a file's name (Microsoft,
+  "Naming Files, Paths, and Namespaces"), and one spelling of an address names one file, where
+  IPv6's text forms are many (RFC 5952 §2).
 - A name is a host's name (RFC 1035 §2.3.1, RFC 1123 §2.1, `shards_dns::host_name`: labels of 63
   bytes, 253 in all), lowercased (RFC 4343), so that its file's name fits each supported
   filesystem's 255 bytes. Its file is `@` and the name: Windows takes a base name of `CON`, `PRN`,
@@ -38172,10 +38196,9 @@ may run, never given twice. Two pairers: refused. A home on a network filesystem
 assured, unsupported as for each of the home's other locks (the image store's, the daemon's).
 
 **Questions for ROOT.** kiln's `Change::Connect` carries no ports, which this asks for both ways:
-its shape is kiln's and Hex's, a seam change to route. Whether a member's grants on a shared network
-are bounded by its image or a ceiling, as D278's past the microVM are: as designed, the
-orchestrator's join says them whole, nothing of a shared network leaving the machine's network
-processes.
+its shape is kiln's and Hex's, a seam change to route. Answered (ROOT, 2026-11-16): a member's
+grants on a shared network are bounded by its image's grants and its ceiling, as D278's past its
+microVM are (*What a member reaches*, above).
 
 **Tests** (slice 1, light; written, not run, by the person's word of 2026-11-16: ROOT runs them).
 networks::leases: `addresses_are_the_lowest_free_and_one_let_go_is_the_next_given`,
@@ -38186,6 +38209,17 @@ held by none), `an_address_in_use_or_out_of_range_is_refused_by_its_cause`,
 `the_homes_networks_are_held_against_every_other_open`. Owed (ROOT): `cargo test -p shards
 --profile test-release networks::leases` on macOS, Linux (glibc and musl) and Windows, as flock(2)
 and LockFileEx each hold them; `scripts/lint` on the seven targets.
+
+**Tests** (slice 2, light; written, not run, by the same word). networks::leases:
+`an_asked_address_is_given_anywhere_in_its_subnet`, `ipv6_addresses_are_leased_as_ipv4_ones_are`;
+daemon: `a_networks_runs_are_leased_and_paired_by_one_process`,
+`a_network_with_another_processs_run_on_it_stays`, and D46's
+`an_asked_address_is_free_once_its_holder_has_said_its_end` on the leases. Owed (ROOT): `cargo test
+-p shards --bin shards --profile test-release -- networks:: daemon::tests::a_network
+daemon::tests::an_asked_address daemon::networks::` on macOS, Linux (glibc and musl) and Windows;
+`scripts/lint` on the seven targets; on real VMs (HVF, KVM, WHP), D46's and D99's network E2E on
+the leases: containers.rs `microvms_on_a_network_reach_one_another_by_name` and its `--ip`,
+`--ip6` and `network rm` cases.
 
 ## 4. Start path (≤ 5 ms budget)
 

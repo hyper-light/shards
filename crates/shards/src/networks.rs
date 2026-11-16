@@ -4,7 +4,8 @@
 //! dockerd's default pools, the lowest that overlaps no other network's nor the host's
 //! (InferReservedNetworks), unless one is asked for; its gateway the pool's (or its
 //! range's) first free address; each member's the lowest free one, in its range where it
-//! has one. dockerd's predefined `bridge`, `host` and `none` are listed beside them.
+//! has one, leased from the home's records by the process that holds its run (`leases`,
+//! D285). dockerd's predefined `bridge`, `host` and `none` are listed beside them.
 
 use std::collections::BTreeMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -13,7 +14,8 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use shards_net::bridge::{Prefix, free_subnet, overlap};
 
-// Its callers are D285's slices 2 (the daemon's members) and 4 (a run host's joins).
+// Its names' caller is D285's slice 4 (a run host's members); the daemon leases its runs'
+// addresses alone (slice 2).
 #[cfg_attr(not(test), allow(dead_code))]
 pub mod leases;
 
@@ -155,14 +157,6 @@ impl Network {
 /// The networks in the home, each its own file.
 pub struct Store {
     root: PathBuf,
-}
-
-/// One network change at a time: a create's pool and name checks hold until it is kept.
-static CHANGES: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-/// Holds network changes off until it is dropped.
-pub fn lock() -> std::sync::MutexGuard<'static, ()> {
-    CHANGES.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 impl Store {
