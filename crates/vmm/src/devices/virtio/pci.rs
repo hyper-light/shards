@@ -20,6 +20,7 @@ use crate::devices::pci::{
 };
 use crate::devices::{Interrupt, MmioDevice, get_le, put_le};
 use crate::memory::GuestMemory;
+use crate::snapshot::codec::{self, Reader, Writer};
 
 /// The BAR's length and its regions' places in it.
 pub const BAR_SIZE: u64 = 0x4000;
@@ -573,6 +574,80 @@ impl Plugged for VirtioPci {
         // A reset stops its device's workers; it touches guest memory no more.
         self.mmio_write(mmio::STATUS, 0);
     }
+
+    /// Its configuration space, its MSI-X table and vectors, what its common configuration
+    /// keeps of its own (what the transport's registers can't read back), then its transport's
+    /// state, its device's among it (D270 slice 5).
+    fn save(&self, w: &mut Writer) {
+        self.signals.header.save(w);
+        self.signals
+            .table
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .save(w);
+        {
+            let vectors = self
+                .signals
+                .vectors
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            w.u16(vectors.0);
+            w.seq(&vectors.1, |w, v| w.u16(*v));
+        }
+        {
+            let c = self.common.lock().unwrap_or_else(PoisonError::into_inner);
+            for v in [
+                c.device_feature_select,
+                c.driver_feature_select,
+                c.driver_features[0],
+                c.driver_features[1],
+            ] {
+                w.u32(v);
+            }
+            w.u16(c.queue_select);
+            w.seq(&c.sizes, |w, s| w.u16(*s));
+            w.seq(&c.rings, |w, r| r.iter().for_each(|a| w.u64(*a)));
+        }
+        MmioDevice::save(&self.transport, w);
+    }
+
+    fn restore(&self, r: &mut Reader<'_>) -> codec::Result<()> {
+        let queues = self.max_sizes.len();
+        self.signals.header.restore(r)?;
+        self.signals
+            .table
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .restore(r)?;
+        let config = r.u16()?;
+        let vectors = r.seq(queues, 2, Reader::u16)?;
+        let selects = [r.u32()?, r.u32()?, r.u32()?, r.u32()?];
+        let queue_select = r.u16()?;
+        let sizes = r.seq(queues, 2, Reader::u16)?;
+        let rings = r.seq(queues, 24, |r| Ok([r.u64()?, r.u64()?, r.u64()?]))?;
+        if vectors.len() != queues || sizes.len() != queues || rings.len() != queues {
+            return Err(codec::DecodeError(format!(
+                "a virtio function of {} queues kept for one of {queues}",
+                vectors.len()
+            )));
+        }
+        *self
+            .signals
+            .vectors
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = (config, vectors);
+        {
+            let mut c = self.common.lock().unwrap_or_else(PoisonError::into_inner);
+            let [device_select, driver_select, low, high] = selects;
+            (
+                c.device_feature_select,
+                c.driver_feature_select,
+                c.driver_features,
+            ) = (device_select, driver_select, [low, high]);
+            (c.queue_select, c.sizes, c.rings) = (queue_select, sizes, rings);
+        }
+        MmioDevice::restore(&self.transport, r)
+    }
 }
 
 #[cfg(test)]
@@ -730,6 +805,114 @@ mod tests {
         f.config_write(reg::COMMAND, &reg::COMMAND_MEMORY.to_le_bytes());
         assert!(f.held().is_none());
         assert_eq!(bar(&f, common::QUEUE_SIZE, 2), 256);
+    }
+
+    /// D270 slice 5: a function as its guest set it up (its BAR placed, memory space and bus
+    /// mastering on, MSI-X enabled with a vector programmed, its queue sized, vectored, placed
+    /// and enabled, its driver OK) is saved and put back whole on a fresh function of the same
+    /// device: its configuration space, common configuration and MSI-X table read back alike,
+    /// and it claims its BAR where it was. One of another device's queues refuses it.
+    #[test]
+    fn a_virtio_function_set_up_is_saved_and_put_back_whole() {
+        let memory = Arc::new(GuestMemory::anonymous(&[(0x8000_0000, 1 << 20)]).unwrap());
+        let f = VirtioPci::new(Box::new(Nothing), memory.clone(), Arc::new(Sent::default())).unwrap();
+        f.config_write(reg::BAR0, &0x1234_4000u32.to_le_bytes());
+        f.config_write(
+            reg::COMMAND,
+            &(reg::COMMAND_MEMORY | reg::COMMAND_MASTER).to_le_bytes(),
+        );
+        f.config_write(AT_MSIX + reg::MSIX_CONTROL, &reg::MSIX_ENABLE.to_le_bytes());
+        put(&f, MSIX_TABLE, 0xfee0_0000, 8);
+        put(&f, MSIX_TABLE + 8, 0x41, 4);
+        put(&f, MSIX_TABLE + 12, 0, 4);
+        put(&f, common::DEVICE_STATUS, 1 | 2, 1);
+        put(&f, common::DRIVER_FEATURE_SELECT, 1, 4);
+        put(&f, common::DRIVER_FEATURE, 1, 4);
+        put(&f, common::DEVICE_STATUS, 1 | 2 | 8, 1);
+        put(&f, common::QUEUE_SIZE, 128, 2);
+        put(&f, common::CONFIG_MSIX_VECTOR, 0, 2);
+        put(&f, common::QUEUE_MSIX_VECTOR, 1, 2);
+        put(&f, common::QUEUE_DESC, 0x8000_0000, 8);
+        put(&f, common::QUEUE_DRIVER, 0x8000_1000, 8);
+        put(&f, common::QUEUE_DEVICE, 0x8000_2000, 8);
+        put(&f, common::QUEUE_ENABLE, 1, 2);
+        put(&f, common::DEVICE_STATUS, 1 | 2 | 8 | 4, 1);
+        Plugged::pause(&f);
+        let mut w = Writer::default();
+        Plugged::save(&f, &mut w);
+        let saved = w.into_bytes();
+
+        let back = VirtioPci::new(Box::new(Nothing), memory.clone(), Arc::new(Sent::default())).unwrap();
+        let mut r = Reader::new(&saved);
+        Plugged::restore(&back, &mut r).unwrap();
+        r.finish().unwrap();
+        for offset in (0..0x100u16).step_by(4) {
+            assert_eq!(
+                cfg(&back, offset, 4),
+                cfg(&f, offset, 4),
+                "configuration at {offset:#x}"
+            );
+        }
+        for (field, len) in [
+            (common::DEVICE_STATUS, 1),
+            (common::NUM_QUEUES, 2),
+            (common::QUEUE_SIZE, 2),
+            (common::CONFIG_MSIX_VECTOR, 2),
+            (common::QUEUE_MSIX_VECTOR, 2),
+            (common::QUEUE_DESC, 8),
+            (common::QUEUE_DRIVER, 8),
+            (common::QUEUE_DEVICE, 8),
+            (common::QUEUE_ENABLE, 2),
+        ] {
+            assert_eq!(
+                bar(&back, field, len),
+                bar(&f, field, len),
+                "common configuration at {field:#x}"
+            );
+        }
+        assert_eq!(back.status(), 1 | 2 | 8 | 4);
+        assert_eq!(bar(&back, MSIX_TABLE, 8), 0xfee0_0000);
+        assert_eq!(
+            back.claims(0x1234_4010, 4),
+            Some((0, 0x10)),
+            "its BAR where it was"
+        );
+
+        struct Two;
+        impl VirtioDevice for Two {
+            fn device_id(&self) -> u32 {
+                2
+            }
+            fn features(&self) -> u64 {
+                super::super::feature::VERSION_1
+            }
+            fn queue_max_sizes(&self) -> &[u16] {
+                &[256, 256]
+            }
+            fn read_config(&self, _: u64, data: &mut [u8]) {
+                data.fill(0);
+            }
+            fn write_config(&mut self, _: u64, _: &[u8]) {}
+            fn shm_regions(&self) -> &[ShmRegion] {
+                &[]
+            }
+            fn activate(&mut self, _: Activation) -> Result<(), String> {
+                Ok(())
+            }
+            fn notify(&self, _: u16) {}
+            fn reset(&mut self) {}
+            fn pause(&mut self) -> Vec<QueueState> {
+                Vec::new()
+            }
+            fn resume(&mut self) -> Result<(), String> {
+                Ok(())
+            }
+        }
+        let other = VirtioPci::new(Box::new(Two), memory, Arc::new(Sent::default())).unwrap();
+        assert!(
+            Plugged::restore(&other, &mut Reader::new(&saved)).is_err(),
+            "another device's queues"
+        );
     }
 
     impl VirtioPci {
