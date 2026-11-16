@@ -446,7 +446,9 @@ fn a_share_at_a_granted_volume_reaches_the_harness() {
 /// the image's `VOLUME` for its harness and given its harness (a share's members narrowing what
 /// a `VOLUME` gives, never widening it), and its run's plug roots its project's top-level
 /// directory, the home's and `/volumes` (D271). Its harness starts in its project, which it
-/// reads at its host path, its files its own (D38), and reads its plugin.
+/// reads at its host path, its files its own (D38), and reads its plugin. Where its host path
+/// is no guest's ([`guest_at`]: Linux's tests keep theirs in `/tmp`, Windows' a `C:\` path),
+/// it is shared beneath `/work` by its name, as kiln shares a Windows project.
 #[test]
 fn a_project_given_its_harness_is_where_it_works() {
     if cannot_run_vms() {
@@ -459,7 +461,7 @@ fn a_project_given_its_harness_is_where_it_works() {
     let proj = proj.path();
     std::fs::write(proj.join("hello.txt"), "from the project\n").unwrap();
     std::fs::write(plugin.join("plugin.md"), "a plugin\n").unwrap();
-    let at = proj.to_str().unwrap().to_owned();
+    let at = guest_at(&proj);
     let file = format!("{at}/hello.txt");
     build(
         &home,
@@ -492,8 +494,18 @@ fn a_project_given_its_harness_is_where_it_works() {
             members: Some(PlugFor::Members(vec![codex()])),
         },
     ];
-    let top = at.trim_start_matches('/').split('/').next().unwrap();
-    s.plug_roots = vec![format!("/{top}"), "/home".into(), "/volumes".into()];
+    // Its plug roots as kiln's are: its project's top-level directory, the home's and
+    // `/volumes`, each once (a root granted twice is refused).
+    let mut roots: Vec<String> = Vec::new();
+    for root in plug_root_of(&at)
+        .into_iter()
+        .chain([String::from("/home"), String::from("/volumes")])
+    {
+        if !roots.contains(&root) {
+            roots.push(root);
+        }
+    }
+    s.plug_roots = roots;
     s.members = vec![MemberSpec {
         member: codex(),
         env: Vec::new(),
@@ -534,7 +546,8 @@ fn a_project_given_its_harness_is_where_it_works() {
 }
 
 /// A share given no member stays the run's own root's (D277; a member's default deny, D59):
-/// its harness, given none, finds nothing at the share's path.
+/// its harness, given none, finds nothing at the share's path, its host path where a guest's
+/// may be it ([`guest_at`]).
 #[test]
 fn a_share_given_no_member_is_the_runs_alone() {
     if cannot_run_vms() {
@@ -544,7 +557,7 @@ fn a_share_given_no_member_is_the_runs_alone() {
     let proj = TempDir::new("api-ungiven-proj");
     let real = std::fs::canonicalize(proj.to_path_buf()).unwrap();
     std::fs::write(real.join("hello.txt"), "from the project\n").unwrap();
-    let at = real.to_str().unwrap().to_owned();
+    let at = guest_at(&real);
     let file = format!("{at}/hello.txt");
     build(&home, "api-ungiven:1", &["files", &file], "");
     let mut s = spec(&home, "api-ungiven:1");
@@ -696,6 +709,30 @@ impl Drop for HostPathDir {
             let _ = std::fs::remove_dir_all(dir);
         }
     }
+}
+
+/// Where a run's microVM sees host directory `host`, as kiln shares a project
+/// (`isolated::guest_path`): at its own path where that is a Unix one beneath a root a
+/// run's domains may be given things under ([`plug_root_of`]); else beneath `/work` by its
+/// own name. A Windows path names no Linux one; and a path beneath a directory init keeps
+/// its own is none a share may be at: Linux's tests keep theirs in `/tmp`, each domain's
+/// scratch, at or under which init refuses a share (D139), and a plug root there is refused
+/// (`plug::root_name`; CI run 43876891053: "\"/tmp\": a plug root is one top-level
+/// directory").
+fn guest_at(host: &std::path::Path) -> String {
+    match host.to_str() {
+        Some(path) if plug_root_of(path).is_some() => path.to_owned(),
+        _ => format!("/work/{}", host.file_name().unwrap().to_string_lossy()),
+    }
+}
+
+/// The plug root guest path `at` lies beneath, as kiln's `isolated::plug_root_of` takes it:
+/// its top-level directory, where a root may be one (`plug::root_name`, D271).
+fn plug_root_of(at: &str) -> Option<String> {
+    let root = format!("/{}", at.strip_prefix('/')?.split('/').next()?);
+    shards_abi::run::plug::root_name(root.as_bytes())
+        .is_some()
+        .then_some(root)
 }
 
 /// A guest port the image gives its harness coming in, published on a host port the
@@ -3834,15 +3871,13 @@ fn warm_hosts_end_with_the_process_holding_their_pools() {
         );
         said.push(byte[0]);
     }
-    let listed = std::process::Command::new("ps")
-        .args(["-A", "-o", "pid=,command="])
-        .output()
-        .unwrap();
+    // Listed from /proc on Linux, where Alpine's BusyBox `ps` has no `command` column and
+    // listed nothing (CI's musl jobs).
     let named = binary.to_string_lossy().into_owned();
-    let hosts: Vec<i32> = String::from_utf8_lossy(&listed.stdout)
-        .lines()
-        .filter(|l| l.contains(&named) && l.contains("api-run"))
-        .filter_map(|l| l.split_whitespace().next()?.parse().ok())
+    let hosts: Vec<i32> = common::commands_with(&named)
+        .into_iter()
+        .filter(|(_, args)| args.contains("api-run"))
+        .filter_map(|(pid, _)| i32::try_from(pid).ok())
         .collect();
     assert!(!hosts.is_empty(), "the holder's warm hosts are listed");
     holder.kill().unwrap();
