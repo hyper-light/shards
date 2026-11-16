@@ -62,7 +62,9 @@ use crate::{Judge, MAX_FDS, MAX_PAYLOAD, Window};
 mod poll;
 mod vsock;
 pub use poll::{ExitWatch, Poller};
-pub use vsock::{VSOCK_QUOTA, VsockNames, vsock_instance, vsock_listen, vsock_open, vsock_pair};
+pub use vsock::{
+    VSOCK_QUOTA, VsockConn, VsockListener, VsockNames, vsock_instance, vsock_listen, vsock_open, vsock_pair,
+};
 
 /// The longest message a [`Stream`] carries ([`send`]): its header, the most payload a
 /// message may carry, and a value for each of the most handles one gives. Its pairs' window
@@ -919,6 +921,14 @@ impl Pipe {
 impl AsHandle for Pipe {
     fn as_handle(&self) -> BorrowedHandle<'_> {
         self.0.as_handle()
+    }
+}
+
+/// Its end, its caller's from here on: one a file's writes take as `std` writes, each its own
+/// call, waited for to its end (a host program's way written, D272).
+impl From<Pipe> for OwnedHandle {
+    fn from(pipe: Pipe) -> OwnedHandle {
+        pipe.0
     }
 }
 

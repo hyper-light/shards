@@ -2,7 +2,9 @@
 //! at f78c987a: daemon/network.go, libnetwork, defaultipam), dockerd's predefined `bridge`,
 //! `host` and `none` beside them, and what docker/cli checks before it asks
 //! (cli/command/network/create.go createIPAMConfig). Their members are the running
-//! microVMs on them, which the daemon holds as it starts and ends their runs.
+//! microVMs on them, which the daemon holds as it starts and ends their runs, their
+//! addresses leased from the home's records, which every process putting runs on a network
+//! shares (D285).
 
 use std::collections::BTreeMap;
 use std::net::{Ipv4Addr, Ipv6Addr};
@@ -13,6 +15,7 @@ use super::commands::{Asker, Reply};
 use super::filters::Filters;
 use super::{Daemon, lock};
 use crate::containers::Disk;
+use crate::networks::leases::{self, Leases};
 use crate::networks::{self as nets, Found, Network, Pool, Pool6, Store};
 
 /// The filters `network ls` takes (daemon/network/filter.go).
@@ -36,6 +39,35 @@ pub(super) struct Member {
     /// Its link-local addresses while it runs (PM M175): those given it, and on a network
     /// with IPv6 the one its kernel makes of its MAC.
     pub link_local: Vec<std::net::IpAddr>,
+}
+
+/// The daemon's runs on one user network: each member with its addresses' leases, and the
+/// network's pairing, held while any of them runs, so that no other process's run joins it
+/// meanwhile (D285). Kept only while it has a member: its last's leaving lets the pairing go.
+#[derive(Debug)]
+pub(super) struct Joined {
+    _pairing: leases::Pairing,
+    members: Vec<Endpoint>,
+}
+
+/// A member, and its addresses' leases, held by the daemon until its run ends.
+#[derive(Debug)]
+struct Endpoint {
+    member: Member,
+    _ip: leases::Lease,
+    _ip6: Option<leases::Lease<Ipv6Addr>>,
+}
+
+/// What a run's start says of a network's refusal of an address or of its pairing, in
+/// dockerd's words where it has them (moby f78c987a, daemon/libnetwork/ipamapi/contract.go:35-36,
+/// ErrIPAlreadyAllocated and ErrIPOutOfRange), each refusal by its cause.
+fn join_refused(network: &Network, family: &str, refused: &leases::Refused) -> String {
+    match refused {
+        leases::Refused::AddressTaken(_) => "Address already in use".into(),
+        leases::Refused::OutOfRange(_) => "requested address is out of range".into(),
+        leases::Refused::Exhausted => format!("network {} has no {family} address left", network.name),
+        other => format!("network {}: {other}", network.name),
+    }
 }
 
 /// Sends a network process `which` and waits for it to say it took it, as published
@@ -739,10 +771,12 @@ impl<D: Disk> Daemon<D> {
         let runs = lock(&self.runs);
         lock(&self.members)
             .get(id)
-            .map(|m| {
-                m.iter()
-                    .filter(|m| runs.contains_key(&m.container))
-                    .cloned()
+            .map(|joined| {
+                joined
+                    .members
+                    .iter()
+                    .filter(|e| runs.contains_key(&e.member.container))
+                    .map(|e| e.member.clone())
                     .collect()
             })
             .unwrap_or_default()
@@ -751,16 +785,17 @@ impl<D: Disk> Daemon<D> {
     /// MicroVM `id`'s network and endpoint, while it is a member of one.
     pub(super) fn membership(&self, id: &str) -> Option<(Network, Member)> {
         let networks = self.all_networks();
-        lock(&self.members).iter().find_map(|(net, members)| {
-            let m = members.iter().find(|m| m.container == id)?;
-            Some((networks.iter().find(|n| &n.id == net)?.clone(), m.clone()))
+        lock(&self.members).iter().find_map(|(net, joined)| {
+            let e = joined.members.iter().find(|e| e.member.container == id)?;
+            Some((networks.iter().find(|n| &n.id == net)?.clone(), e.member.clone()))
         })
     }
 
     /// MicroVM `id`'s name, as its endpoint's on its network: DNSNames' first.
     pub(super) fn name_member(&self, id: &str, name: &str) {
-        for list in lock(&self.members).values_mut() {
-            if let Some(m) = list.iter_mut().find(|m| m.container == id) {
+        for joined in lock(&self.members).values_mut() {
+            if let Some(e) = joined.members.iter_mut().find(|e| e.member.container == id) {
+                let m = &mut e.member;
                 m.name = name.to_string();
                 m.dns_names.retain(|n| n != name);
                 m.dns_names.insert(0, name.to_string());
@@ -769,8 +804,11 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// MicroVM `id`'s endpoint on user network `term` (its `--ip`, its aliases), made as
-    /// it starts (D46): its address the asked one, or the lowest free in the network's
-    /// range; a member until its run ends. The words scripts match where the start fails.
+    /// it starts (D46): its address the asked one, anywhere in the network's subnet, or the
+    /// lowest free in its range, each leased from the home's records and held by the daemon
+    /// until its run ends; the network paired by the daemon from its first run's join to its
+    /// last's leaving, and refused where another process pairs it (D285). The words scripts
+    /// match where the start fails.
     pub(super) fn join_network(
         &self,
         id: &str,
@@ -782,29 +820,29 @@ impl<D: Disk> Daemon<D> {
     ) -> Result<(Network, Member), String> {
         let fail = |e: &str| format!("failed to set up container networking: {e}");
         // An asked address held by a run that has ended, its end not yet taken, is free once
-        // it is, as dockerd's is once `run` returns: taken first, without the networks'
-        // lock, which its leaving takes (PM M182).
+        // it is, as dockerd's is once `run` returns: taken first, without the home's networks
+        // lock, which no caller holds across another process's answer (PM M182, D285).
         if !asked_ip.is_empty() || !asked_ip6.is_empty() {
-            let holders: Vec<String> = {
-                let _held = nets::lock();
-                self.user_network(term)
-                    .map(|n| self.members_of(&n.id))
-                    .unwrap_or_default()
-                    .into_iter()
-                    .filter(|m| {
-                        asked_ip.trim_start_matches("::ffff:").parse() == Ok(m.ip)
-                            || m.ip6.is_some_and(|ip6| asked_ip6.parse() == Ok(ip6))
-                    })
-                    .map(|m| m.container)
-                    .collect()
-            };
+            let holders: Vec<String> = self
+                .user_network(term)
+                .map(|n| self.members_of(&n.id))
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|m| {
+                    asked_ip.trim_start_matches("::ffff:").parse() == Ok(m.ip)
+                        || m.ip6.is_some_and(|ip6| asked_ip6.parse() == Ok(ip6))
+                })
+                .map(|m| m.container)
+                .collect();
             for holder in holders {
                 if let Some(inbox) = self.inbox_of(&holder) {
                     self.take_messages(&holder, &inbox);
                 }
             }
         }
-        let _held = nets::lock();
+        // A run joins anew: what a start of it held before is let go first.
+        self.leave_network(id);
+        let held = leases::hold(&self.home).map_err(|e| fail(&e.to_string()))?;
         let network = self
             .user_network(term)
             .ok_or_else(|| fail(&format!("no network is named {term}")))?;
@@ -813,38 +851,34 @@ impl<D: Disk> Daemon<D> {
             .first()
             .cloned()
             .ok_or_else(|| fail(&format!("network {} has no IPv4 subnet", network.name)))?;
-        let others: Vec<Ipv4Addr> = self.members_of(&network.id).iter().map(|m| m.ip).collect();
-        let ip = if asked_ip.is_empty() {
-            nets::allocate(&pool, &others)
-                .ok_or_else(|| fail(&format!("network {} has no IPv4 address left", network.name)))?
-        } else {
-            let ip: Ipv4Addr = asked_ip
-                .trim_start_matches("::ffff:")
-                .parse()
-                .map_err(|_| fail("Address already in use"))?;
-            if nets::in_use(&pool, &others).contains(&ip) {
-                return Err(fail("Address already in use"));
-            }
-            ip
+        let refused = |family: &str, e: leases::Refused| fail(&join_refused(&network, family, &e));
+        let ledger = Leases::of(&self.home, &network.id).map_err(|e| refused("IPv4", e))?;
+        let asked = match asked_ip {
+            "" => None,
+            ip => Some(
+                ip.trim_start_matches("::ffff:")
+                    .parse::<Ipv4Addr>()
+                    .map_err(|_| fail("Address already in use"))?,
+            ),
         };
-        // Its IPv6 address, as its IPv4 one: the asked one, or the lowest free.
-        let ip6 = match (network.ipv6, network.pools6.first()) {
+        let lease = ledger
+            .take(&held, &pool, asked, id)
+            .map_err(|e| refused("IPv4", e))?;
+        // Its IPv6 address, as its IPv4 one (D99).
+        let lease6 = match (network.ipv6, network.pools6.first()) {
             (true, Some(pool6)) => {
-                let others6: Vec<Ipv6Addr> = self
-                    .members_of(&network.id)
-                    .iter()
-                    .filter_map(|m| m.ip6)
-                    .collect();
-                Some(if asked_ip6.is_empty() {
-                    nets::allocate6(pool6, &others6)
-                        .ok_or_else(|| fail(&format!("network {} has no IPv6 address left", network.name)))?
-                } else {
-                    let ip6: Ipv6Addr = asked_ip6.parse().map_err(|_| fail("Address already in use"))?;
-                    if nets::in_use6(pool6, &others6).contains(&ip6) {
-                        return Err(fail("Address already in use"));
-                    }
-                    ip6
-                })
+                let asked6 = match asked_ip6 {
+                    "" => None,
+                    ip6 => Some(
+                        ip6.parse::<Ipv6Addr>()
+                            .map_err(|_| fail("Address already in use"))?,
+                    ),
+                };
+                Some(
+                    ledger
+                        .take6(&held, pool6, asked6, id)
+                        .map_err(|e| refused("IPv6", e))?,
+                )
             }
             _ => None,
         };
@@ -861,14 +895,25 @@ impl<D: Disk> Daemon<D> {
             endpoint: new_id()?,
             mac: String::new(),
             link_local: Vec::new(),
-            ip,
-            ip6,
+            ip: lease.ip(),
+            ip6: lease6.as_ref().map(|l| l.ip()),
             dns_names,
         };
+        // Paired with its first run, under the members' lock, which its last's leaving lets
+        // the pairing go under: an entry is there while, and only while, the daemon pairs.
         let mut members = lock(&self.members);
-        let list = members.entry(network.id.clone()).or_default();
-        list.retain(|m| m.container != id);
-        list.push(member.clone());
+        let joined = match members.entry(network.id.clone()) {
+            std::collections::btree_map::Entry::Occupied(on) => on.into_mut(),
+            std::collections::btree_map::Entry::Vacant(off) => off.insert(Joined {
+                _pairing: ledger.pair(&held).map_err(|e| refused("IPv4", e))?,
+                members: Vec::new(),
+            }),
+        };
+        joined.members.push(Endpoint {
+            member: member.clone(),
+            _ip: lease,
+            _ip6: lease6,
+        });
         Ok((network, member))
     }
 
@@ -921,7 +966,7 @@ impl<D: Disk> Daemon<D> {
         link_local: &[std::net::IpAddr],
         uplink6: Option<(Ipv6Addr, Ipv6Addr)>,
     ) -> Result<(), String> {
-        let _held = nets::lock();
+        let _telling = lock(&self.telling);
         let Some((network, mut me)) = self.membership(id) else {
             return Ok(());
         };
@@ -939,8 +984,12 @@ impl<D: Disk> Daemon<D> {
                 me.link_local.push(std::net::IpAddr::V6(kernels));
             }
         }
-        if let Some(list) = lock(&self.members).get_mut(&network.id)
-            && let Some(m) = list.iter_mut().find(|m| m.container == id)
+        if let Some(joined) = lock(&self.members).get_mut(&network.id)
+            && let Some(m) = joined
+                .members
+                .iter_mut()
+                .map(|endpoint| &mut endpoint.member)
+                .find(|m| m.container == id)
         {
             m.mac.clone_from(&me.mac);
             m.link_local.clone_from(&me.link_local);
@@ -1044,17 +1093,22 @@ impl<D: Disk> Daemon<D> {
         }
     }
 
-    /// MicroVM `id`'s run has ended: no longer a member, and its peers' names say so.
+    /// MicroVM `id`'s run has ended: no longer a member, its addresses' leases let go, and
+    /// its peers' names say so. Its network's pairing goes with its last member, under the
+    /// members' lock, where a join finds an entry or pairs (D285): never one paired here with
+    /// no entry, which a join would find paired elsewhere.
     pub(super) fn leave_network(&self, id: &str) {
         let left: Vec<String> = {
             let mut members = lock(&self.members);
             let mut left = Vec::new();
-            for (net, list) in members.iter_mut() {
-                if list.iter().any(|m| m.container == id) {
-                    list.retain(|m| m.container != id);
+            members.retain(|net, joined| {
+                let had = joined.members.len();
+                joined.members.retain(|e| e.member.container != id);
+                if joined.members.len() != had {
                     left.push(net.clone());
                 }
-            }
+                !joined.members.is_empty()
+            });
             left
         };
         // A run on no user network: no network to read.
@@ -1064,10 +1118,61 @@ impl<D: Disk> Daemon<D> {
         let networks = self.all_networks();
         for net in left {
             if let Some(n) = networks.iter().find(|n| n.id == net) {
-                let _held = nets::lock();
+                let _telling = lock(&self.telling);
                 self.tell_names(n);
             }
         }
+    }
+
+    /// Network `n`'s runs of other processes (D285): each live address lease that no run
+    /// of this daemon holds, as a member of its holder's ID and its address alone. None of
+    /// a predefined network, which leases none, nor where the home's records cannot be read.
+    fn elsewhere(&self, n: &Network) -> Vec<Member> {
+        if n.predefined() {
+            return Vec::new();
+        }
+        let ours: Vec<Ipv4Addr> = lock(&self.members)
+            .get(&n.id)
+            .map(|joined| joined.members.iter().map(|e| e.member.ip).collect())
+            .unwrap_or_default();
+        let Ok(ledger) = Leases::of(&self.home, &n.id) else {
+            return Vec::new();
+        };
+        let Ok(leased) = leases::hold(&self.home).and_then(|held| ledger.addresses(&held)) else {
+            return Vec::new();
+        };
+        leased
+            .into_iter()
+            .filter(|(ip, _)| !ours.contains(ip))
+            .map(|(ip, holder)| Member {
+                container: holder.unwrap_or_default(),
+                name: String::new(),
+                endpoint: String::new(),
+                mac: String::new(),
+                ip,
+                ip6: None,
+                dns_names: Vec::new(),
+                link_local: Vec::new(),
+            })
+            .collect()
+    }
+
+    /// Network `n`'s record and its leases removed, under the home's networks lock
+    /// (`held`): refused where another process's run is on it, or that process links its
+    /// members (D285).
+    fn remove_network(&self, held: &leases::Held, n: &Network) -> Result<(), String> {
+        match Leases::of(&self.home, &n.id).and_then(|ledger| ledger.clear(held)) {
+            // No process takes a lease of a network whose ID is not one: it has none.
+            Ok(()) | Err(leases::Refused::NotAnId) => {}
+            Err(leases::Refused::InUse) => {
+                return Err(format!(
+                    "cannot remove network {}: another process's runs are on it",
+                    n.name
+                ));
+            }
+            Err(e) => return Err(format!("network {}: {e}", n.name)),
+        }
+        Store::new(&self.home).remove(&n.id)
     }
 
     /// Every IPv4 pool allocated, the default bridge's among them.
@@ -1152,7 +1257,12 @@ impl<D: Disk> Daemon<D> {
         if name.trim().is_empty() {
             return daemon("a network needs a name");
         }
-        let _held = nets::lock();
+        // Its name and pool checked against every network kept, and kept, under the home's
+        // networks lock, which any process making a network takes (D285).
+        let held = match leases::hold(&self.home) {
+            Ok(held) => held,
+            Err(e) => return daemon(&e.to_string()),
+        };
         let networks = self.all_networks();
         if networks.iter().any(|n| &n.name == name) {
             return daemon(&format!("a network is named {name} already"));
@@ -1404,6 +1514,7 @@ impl<D: Disk> Daemon<D> {
         if let Err(e) = Store::new(&self.home).put(&n) {
             return daemon(&e);
         }
+        drop(held);
         reply.out(&id);
         // An MTU is kept as given, and its microVMs keep their device's: what they send
         // leaves through the host's own sockets, which fit it to each path the host finds,
@@ -1426,9 +1537,12 @@ impl<D: Disk> Daemon<D> {
         0
     }
 
-    /// Network `n` in the shape inspect answers (D46, D170).
+    /// Network `n` in the shape inspect answers (D46, D170): this daemon's runs on it, and
+    /// each other process's its leases name (D285).
     pub(super) fn network_value(&self, n: &Network) -> Value {
-        self.network_value_of(n, &self.members_of(&n.id))
+        let mut members = self.members_of(&n.id);
+        members.extend(self.elsewhere(n));
+        self.network_value_of(n, &members)
     }
 
     /// Network `n` as its inspect document says it, with `members` on it: the members of a
@@ -1625,9 +1739,10 @@ impl<D: Disk> Daemon<D> {
         super::inspect::inspected(parsed.string("format"), &documents, errors, asker.styled(), reply)
     }
 
-    /// Whether network `n` holds no member (dangling).
+    /// Whether network `n` holds no member (dangling): no run of this daemon's, nor of
+    /// another process (D285). Takes the home's networks lock: never asked under it.
     fn idle(&self, n: &Network) -> bool {
-        self.members_of(&n.id).is_empty()
+        self.members_of(&n.id).is_empty() && self.elsewhere(n).is_empty()
     }
 
     /// `shards network ls` (NetworkList, daemon/network/filter.go): the networks as data,
@@ -1724,11 +1839,19 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// `shards network rm NETWORK...` (DELETE /networks/{id}): each removed said as given;
-    /// each refused said as it comes, then `exit status 1`, as the CLI says them.
+    /// each refused said as it comes, then `exit status 1`, as the CLI says them. Each
+    /// found and removed under the home's networks lock, let go before it is said (D285).
     pub(super) fn network_rm(&self, parsed: &shards_cmdline::flags::Parsed, reply: &Reply<'_>) -> u8 {
         let mut failed = false;
         for term in &parsed.args {
-            let _held = nets::lock();
+            let held = match leases::hold(&self.home) {
+                Ok(held) => held,
+                Err(e) => {
+                    reply.err(&format!("shards: {e}"));
+                    failed = true;
+                    continue;
+                }
+            };
             let networks = self.all_networks();
             let said = match nets::find(&networks, term) {
                 Found::One(n) if n.predefined() => {
@@ -1758,7 +1881,7 @@ impl<D: Disk> Daemon<D> {
                             n.name
                         ))
                     } else {
-                        Store::new(&self.home).remove(&n.id)
+                        self.remove_network(&held, n)
                     }
                 }
                 Found::Ambiguous(count, by_name) => Err(format!(
@@ -1768,6 +1891,7 @@ impl<D: Disk> Daemon<D> {
                 Found::None if parsed.bool("force") => continue,
                 Found::None => Err(format!("no network is named {term}")),
             };
+            drop(held);
             match said {
                 Ok(()) => reply.out(term),
                 Err(e) => {
@@ -1827,22 +1951,25 @@ impl<D: Disk> Daemon<D> {
             Some(v) => Some(shards_cmdline::gotime::parse_timestamp(v, now, offset)?),
             None => None,
         };
-        let _held = nets::lock();
+        // Another process's runs keep a network as this daemon's do: its removal refuses it
+        // (`remove_network`), under the home's networks lock, which `idle` would take again.
+        let held = leases::hold(&self.home).map_err(|e| e.to_string())?;
         let mut names = Vec::new();
         for n in self.all_networks() {
             let keep = n.predefined()
                 || n.config_only
-                || !self.idle(&n)
+                || !self.members_of(&n.id).is_empty()
                 || !filters.kv("label", &n.labels)
                 || (filters.contains("label!") && filters.kv("label!", &n.labels))
                 || until.is_some_and(|u| i128::try_from(n.created).unwrap_or(i128::MAX) > u);
             if keep {
                 continue;
             }
-            if Store::new(&self.home).remove(&n.id).is_ok() {
+            if self.remove_network(&held, &n).is_ok() {
                 names.push(n.name);
             }
         }
+        drop(held);
         // Said as dockerd says each prune (daemon/prune.go): a network's reclaims nothing.
         self.events.log(
             "network",
