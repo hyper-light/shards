@@ -1894,6 +1894,11 @@ impl StartKind {
             StartKind::Warm => StartedFrom::Warm,
         }
     }
+
+    /// The kind `name` names, as its sample lines say it (`SHARDS_IMAGE_COST_KINDS`).
+    fn named(name: &str) -> Option<StartKind> {
+        StartKind::ALL.into_iter().find(|k| format!("{k:?}") == name)
+    }
 }
 
 /// The homes and specs [`image_start_costs`] starts each kind with: one home whose guest is
@@ -1967,7 +1972,10 @@ impl CostRig {
                 timed_start(&ImageShards::new(), &self.saved_home, &self.saved)
             }
             StartKind::Restored => timed_start(&ImageShards::new(), &self.home, &self.restored),
-            StartKind::Warm => timed_start(&self.pools, &self.home, &self.restored),
+            StartKind::Warm => {
+                self.warm_ready();
+                timed_start(&self.pools, &self.home, &self.restored)
+            }
         };
         assert_eq!(
             started.from,
@@ -1975,13 +1983,27 @@ impl CostRig {
             "a start asked as {kind:?} started {:?}{}; its run host said: {}",
             started.from,
             if kind == StartKind::Warm {
-                " (its pool had no warm host ready)"
+                " (its pool had said a host of it was warm)"
             } else {
                 ""
             },
             std::fs::read_to_string(&started.diagnostics).unwrap_or_default()
         );
         started
+    }
+
+    /// Waits until its pool says a host of it is warm, judged as this test's own processes
+    /// are: a warm start is asked only then, as a caller's next start comes once its pool has
+    /// refilled the host its last one took, so that none races that refill (P3.1's warm
+    /// starts, docs/research/measurements/p3-warm-start).
+    #[track_caller]
+    fn warm_ready(&self) {
+        let mut patience = Patience::started();
+        while !self.pools.held().iter().any(|p| p.warm > 0) {
+            assert!(patience.holds(), "its pool never said a host of it was warm");
+            std::thread::sleep(patience.next_look());
+        }
+        patience.done();
     }
 
     /// What comes before the measured starts: the image's files read once by a start of
@@ -2118,18 +2140,20 @@ shards api-run: not timed
 
 /// Where a shards-api image start's time goes, for each way it starts (D253): from the boot's
 /// call to its answer (Hex's `hex.image.boot`: `boot_stoppable` and the diagnostics' keep), to
-/// its harness's first output, and its stop, `SHARDS_IMAGE_COST_N` starts of each, the kinds
-/// taken round-robin, each round starting one kind later, so that the host's drift and a
-/// pool's refill after its warm start fall on every kind alike (PM M29). Each start's kind is
-/// held to the one asked. Then two passes of one start of each kind, every timed line on the
-/// caller's clock, from the boot's call, in order: `timed`, its run host's and shards-api's
-/// steps alone (`SHARDS_TIMING`): its run host's spawn, preparation and launches, its grants
-/// answered, the way from `READY` through `TAKEN` and `STARTED`, shards-api's own steps to its
-/// answer, and its first output; then `debug`, its VM's log at debug too (`SHARDS_LOG`), which
-/// slows it: its VM's spawn, exec and App Sandbox entry to its `main`, its own steps and its
-/// guest's markers. Its VM's lines share one pipe with its run host's, so where its reader
-/// lags a write waits on it, and the line after shows the wait: `timed`'s gaps are its run
-/// host's own.
+/// its harness's first output, and its stop, `SHARDS_IMAGE_COST_N` starts of each kind
+/// `SHARDS_IMAGE_COST_KINDS` names (comma-separated, as [`StartKind`] names them; all four
+/// where it is unset), the kinds taken round-robin, each round starting one kind later, so
+/// that the host's drift and a pool's refill after its warm start fall on every kind alike
+/// (PM M29), each warm start asked once its pool says a host of it is warm
+/// ([`CostRig::warm_ready`]). Each start's kind is held to the one asked. Then two passes of
+/// one start of each kind, every timed line on the caller's clock, from the boot's call, in
+/// order: `timed`, its run host's and shards-api's steps alone (`SHARDS_TIMING`): its run
+/// host's spawn, preparation and launches, its grants answered, the way from `READY` through
+/// `TAKEN` and `STARTED`, shards-api's own steps to its answer, and its first output; then
+/// `debug`, its VM's log at debug too (`SHARDS_LOG`), which slows it: its VM's spawn, exec and
+/// App Sandbox entry to its `main`, its own steps and its guest's markers. Its VM's lines share
+/// one pipe with its run host's, so where its reader lags a write waits on it, and the line
+/// after shows the wait: `timed`'s gaps are its run host's own.
 #[test]
 #[ignore = "a measurement: SHARDS_IMAGE_COST_N starts of each kind; ROOT runs it"]
 fn image_start_costs() {
@@ -2140,15 +2164,30 @@ fn image_start_costs() {
         .expect("SHARDS_IMAGE_COST_N names the starts of each kind")
         .parse()
         .expect("SHARDS_IMAGE_COST_N is a count");
-    let kinds: &[StartKind] = if shards_vmm::vm::restores_here() {
-        &StartKind::ALL
+    let asked: Vec<StartKind> = match std::env::var("SHARDS_IMAGE_COST_KINDS") {
+        Ok(names) => names
+            .split(',')
+            .map(|name| {
+                StartKind::named(name).unwrap_or_else(|| {
+                    panic!("SHARDS_IMAGE_COST_KINDS: {name} is none of {:?}", StartKind::ALL)
+                })
+            })
+            .collect(),
+        Err(_) => StartKind::ALL.to_vec(),
+    };
+    let kinds: Vec<StartKind> = if shards_vmm::vm::restores_here() {
+        asked
     } else {
         let _ = writeln!(
             std::io::stderr(),
             "SKIP: Saved, Restored and Warm: this host's hypervisor restores no snapshot (PM M345)"
         );
-        &StartKind::ALL[..1]
+        asked.into_iter().filter(|&k| k == StartKind::Booted).collect()
     };
+    if kinds.is_empty() {
+        return;
+    }
+    let kinds = kinds.as_slice();
     let host = format!(
         "backend {}, {}",
         shards_vmm::hv::BACKEND.unwrap_or("none"),
