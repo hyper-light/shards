@@ -1573,9 +1573,7 @@ fn borrowed(identity: &Identity, port: u32, wait: HandshakeWait<'_>) -> Result<B
     Ok(stream)
 }
 
-// Its fixtures stand in for a guest's socket with AF_UNIX listeners; on Windows a guest's vsock
-// is two pipes (D272), whose fixtures are owed (D272 S4).
-#[cfg(all(test, unix))]
+#[cfg(test)]
 #[path = "../../../docs/research/measurements/managed-borrowed-nowait/focused.rs"]
 mod borrowed_tests;
 
@@ -3616,30 +3614,38 @@ mod tests {
         }
     }
 
-    /// A listener at `path` for a stand-in of a managed guest's VM process, as each OS
-    /// listens: a socket; on Windows a pair of pipes named at the path (D272).
+    /// A stand-in's listener for a guest's VM process (a managed guest's, a borrowed connect's
+    /// fixture), as each OS listens: a socket; on Windows a pair of pipes named at its path
+    /// (D272).
     #[cfg(unix)]
-    fn rate_listener(path: &Path) -> std::os::unix::net::UnixListener {
-        std::os::unix::net::UnixListener::bind(path).unwrap()
-    }
+    pub(super) type StandIn = std::os::unix::net::UnixListener;
     #[cfg(windows)]
-    fn rate_listener(path: &Path) -> shards_ipc::VsockListener {
-        shards_ipc::VsockListener::bind(path).unwrap()
+    pub(super) type StandIn = shards_ipc::VsockListener;
+
+    /// A stand-in's side of a dial: its socket; on Windows its client's two pipes.
+    #[cfg(unix)]
+    pub(super) type Dial = std::os::unix::net::UnixStream;
+    #[cfg(windows)]
+    pub(super) type Dial = PipeDial;
+
+    /// A stand-in's listener at `path`.
+    pub(super) fn stand_in_listener(path: &Path) -> StandIn {
+        StandIn::bind(path).unwrap()
     }
 
     /// A stand-in's next dial.
     #[cfg(unix)]
-    fn next_dial(listener: &mut std::os::unix::net::UnixListener) -> std::os::unix::net::UnixStream {
+    pub(super) fn next_dial(listener: &mut StandIn) -> Dial {
         listener.accept().unwrap().0
     }
     #[cfg(windows)]
-    fn next_dial(listener: &mut shards_ipc::VsockListener) -> PipeDial {
+    pub(super) fn next_dial(listener: &mut StandIn) -> Dial {
         PipeDial(listener.accept().unwrap())
     }
 
     /// A stand-in's dial on Windows: its client's way up read, its way down written.
     #[cfg(windows)]
-    struct PipeDial(shards_ipc::VsockConn);
+    pub(super) struct PipeDial(shards_ipc::VsockConn);
 
     #[cfg(windows)]
     impl io::Read for PipeDial {
@@ -3667,7 +3673,7 @@ mod tests {
         answers: Vec<Option<&'static [u8]>>,
     ) -> std::thread::JoinHandle<Vec<Vec<u8>>> {
         use std::io::{Read as _, Write as _};
-        let mut listener = rate_listener(path);
+        let mut listener = stand_in_listener(path);
         std::thread::spawn(move || {
             let mut asks = Vec::new();
             for answer in answers {
@@ -3744,7 +3750,7 @@ mod tests {
     fn a_managed_rate_unanswered_within_its_patience_is_refused() {
         let dir = shards_testdir::TempDir::new("api-rate-late").unwrap();
         let socket = dir.join("v");
-        let listener = rate_listener(&socket);
+        let listener = stand_in_listener(&socket);
         let (guest, _native) = managed_model_at(false, socket);
         let asked = guest.rate(std::num::NonZeroU64::new(250), Duration::ZERO);
         assert!(
@@ -3917,7 +3923,7 @@ mod tests {
     fn a_managed_use_unanswered_or_of_an_ended_guest_is_refused() {
         let dir = shards_testdir::TempDir::new("api-use-late").unwrap();
         let socket = dir.join("v");
-        let listener = rate_listener(&socket);
+        let listener = stand_in_listener(&socket);
         let (guest, native) = managed_model_at(false, socket);
         let asked = guest.host_use(Duration::ZERO);
         assert!(
@@ -5263,9 +5269,8 @@ mod tests {
 
     /// A listener at `path` whose queue is full and which accepts none, with what holds it so:
     /// its backlog cut to none (listen(2) again) and one connection queued, which Linux and
-    /// macOS each take past a backlog of none. On Windows a guest's vsock is two pipes (D272),
-    /// a dial waiting while another client holds them, to its deadline, never refused: its
-    /// counterpart is owed (D272 S4).
+    /// macOS each take past a backlog of none. On Windows a guest's vsock is two pipes (D272):
+    /// its listener's one pair, which another client has opened.
     #[cfg(unix)]
     fn a_full_listener(path: &Path) -> Vec<Box<dyn std::any::Any + Send>> {
         use std::os::fd::AsRawFd as _;
@@ -5276,11 +5281,19 @@ mod tests {
         vec![Box::new(listener), Box::new(queued)]
     }
 
+    #[cfg(windows)]
+    fn a_full_listener(path: &Path) -> Vec<Box<dyn std::any::Any + Send>> {
+        let listener = stand_in_listener(path);
+        let holder = shards_ipc::vsock_open(path, None).unwrap();
+        vec![Box::new(listener), Box::new(holder)]
+    }
+
     /// A dial to a socket whose listener's queue is full waits no longer than its patience
     /// and is asked again within it, refused `Again`, as a guest whose vsock takes no
     /// connection yet is: Linux's blocking connect(2) waited for room for ever, and Windows'
-    /// WSAENOBUFS (PM M205) was taken for a refusal (D215).
-    #[cfg(unix)]
+    /// WSAENOBUFS (PM M205) was taken for a refusal (D215). A full socket refuses its dial at
+    /// once, so a dial expired there had a patience it did not fit in; a pair another client
+    /// holds is waited for to the dial's deadline (D272), so its expiry is the answer there.
     #[test]
     fn a_dial_to_a_full_listener_is_asked_again_within_its_patience() {
         use crate::while_runs::Reached;
@@ -5294,6 +5307,7 @@ mod tests {
             let mut cost = Duration::ZERO;
             Reached::Done(
                 match handshake_until(&path, 5, HandshakeWait::Until(at), &mut cost) {
+                    #[cfg(unix)]
                     Err(HandshakeError::Expired {
                         phase: HandshakePhase::Dial,
                     }) => return Reached::Sooner,

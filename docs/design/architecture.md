@@ -37646,8 +37646,21 @@ finds nothing.
   then the end, then the host's write refused, 232), `a_rates_pipes_are_answered_by_its_owner`,
   `a_client_gone_with_its_way_down_alone_lets_the_next_in`; shards_ipc `pipe::vsock::tests`
   `a_pairs_file_says_its_two_names`, `a_pair_is_opened_by_its_file`,
-  `a_busy_pair_is_waited_for_until_its_deadline`. The muxer's tests that dial its AF_UNIX
-  listener run on Unix alone now; their Windows counterparts are the three above.
+  `a_busy_pair_is_waited_for_until_its_deadline`. The muxer's tests that dialled its AF_UNIX
+  listener or read a handshake off a socket pair run on both now, their assertions shared and
+  their dial each OS's (lane whp-tests; Windows forms written, not run): a dial taken once its
+  pair is whole (`dialled`), a handshake's stream a listening pair's pipes (`host_stream`), a
+  client's bytes looked at before a read (`arrived`), and a read that does not wait a peek of
+  the way down (`read_now`): `handshake_lines_are_bounded_by_the_protocols_words`,
+  `handshakes_arrive_in_pieces_and_leave_later_data_unread`,
+  `past_its_slots_a_dial_is_refused_at_once`,
+  `a_silent_handshake_keeps_its_slot_until_a_newcomer_wants_it`,
+  `an_unanswered_request_gives_its_slot_up_longest_first` and
+  `a_hosts_request_its_guest_answers_late_is_connected`. On Unix alone still: the two rate
+  tests, whose owner answers a socket by a blocking write (Windows' counterpart
+  `a_rates_pipes_are_answered_by_its_owner`, its answer a waited write), and
+  `past_its_descriptors_a_dial_is_refused_at_once` (EMFILE: Windows' listener takes a dial
+  by the handles its pair already holds).
 
 **S3, built** (the grants: `shards` grant_ask.rs, grant_answer.rs, vm_run.rs; Windows tests
 written, not run):
@@ -37698,12 +37711,17 @@ written, not run):
   `host_port_accept`. `vsock_connect` and `echo` ride them, `echo`'s writer sharing its stream
   (a pipe's end is one handle, whose close alone is its end for its peer). boot.rs's managed
   rate test dials by `vsock_dial`.
-- *Owed on Windows*: fixtures that stand in for a guest's socket with AF_UNIX listeners run on
-  Unix alone now, their Windows forms on pipes owed: `shards_api`'s `borrowed_tests`
-  (docs/research/measurements/managed-borrowed-nowait/focused.rs and the two it includes) and
-  `a_dial_to_a_full_listener_is_asked_again_within_its_patience`. On pipes a dial to a pair
-  another client holds waits to its deadline (D272's order), never refused as a full backlog
-  is: that test's Windows form expects the dial's expiry.
+- *Fixtures that stand in for a guest's socket* run on both (lane whp-tests; Windows forms
+  written, not run): `shards_api`'s `borrowed_tests`
+  (docs/research/measurements/managed-borrowed-nowait/focused.rs and the two it includes) on
+  client.rs tests' stand-in listener (`stand_in_listener`, `next_dial`: a socket, or a
+  `VsockListener` and its `PipeDial`), a listener no dial reached one whose pair a dial that
+  waits for nothing opens (`undialed`), and a fixture's end each free way of its pair opened
+  (`redial`), as an attempt may hold its way down alone; and
+  `a_dial_to_a_full_listener_is_asked_again_within_its_patience`, its full listener on Windows
+  a pair another client holds. On pipes such a dial waits to its deadline (D272's order), never
+  refused as a full backlog is, so its expiry there is the answer, asked again; on Unix an
+  expiry is a patience the dial did not fit in, asked again with more.
 - *Tests* (Windows, written, not run): shards_ipc `a_listener_lets_its_clients_in_one_after_another`;
   `shards_api`'s stream tests over pipes (`pair`), `a_streams_socket_is_handed_over` taking its
   pipes, the inheritability check on the way down's handle; client.rs's rate stand-in on a
