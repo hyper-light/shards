@@ -8,7 +8,8 @@ digest of what it said.
     python3 -I measure.py prefixes SCAN_PY BYTES
 
 `sparse` makes a file shaped as a save's memory is (snapshot::prepare): SIZE bytes, sparse
-(scan_test.sparse), holding ACCESS and REFRESH's UTF-16LE in the host page at its middle alone.
+(scan_test.sparse), holding ACCESS at its middle and REFRESH's UTF-16LE at its end alone, the
+end's write lengthening it (scan_test's sparse test says why no truncate).
 `time` runs the scan as it runs; `heap` under tracemalloc, which slows it, for its traced peak.
 The resident peak (getrusage, where the host has it) counts the image's mapped pages too.
 `prefixes` times the credential shapes over BYTES of "eyJ" repeated, a run of JWT prefixes.
@@ -39,12 +40,12 @@ def main(argv):
         return 0
     if argv[0] == "sparse":
         size = int(argv[2])
-        planted = (test.ACCESS.encode(), test.REFRESH.encode("utf-16-le"))
+        planted = ((size // 2, test.ACCESS.encode()), (size, test.REFRESH.encode("utf-16-le")))
         with open(argv[1], "wb") as f:
             test.sparse(f)
-            f.truncate(size)
-            f.seek(size // 2)
-            f.write(b"".join(planted))
+            for end, value in planted:
+                f.seek(end - len(value))
+                f.write(value)
             f.flush()
             os.fsync(f.fileno())
         print("sparse %s: %d bytes, %d held, %d values planted" % (argv[1], size, test.held(argv[1]), len(planted)))
