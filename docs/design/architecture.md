@@ -36856,7 +36856,7 @@ back, ro refusing the member's write with EROFS, a home volume made by its plug,
 across it) and `a_project_is_plugged_into_the_running_harness` on the new call; the test guest's
 `plugged-volumes` mode is new, so the test guests are rebuilt.
 
-### D272. A vsock connection's Windows host side is a named pipe each way (decided 2026-11-15; S0 and S0b measured, S1 and S2 built, S3-S5 owed; Windows tests and WHP runs owed)
+### D272. A vsock connection's Windows host side is a named pipe each way (decided 2026-11-15; S0 and S0b measured, S1-S3 built, S4 and S5 owed; Windows tests and WHP runs owed)
 
 **Why.** D251's amendment holds that every byte a guest sent before its end is its host's,
 and ROOT's second invariant that a host's write after the guest's end fails at once. Windows'
@@ -37045,6 +37045,30 @@ finds nothing.
   `a_pairs_file_says_its_two_names`, `a_pair_is_opened_by_its_file`,
   `a_busy_pair_is_waited_for_until_its_deadline`. The muxer's tests that dial its AF_UNIX
   listener run on Unix alone now; their Windows counterparts are the three above.
+
+**S3, built** (the grants: `shards` grant_ask.rs, grant_answer.rs, vm_run.rs; Windows tests
+written, not run):
+- *Listen*: the spawner makes the VM's first pair (`shards_ipc::vsock_listen`: fresh names,
+  their first instances, the file at the vsock path naming them, a stale one replaced, one in
+  use refused), puts both server ends in the VM (`GRANTED` of their values there, two
+  little-endian u64s, the way down's first), keeps no copy, and keeps their names.
+- *The next pair*: `VSOCK_PAIR` (shards_ipc kind 111), empty, the VM's as the muxer takes a
+  pair whole (`platform::set_pair_maker`, set beside its dialer, vm_run
+  `dial_through_spawner`): answered after the VM's grants are sealed, as its dials are, and
+  only to a VM granted a vsock path, with new instances of its first's names, handed as the
+  first's were. A VM granted none is refused, its link kept.
+- *Dial*: the spawner reads `<path>_<port>`'s file and opens its pair, its way down first,
+  waiting for nothing (`vsock_open` to now: a pair another client holds is refused at once,
+  as the VM's device waits on this answer), puts both client ends in the VM and keeps no copy,
+  so that the VM's close is its host's end at once (no `TAKEN`). The VM makes them a
+  connection (`Pipes::dialed`).
+- *A host ask's answer* (`serve_rates`) is written with `Pipes::write_all_waiting`: in the pipe
+  as the connection closes.
+- *Tests* (Windows, written, not run): grant_answer
+  `a_vms_vsock_pipes_are_made_and_dialled_for_it` (a stale file replaced and one in use
+  refused, the granted pair the path's, the next pair the first's names', a dial's byte and
+  its close its host's, a dial and a pair before any vsock path refused, nothing granted after
+  the start); vm_run `each_rate_handed_over_is_answered_on_its_pipes`.
 
 **A client's change** (Hex's on Windows): read the file at the VM's socket path for its
 pipes' names and open both (CreateFileW, SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION),
