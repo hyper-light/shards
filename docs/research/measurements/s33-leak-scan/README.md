@@ -276,4 +276,5 @@ check spent 28.6 minutes in the scan's two passes, reading holes byte for byte.
   the old scan ran out of memory) and on KVM (2092 s) shows the linear scan on a real save.
 - **Run 2, the real sessions.** It waits on step 8, on Hex's half of step 6, and on a save hook
   in Hex.
-- **Step 10's second part,** the injector's A/B latency harness, is another lane's.
+- **Step 10's second part,** the injector's A/B latency harness, is built:
+  [s33-injector-ab](../s33-injector-ab/README.md) (6cb1213f2). Its runs are ROOT's too.

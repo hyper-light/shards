@@ -31193,7 +31193,7 @@ memory its guest holds before its guest drops its page cache (D188's measure, PM
 image run); an orchestrator that needs D188's pressure give-back through its run host to keep
 its runs within its budget.
 
-### D242. Credentials in Veil's shape: a credential is named, never carried, and filled in at the VM's egress (the contract decided and built; the run's CA in its network process and in its granted members' trust built, step 2; its leases built, step 4; kiln's broker built, step 5; every harness's trust surveyed, step 9; the injector built, step 3: TLS ended for granted hosts, HTTP/1.1 heads filled in, echoes masked; Hex filling a harness VM's grants and answering its leases from kiln's broker built, step 6, kiln's half on kiln main and Hex's with the Hex lead; the leak scan's harness built, step 10's first part, D259; the Claude Code and Codex sign-in profiles built, step 8's first slice; HTTP/2's layer built, step 7's first slice; the injector's capture and its run host's relay built, step 8's second slice; HTTP/2 in the injector's connections built, step 7's second slice; a sign-in's token host over HTTP/2 built, its token handling per stream; the injector's upstream roots made explicit, the same on every OS, and never taken from its environment; kiln's broker answering sign-ins and the real-VM runs owed)
+### D242. Credentials in Veil's shape: a credential is named, never carried, and filled in at the VM's egress (the contract decided and built; the run's CA in its network process and in its granted members' trust built, step 2; its leases built, step 4; kiln's broker built, step 5; every harness's trust surveyed, step 9; the injector built, step 3: TLS ended for granted hosts, HTTP/1.1 heads filled in, echoes masked; Hex filling a harness VM's grants and answering its leases from kiln's broker built, step 6, kiln's half on kiln main and Hex's with the Hex lead; the leak scan's harness built, step 10's first part, D259; the injector's A/B harness built, step 10's second part; the Claude Code and Codex sign-in profiles built, step 8's first slice; HTTP/2's layer built, step 7's first slice; the injector's capture and its run host's relay built, step 8's second slice; HTTP/2 in the injector's connections built, step 7's second slice; a sign-in's token host over HTTP/2 built, its token handling per stream; the injector's upstream roots made explicit, the same on every OS, and never taken from its environment; kiln's broker answering sign-ins and the real-VM runs owed)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 33: every kiln harness runs in a
 Shards microVM, and a harness needs its model-provider credential without the credential
@@ -31932,8 +31932,51 @@ s33-leak-scan).**
   save's files, a disk image and each member's environment as given, and looks for each value
   in its UTF-8, UTF-16LE and base64 forms. It counts the run's placeholders as no leak, lists
   the bring-up's credential shapes that no value explains, and never prints a value.
-- *Owed.* ROOT's runs of it on KVM, HVF and WHP (its README); step 10's second part, the
-  injector's A/B latency harness, is another lane's.
+- *Owed.* ROOT's runs of it on KVM, HVF and WHP (its README).
+
+**Built: step 10's second part, the injector's A/B harness (docs/research/measurements/
+s33-injector-ab, 6cb1213f2; kept in step with the injector by 529838116 and b6814785d).**
+- *What it measures.* ab.rs drives the injector in-process, as step 3's tests do. It is
+  compiled into shards-net's unit tests as ignored tests (`inject::ab`), so it needs no VM.
+  - `request`: a Messages-shaped request carrying its placeholder, through the injector
+    (`*.inject`: the host granted, the value filled in) against the same bytes with no grant
+    (`*.direct`), on a new connection each sample (`connect.*`) and on a kept one
+    (`request.*`). The arms take turns going first, AB then BA.
+  - `ca`: the run's CA, each sample three fresh processes started as a VM's network process
+    starts: its key, the CA, the upstream verifier, a leaf minted first and second, and a
+    process's first and second connection, injected against direct.
+  - `gzip`: f70's cost, a body gzip-coded against the same body identity-coded, through the
+    injector, from one TLS record's plaintext (2^14 bytes) doubling to 2^26, with the bytes
+    each puts on the wire.
+- *What each line says.* A series' n, p50, p90, p99 and max, and its p99's distribution-free
+  95% interval (Le Boudec 2010, Theorem 2.1). A header names the host, its OS, the revision,
+  its CPUs and its load average; `S33_AB_OUT` keeps every raw sample. Sampling starts at the
+  fewest samples with an interval and doubles n until every p99 falls within its previous
+  round's, and the line says why it stopped (`Stop`: stable, `S33_AB_N`, or `S33_AB_BUDGET_S`
+  with its p99s still moving). It never waits for quiet: `S33_AB_LOAD=cpus` keeps a busy
+  thread on each CPU.
+- *Literals* (R03). `QUANTILE`, 0.99, is the tail the person's rule holds first-class, and
+  `CONFIDENCE`, 0.95, the conventional two-sided level. The first n, 368, follows from them:
+  ⌈ln(0.025) / ln(0.99)⌉, the fewest samples whose largest lies above the p99 with
+  probability 0.975, so the first round's upper end is its largest sample. `RECORD`,
+  2^14 + 256 + 5 bytes, is a TLS record's most (RFC 8446 §5.2). The gzip sweep runs from one
+  record's plaintext (§5.1) to the largest power of two within the Messages API's 128 MB
+  request limit. Level 6 is zlib's default; Claude Code's own level is unverified, so
+  `S33_AB_GZIP_LEVEL` and `S33_AB_BODY` take the real level and a captured body. No literal
+  reaches production: ab.rs is compiled into tests alone.
+- *Not counted* (its README). The lease's round trip to the run host and kiln's broker; the
+  audit line's write; tcp.rs's segments and the guest's virtio path, which a real microVM's
+  two arms would both cross; Bun's BoringSSL, as the guest is rustls.
+- *Its statistics held to their sources.* `the_statistics_each_line_reports_hold_to_their_sources`
+  is an ordinary unit test. It holds the first n to 368 and to its closed form, and the first
+  round's upper end to the largest sample. It holds each round's interval up to n = 11776 to
+  binomial terms summed apart from `interval`'s own: the narrowest whose tails are each within
+  2.5%. It holds the quantiles to nearest rank and the arms to their turns.
+- *Owed* (ROOT). Its runs with `--release`, quiet and under load, on each OS and
+  architecture the network process runs on (on macOS through launchd-run.sh); their numbers
+  in PM, and any miss of R08's target recorded. Not measured here: Claude Code reading the
+  bundle `NODE_EXTRA_CA_CERTS` names as it starts, which step 2 owes and which needs Claude
+  Code itself.
 
 **Built: step 8's first slice, the sign-in profiles** (`crates/net/src/signin.rs`; kiln plan
 01a1d2b88be57304b972761e2a5c6781 step 8; research f16, f43, f47, f49, f50, f52–f55, f63, f64; record
@@ -32493,7 +32536,7 @@ lease answered 503").
 **Owed (later slices of step 33, this plan's steps 7, 8 and 10).** Kiln's broker answering the sign-ins' words (step 8's third slice;
 the network process telling its run host of a capture, a refresh and a revocation, the run host its
 orchestrator, and the injector capturing and answering outside are built, its second); and ROOT's real-VM runs on KVM, HVF and WHP with a whole-guest-memory leak scan
-(its harness built, D259), the injector's measured cost (step 10), and a real sign-in of each
+(its harness built, D259), the injector's measured cost (its harness built, step 10's second part), and a real sign-in of each
 CLI surviving a refresh answered outside (step 8). Step 6's own owed items are its block's,
 above.
 
