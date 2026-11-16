@@ -4421,6 +4421,63 @@ fn an_agents_volume_refuses_writes_past_its_bound() {
     guest.stop().unwrap();
 }
 
+/// P6.2 (D281, lane charge-2): an orchestrator's run's own anonymous volume, made for its
+/// image's `VOLUME` that no share stands in for, is held for the run's life as a named one is:
+/// `prune volumes` while the run runs passes it by, its files kept, where the same prune
+/// removes an anonymous volume no run holds; and it goes as its run ends, its lock file with
+/// it, as `--rm`'s volumes go.
+#[test]
+fn a_runs_anonymous_volume_is_passed_by_a_prune_while_it_runs_and_goes_with_it() {
+    if cannot_run_vms() {
+        return;
+    }
+    let home = TempDir::new("api-anon-vol-home");
+    build(&home, "api-anon-vol:1", &["trap", "TERM"], "VOLUME /scratch\n");
+    let env = host_env(&home);
+    let named: Vec<(&str, &std::ffi::OsStr)> = env
+        .iter()
+        .map(|(k, v)| (k.to_str().unwrap(), v.as_os_str()))
+        .collect();
+    let shards = |args: &[&str]| run_shards_env(&[], args, &named);
+    let anonymous = || -> Vec<String> {
+        shards_api::volumes::volumes(Some(common::shards()), &env)
+            .unwrap()
+            .into_iter()
+            .filter(|v| v.anonymous)
+            .map(|v| v.name)
+            .collect()
+    };
+    let volumes = home.join("volumes");
+    let lock_file = |name: &str| volumes.join(format!(".{name}.lock"));
+    let guest = boot(&home, &spec(&home, "api-anon-vol:1"));
+    let lines = lines_of(&*guest, Channel::Stdout);
+    said_all(&lines, &["ready".to_string()]);
+    let listed = anonymous();
+    let [held] = listed.as_slice() else {
+        panic!("its VOLUME's own alone: {listed:?}");
+    };
+    let held = held.as_str();
+    assert!(lock_file(held).exists(), "held as its run runs");
+    let made = shards(&["create", "volume"]);
+    assert_eq!(made.status, Some(0), "{made}");
+    let unheld = made.stdout.trim().to_owned();
+    let pruned = shards(&["prune", "volumes", "-f"]);
+    assert_eq!(pruned.status, Some(0), "{pruned}");
+    assert!(
+        pruned.stdout.contains(&format!("\n{unheld}\n")) && !pruned.stdout.contains(held),
+        "{pruned}"
+    );
+    assert_eq!(anonymous(), [held]);
+    assert!(volumes.join(held).join("_data").is_dir());
+    guest.stop().unwrap();
+    drop(guest);
+    assert_eq!(anonymous(), Vec::<String>::new(), "gone with its run");
+    assert!(!volumes.join(held).exists());
+    assert!(!lock_file(held).exists(), "its lock file gone with it");
+    let stopped = shards(&["stop", "daemon"]);
+    assert_eq!(stopped.status, Some(0), "{stopped}");
+}
+
 /// D273, P6b.1 AC2: a destination its image grants, reached by the running harness, revoked
 /// as the run runs refuses the next connection to it, and every one after; granted back, it is
 /// reached again. All of it in the running microVM in place: its start (`started_from`) and its
