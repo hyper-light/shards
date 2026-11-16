@@ -37,7 +37,7 @@ use crate::Credentials;
 use crate::decode::{Coding, Decoder};
 use crate::dns::credential::{self, Fill};
 use crate::hpack;
-use crate::http2::{self, Code, End, Scope};
+use crate::http2::{self, Code, End, Scope, ping};
 use crate::lease::{self, Asked};
 use crate::ring::Ring;
 use crate::signin::{self, Cli};
@@ -3083,20 +3083,6 @@ fn stream_error(stream: u32, code: Code, why: &'static str) -> http2::Error {
         code,
         why,
     }
-}
-
-/// A PING (§6.7): answered on its own hop.
-fn ping(head: http2::Head, payload: &[u8], out: &mut Vec<u8>) -> Result<(), http2::Error> {
-    if head.stream != 0 {
-        return Err(http2::connection(Code::Protocol, "a PING on a stream"));
-    }
-    if payload.len() != 8 {
-        return Err(http2::connection(Code::FrameSize, "a PING not of eight octets"));
-    }
-    if head.flags & http2::ACK == 0 {
-        http2::ping_ack(payload, out);
-    }
-    Ok(())
 }
 
 /// `value`, a field's, its echoes of the values `mask` masks replaced.

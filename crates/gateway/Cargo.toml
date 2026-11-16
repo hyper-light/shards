@@ -9,3 +9,7 @@ rust-version.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+# HTTP/2's frames, flow control and HPACK, the credential injector's too (D242, R12).
+shards-http2 = { path = "../http2" }
