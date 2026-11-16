@@ -84,11 +84,12 @@ fn next_count(lines: &mut Lines<BufReader<ChildStdout>>) -> u64 {
 }
 
 /// Waits for a child, a client of `home`'s daemon, failing the test rather than hanging
-/// it: for as long as the daemon or its microVMs progress ([`Patience`], its kind its
-/// caller's call site).
+/// it: for as long as it, the daemon or its microVMs progress ([`Patience::client`], its
+/// kind its caller's call site): once its daemon has died or stopped, its own end is all
+/// that goes on (containers.rs' `exit`).
 #[track_caller]
 fn exit(child: &mut Child, home: &Path) -> Option<i32> {
-    let mut patience = Patience::of(home);
+    let mut patience = Patience::client(child.id(), home);
     loop {
         if let Some(status) = child.try_wait().unwrap() {
             patience.done();
@@ -96,7 +97,7 @@ fn exit(child: &mut Child, home: &Path) -> Option<i32> {
         }
         if !patience.holds() {
             let _ = child.kill();
-            panic!("shards run did not exit, its daemon and microVMs no longer progressing");
+            panic!("shards run did not exit, it, its daemon and microVMs no longer progressing");
         }
         std::thread::sleep(Duration::from_millis(5));
     }

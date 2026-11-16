@@ -25313,9 +25313,13 @@ Max) left untimed (D253's amendment, the start path's cuts):
 - Before its VM's launch (stretch 3): `its VM's binary checked` (now on a thread of its own
   from the run host's first step, api_run.rs `Checking`; `, its network process's too` where
   its run has a network, whose binary that thread checks once `shape` elects its bridge),
-  `its network decided`, `its writable layer cloned|made|none`, then `launching its VM`.
-- Past `READY` (stretch 6): `its writable layer's name let go of`, `its VM's start settled`,
-  then `its VM process … is ready`.
+  `its network decided`, `its writable layer cloned|made|none` (with `, taken from its
+  thread` where the layer was made beside the start, D253's cut (a); without it where its
+  launch made its own), then `launching its VM`. That thread says its making as it ends, begun
+  at `its microVM shaped`: `its writable layer cloned|made|none on its own thread, in US us`.
+- Past `READY` (stretch 6): `its VM's start settled`, then `its VM process … is ready`; `its
+  writable layer's name let go of` once its start is told its orchestrator (cut (b)), a warm
+  host's as its VM is ready.
 - shards-api's side (stretch 2): `shards-api: at unix US us WHAT` lines among the run host's
   diagnostics, its own wall clock's (session.rs `Shared::step`), said `caller` by the
   timeline: `its run host N started`, `its run's request sending` and `sent`, `its host's
@@ -25327,6 +25331,14 @@ Max) left untimed (D253's amendment, the start path's cuts):
   pipe with the run host's, which only the caller's diagnostics reader drains, and a run
   host's line takes its time before its write: where the reader lags, the line after a wait
   shows it as its gap, so `timed`'s gaps are the run host's own.
+
+Two builds A/B (D253's cut (a)): `docs/research/measurements/image-start-ab/ab.py A_DIR B_DIR
+ROUNDS N OUT` builds each checkout's harness in its own `target`, then runs it in each by
+turns, ABBA (PM M29), `SHARDS_IMAGE_COST_N=N` a process, keeping each process's output, and
+reports per arm and kind the n, p50, p90, p99 and max of each span over all its rounds; and
+from each round's `timed` phase pass the launch's wait for its writable layer (`its network
+decided` to `its writable layer …`) and, where its thread made it, that making. On macOS it
+runs as the user's own, through `macos-sched/launchd-run.sh`.
 
 Numbers: owed (ROOT runs it), on HVF and on KVM.
 

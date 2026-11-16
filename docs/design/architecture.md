@@ -34458,6 +34458,57 @@ each compiled for that kernel.
   let go; red with the refill asked at the take). *Owed* (ROOT): the A/B of warm starts, and
   of a burst's second, with and without it.
 
+**Amended: a run host makes its microVM's writable layer beside the rest of its start**
+(2026-11-16, the start path's cut (a)). A start that boots or saves made its layer's file
+(D190, `LayerFile::made`) on its way, after `its network decided` and before `launching its
+VM`, and a restore made its clone of its template's (`LayerFile::for_restore`) there too.
+`made` is a sparse file of the run's size (10 GiB unless `--storage-opt size`) whose ext4 file
+system `shards_ext4::format` writes as metadata alone (the superblock and its copies with
+their descriptor tables, the bitmaps it must, the first inode table block, the root and
+lost+found, the journal's superblock), so what it costs is its file system's work, under
+whatever contention, not bytes: ROOT's phase passes on a loaded Studio put `its writable layer
+made` at 18–320 ms; on a quiet one it is unmeasured. Nothing of the start between its
+microVM's shape and its VM's launch needs it: its security's making, its run's planning, its
+share process's start, its binaries' check, its network's decision.
+- *Decided.* `shape` begins its making on a thread of its own (`api_run.rs` `Layering`) once
+  its microVM is shaped, for the way that microVM is then to start (`way_of`: a boot, a save,
+  or a restore of its template), as a launch that way makes it (`layer_for`, which a launch
+  making its own calls too). Its launch still decides its way as it starts, and takes the
+  thread's layer, waiting for it, where the two are one way. Where they differ (its template
+  saved or removed meanwhile by another run, or a restore that failed and boots instead) the
+  launch makes its own and the thread is let go of: its file goes as the thread ends, its
+  result dropped with it (Rust std `thread/lifecycle.rs`, `impl Drop for Packet`: an
+  unjoined thread's result is dropped there), or, where the run host ends first, by its
+  orchestrator (`clear_layers`, above), as a file its host made before its microVM held it
+  always was. A plan refused lets it go alike. A warm host shapes too, so its VM is ready
+  sooner; a warm run's way had no layer on it before either.
+- *States* (R04): `Layering::Making { way, thread }` from its start; `Gone` once taken or let
+  go of, or where no thread could be started, whose launch makes its own.
+- *Considered.* (1) The way decided once, as the microVM is shaped, the launch taking it: one
+  read of the template fewer, but a template saved in between would have the run boot and save
+  (seconds) where it could restore (milliseconds), and one removed would have it restore
+  nothing, fail and boot. (2) Joining a thread let go of: its file gone at once, but the rest of
+  its making then on the launch's way, the cost this cut takes off it. (3) Beginning it at the
+  run host's first step: the way is unknown until the microVM names its template, and a layer
+  made for a run that restores is file system work beside its restore, the hottest kind.
+- *Literals:* none.
+- *Timed* (`SHARDS_TIMING`): its thread says `its writable layer made|cloned|none on its own
+  thread, in US us` as it ends; its launch says `its writable layer made|cloned|none, taken
+  from its thread` (without the suffix where it made its own) after `its network decided`,
+  the gap between those two its wait.
+- *Tested* (unit; written, not run): `a_layer_made_beside_a_runs_making_is_its_launchs_own`
+  (a boot's and a save's layer made on its thread as a launch makes one: ext4, in `layers`,
+  the length of a launch's own of that size, gone with its handle; a restore of a template
+  holding no snapshot none; each taken once; none where none was begun) and
+  `a_layer_made_for_another_way_is_no_launchs` (a boot's is no save's, nor its own way's once
+  let go of; red with the way's check removed).
+- *Owed* (ROOT): those tests and their mutation; `api_image.rs` on HVF, KVM x86_64 and WHP,
+  every start kind; and the A/B, the revision before this against this, on a quiet Studio
+  through `launchd-run.sh` (`docs/research/measurements/image-start-ab/ab.py`, PM M593).
+- *What would refuse it:* an A/B in which Booted's or Saved's boot span does not fall by the
+  launch's former wait, or Restored's or Warm's rises (the thread's file system work beside a
+  restore's own).
+
 ### D254. kiln's MCP rides the agent-control link: a stdio bridge in the harness's member, one lane of the link per connection, no network grant (decided; its asks built at the endpoint and the controller, the member's listener and bridge and its VM's hand-off built; the runs' asking and the run hosts' pairing built, the daemon's and an orchestrator's; kiln's side and every real-VM run owed)
 
 **Why.** A harness kiln drives in a microVM calls kiln's MCP server (kiln serves `/api/mcp`
@@ -37499,7 +37550,12 @@ plugin. `a_share_given_no_member_is_the_runs_alone` (its default deny),
 narrowed to its own member, taken; widened to another, refused); the image channel's
 `each_shares_members_ride_the_request_last`; shards-api's spec refusals; init's
 `a_share_given_members_is_theirs_alone` (Linux; owed here). Mutation: the run host's
-`give_members` not called, and the first test fails as kiln's launch did.
+`give_members` not called, and the first test fails as kiln's launch did. Where a test's
+directory is no guest path as it is, the first two tests share it beneath `/work` by its name,
+as kiln shares a Windows project (its `isolated::guest_path`), and take its plug roots as kiln
+does (`plug_root_of`): Linux keeps them in `/tmp`, each domain's scratch, which no share may be
+at or under (D139) and no plug root may be (`plug::root_name`), and Windows' are `C:\` paths
+(CI run 43876891053 refused the Linux runs' `/tmp` plug root).
 
 **Amended (P6.1, kiln plan 01a1dd2e959772a1b17bc49026448e8a item 1, 2026-11-16): a working
 directory no share given its member holds is refused at boot, typed.** Before, such a member's

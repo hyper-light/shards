@@ -4199,8 +4199,13 @@ impl<D: Disk> Daemon<D> {
             });
         let shares = match shared {
             Ok(link) => link,
+            // A start already refused keeps that refusal, which the setup's follows from:
+            // `--network container:NAME` of none is "No such container", not the setup's
+            // word on that container's shared memory (ad8308bb8, CI run 43876891053).
             Err(e) => {
-                start = network::Start::Fails(e);
+                if !matches!(start, network::Start::Fails(_)) {
+                    start = network::Start::Fails(e);
+                }
                 None
             }
         };
