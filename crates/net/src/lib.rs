@@ -989,6 +989,10 @@ struct Stack<'r> {
     names: Option<dns::Names>,
     /// The networks shared by runs that the guest is on (D285), beside its own.
     joined: shared::Networks,
+    /// A descriptor held for each link its shared networks still need (D285, `sys::reserve`):
+    /// let go as a control message is read, so that a link's socket comes into one, and held
+    /// again for those still to come once it is taken.
+    reserved: Vec<UnixStream>,
     /// Whether the process is held to an Agentfile's TCP ports already (D31, `NET_POLICY`).
     #[cfg(target_os = "linux")]
     ports_confined: bool,
@@ -1259,6 +1263,7 @@ pub fn serve(
         next_link: 1,
         names: None,
         joined: shared::Networks::default(),
+        reserved: Vec::new(),
         #[cfg(target_os = "linux")]
         ports_confined: false,
         ceiling: None,
@@ -1473,13 +1478,36 @@ fn follow(c: &mut Credentials, changed: signin::Changed) {
 /// Takes what control socket `sock` holds, `role` saying what it may say: published ports
 /// come and go as each message comes whole, and each is answered once taken, so that its
 /// sender's copies may close. False once it has hung up, or said what is not its to say.
+///
+/// The descriptors held for its shared networks' links to come are let go as each message is
+/// read, so that a link's socket comes into one, and held again once it is read (D285): the
+/// process does nothing else meanwhile, so no flow takes them. Held as duplicates of a live
+/// control's socket, never of one that has ended: they would keep it from its sender's end.
 fn control(
     stack: &mut Stack<'_>,
     role: Control,
     sock: &UnixStream,
     incoming: &mut shards_ipc::Incoming,
 ) -> bool {
+    let open = take_control(stack, role, sock, incoming);
+    if open {
+        let wanted = stack.links_to_come(None);
+        let _ = sys::reserve(sock, wanted, &mut stack.reserved);
+    } else {
+        stack.reserved.clear();
+    }
+    open
+}
+
+/// [`control`]'s messages, each read with the links' descriptors let go.
+fn take_control(
+    stack: &mut Stack<'_>,
+    role: Control,
+    sock: &UnixStream,
+    incoming: &mut shards_ipc::Incoming,
+) -> bool {
     loop {
+        stack.reserved.clear();
         let mut m = match incoming.take(sock) {
             Ok(shards_ipc::Took::Message(m)) => m,
             Ok(shards_ipc::Took::Partial) => return true,
@@ -2388,7 +2416,7 @@ impl<'r> Stack<'r> {
         }
         if linked {
             for (_, _, frame) in frames {
-                self.from_link(i, frame);
+                self.frame_from_link(i, frame);
             }
             if gone {
                 self.drop_peer(i);
@@ -2458,8 +2486,36 @@ impl<'r> Stack<'r> {
         })
     }
 
+    /// How many links its shared networks still need (D285): each other run's address on
+    /// each without its link yet, `join`'s members in place of its network's where given.
+    fn links_to_come(&self, join: Option<&shared::Join>) -> usize {
+        let unlinked = |id: &shared::NetworkId, runs: std::collections::HashSet<Ipv4Addr>| {
+            runs.into_iter()
+                .filter(|&at| self.link_of(id, at).is_none())
+                .count()
+        };
+        let mut count = 0usize;
+        for n in self
+            .joined
+            .iter()
+            .filter(|n| join.is_none_or(|j| j.network != n.id))
+        {
+            count = count.saturating_add(unlinked(&n.id, n.runs()));
+        }
+        if let Some(j) = join {
+            let runs = j
+                .members
+                .iter()
+                .map(|&(_, at)| at)
+                .filter(|&at| at != j.address)
+                .collect();
+            count = count.saturating_add(unlinked(&j.network, runs));
+        }
+        count
+    }
+
     /// A run's place on a network shared by runs and its members, whole (`NET_JOIN`, D285):
-    /// taken where it keeps clear of the guest's other addresses and the process has a
+    /// taken where it keeps clear of the guest's other addresses and the process holds a
     /// descriptor for each link it still needs; then each link to an address no other run's
     /// member is at dropped, and each flow its grants, their peers where the members now are,
     /// no longer admit ended. An error for a malformed one.
@@ -2482,19 +2538,10 @@ impl<'r> Stack<'r> {
             return Ok(Err(refused));
         }
         // A link to come for each other run's address is a descriptor as its message comes:
-        // one its message lost for want of one would end this control (MSG_CTRUNC), so none
-        // is asked past them.
-        let runs: std::collections::HashSet<Ipv4Addr> = join
-            .members
-            .iter()
-            .map(|&(_, at)| at)
-            .filter(|&at| at != join.address)
-            .collect();
-        let to_come = runs
-            .into_iter()
-            .filter(|&at| self.link_of(&join.network, at).is_none())
-            .count();
-        if sys::descriptors_left(control, to_come) < to_come {
+        // one its message lost for want of one would end this control (MSG_CTRUNC), so each is
+        // held from now until its message is read (`sys::reserve`), and none is asked past
+        // them.
+        if !sys::reserve(control, self.links_to_come(Some(&join)), &mut self.reserved) {
             return Ok(Err(shared::Refusal::NoDescriptors));
         }
         let id = join.network;
@@ -2668,7 +2715,7 @@ impl<'r> Stack<'r> {
     /// A frame from link `i` of a network shared by runs (D285), to the guest only as a flow
     /// both ends grant ([`shared::Packet::linked`]): its flow's, or the first of one the
     /// guest's ingress takes; from the gateway's MAC, as a routed frame comes.
-    fn from_link(&mut self, i: usize, mut frame: Vec<u8>) {
+    fn frame_from_link(&mut self, i: usize, mut frame: Vec<u8>) {
         let crossed = match self.peers.get_mut(i) {
             Some(Some(peer)) => {
                 let from = peer.ip;
@@ -3654,6 +3701,7 @@ mod tests {
             next_link: 1,
             names: None,
             joined: shared::Networks::default(),
+            reserved: Vec::new(),
             #[cfg(target_os = "linux")]
             ports_confined: false,
             ceiling: None,

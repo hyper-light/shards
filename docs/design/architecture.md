@@ -22069,8 +22069,8 @@ would meet the flow kept in zone 0.
   fails the change (the built-in's exit 1, as its other failures), told again, done again
   whole.
 - *Not* a raw chain of the shared networks' own, always on (ROOT): it would cost every packet
-  that comes in; this costs a chosen port's packets two comparisons more, and a holder's
-  answers one for each shared network.
+  that comes in; this costs a chosen port's packets one comparison more (a new flow's first, one
+  more in `chosen`), and a holder's answers one for each shared network.
 - *Tests* (written, not run): links `the_chooser_takes_eth0s_own_address_alone` (each rule of
   the chains, with and without a shared network), chooser
   `a_shared_networks_subnet_is_told_and_answered` (the message both ways; init's wait ended
@@ -22079,9 +22079,10 @@ would meet the flow kept in zone 0.
   on Linux x86_64 and aarch64; this entry's real-VM tests again, every chosen flow now matched
   to eth0's address (`cargo test -p shards --profile test-release --test build --
   a_port_comes_in_to_the_member_listening_on_it a_udp_flow_goes_to_its_ports_next_holder
-  each_agent_answers_the_port_its_expose_names`); and, once D285's slice 4 lands, a member
+  each_agent_answers_the_port_its_expose_names`); and, with D285's slice 4 on main, a member
   granted in on a shared network on a UDP port its `EXPOSE` contests, answered there whether
-  or not it holds the port, and a holder's answers to eth0's own clients still in its zone.
+  or not it holds the port, and a holder's answers to eth0's own clients still in its zone
+  (slice 6's real VMs, no test yet).
 
 **Each port its own holder (network-06, 2026-11-14).** A contest had one holder for
 its whole range, chosen where it listened on any port of it: with web listening on
@@ -39160,7 +39161,7 @@ per change is ROOT's to measure (R14).
   - Real VM, owed (ROOT; HVF, KVM, WHP): api_image.rs
     `an_agents_volume_refuses_writes_past_its_bound`.
 
-### D285. Networks shared by runs: a member of one microVM reaches a member of another on a named network, each flow granted at both of its ends (designed 2026-11-16; slices 1 to 3 and 5, a network's leases held across processes, the daemon's runs on them, the network process's switch and the guest's side, built; slices 4 and 6 owed)
+### D285. Networks shared by runs: a member of one microVM reaches a member of another on a named network, each flow granted at both of its ends (designed 2026-11-16; slices 1 to 5, a network's leases held across processes, the daemon's runs on them, the network process's switch, the API, wire and run host, and the guest's side, built; slice 6 owed)
 
 **Asked.** The person's live changes, with no rebuild or restart (kiln plan 01a1dd2e… P6b.1, its
 third criterion; kiln goal 394cd57a): "Connect and disconnect a member (harness, agent, MCP server)
@@ -39326,7 +39327,8 @@ join until 4 and 5 have landed):
    leases (their holder the run host, its run's ID a microVM ID's form), its network process's and
    its guest's asks; shards-api's pairings and each run host's links socket; a network made
    beforehand, with `network create`'s pool and words (`Networks::create`), never by a join. The
-   image channel's version one past main's at landing (43 over today's 42).
+   image channel's version one past main's at landing (built: version 50, *Slice 4, built* below;
+   `AddressTaken` arises from no join, which asks no address; `Networks::create` is not built).
 5. *The guest*: a built-in (26, the next free at landing), `join` and `leave` of a member: eth0's
    second address and a route to the network's subnet from it, set as `address=` sets eth0's;
    init's translation of the member's flows to that subnet from that address, its gate letting out
@@ -39354,17 +39356,22 @@ join until 4 and 5 have landed):
   process's few file operations.
 - *A pairing*: none → (tried, exclusive) **paired**: this process links the network's members →
   (dropped: its last member left, or the process ended) none; a try another holds:
-  `PairedElsewhere`.
+  `PairedElsewhere`. An orchestrator's (slice 4): held shared by its run hosts, each from its run's
+  first member's join to its last's leaving (`pair_as`), the orchestrator's process linking them;
+  none while the daemon or another orchestrator's run host holds it.
 - *A network*: **kept** while no lease of it lives and no process pairs it, **in use** while one
   does; removed only kept: its record and its leases, under the home's lock.
-- *A member's join* (slice 4): asked → leased (its run's address, taken or its run's already, and
-  its name) → told (its network process answered `NET_JOIN`) → linked (each other run on the
-  network paired, `NET_PEER` answered at both ends) → granted (its guest's built-in answered) →
-  **joined**; a failure undoes the steps before it in reverse, its refusal naming the step.
-  **joined** → leaving (its guest first: its gate shut, its open flows reset; then `NET_LEAVE`, its
-  run's last member's dropping the run's links; then its name, and the last member's, its run's
-  address) → none. A run's end lets every lease go with its host and every link with its network
-  process; shards-api tells the network's other runs their names without it.
+- *A member's join* (slice 4, as built): asked → leased (the network's pairing and its run's
+  address, taken or its run's already, and its name) → told (its network process answered
+  `NET_JOIN`) → granted (`NET_PEER_GRANT` answered, then its guest's `SHARED`) → **joined**; then,
+  the run new to the network, linked (each other run of its orchestrator's on it told its members
+  again, then a link handed to both, `NET_LINK` answered at both ends); a failure undoes the steps
+  before it in reverse, its refusal naming the step. **joined** → leaving (its guest first, `SHARED`
+  without it: its gate shut, its open flows reset; then `NET_PEER_GRANT`; then `NET_JOIN` without
+  it as its name goes, or, the run's last member's, `NET_LEAVE`, dropping the run's links, as its
+  address and pairing go) → none. A run's end lets every lease go with its host and every link
+  with its network process; shards-api tells the network's other runs their names without it at
+  the network's next change.
 - *A flow* (slice 3), per link: none → (its first packet admitted: a TCP SYN or a UDP datagram, its
   sender's grant and its receiver's both taking it, each at its own end) **open** → (a TCP RST, or a
   FIN each way) none; **open** → (idle past its timer) none; its link dropped, every flow of it
@@ -39500,7 +39507,7 @@ of that day: ROOT builds and runs it). `crates/net/src/shared.rs`, with its seam
   to count its own and `F_DUPFD_CLOEXEC` is among its seccomp filter's calls; on Windows from the
   2^24 handles a process may hold (Microsoft, "Kernel Objects") past those it holds. A check, not a
   reservation: a flow past the microVM may take a descriptor first, and the link's message then
-  ends the control (MSG_CTRUNC).
+  ends the control (MSG_CTRUNC). Made a reservation by slice 4 (*Slice 4, built*).
 - *Unmeasured* (R14, ROOT's): the cost per flow and per link; a join's relinking, links times
   members; the descriptor probe's, a duplicate and a close for each link to come.
 
@@ -39592,8 +39599,12 @@ that day: ROOT builds and runs it). abi `run::shared` and `builtin::SHARED`; sha
   so the change told again does it whole; a run's end takes everything with its guest.
 - *Open* (ROOT's): slice 3's `Join` takes each name once and as a host's (`dns::host_name`), where
   this takes Docker's names with `_` and `.` and shared aliases (ROOT's decision for slice 4), so
-  slice 4's wire carries both to the guest and its network process must take aliases as this does;
-  an empty `shared-in` on every run with an uplink, one more NAT chain a new flow's first packet passes,
+  slice 4's wire carries both to the guest and its network process must take aliases as this does
+  (closed by slice 4: its `Join` takes them so);
+  a UDP port that both a grant in and a contested `EXPOSE` (D122) give was tracked in the chooser's
+  zone (`chosen-zone`, which read no address), so its replies might miss their translation (closed
+  by D122's amendment of 2026-11-16: the chooser takes eth0's own address alone); an empty
+  `shared-in` on every run with an uplink, one more NAT chain a new flow's first packet passes,
   unmeasured (R14); IPv6 comes after (`Ipv6`, slice 4).
 
 **Tests** (slice 5, light; written, not run). abi `run::shared`:
@@ -39609,6 +39620,97 @@ links:: egress::` on Linux x86_64 and aarch64, as D278's init tests run; `script
 targets (init's Linux code through its musl targets); D278's `a_lost_flow_is_found_and_named_exactly`
 and `grants_as_a_run_starts_join_its_links` again (`reset` and `at_start` changed); slice 6's real
 VMs once slice 4 lands.
+
+**Slice 4, built** (lane xnet-s4, 2026-11-16; written, neither built nor run, by the person's word of
+that day: ROOT builds and runs it). shards-api `image::wire`, `ImageGuest::{connect, disconnect}`
+and `image::session::links`; the run host's `connect_live`, `disconnect_live`, `link_live` and
+`rejoin_live` (api_run.rs); `networks::leases`; the net crate's `shared.rs` and `sys::reserve`.
+- *The API*: `ImageGuest::connect(member, network, &NetworkGrant, patience)` and `disconnect(…)`,
+  kiln's `Change::Connect` and `Disconnect` one to one (`NetworkGrant { name, peer, proto, first,
+  last, way }`, kiln's `ports.udp` its `proto`), each answered with the run's places on shared
+  networks (`OnNetwork`: the network's name and ID, the run's address there, each of its members
+  by index, name and grants). Checked before anything is asked (`NetworkGrant::refused`: names of
+  Docker's grammar, its peer not its own name, ports from 1, the first not past the last; a member
+  that runs). Default methods refuse `Unsupported`, so that Hex's own `ImageGuest`s build
+  unchanged until they take them.
+- *The wire* (image channel 50, main's 49 at landing plus one): `NetChange::Connect` (4: member,
+  network, grant and the pairer's token), `Disconnect` (5), `Link` (6: the network's ID, the peer's
+  address, on Windows the socket's protocol info) and `Rejoin` (7: the network's ID);
+  `NetRefusal::NoSuchNetwork` (7), `NameTaken` (8), `Exhausted` (9), `PairedElsewhere` (10), `Ipv6`
+  (11), `Grant` (12) and `Overlaps` (13: the guest's `SHARED_OVERLAPS`, the network process's
+  `Overlaps`); `NetChanged::networks`. A grant held already is done already, as is one taken
+  back that is not held, so that a caller that lost an answer asks again safely.
+- *Linking* (decision 4): the orchestrator's process holds the channel of each of its run hosts,
+  so it links each two of its runs on a network, a stream pair as D46's `NET_PEER`'s, each end
+  handed to a host, which hands it to its network process (`NET_LINK`): on Unix on the host's
+  links socket, its descriptor 3 (`wire::LINKS_FD`, the first past the standard streams) given it
+  at its start with `--links`, which it takes before it opens any descriptor, and only a socket;
+  on Windows within the `Link` ask, shared with the host's process (`shards_ipc::share_socket`,
+  WSADuplicateSocketW, PM M203). One change of a shared network at a time in the process: its
+  run's host asked; each other run of the process's on the network told its members again
+  (`Rejoin`); then, the run new to it, a link made with each. A run that has ended is let go of at
+  its network's next change: its link ended with its network process, so nothing reaches it, its
+  name answered meanwhile.
+- *Pairing across processes* (`Leases::pair_as`): an orchestrator's run hosts hold a network's
+  pairing together, each a lease `pairers/HOLDER` saying its orchestrator's token, refused
+  `PairedElsewhere` while the daemon pairs the network or another orchestrator's run host holds
+  it; the daemon's `pair` is refused while one is held, and a network so paired is in use. The
+  token is 64 lowercase hex digits, 256 bits of std's `RandomState` seeded from the OS's random
+  source, a microVM ID's form so that it names no path.
+- *The run host*: its run's first member on a network: under the home's lock, the network found
+  (`Ipv6` refused), its pairing, its address (the lowest free, its holder's ID made once, a microVM
+  ID's form) and the member's name leased; the lock let go; `NET_JOIN` whole, `NET_PEER_GRANT`, then
+  its guest's `SHARED` whole (slice 5's wire). Another member: its name leased, then the same. A
+  grant more: `NET_PEER_GRANT`, then `SHARED`, the network process's put back where the guest
+  refuses (D278's order widening). A grant taken back: `SHARED` first (its run's last member's,
+  `args_off`), then `NET_PEER_GRANT`, then `NET_JOIN` without the member, or `NET_LEAVE` (D278's
+  order narrowing). `Rejoin`: `NET_JOIN` whole, then `SHARED` whole, whose names its gates and
+  resolver hold its members' peers by. `Link`: its socket taken and checked against the ask's
+  network and peer, then `NET_LINK`. Each grant is held within its member's image and ceiling
+  before anything is told (`grant_past`, ROOT's decision), as its guest holds it again. Refusals
+  typed: the leases' by their cause; the guest's by its exit status (13 `Widening`, 2 `Unknown`, 98
+  `Overlaps`, else `Network`); the network process's `Overlaps` as `Overlaps`, its others `Network`.
+- *Names by Docker's rules* (ROOT, 2026-11-16): a lease of a member's name is one member's
+  (`name/@NAME`), of an alias shared (`alias/@NAME/A.B.C.D`, one for each address answering to it),
+  each of the grammar `shards_abi::run::shared::name_ok` (Docker's `[a-z0-9][a-z0-9_.-]*`
+  lowercased, at most 253 bytes, slice 5's) with no last `.`, which Windows drops from a file's
+  name. The network process's table takes them so (slice 3's `Join` and `decode_grant`): each name
+  at an address once, a name at several addresses an alias, names before aliases so that an
+  address's PTR answers a member's; a grant's peer a name or an alias at the link's address. Told
+  as the home's leases hold them, names then aliases, each of that grammar at an address of the
+  network's subnet, so that no lease of another's making has a join or the guest's built-in
+  refused as malformed. The API makes no alias (kiln names none); the daemon's names may take them.
+- *Descriptors* (slice 3's gap): the network process holds a descriptor for each link its joins
+  still need (`sys::reserve`, duplicates of a live control's socket), from the join that counts it
+  until a control message is read, when they are let go so that a link's socket comes into one,
+  then held again; a join that cannot hold them all is refused `NoDescriptors`. The process reads
+  its controls and opens flows on one thread, so no flow takes one meanwhile; none is a duplicate
+  of a control that has ended, which it would keep from its sender's end.
+- *Literals* (R03): the channel's 50, main's 49 plus one; `LINKS_FD` 3, the first descriptor past
+  the standard streams (POSIX's 0 to 2); the token's 64 hex digits, slice 1's ID form. Nothing
+  else: names' 253 bytes are slice 5's `HOST_MOST`.
+- *Not built*: `Networks::create` of shards-api's own (a network is made through the daemon's
+  `network create` until it is); `AddressTaken` (no join asks an address).
+- *Unmeasured* (R14, ROOT's): a connect's round trips (its host's leases, `NET_JOIN`,
+  `NET_PEER_GRANT`, its guest's exec, then each other run's `Rejoin` and each link's two asks); the
+  reservation's duplicates, one per link to come at each control message.
+
+**Tests** (slice 4, light; written, not run). image wire: `network_changes_and_their_answers_cross_the_channel`
+(version 50's changes, answers and refusals), `a_shared_networks_grant_is_refused_as_kiln_refuses_one`;
+image session `links`: `this_processs_token_is_an_ids_form_and_its_own`,
+`a_networks_runs_are_linked_until_they_leave_or_end`; api_run (Unix):
+`a_members_grants_on_a_shared_network_lease_join_grant_link_and_leave` (a stand-in network
+process and VM); leases: `an_alias_is_answered_at_every_address_that_holds_it`,
+`an_orchestrators_run_hosts_share_a_pairing_no_other_process_takes`,
+`a_name_is_held_once_on_a_network_whatever_its_case` (Docker's names); net:
+`sys::tests::a_reservation_holds_what_is_wanted_and_lets_the_rest_go`, shared.rs's
+`joins_grants_links_and_answers_read_back_as_written` (Docker's names, aliases). Owed (ROOT):
+`cargo test -p shards-api --profile test-release image::`; `cargo test -p shards --bin shards
+--profile test-release -- networks::leases api_run::hosted::tests::a_members_grants`; `cargo test
+-p shards-net --profile test-release shared sys` (and its lib tests, its `control` changed); on
+macOS, Linux (glibc and musl) and Windows (the links' Windows arm: cargo-xwin, jupiter);
+`scripts/lint` on the seven targets; slice 6's real VMs, api_image.rs
+`members_of_two_runs_reach_each_other_on_a_shared_network_only_as_granted`.
 
 **Amended (lane xnet-s5b, 2026-11-16, ROOT's decisions on slice 5's open items).**
 - *A UDP port both a grant in and a contested `EXPOSE` give*: the chooser's chains, which took a
