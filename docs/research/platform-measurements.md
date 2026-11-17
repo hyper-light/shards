@@ -26269,7 +26269,33 @@ the counts are a process's, not a thread's. n is one run of each child.
   directory's length (100, 140, 160, 180, 200, 220, 240, 250, 256, 260, 280 and 300 bytes) in
   its container's own Temp (GetAppContainerFolderPath's); then the profile is deleted and looked
   for again. This process sweeps the same lengths unconfined.
-- **Found.** Owed: the runs.
+- **Found** (whp-run 44151837565 at 8891e1cb73, 2026-11-17: windows-2022, image 20261112.366.7,
+  Windows Server 2022 10.0.20348 build 5870; windows-2025, windows-2025-vs2026 20261103.298.1,
+  Server 2025 10.0.26100 build 33674; alike on both):
+  - *Where the profile is.* The user's own `LOCALAPPDATA` (CreateEnvironmentBlock's) was
+    `C:\Users\runneradmin\AppData\Local`, as this process's own was. Under each `LOCALAPPDATA` (this
+    process's own; a short stand-in, 53 bytes; one as long as r769's, 133), the profile's
+    folder was made beneath the user's own: GetAppContainerFolderPath said
+    `C:\Users\runneradmin\AppData\Local\Packages\<profile>\AC` each time, its Temp there, and
+    beneath a stand-in none.
+  - *The child's Temp.* The confined child's `LOCALAPPDATA`, `TEMP` and `TMP` were beneath the
+    `LOCALAPPDATA` it was given: under a stand-in, `<stand-in>\Packages\<profile>\AC\Temp` (89
+    and 169 bytes), not there. A pair there, made as `shards_afunix` makes one: its bind refused
+    10050 (WSAENETDOWN), as a pair's where no directory is was, in every case; with the whole
+    path in `sun_path`, 10050 (96 bytes), or past `sun_path` (176). Under this process's own its
+    Temp (70 bytes) was there: the pair bound, connected and accepted, as the whole path's did
+    (77 bytes).
+  - *The controls' length.* In its container's own Temp the child's pairs bound, connected and
+    accepted through directories of 100, 140, 160, 180, 200, 220, 240, 250 and 256 bytes; at 260,
+    280 and 300 bytes the listener's control was refused, 10055 (WSAENOBUFS). Unconfined, the same.
+    257 to 259 bytes unmeasured.
+  - *Deletion.* Each profile deleted as its container dropped, under the `LOCALAPPDATA` it was
+    made under: its folder gone beneath both; deleted again under this process's own, S_OK.
+- **Decided** (D141). r769's VM process failed for a Temp that was not there, not for a length
+  (its directory, 160 bytes, binds here). A confined child is given the `LOCALAPPDATA` its
+  profile's folder is beneath (`shards_ipc`'s `profile_local_app_data`): this process's where the
+  folder is there, else the user's own. The controls' cutoff (256 bytes taken, 260 refused) is
+  said by `shards_afunix`'s refusal, the directory's length beside the 256, and in D141.
 
 ### M616. The Firecracker comparison's restores and fleets: one snapshot a run is one draw (D36; vm-text 44076339609 and 44138427198)
 

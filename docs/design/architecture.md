@@ -20445,7 +20445,9 @@ its network the network process's (D142).
   no child in an AppContainer, and points it at the container's own folder, the child's
   `TEMP` at the `Temp` there; without `SystemRoot` Winsock makes no socket
   (WSAEPROVIDERFAILEDINIT). A Windows child had its spawner's whole environment until now
-  (D141).
+  (D141). A confined child's `LOCALAPPDATA` is the one its profile's folder is beneath:
+  this process's where it is there, else the user's own, which a caller may have set this
+  process's apart from (D141's amendment of 2026-11-17, PM M615).
 
 ### D142. The network process on Windows
 
@@ -20507,8 +20509,8 @@ on Windows as on Linux and macOS.
   (`shards_netring::socket_doorbell`), its control and a peer's link are AF_UNIX, made by
   `shards_afunix`, and every socket bound or connected by path is told its directory by
   afunix.h's parent-path controls, as D141's amendment says: the directory as UTF-8, the
-  address its file name alone, so that no directory's length refuses one, an AppContainer's
-  Temp beneath a long `LOCALAPPDATA` among them. ProcessSocketNotifications, which it waits
+  address its file name alone, so that a directory past `sun_path` is taken, up to the 256
+  bytes the controls take (PM M615; D141). ProcessSocketNotifications, which it waits
   on, is documented from "Windows 10 Build 20348" (Microsoft's sdk-api,
   `nf-winsock2-processsocketnotifications.md`, 8f2547f96c), the build of the controls' oldest
   host measured, Windows Server 2022's 20348.5870: shards' Windows floor (D141). What the
@@ -20617,7 +20619,8 @@ was built on [PM M200-M203]:
   parent-path control before its bind (`SIO_AF_UNIX_SETBINDPARENTPATH`) or its connect
   (`SIO_AF_UNIX_SETCONNPARENTPATH`), the directory absolute and as UTF-8 with its NUL, its
   address the file name alone (`shards_afunix`'s `Place`). Only a file name past 107 bytes is
-  refused, naming its path; a pair's directory may be as long as Windows' paths are.
+  refused, naming its path; a pair's directory may be as long as the controls take one, 256
+  bytes measured (below).
   - *Sources.* Microsoft's "AF_UNIX comes to Windows" (the WSL team, 2017-12-19): AF_UNIX from
     Insider build 17063, `sun_path` "a Win32 UTF-8 file system path", no socketpair; it names
     no parent-path control. The Windows SDK 10.0.26100's `shared/afunix.h`
@@ -20660,7 +20663,49 @@ was built on [PM M200-M203]:
     file in the long directory fails. With it, a WHP boot under a long `LOCALAPPDATA`
     (`api_image`), as r735's: the probe ran outside any AppContainer, so the controls inside
     one are first exercised there, and by every Windows VM test, each of whose pairs now goes
-    this way.
+    this way. Run on jupiter (ROOT's r769, r777): the unit test green, red as above, its
+    mutation failing as above; the boot under the user's own `LOCALAPPDATA` passed, and under
+    the long one failed for its Temp (below).
+- **Its Temp where `LOCALAPPDATA` is set apart** (2026-11-17; ROOT's r769 and r777, PM M615).
+  r769 booted a VM at 0e7773c19c (`api_image`) with its spawner's `LOCALAPPDATA` a stand-in
+  (`C:\Users\corph\.cache\w1-long\`, 40 a's, 40 b's, `AppData\Local`), as kiln's runner homes set
+  one (kiln's `tests/vm_e2e/mod.rs` and `tests/common/mod.rs`, with `USERPROFILE` and `APPDATA`):
+  its VM process ended at its first socket pair, refused WSAENETDOWN (10050); r777, the same
+  boot under the user's own, passed. Windows makes an AppContainer's profile folder beneath the
+  user's own LocalAppData whatever the spawner's `LOCALAPPDATA` says (M615: GetAppContainerFolderPath
+  named it there under each stand-in; Microsoft: CreateAppContainerProfile's folders "can be
+  accessed by calling SHGetKnownFolderPath", and GetAppContainerFolderPath's path is "the same
+  path that you would get by calling the SHGetKnownFolderPath function with
+  FOLDERID_LocalAppData"), while it points the child's `TEMP` at
+  `<LOCALAPPDATA>\Packages\<profile>\AC\Temp` of the `LOCALAPPDATA` it is given (M208): beneath a
+  stand-in, a Temp that is not there, where a bind is refused 10050, as one where no directory
+  is (M615). Now a confined child is given the `LOCALAPPDATA` its profile's folder is beneath
+  (`shards_ipc`'s `profile_local_app_data`): this process's where the folder is there (every
+  host whose `LOCALAPPDATA` is the user's own, unchanged), else the user's own as Windows makes
+  the user's environment (CreateEnvironmentBlock for the spawner's token, none of its
+  variables), else refused, naming both. kiln's homes set `USERPROFILE` with `LOCALAPPDATA`;
+  where Windows then makes the folder is unmeasured, and the child is given whichever holds it.
+  An unconfined child keeps the spawner's `LOCALAPPDATA`, and one a caller gives explicitly
+  wins. And a bind or connect `shards_afunix` is refused says its path and its call, which
+  r769's did not ("A socket operation encountered a dead network").
+  - *The controls' length* (M615, confined and not): a directory of 100 to 256 bytes was taken,
+    and bound, connected and accepted; one of 260, 280 or 300 bytes was refused at the control,
+    WSAENOBUFS (10055); 257 to 259 unmeasured. `shards_afunix` sets no bound of its own: a
+    directory the controls refuse is said with its length beside the 256 bytes measured taken.
+    A confined child's Temp beneath the user's own was 70 bytes on CI's runners.
+  - *Profiles left behind.* A profile's folder is beneath the user's own LocalAppData, wherever
+    the spawner's `LOCALAPPDATA` points, and goes with the profile: deleted as its VM ends
+    (`AppContainer`'s drop), under a stand-in too (M615). A spawner killed leaves its profile to
+    the next spawner's sweep of the same records (`<cache>\containers`, its `SHARDS_CACHE`'s or
+    its `LOCALAPPDATA`'s), or to Hex's release; a home removed before either leaves the profile
+    and its folder in the user's own LocalAppData, as it did before this amendment.
+  - *Tests.* `shards_ipc` `a_child_is_given_its_variables_and_what_windows_needs_alone` and
+    `a_confined_child_is_given_the_local_app_data_its_profile_is_beneath`; `shards_afunix`
+    `a_refused_bind_or_connect_says_its_path`; `confined.rs`
+    `a_vm_boots_under_a_stand_in_local_app_data`, a direct boot to its kernel's panic with its
+    spawner's `LOCALAPPDATA` a stand-in: red at 0e7773c19c, as r769, green here. Unrun in its
+    lane, owed on jupiter with r769's boot, kiln's shape and a look for profiles left behind.
+    What CreateEnvironmentBlock costs a spawn that asks it is unmeasured.
 
 Tested on real VMs (`the_vm_process_is_confined`): the VM process's token is an
 AppContainer's, it is in a Job, each mitigation is on, dynamic code forbidden once its guest
