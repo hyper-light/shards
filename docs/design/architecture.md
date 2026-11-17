@@ -1761,6 +1761,20 @@ removes it; `--rm` removes it once it ends.
     found from the code: `wait` registers its waiter, and `rm` wakes it, both under the
     registry's lock, and a pending run learns of its cancel as a VM comes for it (`commit`).
     Owed (ROOT): the three gated tests on Linux and macOS, and the next red's dump.
+  - *The stop, 2026-11-17 (ci-read-5, kiln goal b2124227).* On x86_64 gnu CI at f6ad71083
+    (run 43990298220, job 133729067961) `a_stopping_daemon_starts_no_pending_run` ran from
+    about 01:27:36 to its step's limit at 01:50:18, undumped; the other 164 of containers.rs
+    ended, and it passed in the same run on arm64 gnu and musl. Its run's client had ended (the
+    watcher takes such a client at 40 s), so the wait that never ended was `daemon stop`'s.
+    That wait was cold (no record of its kind on a fresh runner; CI keeps records only from a
+    passing job, D261), so it followed its party's liveness alone (D209), and the watcher
+    passed over every command line holding `shards daemon`, the stop client's too. The watcher
+    now passes over a daemon's own command lines alone (`shards daemon`, `--detached`,
+    `--ready`), and finds a home's daemon among them, not the stop client that works in the
+    home too. No cause of the stop's hang was found from the code: a stopping daemon refuses a
+    claim waiting for a VM (`claim`), and SIGTERMs its starting VMs as it finishes. Owed
+    (ROOT): the next red's dump, or `--test containers -- --exact
+    a_stopping_daemon_starts_no_pending_run` in a loop on x86_64 KVM with the watcher beside it.
 - **Commands** (`crates/shards/src/daemon/commands.rs`), answering with dockerd's and the
   CLI's words:
   - A microVM is named by its ID, its name, or the start of its ID and of no other's

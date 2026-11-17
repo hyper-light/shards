@@ -25869,3 +25869,30 @@ the counts are a process's, not a thread's. n is one run of each child.
   yet: the person's rule of 2026-11-16 leaves every build and test to ROOT.
 - **Numbers.** Owed (ROOT runs it): on HVF and KVM, the plan's two backends; and on WHP, where
   `vm::restores_here()` says snapshots restore.
+
+### M613. CI's arm64 Windows lane: its build of the tests outgrew its tests' step (M423, M560; CI 43990298220)
+
+- **Question.** Main's CI at f6ad71083 (run 43990298220) cut arm64 Windows' tests' step at its
+  35 minutes, as it had cut it in every run since 2026-11-16 (43876891053, 43926955660,
+  43968984258). Hung tests, or a step too short for what it now holds?
+- **Method.** `docs/research/measurements/ci-limits/limits.py CACHE RUNS` over the nine main
+  runs at the top of runs.txt (2026-11-12 to 2026-11-17). It now splits arm64 Windows' step as
+  it splits x86_64 Linux's, at cargo's `Finished` line (or the tests' own build step where a
+  job has one), takes a step as run out where GitHub's annotation of its job says so (the
+  limits changed within runs.txt's span: M420, M423), and counts a job cancelled at its own
+  limit by the steps it finished.
+- **Found.** Building the tests on windows-11-arm: n 9, p50 21.1, max 30.8 minutes (20.3 to
+  21.1 on 2026-11-12; 27.7, 28.2, 27.8 and 30.8 since). Running them: n 5, p50 11.8, max 12.1,
+  all of 2026-11-12; the four runs since ran out in the shards binary's unit tests, 4.3 to 7.4
+  minutes after their build, where the rest took 11.8 to 12.0 in the runs that ran through: a
+  step of 46.9 to 47.2. The job's other steps: max 17.1 in the run cut at the job's 52 (its
+  last step cut too); each step's slowest summed, 18.3 (lints 10.9, release's stack guards 2.4,
+  zig 2.3, the host's check 1.5). Beside it, the other native jobs' other steps reached 14.1
+  (macOS), 17.1 (windows-2025) and 16.3 (windows-2022), past the 13.0 and 16.1 of M420.
+- **Decided.** As M560 did for the musl job: arm64 Windows builds the tests in a step of its
+  own (`Build the tests`, ci.yml's `build_minutes`), 42 minutes, a third above 30.8. Running
+  them keeps the 35: M423's limit of a step that built them too, so it bounds them from above,
+  as their own slowest since is unmeasured. Its job 102 (42, 35 and a third above 18.3). The
+  native jobs' default job limit 75 (56 and a third above macOS' 14.1); windows-2025's job 145
+  (122 and a third above 17.1). limits.py derives them again as runs gather: running the tests
+  on windows-11-arm, once runs run them through, sets their own limit.
