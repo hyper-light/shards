@@ -164,52 +164,67 @@ fn until_of(path: &str) -> Option<SystemTime> {
     SystemTime::UNIX_EPOCH.checked_add(Duration::from_secs(secs))
 }
 
+/// Whether `conn` has something to read, or has ended, within `wait`, so that a read then
+/// does not wait: poll(2)'s answer, its wait in whole milliseconds rounded up so that it
+/// never ends before its time, as the daemon's own `readable_within` waits; on Windows its
+/// pipe's (`shards_ipc::Stream::wait_readable`). It sets no option of the socket's. macOS
+/// refuses any, EINVAL, once its peer has closed, though what the peer sent first is still
+/// to be read. That is how ROOT's r664 (HVF) failed: an exec's whole answer and its close
+/// came between a look that found nothing and the read's timeout being set.
+fn readable_within(conn: &UnixStream, wait: Duration) -> std::io::Result<bool> {
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsRawFd as _;
+        let mut polled = libc::pollfd {
+            fd: conn.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let ms = i32::try_from(wait.as_nanos().div_ceil(1_000_000)).unwrap_or(i32::MAX);
+        loop {
+            // SAFETY: poll(2) of one pollfd of ours, whose descriptor `conn` holds open.
+            let ready = unsafe { libc::poll(&raw mut polled, 1, ms) };
+            if ready >= 0 {
+                return Ok(ready > 0);
+            }
+            let e = std::io::Error::last_os_error();
+            if e.kind() != std::io::ErrorKind::Interrupted {
+                return Err(e);
+            }
+        }
+    }
+    #[cfg(windows)]
+    {
+        conn.wait_readable(None, std::time::Instant::now().checked_add(wait))
+    }
+}
+
 impl Read for Patient {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         // What its daemon has sent already is read without waiting: no answer waited for,
         // which would teach its kind a W* of one read (#77: engine.rs' `head`, refused "its
         // daemon made no progress" by a kind such reads taught).
-        self.conn.set_nonblocking(true)?;
-        let read = self.conn.read(buf);
-        self.conn.set_nonblocking(false)?;
-        match read {
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
-            read => return read,
+        if readable_within(&self.conn, Duration::ZERO)? {
+            return self.conn.read(buf);
         }
         // Until the end its asker gave the answer, its daemon owes it nothing: what comes
         // before then is read as it comes, unjudged, and teaches its kind nothing (D209).
         let left = self
             .due
             .and_then(|due| due.duration_since(SystemTime::now()).ok());
-        if let Some(left) = left.filter(|left| !left.is_zero()) {
-            self.conn.set_read_timeout(Some(left))?;
-            match self.conn.read(buf) {
-                Err(e)
-                    if matches!(
-                        e.kind(),
-                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                    ) => {}
-                read => return read,
-            }
+        if let Some(left) = left
+            && readable_within(&self.conn, left)?
+        {
+            return self.conn.read(buf);
         }
         let mut patience = common::Patience::awaiting(&self.home, self.site, self.part.awaited());
         loop {
-            let left = patience.next_look();
-            if !left.is_zero() {
-                self.conn.set_read_timeout(Some(left))?;
-                match self.conn.read(buf) {
-                    Err(e)
-                        if matches!(
-                            e.kind(),
-                            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                        ) => {}
-                    read => {
-                        if read.is_ok() {
-                            patience.done();
-                        }
-                        return read;
-                    }
+            if readable_within(&self.conn, patience.next_look())? {
+                let read = self.conn.read(buf);
+                if read.is_ok() {
+                    patience.done();
                 }
+                return read;
             }
             if !patience.holds() {
                 return Err(std::io::Error::new(

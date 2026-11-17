@@ -25455,13 +25455,174 @@ as its archive held them: `out/` (each process), `run.log`, `carrier.log`, `smok
 `looks.log`, `kiln.log` (empty: no line matched) and both builds' logs. The archive's SHA-256 is
 56850adbdf314599e1ef068ed3fee009c7e27924ef7f76d6d12d9fc294f61a6f.
 
+Numbers on HVF, B alone: this entry's own command at B, ROOT's run r666, 2026-11-17 02:40Z.
+- The same Studio and macOS. B is 26c1ea5df.
+- Run from kiln by the carrier's `bash run.sh costs` (54dee80), through `launchd-run.sh`, in one
+  process: `SHARDS_IMAGE_COST_N=100`, so n=100 of each kind. Its starts took 71 s.
+- The condition as the run recorded it: nice 10, priorities 20, 31 and 97, the VM threads at 31
+  and 97 (no QoS clamp). kiln's log had no line on its job or on headroom.
+- Load 1.94 before it, with 12.06 of the 14 CPUs idle (8 asked), and 2.66 at its one look.
+
+The `MEASURED IMAGE START` lines; ms, p50 / p90 / p99 / max:
+
+| kind | boot | first output | stop |
+|---|---|---|---|
+| Booted | 72.404 / 74.629 / 76.385 / 79.742 | 74.954 / 77.454 / 79.629 / 80.185 | 1.543 / 1.625 / 1.914 / 4.289 |
+| Saved | 194.127 / 201.597 / 206.500 / 207.166 | 202.145 / 210.052 / 215.150 / 215.585 | 2.053 / 2.173 / 7.115 / 12.409 |
+| Restored | 18.233 / 19.951 / 20.612 / 22.350 | 23.409 / 25.145 / 25.717 / 26.404 | 1.491 / 1.628 / 1.899 / 3.801 |
+| Warm | 0.272 / 0.351 / 0.407 / 0.573 | 5.328 / 5.835 / 6.181 / 6.371 | 1.636 / 1.799 / 4.853 / 5.220 |
+
+Where one start of each kind spent its time: r666's timed phase pass, one start a kind (n=1), the
+differences of its lines' times. Its spread is unmeasured here; r644's logs hold ten such passes
+of B a kind. ms:
+
+| kind | run host up | image prepared | microVM shaped | security made | to launching | VM spawned | to `READY` | to the boot's answer | to `STARTED` | to first output |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Booted | 1.548 | 0.829 | 1.095 | 6.077 | 0.124 | 0.217 | 64.340 | 0.267 | 2.338 | 0.199 |
+| Saved | 1.687 | 0.919 | 1.014 | 5.589 | 0.162 | 0.233 | 178.990 | 11.489 | 8.231 | 0.192 |
+| Restored | 1.767 | 0.935 | 1.056 | 5.484 | 0.298 | 0.221 | 7.897 | 0.211 | 4.864 | 0.170 |
+| Warm | 1.710 | 0.904 | 1.107 | 5.716 | 0.239 | 0.200 | 8.946 | 0.258 | 4.676 | 0.207 |
+
+What each column spans:
+- **run host up:** from the caller's `its run host N started` to the host's `its request read`.
+- **image prepared, microVM shaped, security made:** each from the step before it. The layer's
+  thread runs within *security made*. It made Booted's and Saved's layers in 1.690 and 1.512 ms,
+  and cloned Restored's and the warm host's in 0.289 and 0.304 ms.
+- **to launching:** from `its security made…` to `launching its VM`. This covers its planning,
+  its binary's check, its network and its layer taken.
+- **VM spawned:** from `launching its VM` to `the VM spawned`.
+- **to `READY`:** from the VM's spawn to its `READY`. This is the VM process's start, its grants,
+  its boot or restore, and its guest's init.
+- **to the boot's answer:** from `READY` to the caller's `the boot answered`. A Saved start
+  settles its template here.
+- **to `STARTED`, to first output:** from the boot's answer to the VM's `STARTED`, then to the
+  caller's `its harness's first output read`.
+- **Warm:** its first seven columns are its host's, before its run asked. Its answer comes 0.258
+  ms after its run's request, and the boot answered at 0.282 ms; first output came at 5.165 ms.
+
+Read:
+- In this pass, timed from the boot's call, a warm run's VM took the run at 0.158 ms and said
+  `STARTED` at 4.958 ms. Its first output was read 0.207 ms later, at 5.165 ms. So the start
+  path's 5 ms target is missed between a warm VM taking its run and its `STARTED`, past the run
+  host's own steps, not on cut (a)'s way.
+- Before its launch, every kind's run host spent the most time in *security made*: 5.484 to
+  6.077 ms, from its microVM's shape to its guest's kernel read and its filters compiled. A warm
+  host spends it before its run asks.
+
+Raw results: `docs/research/measurements/image-start-ab/results/r666/` holds the run's 6 logs, as
+its archive held them: `m593.log` (the starts, their samples and both phase passes),
+`carrier.log`, `smoke.log`, `looks.log`, `kiln.log` (empty: no line matched) and `build-b.log`.
+The archive's SHA-256 is 220bf39730a6b110f9bdba64b56b58b15797d06a0e4e387e0fa9093af632b11f.
+
+Numbers on HVF, the A/B again at n=380: ROOT's run r680, 2026-11-17 from 03:01Z, 31 min in all.
+- The same Studio and revisions, from the carrier (a6b7031) with `CUT_A_ROUNDS=38`: 38 rounds
+  ABBA of N=10, so n=380 per arm and kind for the spans and n=38 for the timed rows. The A/B
+  took 632 s.
+- The condition over its 77 looks: nice 10, priorities 0, 20, 31 and 97, the VM threads at 31, 46
+  and 97 (no QoS clamp). kiln's log says it followed the run's three launchd jobs as its agent's
+  (6 lines), and has no line on headroom.
+- Load 3.24 as the A/B began, with 10.76 of the 14 CPUs idle (8 asked). Over its looks the load
+  ran from 2.90 to 9.08, highest in its first rounds: 9.08 at B-0's look, 8.43 at B-1's, 7.52
+  at A-1's.
+
+ms, p50 / p90 / p99 / max:
+
+| kind | span | A | B |
+|---|---|---|---|
+| Booted | boot | 74.585 / 77.616 / 88.605 / 90.702 | 73.036 / 76.091 / 84.767 / 86.250 |
+| Booted | first output | 77.302 / 80.318 / 91.392 / 93.109 | 75.670 / 78.769 / 87.865 / 89.166 |
+| Booted | stop | 1.561 / 1.639 / 1.903 / 6.737 | 1.571 / 1.678 / 6.109 / 7.241 |
+| Booted | layer: launch waited | 1.500 / 1.549 / 1.564 / 1.564 | 0.005 / 0.008 / 0.009 / 0.009 |
+| Booted | layer: its thread | n 0 | 1.541 / 1.737 / 3.836 / 3.836 |
+| Booted | shaped to launching | 7.801 / 7.939 / 8.003 / 8.003 | 6.158 / 6.251 / 6.363 / 6.363 |
+| Saved | boot | 199.060 / 207.400 / 245.849 / 254.423 | 197.755 / 206.168 / 220.200 / 236.356 |
+| Saved | first output | 207.381 / 215.762 / 254.594 / 263.143 | 205.813 / 214.541 / 228.665 / 244.699 |
+| Saved | stop | 2.082 / 2.216 / 6.476 / 7.977 | 2.085 / 2.191 / 6.371 / 6.884 |
+| Saved | layer: launch waited | 1.407 / 1.990 / 9.160 / 9.160 | 0.005 / 0.008 / 0.009 / 0.009 |
+| Saved | layer: its thread | n 0 | 1.515 / 2.434 / 2.632 / 2.632 |
+| Saved | shaped to launching | 7.212 / 8.134 / 14.864 / 14.864 | 5.810 / 5.923 / 6.235 / 6.235 |
+| Restored | boot | 18.711 / 20.675 / 23.314 / 27.957 | 18.323 / 20.254 / 21.965 / 23.070 |
+| Restored | first output | 23.880 / 25.904 / 29.030 / 33.018 | 23.552 / 25.416 / 26.804 / 27.983 |
+| Restored | stop | 1.504 / 1.624 / 3.403 / 5.278 | 1.517 / 1.634 / 2.661 / 4.623 |
+| Restored | layer: launch waited | 0.287 / 0.310 / 1.968 / 1.968 | 0.006 / 0.009 / 0.012 / 0.012 |
+| Restored | layer: its thread | n 0 | 0.295 / 0.309 / 0.364 / 0.364 |
+| Restored | shaped to launching | 6.138 / 6.320 / 8.605 / 8.605 | 5.796 / 6.004 / 6.496 / 6.496 |
+| Warm | boot | 0.259 / 0.344 / 0.409 / 3.881 | 0.265 / 0.346 / 0.796 / 3.349 |
+| Warm | first output | 5.197 / 5.775 / 6.255 / 6.465 | 5.348 / 5.809 / 6.134 / 6.441 |
+| Warm | stop | 1.657 / 1.810 / 5.031 / 10.657 | 1.652 / 1.798 / 4.468 / 4.635 |
+| Warm | layer: launch waited | 0.284 / 0.314 / 0.430 / 0.430 | 0.006 / 0.008 / 0.013 / 0.013 |
+| Warm | layer: its thread | n 0 | 0.338 / 0.367 / 2.364 / 2.364 |
+| Warm | shaped to launching | 6.508 / 6.877 / 7.072 / 7.072 | 6.066 / 6.455 / 7.280 / 7.280 |
+
+Its intervals come from `intervals.py` over `results/r680/out`; its output is
+`results/r680/intervals.txt`, whose per-arm ranks equal ab.py's own summary in `run.log`.
+- At n=380, a p50's interval runs from the 171st to the 210th sample, a p90's from the 330th to
+  the 354th, and a p99's from the 372nd to the 380th.
+- At n=38, the timed rows' p50 runs from the 13th to the 26th sample and their p90 from the 30th
+  to the 38th; their p99 has none.
+- By rounds, the median of the 38 rounds' differences runs from the 13th to the 26th.
+
+The boot, against D253's refusals; B less A, ms:
+
+| kind | p50 | p90 | p99 | by rounds: median, interval | the refusal | shown |
+|---|---|---|---|---|---|---|
+| Booted | -1.917 to -1.234 | -3.331 to 0.368 | -10.899 to 1.317 | -1.513, -1.687 to -1.223 | a fall short of 1.500 | no |
+| Saved | -2.881 to -0.091 | -6.321 to 1.985 | -41.715 to 1.421 | -1.127, -2.991 to -0.036 | a fall short of 1.407 | no |
+| Restored | -0.551 to -0.215 | -0.940 to -0.117 | -6.916 to 0.513 | -0.320, -0.561 to -0.169 | a rise | no |
+| Warm | -0.001 to 0.011 | -0.019 to 0.014 | -3.499 to 2.977 | 0.005, -0.001 to 0.012 | a rise | no |
+
+The span the wait was on, from `its microVM shaped` to `launching its VM` (n=38 an arm and kind);
+each rank with its interval, ms:
+
+| kind | A's p50 and p90 | B's p50 and p90 | B less A, p50 | p90 | by rounds: median, interval | A's wait |
+|---|---|---|---|---|---|---|
+| Booted | 7.801 [7.744, 7.859]; 7.939 [7.883, 8.003] | 6.158 [6.142, 6.200]; 6.251 [6.212, 6.363] | -1.717 to -1.544 | -1.791 to -1.520 | -1.672, -1.729 to -1.580 | 1.500 |
+| Saved | 7.212 [7.163, 7.348]; 8.134 [7.493, 14.864] | 5.810 [5.782, 5.847]; 5.923 [5.868, 6.235] | -1.566 to -1.316 | -8.996 to -1.258 | -1.445, -1.604 to -1.341 | 1.407 |
+| Restored | 6.138 [6.092, 6.183]; 6.320 [6.216, 8.605] | 5.796 [5.768, 5.840]; 6.004 [5.895, 6.496] | -0.415 to -0.252 | -2.710 to 0.280 | -0.309, -0.342 to -0.287 | 0.287 |
+| Warm | 6.508 [6.279, 6.673]; 6.877 [6.693, 7.072] | 6.066 [5.992, 6.284]; 6.455 [6.336, 7.280] | -0.681 to 0.005 | -0.736 to 0.587 | -0.326, -0.434 to -0.224 | 0.284 |
+
+Read:
+- **No interval shows either of D253's refusals,** at p50, p90 or p99, pooled or by rounds. So
+  cut (a) is kept at p90 and p99 too.
+  - Restored's boot falls at p50 and p90 pooled, and by rounds; at p99 it shows neither.
+  - Booted's and Saved's boot fall at p50, pooled and by rounds. At p90 and p99 neither is shown,
+    and no interval shows a fall short of the wait.
+- **Three readings are near their edges:**
+  - Warm's boot at p50: B less A runs from -0.001 to 0.011 ms pooled, and from -0.001 to 0.012
+    by rounds. A rise is not shown, by 0.001 ms. A warm run's boot has no layer on it in either
+    build.
+  - Warm's boot at p99: 0.796 ms in B against 0.409 in A. B has 6 of its 380 starts over 0.5 ms
+    and A has 3 (over 1 ms, 3 and 2). So B's p99 falls on an outlier and A's does not. Their p99
+    intervals (the top nine of each) overlap, so no rise is shown.
+  - Booted's and Saved's p99 rest on round 0, the run's slowest on both arms, when its load was
+    highest: all nine of A's top boots on each, and six of B's, come from that round. So their
+    p99 reads that round more than the run. Restored's and Warm's top nine spread over the
+    rounds.
+- **Where the wait was, no interval shows the start falling short of it.** The span from shaped
+  to launching falls at p50 and p90 on Booted and Saved, at p50 on Restored, and by rounds on
+  every kind. Each interval holds minus A's wait, or lies below it.
+- **The cut's seam held on every timed start.** B's launch waited at most 0.013 ms for its
+  layer in all 152 of them. A's waited 1.500 ms at p50 on a Booted start (Saved 1.407, Restored
+  0.287, a warm host 0.284).
+
+B alone again, after the A/B: r680's single-arm costs, one process, n=100 of each kind. Load was
+4.87 before it, with 9.13 CPUs idle (8 asked), and its starts took 39 s. ms, p50 / p90 / p99 /
+max:
+
+| kind | boot | first output | stop |
+|---|---|---|---|
+| Booted | 72.699 / 74.877 / 78.879 / 79.062 | 75.135 / 77.605 / 80.232 / 81.609 | 1.556 / 1.684 / 6.185 / 7.550 |
+| Saved | 197.447 / 202.558 / 208.487 / 216.395 | 205.326 / 210.900 / 216.977 / 224.934 | 2.067 / 2.178 / 2.291 / 3.752 |
+| Restored | 18.422 / 20.188 / 22.667 / 23.528 | 23.406 / 25.035 / 26.662 / 28.267 | 1.482 / 1.587 / 1.663 / 3.733 |
+| Warm | 0.266 / 0.358 / 0.377 / 0.379 | 5.253 / 5.719 / 5.960 / 5.999 | 1.637 / 1.835 / 2.085 / 6.010 |
+
+Raw results: `docs/research/measurements/image-start-ab/results/r680/` holds the run's 84 logs, as
+its archive held them: `out/` (each of its 76 processes), `run.log`, `m593.log`, `carrier.log`,
+`smoke.log`, `looks.log`, `kiln.log` and both builds' logs. The archive's SHA-256 is
+dd866accdc49ab9978c8c8696727fc9aefafafb01fc596f06ff5dc63d9e58eb3. `results/r644/intervals.txt` is
+r644's reading again, now with the p99 rank, which has no interval at n=100.
+
 Owed (ROOT):
-- B's single-arm costs at N=100, with their phase timelines (where the time goes). r644's carrier
-  refused them: the Studio was no longer quiet, with 4.13 CPUs idle where 8 were asked. They run
-  as r666, the carrier's `bash run.sh costs`.
-- The p90 and p99: the A/B again with 38 rounds of N=10, n=380 per arm and kind. 38 is the fewest
-  rounds whose n reaches 368 and that is even, so that each arm goes first as often. The
-  carrier's `bash run.sh` with `CUT_A_ROUNDS=38`.
 - All of it on KVM, and on WHP where `vm::restores_here`.
 
 ### M600. Where a loaded Mac's `shards guest use` spends its time (D215, ROOT's batch 32)

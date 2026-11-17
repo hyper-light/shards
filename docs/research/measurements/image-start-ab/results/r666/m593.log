@@ -1,0 +1,864 @@
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=aarch64_apple_darwin
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'aarch64-apple-darwin'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/Users/adalundhe/.cache/cut-a/b/target/release/build/aws-lc-sys-a6aaf3311725cafc/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Using flag: -ffile-prefix-map=/Users/adalundhe/.cache/cut-a/b/vendor/aws-lc-sys=
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/Users/adalundhe/.cache/cut-a/b/target/release/build/aws-lc-sys-a6aaf3311725cafc/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/Users/adalundhe/.cache/cut-a/b/target/release/build/aws-lc-sys-a6aaf3311725cafc/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'neon_sha3_check.c' succeeded - Ok(["/Users/adalundhe/.cache/cut-a/b/target/release/build/aws-lc-sys-a6aaf3311725cafc/out/out-neon_sha3_check/7dfda64fdf5a526c-neon_sha3_check.o"]).
+    Finished `release` profile [optimized + debuginfo] target(s) in 0.09s
+     Running tests/api_image.rs (target/release/deps/api_image-c665f96ed393319f)
+
+running 1 test
+   Compiling libc v0.2.189
+   Compiling shlex v2.0.1
+   Compiling find-msvc-tools v0.1.14
+   Compiling fs_extra v1.3.0
+   Compiling dunce v1.0.5
+   Compiling pkg-config v0.3.34
+   Compiling serde_core v1.0.229
+   Compiling aws-lc-rs v1.18.1 (/Users/adalundhe/.cache/cut-a/b/vendor/aws-lc-rs)
+   Compiling zeroize v1.9.0
+   Compiling zmij v1.0.23
+   Compiling serde v1.0.229
+   Compiling serde_json v1.0.151
+   Compiling shards-abi v0.1.0 (/Users/adalundhe/.cache/cut-a/b/crates/abi)
+   Compiling rustls v0.23.46
+   Compiling memchr v2.8.3
+   Compiling rustls-pki-types v1.15.1
+   Compiling itoa v1.0.18
+   Compiling untrusted v0.9.0
+   Compiling once_cell v1.21.4
+   Compiling subtle v2.6.1
+   Compiling shards-http2 v0.1.0 (/Users/adalundhe/.cache/cut-a/b/crates/http2)
+   Compiling shards-devcgroup v0.1.0 (/Users/adalundhe/.cache/cut-a/b/crates/devcgroup)
+   Compiling jobserver v0.1.35
+   Compiling cc v1.5.1
+   Compiling cmake v0.1.58
+   Compiling aws-lc-sys v0.45.0 (/Users/adalundhe/.cache/cut-a/b/vendor/aws-lc-sys)
+   Compiling shards-seccomp v0.1.0 (/Users/adalundhe/.cache/cut-a/b/crates/seccomp)
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'CARGO_ENCODED_RUSTFLAGS': ''
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=universal
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'aarch64-unknown-linux-musl'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/Users/adalundhe/.cache/cut-a/b/target/guest/aarch64-unknown-linux-musl/guest/build/aws-lc-sys-9b7dbba38ec4bf3c/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Environment Variable found 'CC_aarch64_unknown_linux_musl': '/Users/adalundhe/.cache/cut-a/b/scripts/zig-cc'
+warning: aws-lc-sys@0.45.0: Setting CC_aarch64_unknown_linux_musl: /Users/adalundhe/.cache/cut-a/b/scripts/zig-cc
+warning: aws-lc-sys@0.45.0: Using flag: -ffile-prefix-map=/Users/adalundhe/.cache/cut-a/b/vendor/aws-lc-sys=
+warning: aws-lc-sys@0.45.0: Size-optimized AWS-LC build enabled. Applying OPENSSL_SMALL and disabling AVX-512 assembly.
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/Users/adalundhe/.cache/cut-a/b/target/guest/aarch64-unknown-linux-musl/guest/build/aws-lc-sys-9b7dbba38ec4bf3c/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/Users/adalundhe/.cache/cut-a/b/target/guest/aarch64-unknown-linux-musl/guest/build/aws-lc-sys-9b7dbba38ec4bf3c/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'neon_sha3_check.c' succeeded - Ok(["/Users/adalundhe/.cache/cut-a/b/target/guest/aarch64-unknown-linux-musl/guest/build/aws-lc-sys-9b7dbba38ec4bf3c/out/out-neon_sha3_check/7dfda64fdf5a526c-neon_sha3_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'linux_random_h.c' succeeded - Ok(["/Users/adalundhe/.cache/cut-a/b/target/guest/aarch64-unknown-linux-musl/guest/build/aws-lc-sys-9b7dbba38ec4bf3c/out/out-linux_random_h/7dfda64fdf5a526c-linux_random_h.o"]).
+   Compiling rustls-webpki v0.103.16
+   Compiling shards-testguest v0.1.0 (/Users/adalundhe/.cache/cut-a/b/crates/testguest)
+    Finished `guest` profile [optimized] target(s) in 28.73s
+IMAGE-START-SAMPLE round 0 Booted from Booted boot_us 71972 usable_us 74383 stop_us 1590
+IMAGE-START-SAMPLE round 0 Saved from Saved boot_us 193788 usable_us 201946 stop_us 2064
+IMAGE-START-SAMPLE round 0 Restored from Restored boot_us 17698 usable_us 22963 stop_us 1501
+IMAGE-START-SAMPLE round 0 Warm from Warm boot_us 320 usable_us 5117 stop_us 1700
+IMAGE-START-SAMPLE round 1 Saved from Saved boot_us 189221 usable_us 197252 stop_us 2096
+IMAGE-START-SAMPLE round 1 Restored from Restored boot_us 22349 usable_us 26404 stop_us 1406
+IMAGE-START-SAMPLE round 1 Warm from Warm boot_us 248 usable_us 5207 stop_us 1574
+IMAGE-START-SAMPLE round 1 Booted from Booted boot_us 70921 usable_us 73174 stop_us 1535
+IMAGE-START-SAMPLE round 2 Restored from Restored boot_us 18890 usable_us 23770 stop_us 1355
+IMAGE-START-SAMPLE round 2 Warm from Warm boot_us 255 usable_us 5163 stop_us 1544
+IMAGE-START-SAMPLE round 2 Booted from Booted boot_us 70484 usable_us 73188 stop_us 1509
+IMAGE-START-SAMPLE round 2 Saved from Saved boot_us 207165 usable_us 215584 stop_us 2108
+IMAGE-START-SAMPLE round 3 Warm from Warm boot_us 348 usable_us 5565 stop_us 1475
+IMAGE-START-SAMPLE round 3 Booted from Booted boot_us 73819 usable_us 76153 stop_us 1498
+IMAGE-START-SAMPLE round 3 Saved from Saved boot_us 191567 usable_us 200326 stop_us 1981
+IMAGE-START-SAMPLE round 3 Restored from Restored boot_us 18390 usable_us 23407 stop_us 1740
+IMAGE-START-SAMPLE round 4 Booted from Booted boot_us 72720 usable_us 75869 stop_us 1510
+IMAGE-START-SAMPLE round 4 Saved from Saved boot_us 202182 usable_us 210216 stop_us 2010
+IMAGE-START-SAMPLE round 4 Restored from Restored boot_us 19455 usable_us 24496 stop_us 1540
+IMAGE-START-SAMPLE round 4 Warm from Warm boot_us 266 usable_us 5726 stop_us 1762
+IMAGE-START-SAMPLE round 5 Saved from Saved boot_us 198627 usable_us 206873 stop_us 2224
+IMAGE-START-SAMPLE round 5 Restored from Restored boot_us 18965 usable_us 24293 stop_us 1649
+IMAGE-START-SAMPLE round 5 Warm from Warm boot_us 239 usable_us 5142 stop_us 1825
+IMAGE-START-SAMPLE round 5 Booted from Booted boot_us 73132 usable_us 75546 stop_us 1625
+IMAGE-START-SAMPLE round 6 Restored from Restored boot_us 19606 usable_us 24413 stop_us 1762
+IMAGE-START-SAMPLE round 6 Warm from Warm boot_us 262 usable_us 5309 stop_us 1831
+IMAGE-START-SAMPLE round 6 Booted from Booted boot_us 71685 usable_us 73975 stop_us 1551
+IMAGE-START-SAMPLE round 6 Saved from Saved boot_us 194548 usable_us 203041 stop_us 2082
+IMAGE-START-SAMPLE round 7 Warm from Warm boot_us 267 usable_us 5372 stop_us 1561
+IMAGE-START-SAMPLE round 7 Booted from Booted boot_us 70411 usable_us 72666 stop_us 1539
+IMAGE-START-SAMPLE round 7 Saved from Saved boot_us 188400 usable_us 196411 stop_us 2079
+IMAGE-START-SAMPLE round 7 Restored from Restored boot_us 19271 usable_us 24480 stop_us 1335
+IMAGE-START-SAMPLE round 8 Booted from Booted boot_us 71505 usable_us 73886 stop_us 1550
+IMAGE-START-SAMPLE round 8 Saved from Saved boot_us 200619 usable_us 208623 stop_us 2064
+IMAGE-START-SAMPLE round 8 Restored from Restored boot_us 19926 usable_us 25082 stop_us 1317
+IMAGE-START-SAMPLE round 8 Warm from Warm boot_us 287 usable_us 5577 stop_us 1740
+IMAGE-START-SAMPLE round 9 Saved from Saved boot_us 194501 usable_us 202547 stop_us 1583
+IMAGE-START-SAMPLE round 9 Restored from Restored boot_us 18212 usable_us 23141 stop_us 1600
+IMAGE-START-SAMPLE round 9 Warm from Warm boot_us 240 usable_us 5327 stop_us 5220
+IMAGE-START-SAMPLE round 9 Booted from Booted boot_us 72345 usable_us 74813 stop_us 1567
+IMAGE-START-SAMPLE round 10 Restored from Restored boot_us 18665 usable_us 23984 stop_us 1477
+IMAGE-START-SAMPLE round 10 Warm from Warm boot_us 375 usable_us 5344 stop_us 1595
+IMAGE-START-SAMPLE round 10 Booted from Booted boot_us 71802 usable_us 74229 stop_us 1482
+IMAGE-START-SAMPLE round 10 Saved from Saved boot_us 190885 usable_us 198755 stop_us 2125
+IMAGE-START-SAMPLE round 11 Warm from Warm boot_us 241 usable_us 5617 stop_us 1598
+IMAGE-START-SAMPLE round 11 Booted from Booted boot_us 71650 usable_us 74026 stop_us 1406
+IMAGE-START-SAMPLE round 11 Saved from Saved boot_us 193319 usable_us 201410 stop_us 2113
+IMAGE-START-SAMPLE round 11 Restored from Restored boot_us 17989 usable_us 23344 stop_us 1534
+IMAGE-START-SAMPLE round 12 Booted from Booted boot_us 72462 usable_us 74890 stop_us 1585
+IMAGE-START-SAMPLE round 12 Saved from Saved boot_us 196618 usable_us 204823 stop_us 2008
+IMAGE-START-SAMPLE round 12 Restored from Restored boot_us 19950 usable_us 25145 stop_us 1484
+IMAGE-START-SAMPLE round 12 Warm from Warm boot_us 344 usable_us 5144 stop_us 1547
+IMAGE-START-SAMPLE round 13 Saved from Saved boot_us 194761 usable_us 202727 stop_us 1781
+IMAGE-START-SAMPLE round 13 Restored from Restored boot_us 18690 usable_us 23934 stop_us 1448
+IMAGE-START-SAMPLE round 13 Warm from Warm boot_us 236 usable_us 5834 stop_us 1604
+IMAGE-START-SAMPLE round 13 Booted from Booted boot_us 71506 usable_us 74744 stop_us 1559
+IMAGE-START-SAMPLE round 14 Restored from Restored boot_us 18470 usable_us 23435 stop_us 1497
+IMAGE-START-SAMPLE round 14 Warm from Warm boot_us 358 usable_us 5478 stop_us 1690
+IMAGE-START-SAMPLE round 14 Booted from Booted boot_us 71905 usable_us 74213 stop_us 1522
+IMAGE-START-SAMPLE round 14 Saved from Saved boot_us 194995 usable_us 203108 stop_us 12409
+IMAGE-START-SAMPLE round 15 Warm from Warm boot_us 257 usable_us 5910 stop_us 1658
+IMAGE-START-SAMPLE round 15 Booted from Booted boot_us 69842 usable_us 72548 stop_us 1506
+IMAGE-START-SAMPLE round 15 Saved from Saved boot_us 194894 usable_us 203178 stop_us 2069
+IMAGE-START-SAMPLE round 15 Restored from Restored boot_us 18217 usable_us 23418 stop_us 1722
+IMAGE-START-SAMPLE round 16 Booted from Booted boot_us 68740 usable_us 71732 stop_us 1602
+IMAGE-START-SAMPLE round 16 Saved from Saved boot_us 193919 usable_us 202121 stop_us 2096
+IMAGE-START-SAMPLE round 16 Restored from Restored boot_us 19359 usable_us 24030 stop_us 1466
+IMAGE-START-SAMPLE round 16 Warm from Warm boot_us 341 usable_us 5097 stop_us 1576
+IMAGE-START-SAMPLE round 17 Saved from Saved boot_us 191069 usable_us 199139 stop_us 2164
+IMAGE-START-SAMPLE round 17 Restored from Restored boot_us 17653 usable_us 22547 stop_us 1448
+IMAGE-START-SAMPLE round 17 Warm from Warm boot_us 243 usable_us 4966 stop_us 1553
+IMAGE-START-SAMPLE round 17 Booted from Booted boot_us 73834 usable_us 76933 stop_us 1546
+IMAGE-START-SAMPLE round 18 Restored from Restored boot_us 17908 usable_us 23152 stop_us 1445
+IMAGE-START-SAMPLE round 18 Warm from Warm boot_us 259 usable_us 5097 stop_us 1487
+IMAGE-START-SAMPLE round 18 Booted from Booted boot_us 71701 usable_us 74116 stop_us 1509
+IMAGE-START-SAMPLE round 18 Saved from Saved boot_us 189060 usable_us 197102 stop_us 1793
+IMAGE-START-SAMPLE round 19 Warm from Warm boot_us 251 usable_us 5409 stop_us 1488
+IMAGE-START-SAMPLE round 19 Booted from Booted boot_us 73087 usable_us 76236 stop_us 1473
+IMAGE-START-SAMPLE round 19 Saved from Saved boot_us 197558 usable_us 205745 stop_us 2066
+IMAGE-START-SAMPLE round 19 Restored from Restored boot_us 17983 usable_us 22625 stop_us 1451
+IMAGE-START-SAMPLE round 20 Booted from Booted boot_us 72412 usable_us 74750 stop_us 4288
+IMAGE-START-SAMPLE round 20 Saved from Saved boot_us 192749 usable_us 200992 stop_us 2044
+IMAGE-START-SAMPLE round 20 Restored from Restored boot_us 19294 usable_us 24521 stop_us 1384
+IMAGE-START-SAMPLE round 20 Warm from Warm boot_us 327 usable_us 4941 stop_us 1728
+IMAGE-START-SAMPLE round 21 Saved from Saved boot_us 191143 usable_us 199076 stop_us 1837
+IMAGE-START-SAMPLE round 21 Restored from Restored boot_us 17976 usable_us 22918 stop_us 1484
+IMAGE-START-SAMPLE round 21 Warm from Warm boot_us 238 usable_us 5358 stop_us 1631
+IMAGE-START-SAMPLE round 21 Booted from Booted boot_us 72102 usable_us 74499 stop_us 1521
+IMAGE-START-SAMPLE round 22 Restored from Restored boot_us 18018 usable_us 23082 stop_us 1505
+IMAGE-START-SAMPLE round 22 Warm from Warm boot_us 240 usable_us 5119 stop_us 1778
+IMAGE-START-SAMPLE round 22 Booted from Booted boot_us 70988 usable_us 73288 stop_us 1481
+IMAGE-START-SAMPLE round 22 Saved from Saved boot_us 194126 usable_us 202404 stop_us 2124
+IMAGE-START-SAMPLE round 23 Warm from Warm boot_us 277 usable_us 5522 stop_us 1525
+IMAGE-START-SAMPLE round 23 Booted from Booted boot_us 73174 usable_us 76452 stop_us 1913
+IMAGE-START-SAMPLE round 23 Saved from Saved boot_us 195865 usable_us 203959 stop_us 1712
+IMAGE-START-SAMPLE round 23 Restored from Restored boot_us 20205 usable_us 25614 stop_us 1524
+IMAGE-START-SAMPLE round 24 Booted from Booted boot_us 73566 usable_us 76867 stop_us 1598
+IMAGE-START-SAMPLE round 24 Saved from Saved boot_us 197616 usable_us 206052 stop_us 2197
+IMAGE-START-SAMPLE round 24 Restored from Restored boot_us 19864 usable_us 24888 stop_us 1430
+IMAGE-START-SAMPLE round 24 Warm from Warm boot_us 239 usable_us 5912 stop_us 1616
+IMAGE-START-SAMPLE round 25 Saved from Saved boot_us 194021 usable_us 202145 stop_us 1705
+IMAGE-START-SAMPLE round 25 Restored from Restored boot_us 18611 usable_us 23967 stop_us 1547
+IMAGE-START-SAMPLE round 25 Warm from Warm boot_us 281 usable_us 6181 stop_us 1663
+IMAGE-START-SAMPLE round 25 Booted from Booted boot_us 73940 usable_us 75439 stop_us 1522
+IMAGE-START-SAMPLE round 26 Restored from Restored boot_us 20184 usable_us 24340 stop_us 1563
+IMAGE-START-SAMPLE round 26 Warm from Warm boot_us 348 usable_us 5190 stop_us 1770
+IMAGE-START-SAMPLE round 26 Booted from Booted boot_us 72843 usable_us 75080 stop_us 1545
+IMAGE-START-SAMPLE round 26 Saved from Saved boot_us 193171 usable_us 201353 stop_us 2087
+IMAGE-START-SAMPLE round 27 Warm from Warm boot_us 248 usable_us 5424 stop_us 1523
+IMAGE-START-SAMPLE round 27 Booted from Booted boot_us 71687 usable_us 74048 stop_us 1528
+IMAGE-START-SAMPLE round 27 Saved from Saved boot_us 190285 usable_us 198335 stop_us 2167
+IMAGE-START-SAMPLE round 27 Restored from Restored boot_us 17871 usable_us 23168 stop_us 1549
+IMAGE-START-SAMPLE round 28 Booted from Booted boot_us 72188 usable_us 75328 stop_us 1577
+IMAGE-START-SAMPLE round 28 Saved from Saved boot_us 193120 usable_us 201397 stop_us 1614
+IMAGE-START-SAMPLE round 28 Restored from Restored boot_us 17860 usable_us 23055 stop_us 1420
+IMAGE-START-SAMPLE round 28 Warm from Warm boot_us 249 usable_us 5516 stop_us 1510
+IMAGE-START-SAMPLE round 29 Saved from Saved boot_us 198145 usable_us 206720 stop_us 2022
+IMAGE-START-SAMPLE round 29 Restored from Restored boot_us 18239 usable_us 23096 stop_us 1594
+IMAGE-START-SAMPLE round 29 Warm from Warm boot_us 285 usable_us 5394 stop_us 1713
+IMAGE-START-SAMPLE round 29 Booted from Booted boot_us 70472 usable_us 73206 stop_us 1621
+IMAGE-START-SAMPLE round 30 Restored from Restored boot_us 17718 usable_us 23022 stop_us 1575
+IMAGE-START-SAMPLE round 30 Warm from Warm boot_us 346 usable_us 5135 stop_us 1621
+IMAGE-START-SAMPLE round 30 Booted from Booted boot_us 74065 usable_us 76598 stop_us 1616
+IMAGE-START-SAMPLE round 30 Saved from Saved boot_us 192896 usable_us 201009 stop_us 6620
+IMAGE-START-SAMPLE round 31 Warm from Warm boot_us 273 usable_us 6115 stop_us 1827
+IMAGE-START-SAMPLE round 31 Booted from Booted boot_us 72776 usable_us 75142 stop_us 1549
+IMAGE-START-SAMPLE round 31 Saved from Saved boot_us 197056 usable_us 202595 stop_us 1745
+IMAGE-START-SAMPLE round 31 Restored from Restored boot_us 17990 usable_us 22947 stop_us 1658
+IMAGE-START-SAMPLE round 32 Booted from Booted boot_us 72379 usable_us 74789 stop_us 1603
+IMAGE-START-SAMPLE round 32 Saved from Saved boot_us 194330 usable_us 202138 stop_us 2173
+IMAGE-START-SAMPLE round 32 Restored from Restored boot_us 17681 usable_us 23025 stop_us 1523
+IMAGE-START-SAMPLE round 32 Warm from Warm boot_us 270 usable_us 5513 stop_us 1755
+IMAGE-START-SAMPLE round 33 Saved from Saved boot_us 203643 usable_us 212044 stop_us 2162
+IMAGE-START-SAMPLE round 33 Restored from Restored boot_us 18334 usable_us 23530 stop_us 1545
+IMAGE-START-SAMPLE round 33 Warm from Warm boot_us 271 usable_us 5099 stop_us 1577
+IMAGE-START-SAMPLE round 33 Booted from Booted boot_us 71456 usable_us 73851 stop_us 1559
+IMAGE-START-SAMPLE round 34 Restored from Restored boot_us 17957 usable_us 22988 stop_us 1514
+IMAGE-START-SAMPLE round 34 Warm from Warm boot_us 328 usable_us 5159 stop_us 1823
+IMAGE-START-SAMPLE round 34 Booted from Booted boot_us 73569 usable_us 75944 stop_us 1505
+IMAGE-START-SAMPLE round 34 Saved from Saved boot_us 192019 usable_us 200267 stop_us 1872
+IMAGE-START-SAMPLE round 35 Warm from Warm boot_us 276 usable_us 5811 stop_us 1673
+IMAGE-START-SAMPLE round 35 Booted from Booted boot_us 73429 usable_us 76159 stop_us 1498
+IMAGE-START-SAMPLE round 35 Saved from Saved boot_us 197431 usable_us 202243 stop_us 2060
+IMAGE-START-SAMPLE round 35 Restored from Restored boot_us 17686 usable_us 22899 stop_us 1466
+IMAGE-START-SAMPLE round 36 Booted from Booted boot_us 70063 usable_us 73251 stop_us 1539
+IMAGE-START-SAMPLE round 36 Saved from Saved boot_us 197702 usable_us 206145 stop_us 2105
+IMAGE-START-SAMPLE round 36 Restored from Restored boot_us 17681 usable_us 22808 stop_us 1418
+IMAGE-START-SAMPLE round 36 Warm from Warm boot_us 248 usable_us 4823 stop_us 1744
+IMAGE-START-SAMPLE round 37 Saved from Saved boot_us 189696 usable_us 197740 stop_us 2051
+IMAGE-START-SAMPLE round 37 Restored from Restored boot_us 17753 usable_us 22797 stop_us 1628
+IMAGE-START-SAMPLE round 37 Warm from Warm boot_us 361 usable_us 4833 stop_us 1798
+IMAGE-START-SAMPLE round 37 Booted from Booted boot_us 69876 usable_us 73442 stop_us 1559
+IMAGE-START-SAMPLE round 38 Restored from Restored boot_us 17817 usable_us 23039 stop_us 1489
+IMAGE-START-SAMPLE round 38 Warm from Warm boot_us 299 usable_us 5219 stop_us 1659
+IMAGE-START-SAMPLE round 38 Booted from Booted boot_us 72559 usable_us 74879 stop_us 1493
+IMAGE-START-SAMPLE round 38 Saved from Saved boot_us 189260 usable_us 197574 stop_us 2198
+IMAGE-START-SAMPLE round 39 Warm from Warm boot_us 348 usable_us 5686 stop_us 1822
+IMAGE-START-SAMPLE round 39 Booted from Booted boot_us 72881 usable_us 75221 stop_us 1553
+IMAGE-START-SAMPLE round 39 Saved from Saved boot_us 193749 usable_us 202135 stop_us 1839
+IMAGE-START-SAMPLE round 39 Restored from Restored boot_us 18008 usable_us 22942 stop_us 1468
+IMAGE-START-SAMPLE round 40 Booted from Booted boot_us 71485 usable_us 73832 stop_us 1730
+IMAGE-START-SAMPLE round 40 Saved from Saved boot_us 190059 usable_us 198401 stop_us 2113
+IMAGE-START-SAMPLE round 40 Restored from Restored boot_us 20510 usable_us 25717 stop_us 1427
+IMAGE-START-SAMPLE round 40 Warm from Warm boot_us 291 usable_us 5874 stop_us 1921
+IMAGE-START-SAMPLE round 41 Saved from Saved boot_us 194618 usable_us 203081 stop_us 2087
+IMAGE-START-SAMPLE round 41 Restored from Restored boot_us 18010 usable_us 22780 stop_us 1419
+IMAGE-START-SAMPLE round 41 Warm from Warm boot_us 240 usable_us 5058 stop_us 1549
+IMAGE-START-SAMPLE round 41 Booted from Booted boot_us 72403 usable_us 74809 stop_us 1583
+IMAGE-START-SAMPLE round 42 Restored from Restored boot_us 17657 usable_us 22836 stop_us 1347
+IMAGE-START-SAMPLE round 42 Warm from Warm boot_us 263 usable_us 5498 stop_us 1675
+IMAGE-START-SAMPLE round 42 Booted from Booted boot_us 71995 usable_us 75180 stop_us 1558
+IMAGE-START-SAMPLE round 42 Saved from Saved boot_us 188852 usable_us 197184 stop_us 1728
+IMAGE-START-SAMPLE round 43 Warm from Warm boot_us 272 usable_us 6370 stop_us 4853
+IMAGE-START-SAMPLE round 43 Booted from Booted boot_us 74105 usable_us 75357 stop_us 1498
+IMAGE-START-SAMPLE round 43 Saved from Saved boot_us 195221 usable_us 203558 stop_us 2043
+IMAGE-START-SAMPLE round 43 Restored from Restored boot_us 19190 usable_us 24509 stop_us 1454
+IMAGE-START-SAMPLE round 44 Booted from Booted boot_us 73619 usable_us 76899 stop_us 1482
+IMAGE-START-SAMPLE round 44 Saved from Saved boot_us 191979 usable_us 199998 stop_us 2014
+IMAGE-START-SAMPLE round 44 Restored from Restored boot_us 19843 usable_us 25082 stop_us 1387
+IMAGE-START-SAMPLE round 44 Warm from Warm boot_us 287 usable_us 5243 stop_us 1556
+IMAGE-START-SAMPLE round 45 Saved from Saved boot_us 202164 usable_us 210576 stop_us 2052
+IMAGE-START-SAMPLE round 45 Restored from Restored boot_us 18447 usable_us 23703 stop_us 1453
+IMAGE-START-SAMPLE round 45 Warm from Warm boot_us 255 usable_us 5268 stop_us 1511
+IMAGE-START-SAMPLE round 45 Booted from Booted boot_us 74458 usable_us 77000 stop_us 1586
+IMAGE-START-SAMPLE round 46 Restored from Restored boot_us 17749 usable_us 22591 stop_us 1464
+IMAGE-START-SAMPLE round 46 Warm from Warm boot_us 240 usable_us 5301 stop_us 1651
+IMAGE-START-SAMPLE round 46 Booted from Booted boot_us 70845 usable_us 73769 stop_us 1550
+IMAGE-START-SAMPLE round 46 Saved from Saved boot_us 187611 usable_us 195573 stop_us 1816
+IMAGE-START-SAMPLE round 47 Warm from Warm boot_us 264 usable_us 6056 stop_us 1637
+IMAGE-START-SAMPLE round 47 Booted from Booted boot_us 71866 usable_us 75050 stop_us 1508
+IMAGE-START-SAMPLE round 47 Saved from Saved boot_us 191807 usable_us 199977 stop_us 2620
+IMAGE-START-SAMPLE round 47 Restored from Restored boot_us 18388 usable_us 23436 stop_us 1502
+IMAGE-START-SAMPLE round 48 Booted from Booted boot_us 71879 usable_us 74259 stop_us 1471
+IMAGE-START-SAMPLE round 48 Saved from Saved boot_us 192944 usable_us 200948 stop_us 2012
+IMAGE-START-SAMPLE round 48 Restored from Restored boot_us 20272 usable_us 25641 stop_us 1480
+IMAGE-START-SAMPLE round 48 Warm from Warm boot_us 276 usable_us 5522 stop_us 1605
+IMAGE-START-SAMPLE round 49 Saved from Saved boot_us 189784 usable_us 197985 stop_us 2096
+IMAGE-START-SAMPLE round 49 Restored from Restored boot_us 18069 usable_us 23415 stop_us 1479
+IMAGE-START-SAMPLE round 49 Warm from Warm boot_us 406 usable_us 5118 stop_us 1838
+IMAGE-START-SAMPLE round 49 Booted from Booted boot_us 73464 usable_us 75822 stop_us 1566
+IMAGE-START-SAMPLE round 50 Restored from Restored boot_us 18246 usable_us 23101 stop_us 1884
+IMAGE-START-SAMPLE round 50 Warm from Warm boot_us 339 usable_us 5019 stop_us 1740
+IMAGE-START-SAMPLE round 50 Booted from Booted boot_us 74628 usable_us 77096 stop_us 1551
+IMAGE-START-SAMPLE round 50 Saved from Saved boot_us 194325 usable_us 202445 stop_us 2156
+IMAGE-START-SAMPLE round 51 Warm from Warm boot_us 297 usable_us 5784 stop_us 1664
+IMAGE-START-SAMPLE round 51 Booted from Booted boot_us 75291 usable_us 77653 stop_us 1472
+IMAGE-START-SAMPLE round 51 Saved from Saved boot_us 195358 usable_us 203745 stop_us 1705
+IMAGE-START-SAMPLE round 51 Restored from Restored boot_us 19848 usable_us 25177 stop_us 1341
+IMAGE-START-SAMPLE round 52 Booted from Booted boot_us 71718 usable_us 74135 stop_us 1506
+IMAGE-START-SAMPLE round 52 Saved from Saved boot_us 191892 usable_us 200002 stop_us 2105
+IMAGE-START-SAMPLE round 52 Restored from Restored boot_us 18217 usable_us 23427 stop_us 1523
+IMAGE-START-SAMPLE round 52 Warm from Warm boot_us 351 usable_us 5769 stop_us 1682
+IMAGE-START-SAMPLE round 53 Saved from Saved boot_us 191045 usable_us 199201 stop_us 1966
+IMAGE-START-SAMPLE round 53 Restored from Restored boot_us 17793 usable_us 22986 stop_us 1476
+IMAGE-START-SAMPLE round 53 Warm from Warm boot_us 252 usable_us 5501 stop_us 1418
+IMAGE-START-SAMPLE round 53 Booted from Booted boot_us 71615 usable_us 74022 stop_us 1450
+IMAGE-START-SAMPLE round 54 Restored from Restored boot_us 17918 usable_us 22854 stop_us 1765
+IMAGE-START-SAMPLE round 54 Warm from Warm boot_us 249 usable_us 5047 stop_us 1616
+IMAGE-START-SAMPLE round 54 Booted from Booted boot_us 73388 usable_us 75646 stop_us 1553
+IMAGE-START-SAMPLE round 54 Saved from Saved boot_us 190010 usable_us 198001 stop_us 2086
+IMAGE-START-SAMPLE round 55 Warm from Warm boot_us 383 usable_us 5556 stop_us 1970
+IMAGE-START-SAMPLE round 55 Booted from Booted boot_us 79741 usable_us 80185 stop_us 1522
+IMAGE-START-SAMPLE round 55 Saved from Saved boot_us 194470 usable_us 202460 stop_us 2073
+IMAGE-START-SAMPLE round 55 Restored from Restored boot_us 19695 usable_us 24453 stop_us 1306
+IMAGE-START-SAMPLE round 56 Booted from Booted boot_us 75126 usable_us 78395 stop_us 1534
+IMAGE-START-SAMPLE round 56 Saved from Saved boot_us 199018 usable_us 207010 stop_us 2063
+IMAGE-START-SAMPLE round 56 Restored from Restored boot_us 17497 usable_us 22555 stop_us 1406
+IMAGE-START-SAMPLE round 56 Warm from Warm boot_us 257 usable_us 5134 stop_us 1591
+IMAGE-START-SAMPLE round 57 Saved from Saved boot_us 193200 usable_us 201408 stop_us 1722
+IMAGE-START-SAMPLE round 57 Restored from Restored boot_us 18297 usable_us 23137 stop_us 1534
+IMAGE-START-SAMPLE round 57 Warm from Warm boot_us 350 usable_us 4957 stop_us 1652
+IMAGE-START-SAMPLE round 57 Booted from Booted boot_us 74350 usable_us 76685 stop_us 1574
+IMAGE-START-SAMPLE round 58 Restored from Restored boot_us 18069 usable_us 22885 stop_us 1602
+IMAGE-START-SAMPLE round 58 Warm from Warm boot_us 252 usable_us 5220 stop_us 1655
+IMAGE-START-SAMPLE round 58 Booted from Booted boot_us 69966 usable_us 72402 stop_us 1458
+IMAGE-START-SAMPLE round 58 Saved from Saved boot_us 199136 usable_us 207361 stop_us 2102
+IMAGE-START-SAMPLE round 59 Warm from Warm boot_us 368 usable_us 5513 stop_us 1572
+IMAGE-START-SAMPLE round 59 Booted from Booted boot_us 72114 usable_us 74463 stop_us 1651
+IMAGE-START-SAMPLE round 59 Saved from Saved boot_us 185706 usable_us 193548 stop_us 2043
+IMAGE-START-SAMPLE round 59 Restored from Restored boot_us 17701 usable_us 22785 stop_us 1441
+IMAGE-START-SAMPLE round 60 Booted from Booted boot_us 73512 usable_us 76559 stop_us 1636
+IMAGE-START-SAMPLE round 60 Saved from Saved boot_us 188237 usable_us 196172 stop_us 2029
+IMAGE-START-SAMPLE round 60 Restored from Restored boot_us 19779 usable_us 24521 stop_us 1421
+IMAGE-START-SAMPLE round 60 Warm from Warm boot_us 260 usable_us 5124 stop_us 1510
+IMAGE-START-SAMPLE round 61 Saved from Saved boot_us 192844 usable_us 201135 stop_us 1887
+IMAGE-START-SAMPLE round 61 Restored from Restored boot_us 18414 usable_us 23799 stop_us 1483
+IMAGE-START-SAMPLE round 61 Warm from Warm boot_us 248 usable_us 5274 stop_us 1582
+IMAGE-START-SAMPLE round 61 Booted from Booted boot_us 73030 usable_us 75350 stop_us 1542
+IMAGE-START-SAMPLE round 62 Restored from Restored boot_us 20048 usable_us 24956 stop_us 1539
+IMAGE-START-SAMPLE round 62 Warm from Warm boot_us 245 usable_us 5660 stop_us 1517
+IMAGE-START-SAMPLE round 62 Booted from Booted boot_us 76384 usable_us 79628 stop_us 1539
+IMAGE-START-SAMPLE round 62 Saved from Saved boot_us 206500 usable_us 214941 stop_us 1928
+IMAGE-START-SAMPLE round 63 Warm from Warm boot_us 255 usable_us 5673 stop_us 1585
+IMAGE-START-SAMPLE round 63 Booted from Booted boot_us 71793 usable_us 74305 stop_us 1616
+IMAGE-START-SAMPLE round 63 Saved from Saved boot_us 191456 usable_us 199930 stop_us 2051
+IMAGE-START-SAMPLE round 63 Restored from Restored boot_us 17958 usable_us 22846 stop_us 1511
+IMAGE-START-SAMPLE round 64 Booted from Booted boot_us 69231 usable_us 72713 stop_us 1592
+IMAGE-START-SAMPLE round 64 Saved from Saved boot_us 203883 usable_us 212566 stop_us 2108
+IMAGE-START-SAMPLE round 64 Restored from Restored boot_us 20274 usable_us 25061 stop_us 1487
+IMAGE-START-SAMPLE round 64 Warm from Warm boot_us 263 usable_us 5770 stop_us 1552
+IMAGE-START-SAMPLE round 65 Saved from Saved boot_us 193921 usable_us 201857 stop_us 2107
+IMAGE-START-SAMPLE round 65 Restored from Restored boot_us 18090 usable_us 23004 stop_us 1500
+IMAGE-START-SAMPLE round 65 Warm from Warm boot_us 250 usable_us 5760 stop_us 1677
+IMAGE-START-SAMPLE round 65 Booted from Booted boot_us 73113 usable_us 75456 stop_us 1595
+IMAGE-START-SAMPLE round 66 Restored from Restored boot_us 18458 usable_us 23355 stop_us 1558
+IMAGE-START-SAMPLE round 66 Warm from Warm boot_us 316 usable_us 5319 stop_us 1777
+IMAGE-START-SAMPLE round 66 Booted from Booted boot_us 73219 usable_us 75655 stop_us 1459
+IMAGE-START-SAMPLE round 66 Saved from Saved boot_us 191142 usable_us 199355 stop_us 1665
+IMAGE-START-SAMPLE round 67 Warm from Warm boot_us 267 usable_us 5724 stop_us 1663
+IMAGE-START-SAMPLE round 67 Booted from Booted boot_us 74132 usable_us 76106 stop_us 1435
+IMAGE-START-SAMPLE round 67 Saved from Saved boot_us 195328 usable_us 203716 stop_us 2062
+IMAGE-START-SAMPLE round 67 Restored from Restored boot_us 18417 usable_us 24918 stop_us 1369
+IMAGE-START-SAMPLE round 68 Booted from Booted boot_us 71085 usable_us 74251 stop_us 1470
+IMAGE-START-SAMPLE round 68 Saved from Saved boot_us 195345 usable_us 203627 stop_us 1776
+IMAGE-START-SAMPLE round 68 Restored from Restored boot_us 17941 usable_us 24045 stop_us 1548
+IMAGE-START-SAMPLE round 68 Warm from Warm boot_us 320 usable_us 4902 stop_us 1636
+IMAGE-START-SAMPLE round 69 Saved from Saved boot_us 197981 usable_us 206291 stop_us 1673
+IMAGE-START-SAMPLE round 69 Restored from Restored boot_us 18999 usable_us 25309 stop_us 1492
+IMAGE-START-SAMPLE round 69 Warm from Warm boot_us 310 usable_us 5786 stop_us 1666
+IMAGE-START-SAMPLE round 69 Booted from Booted boot_us 73302 usable_us 76664 stop_us 1564
+IMAGE-START-SAMPLE round 70 Restored from Restored boot_us 19221 usable_us 25425 stop_us 1522
+IMAGE-START-SAMPLE round 70 Warm from Warm boot_us 388 usable_us 5149 stop_us 1713
+IMAGE-START-SAMPLE round 70 Booted from Booted boot_us 73674 usable_us 76806 stop_us 1606
+IMAGE-START-SAMPLE round 70 Saved from Saved boot_us 195551 usable_us 203760 stop_us 1769
+IMAGE-START-SAMPLE round 71 Warm from Warm boot_us 272 usable_us 5745 stop_us 1548
+IMAGE-START-SAMPLE round 71 Booted from Booted boot_us 71701 usable_us 74954 stop_us 1633
+IMAGE-START-SAMPLE round 71 Saved from Saved boot_us 195306 usable_us 203606 stop_us 1759
+IMAGE-START-SAMPLE round 71 Restored from Restored boot_us 20612 usable_us 25204 stop_us 3800
+IMAGE-START-SAMPLE round 72 Booted from Booted boot_us 71716 usable_us 74761 stop_us 1521
+IMAGE-START-SAMPLE round 72 Saved from Saved boot_us 204937 usable_us 213133 stop_us 2112
+IMAGE-START-SAMPLE round 72 Restored from Restored boot_us 18324 usable_us 23262 stop_us 1490
+IMAGE-START-SAMPLE round 72 Warm from Warm boot_us 351 usable_us 5274 stop_us 1645
+IMAGE-START-SAMPLE round 73 Saved from Saved boot_us 201705 usable_us 210245 stop_us 1604
+IMAGE-START-SAMPLE round 73 Restored from Restored boot_us 17927 usable_us 22877 stop_us 1559
+IMAGE-START-SAMPLE round 73 Warm from Warm boot_us 337 usable_us 5243 stop_us 1606
+IMAGE-START-SAMPLE round 73 Booted from Booted boot_us 76233 usable_us 78587 stop_us 1557
+IMAGE-START-SAMPLE round 74 Restored from Restored boot_us 19652 usable_us 24738 stop_us 1518
+IMAGE-START-SAMPLE round 74 Warm from Warm boot_us 344 usable_us 4949 stop_us 1769
+IMAGE-START-SAMPLE round 74 Booted from Booted boot_us 74825 usable_us 77459 stop_us 1520
+IMAGE-START-SAMPLE round 74 Saved from Saved boot_us 195746 usable_us 204128 stop_us 2252
+IMAGE-START-SAMPLE round 75 Warm from Warm boot_us 278 usable_us 5511 stop_us 1534
+IMAGE-START-SAMPLE round 75 Booted from Booted boot_us 74744 usable_us 77144 stop_us 1521
+IMAGE-START-SAMPLE round 75 Saved from Saved boot_us 201597 usable_us 209642 stop_us 2077
+IMAGE-START-SAMPLE round 75 Restored from Restored boot_us 18099 usable_us 23400 stop_us 1483
+IMAGE-START-SAMPLE round 76 Booted from Booted boot_us 70864 usable_us 73268 stop_us 1568
+IMAGE-START-SAMPLE round 76 Saved from Saved boot_us 201478 usable_us 210052 stop_us 2050
+IMAGE-START-SAMPLE round 76 Restored from Restored boot_us 18528 usable_us 23408 stop_us 1562
+IMAGE-START-SAMPLE round 76 Warm from Warm boot_us 320 usable_us 5112 stop_us 1647
+IMAGE-START-SAMPLE round 77 Saved from Saved boot_us 192983 usable_us 201091 stop_us 2018
+IMAGE-START-SAMPLE round 77 Restored from Restored boot_us 20054 usable_us 24871 stop_us 1872
+IMAGE-START-SAMPLE round 77 Warm from Warm boot_us 277 usable_us 5587 stop_us 1580
+IMAGE-START-SAMPLE round 77 Booted from Booted boot_us 74417 usable_us 76838 stop_us 1531
+IMAGE-START-SAMPLE round 78 Restored from Restored boot_us 18222 usable_us 23959 stop_us 1898
+IMAGE-START-SAMPLE round 78 Warm from Warm boot_us 572 usable_us 5202 stop_us 1519
+IMAGE-START-SAMPLE round 78 Booted from Booted boot_us 71156 usable_us 73553 stop_us 1483
+IMAGE-START-SAMPLE round 78 Saved from Saved boot_us 197594 usable_us 206146 stop_us 1824
+IMAGE-START-SAMPLE round 79 Warm from Warm boot_us 283 usable_us 6014 stop_us 1587
+IMAGE-START-SAMPLE round 79 Booted from Booted boot_us 71552 usable_us 73866 stop_us 1463
+IMAGE-START-SAMPLE round 79 Saved from Saved boot_us 188730 usable_us 196924 stop_us 1778
+IMAGE-START-SAMPLE round 79 Restored from Restored boot_us 17781 usable_us 24538 stop_us 1459
+IMAGE-START-SAMPLE round 80 Booted from Booted boot_us 70874 usable_us 74032 stop_us 1617
+IMAGE-START-SAMPLE round 80 Saved from Saved boot_us 192190 usable_us 200657 stop_us 2003
+IMAGE-START-SAMPLE round 80 Restored from Restored boot_us 18157 usable_us 24240 stop_us 1511
+IMAGE-START-SAMPLE round 80 Warm from Warm boot_us 271 usable_us 5370 stop_us 1607
+test image_start_costs has been running for over 60 seconds
+IMAGE-START-SAMPLE round 81 Saved from Saved boot_us 204698 usable_us 213067 stop_us 2110
+IMAGE-START-SAMPLE round 81 Restored from Restored boot_us 18414 usable_us 24934 stop_us 1482
+IMAGE-START-SAMPLE round 81 Warm from Warm boot_us 281 usable_us 5491 stop_us 1689
+IMAGE-START-SAMPLE round 81 Booted from Booted boot_us 74517 usable_us 77706 stop_us 1549
+IMAGE-START-SAMPLE round 82 Restored from Restored boot_us 17695 usable_us 23123 stop_us 1495
+IMAGE-START-SAMPLE round 82 Warm from Warm boot_us 334 usable_us 5305 stop_us 1658
+IMAGE-START-SAMPLE round 82 Booted from Booted boot_us 74455 usable_us 77454 stop_us 1532
+IMAGE-START-SAMPLE round 82 Saved from Saved boot_us 196570 usable_us 204896 stop_us 7115
+IMAGE-START-SAMPLE round 83 Warm from Warm boot_us 251 usable_us 5749 stop_us 1577
+IMAGE-START-SAMPLE round 83 Booted from Booted boot_us 75437 usable_us 77798 stop_us 1497
+IMAGE-START-SAMPLE round 83 Saved from Saved boot_us 196544 usable_us 204950 stop_us 4864
+IMAGE-START-SAMPLE round 83 Restored from Restored boot_us 18226 usable_us 23068 stop_us 1474
+IMAGE-START-SAMPLE round 84 Booted from Booted boot_us 71616 usable_us 74007 stop_us 1525
+IMAGE-START-SAMPLE round 84 Saved from Saved boot_us 195657 usable_us 204072 stop_us 1760
+IMAGE-START-SAMPLE round 84 Restored from Restored boot_us 17729 usable_us 22916 stop_us 1529
+IMAGE-START-SAMPLE round 84 Warm from Warm boot_us 278 usable_us 6004 stop_us 1700
+IMAGE-START-SAMPLE round 85 Saved from Saved boot_us 190994 usable_us 199140 stop_us 1743
+IMAGE-START-SAMPLE round 85 Restored from Restored boot_us 18093 usable_us 23346 stop_us 1534
+IMAGE-START-SAMPLE round 85 Warm from Warm boot_us 262 usable_us 5411 stop_us 1576
+IMAGE-START-SAMPLE round 85 Booted from Booted boot_us 71665 usable_us 73981 stop_us 1554
+IMAGE-START-SAMPLE round 86 Restored from Restored boot_us 18051 usable_us 22665 stop_us 1479
+IMAGE-START-SAMPLE round 86 Warm from Warm boot_us 247 usable_us 5325 stop_us 1570
+IMAGE-START-SAMPLE round 86 Booted from Booted boot_us 74351 usable_us 76683 stop_us 1528
+IMAGE-START-SAMPLE round 86 Saved from Saved boot_us 195849 usable_us 204060 stop_us 2051
+IMAGE-START-SAMPLE round 87 Warm from Warm boot_us 277 usable_us 5515 stop_us 1548
+IMAGE-START-SAMPLE round 87 Booted from Booted boot_us 71063 usable_us 73784 stop_us 1543
+IMAGE-START-SAMPLE round 87 Saved from Saved boot_us 195422 usable_us 203242 stop_us 2083
+IMAGE-START-SAMPLE round 87 Restored from Restored boot_us 17847 usable_us 23032 stop_us 1414
+IMAGE-START-SAMPLE round 88 Booted from Booted boot_us 76194 usable_us 78577 stop_us 1705
+IMAGE-START-SAMPLE round 88 Saved from Saved boot_us 196550 usable_us 205278 stop_us 1878
+IMAGE-START-SAMPLE round 88 Restored from Restored boot_us 17664 usable_us 22624 stop_us 1429
+IMAGE-START-SAMPLE round 88 Warm from Warm boot_us 272 usable_us 5289 stop_us 1640
+IMAGE-START-SAMPLE round 89 Saved from Saved boot_us 195011 usable_us 203423 stop_us 1882
+IMAGE-START-SAMPLE round 89 Restored from Restored boot_us 18446 usable_us 23677 stop_us 1469
+IMAGE-START-SAMPLE round 89 Warm from Warm boot_us 270 usable_us 5448 stop_us 1628
+IMAGE-START-SAMPLE round 89 Booted from Booted boot_us 75880 usable_us 79111 stop_us 1417
+IMAGE-START-SAMPLE round 90 Restored from Restored boot_us 17586 usable_us 22807 stop_us 1559
+IMAGE-START-SAMPLE round 90 Warm from Warm boot_us 235 usable_us 5756 stop_us 1654
+IMAGE-START-SAMPLE round 90 Booted from Booted boot_us 70727 usable_us 72988 stop_us 1432
+IMAGE-START-SAMPLE round 90 Saved from Saved boot_us 187901 usable_us 195834 stop_us 2084
+IMAGE-START-SAMPLE round 91 Warm from Warm boot_us 304 usable_us 5277 stop_us 1570
+IMAGE-START-SAMPLE round 91 Booted from Booted boot_us 71751 usable_us 74228 stop_us 1661
+IMAGE-START-SAMPLE round 91 Saved from Saved boot_us 191324 usable_us 199683 stop_us 2023
+IMAGE-START-SAMPLE round 91 Restored from Restored boot_us 18276 usable_us 24465 stop_us 1330
+IMAGE-START-SAMPLE round 92 Booted from Booted boot_us 71720 usable_us 74974 stop_us 1625
+IMAGE-START-SAMPLE round 92 Saved from Saved boot_us 191295 usable_us 199525 stop_us 2090
+IMAGE-START-SAMPLE round 92 Restored from Restored boot_us 19626 usable_us 24828 stop_us 1362
+IMAGE-START-SAMPLE round 92 Warm from Warm boot_us 233 usable_us 5077 stop_us 1579
+IMAGE-START-SAMPLE round 93 Saved from Saved boot_us 206233 usable_us 215149 stop_us 2065
+IMAGE-START-SAMPLE round 93 Restored from Restored boot_us 18714 usable_us 25546 stop_us 1601
+IMAGE-START-SAMPLE round 93 Warm from Warm boot_us 273 usable_us 5231 stop_us 1528
+IMAGE-START-SAMPLE round 93 Booted from Booted boot_us 74002 usable_us 76321 stop_us 1425
+IMAGE-START-SAMPLE round 94 Restored from Restored boot_us 18233 usable_us 23111 stop_us 1293
+IMAGE-START-SAMPLE round 94 Warm from Warm boot_us 229 usable_us 5167 stop_us 1647
+IMAGE-START-SAMPLE round 94 Booted from Booted boot_us 73642 usable_us 76883 stop_us 1572
+IMAGE-START-SAMPLE round 94 Saved from Saved boot_us 193385 usable_us 201314 stop_us 2081
+IMAGE-START-SAMPLE round 95 Warm from Warm boot_us 245 usable_us 5320 stop_us 1568
+IMAGE-START-SAMPLE round 95 Booted from Booted boot_us 71355 usable_us 73684 stop_us 1516
+IMAGE-START-SAMPLE round 95 Saved from Saved boot_us 189126 usable_us 197200 stop_us 2235
+IMAGE-START-SAMPLE round 95 Restored from Restored boot_us 17817 usable_us 22988 stop_us 1537
+IMAGE-START-SAMPLE round 96 Booted from Booted boot_us 73826 usable_us 76141 stop_us 1514
+IMAGE-START-SAMPLE round 96 Saved from Saved boot_us 193776 usable_us 201853 stop_us 2076
+IMAGE-START-SAMPLE round 96 Restored from Restored boot_us 19157 usable_us 24392 stop_us 1588
+IMAGE-START-SAMPLE round 96 Warm from Warm boot_us 236 usable_us 5109 stop_us 1645
+IMAGE-START-SAMPLE round 97 Saved from Saved boot_us 193139 usable_us 201670 stop_us 2000
+IMAGE-START-SAMPLE round 97 Restored from Restored boot_us 18123 usable_us 23049 stop_us 1547
+IMAGE-START-SAMPLE round 97 Warm from Warm boot_us 251 usable_us 5324 stop_us 1778
+IMAGE-START-SAMPLE round 97 Booted from Booted boot_us 72900 usable_us 75251 stop_us 1582
+IMAGE-START-SAMPLE round 98 Restored from Restored boot_us 17885 usable_us 23087 stop_us 1590
+IMAGE-START-SAMPLE round 98 Warm from Warm boot_us 333 usable_us 4990 stop_us 1680
+IMAGE-START-SAMPLE round 98 Booted from Booted boot_us 72456 usable_us 74839 stop_us 1457
+IMAGE-START-SAMPLE round 98 Saved from Saved boot_us 188631 usable_us 196820 stop_us 1918
+IMAGE-START-SAMPLE round 99 Warm from Warm boot_us 270 usable_us 5951 stop_us 1589
+IMAGE-START-SAMPLE round 99 Booted from Booted boot_us 72018 usable_us 74483 stop_us 1650
+IMAGE-START-SAMPLE round 99 Saved from Saved boot_us 199464 usable_us 207858 stop_us 1644
+IMAGE-START-SAMPLE round 99 Restored from Restored boot_us 20266 usable_us 25462 stop_us 1436
+MEASURED IMAGE START Booted boot, hex.image.boot's span (backend hvf, Darwin 25.2.0): n 100 p50 72.403875ms p90 74.628583ms p99 76.3845ms max 79.741666ms (host Adas-Mac-Studio-2.local macos-aarch64-14, 26c1ea5df2c3)
+MEASURED IMAGE START Booted to first output (backend hvf, Darwin 25.2.0): n 100 p50 74.954459ms p90 77.454167ms p99 79.628833ms max 80.185375ms (host Adas-Mac-Studio-2.local macos-aarch64-14, 26c1ea5df2c3)
+MEASURED IMAGE START Booted stop (backend hvf, Darwin 25.2.0): n 100 p50 1.54275ms p90 1.625375ms p99 1.913959ms max 4.288834ms (host Adas-Mac-Studio-2.local macos-aarch64-14, 26c1ea5df2c3)
+MEASURED IMAGE START Saved boot, hex.image.boot's span (backend hvf, Darwin 25.2.0): n 100 p50 194.126875ms p90 201.59725ms p99 206.500041ms max 207.165584ms (host Adas-Mac-Studio-2.local macos-aarch64-14, 26c1ea5df2c3)
+MEASURED IMAGE START Saved to first output (backend hvf, Darwin 25.2.0): n 100 p50 202.14525ms p90 210.052166ms p99 215.149958ms max 215.584625ms (host Adas-Mac-Studio-2.local macos-aarch64-14, 26c1ea5df2c3)
+MEASURED IMAGE START Saved stop (backend hvf, Darwin 25.2.0): n 100 p50 2.052791ms p90 2.173125ms p99 7.115084ms max 12.409166ms (host Adas-Mac-Studio-2.local macos-aarch64-14, 26c1ea5df2c3)
+MEASURED IMAGE START Restored boot, hex.image.boot's span (backend hvf, Darwin 25.2.0): n 100 p50 18.233208ms p90 19.950959ms p99 20.612208ms max 22.349833ms (host Adas-Mac-Studio-2.local macos-aarch64-14, 26c1ea5df2c3)
+MEASURED IMAGE START Restored to first output (backend hvf, Darwin 25.2.0): n 100 p50 23.408959ms p90 25.145084ms p99 25.717417ms max 26.404458ms (host Adas-Mac-Studio-2.local macos-aarch64-14, 26c1ea5df2c3)
+MEASURED IMAGE START Restored stop (backend hvf, Darwin 25.2.0): n 100 p50 1.490958ms p90 1.628375ms p99 1.898834ms max 3.8005ms (host Adas-Mac-Studio-2.local macos-aarch64-14, 26c1ea5df2c3)
+MEASURED IMAGE START Warm boot, hex.image.boot's span (backend hvf, Darwin 25.2.0): n 100 p50 272.25µs p90 350.833µs p99 406.917µs max 572.959µs (host Adas-Mac-Studio-2.local macos-aarch64-14, 26c1ea5df2c3)
+MEASURED IMAGE START Warm to first output (backend hvf, Darwin 25.2.0): n 100 p50 5.327875ms p90 5.834583ms p99 6.18125ms max 6.370792ms (host Adas-Mac-Studio-2.local macos-aarch64-14, 26c1ea5df2c3)
+MEASURED IMAGE START Warm stop (backend hvf, Darwin 25.2.0): n 100 p50 1.636417ms p90 1.7985ms p99 4.853292ms max 5.22ms (host Adas-Mac-Studio-2.local macos-aarch64-14, 26c1ea5df2c3)
+IMAGE-START-PHASES timed Booted from Booted: boot 74663 us, first output 77200 us, stop 1516 us; every timed line in us from the boot's call:
+IMAGE-START-PHASES timed Booted       166            caller    its run host 11567 started
+IMAGE-START-PHASES timed Booted       187       +21  caller    its run's request sending
+IMAGE-START-PHASES timed Booted       189        +2  caller    its run's request sent
+IMAGE-START-PHASES timed Booted      1692     +1503  run host  its clock began at unix 1794884059002705 us
+IMAGE-START-PHASES timed Booted      1714       +22  run host  its request read
+IMAGE-START-PHASES timed Booted      2543      +829  run host  its image prepared
+IMAGE-START-PHASES timed Booted      3638     +1095  run host  its microVM shaped
+IMAGE-START-PHASES timed Booted      5350     +1712  run host  its writable layer made on its own thread, in 1690 us
+IMAGE-START-PHASES timed Booted      9715     +4365  run host  its security made: its guest's kernel read, its filters compiled
+IMAGE-START-PHASES timed Booted      9751       +36  run host  its members staged, its ports bound
+IMAGE-START-PHASES timed Booted      9763       +12  run host  its setup's security composed
+IMAGE-START-PHASES timed Booted      9772        +9  run host  its run planned
+IMAGE-START-PHASES timed Booted      9779        +7  run host  prepared sha256:8ccf9ed0c9b5d579183a2f845077ef3df2090fda01e296591be7a0ded82639f6, 1 vCPUs, 512 MiB; starting its VM
+IMAGE-START-PHASES timed Booted      9825       +46  run host  its VM's binary checked
+IMAGE-START-PHASES timed Booted      9828        +3  run host  its network decided
+IMAGE-START-PHASES timed Booted      9833        +5  run host  its writable layer made, taken from its thread
+IMAGE-START-PHASES timed Booted      9839        +6  run host  launching its VM
+IMAGE-START-PHASES timed Booted      9897       +58  run host  spawning the VM
+IMAGE-START-PHASES timed Booted     10056      +159  run host  the VM spawned, its process 11570
+IMAGE-START-PHASES timed Booted     10077       +21  run host  the VM's grants: 0 of its asks answered
+IMAGE-START-PHASES timed Booted     14693     +4616  run host  the VM's grants: 1 of its asks answered
+IMAGE-START-PHASES timed Booted     74396    +59703  run host  its VM said READY
+IMAGE-START-PHASES timed Booted     74403        +7  run host  its VM's start settled
+IMAGE-START-PHASES timed Booted     74410        +7  run host  its VM process 11570 is ready (Booted)
+IMAGE-START-PHASES timed Booted     74490       +80  run host  its VM took the run
+IMAGE-START-PHASES timed Booted     74541       +51  run host  its start told its orchestrator
+IMAGE-START-PHASES timed Booted     74555       +14  caller    its host's answer 16 read
+IMAGE-START-PHASES timed Booted     74565       +10  caller    its start taken
+IMAGE-START-PHASES timed Booted     74584       +19  run host  its writable layer's name let go of
+IMAGE-START-PHASES timed Booted     74591        +7  caller    its members' outputs pumped
+IMAGE-START-PHASES timed Booted     74592        +1  caller    its diagnostics' file named
+IMAGE-START-PHASES timed Booted     74592        +0  caller    its diagnostics' keeper taken
+IMAGE-START-PHASES timed Booted     74605       +13  caller    its diagnostics' file cut to its length
+IMAGE-START-PHASES timed Booted     74660       +55  caller    its diagnostics kept
+IMAGE-START-PHASES timed Booted     74663        +3  caller    the boot answered
+IMAGE-START-PHASES timed Booted     77001     +2338  run host  its VM said STARTED
+IMAGE-START-PHASES timed Booted     77200      +199  caller    its harness's first output read
+IMAGE-START-PHASES timed Saved from Saved: boot 200265 us, first output 208688 us, stop 2052 us; every timed line in us from the boot's call:
+IMAGE-START-PHASES timed Saved       182            caller    its run host 11571 started
+IMAGE-START-PHASES timed Saved       202       +20  caller    its run's request sending
+IMAGE-START-PHASES timed Saved       205        +3  caller    its run's request sent
+IMAGE-START-PHASES timed Saved      1848     +1643  run host  its clock began at unix 1794884059083582 us
+IMAGE-START-PHASES timed Saved      1869       +21  run host  its request read
+IMAGE-START-PHASES timed Saved      2788      +919  run host  its image prepared
+IMAGE-START-PHASES timed Saved      3802     +1014  run host  its microVM shaped
+IMAGE-START-PHASES timed Saved      5341     +1539  run host  its writable layer made on its own thread, in 1512 us
+IMAGE-START-PHASES timed Saved      9391     +4050  run host  its security made: its guest's kernel read, its filters compiled
+IMAGE-START-PHASES timed Saved      9430       +39  run host  its members staged, its ports bound
+IMAGE-START-PHASES timed Saved      9443       +13  run host  its setup's security composed
+IMAGE-START-PHASES timed Saved      9449        +6  run host  its run planned
+IMAGE-START-PHASES timed Saved      9456        +7  run host  prepared sha256:01fbdc9ecc56beebf64bd4c0b6fd2f2ca077f104d2fc5f9989be7c0d0ab1f870, 1 vCPUs, 512 MiB; starting its VM
+IMAGE-START-PHASES timed Saved      9529       +73  run host  its VM's binary checked
+IMAGE-START-PHASES timed Saved      9542       +13  run host  its network decided
+IMAGE-START-PHASES timed Saved      9547        +5  run host  its writable layer made, taken from its thread
+IMAGE-START-PHASES timed Saved      9553        +6  run host  launching its VM
+IMAGE-START-PHASES timed Saved      9624       +71  run host  spawning the VM
+IMAGE-START-PHASES timed Saved      9786      +162  run host  the VM spawned, its process 11572
+IMAGE-START-PHASES timed Saved      9808       +22  run host  the VM's grants: 0 of its asks answered
+IMAGE-START-PHASES timed Saved     20642    +10834  run host  the VM's grants: 1 of its asks answered
+IMAGE-START-PHASES timed Saved    188776   +168134  run host  its VM said READY
+IMAGE-START-PHASES timed Saved    200055    +11279  run host  its VM's start settled
+IMAGE-START-PHASES timed Saved    200061        +6  run host  its VM process 11572 is ready (Saved)
+IMAGE-START-PHASES timed Saved    200139       +78  run host  its VM took the run
+IMAGE-START-PHASES timed Saved    200178       +39  run host  its start told its orchestrator
+IMAGE-START-PHASES timed Saved    200190       +12  caller    its host's answer 16 read
+IMAGE-START-PHASES timed Saved    200201       +11  caller    its start taken
+IMAGE-START-PHASES timed Saved    200218       +17  run host  its writable layer's name let go of
+IMAGE-START-PHASES timed Saved    200227        +9  caller    its members' outputs pumped
+IMAGE-START-PHASES timed Saved    200228        +1  caller    its diagnostics' file named
+IMAGE-START-PHASES timed Saved    200228        +0  caller    its diagnostics' keeper taken
+IMAGE-START-PHASES timed Saved    200237        +9  caller    its diagnostics' file cut to its length
+IMAGE-START-PHASES timed Saved    200264       +27  caller    its diagnostics kept
+IMAGE-START-PHASES timed Saved    200265        +1  caller    the boot answered
+IMAGE-START-PHASES timed Saved    208496     +8231  run host  its VM said STARTED
+IMAGE-START-PHASES timed Saved    208688      +192  caller    its harness's first output read
+IMAGE-START-PHASES timed Restored from Restored: boot 18067 us, first output 23101 us, stop 1394 us; every timed line in us from the boot's call:
+IMAGE-START-PHASES timed Restored       198            caller    its run host 11574 started
+IMAGE-START-PHASES timed Restored       219       +21  caller    its run's request sending
+IMAGE-START-PHASES timed Restored       222        +3  caller    its run's request sent
+IMAGE-START-PHASES timed Restored      1938     +1716  run host  its clock began at unix 1794884059295401 us
+IMAGE-START-PHASES timed Restored      1965       +27  run host  its request read
+IMAGE-START-PHASES timed Restored      2900      +935  run host  its image prepared
+IMAGE-START-PHASES timed Restored      3956     +1056  run host  its microVM shaped
+IMAGE-START-PHASES timed Restored      4302      +346  run host  its writable layer cloned on its own thread, in 289 us
+IMAGE-START-PHASES timed Restored      9440     +5138  run host  its security made: its guest's kernel read, its filters compiled
+IMAGE-START-PHASES timed Restored      9482       +42  run host  its members staged, its ports bound
+IMAGE-START-PHASES timed Restored      9494       +12  run host  its setup's security composed
+IMAGE-START-PHASES timed Restored      9501        +7  run host  its run planned
+IMAGE-START-PHASES timed Restored      9508        +7  run host  prepared sha256:8ccf9ed0c9b5d579183a2f845077ef3df2090fda01e296591be7a0ded82639f6, 1 vCPUs, 512 MiB; starting its VM
+IMAGE-START-PHASES timed Restored      9584       +76  run host  its VM's binary checked
+IMAGE-START-PHASES timed Restored      9686      +102  run host  its network decided
+IMAGE-START-PHASES timed Restored      9692        +6  run host  its writable layer cloned, taken from its thread
+IMAGE-START-PHASES timed Restored      9738       +46  run host  launching its VM
+IMAGE-START-PHASES timed Restored      9800       +62  run host  spawning the VM
+IMAGE-START-PHASES timed Restored      9959      +159  run host  the VM spawned, its process 11575
+IMAGE-START-PHASES timed Restored      9982       +23  run host  the VM's grants: 0 of its asks answered
+IMAGE-START-PHASES timed Restored     14943     +4961  run host  the VM's grants: 1 of its asks answered
+IMAGE-START-PHASES timed Restored     15106      +163  run host  the VM's grants: 2 of its asks answered
+IMAGE-START-PHASES timed Restored     15209      +103  run host  the VM's grants: 3 of its asks answered
+IMAGE-START-PHASES timed Restored     17856     +2647  run host  its VM said READY
+IMAGE-START-PHASES timed Restored     17859        +3  run host  its VM's start settled
+IMAGE-START-PHASES timed Restored     17862        +3  run host  its VM process 11575 is ready (Restored)
+IMAGE-START-PHASES timed Restored     17915       +53  run host  its VM took the run
+IMAGE-START-PHASES timed Restored     17949       +34  run host  its start told its orchestrator
+IMAGE-START-PHASES timed Restored     17983       +34  caller    its host's answer 16 read
+IMAGE-START-PHASES timed Restored     17996       +13  caller    its start taken
+IMAGE-START-PHASES timed Restored     18026       +30  caller    its members' outputs pumped
+IMAGE-START-PHASES timed Restored     18026        +0  run host  its writable layer's name let go of
+IMAGE-START-PHASES timed Restored     18027        +1  caller    its diagnostics' file named
+IMAGE-START-PHASES timed Restored     18028        +1  caller    its diagnostics' keeper taken
+IMAGE-START-PHASES timed Restored     18036        +8  caller    its diagnostics' file cut to its length
+IMAGE-START-PHASES timed Restored     18065       +29  caller    its diagnostics kept
+IMAGE-START-PHASES timed Restored     18067        +2  caller    the boot answered
+IMAGE-START-PHASES timed Restored     22931     +4864  run host  its VM said STARTED
+IMAGE-START-PHASES timed Restored     23101      +170  caller    its harness's first output read
+IMAGE-START-PHASES timed Warm from Warm: boot 282 us, first output 5165 us, stop 1549 us; every timed line in us from the boot's call:
+IMAGE-START-PHASES timed Warm   -325703            caller    its run host 11565 started
+IMAGE-START-PHASES timed Warm   -324016     +1687  run host  its clock began at unix 1794884058995063 us
+IMAGE-START-PHASES timed Warm   -323993       +23  run host  its request read
+IMAGE-START-PHASES timed Warm   -323089      +904  run host  its image prepared
+IMAGE-START-PHASES timed Warm   -321982     +1107  run host  its microVM shaped
+IMAGE-START-PHASES timed Warm   -321621      +361  run host  its writable layer cloned on its own thread, in 304 us
+IMAGE-START-PHASES timed Warm   -316266     +5355  run host  its security made: its guest's kernel read, its filters compiled
+IMAGE-START-PHASES timed Warm   -316193       +73  run host  its VM's binary checked
+IMAGE-START-PHASES timed Warm   -316075      +118  run host  its network decided
+IMAGE-START-PHASES timed Warm   -316069        +6  run host  its writable layer cloned, taken from its thread
+IMAGE-START-PHASES timed Warm   -316027       +42  run host  launching its VM
+IMAGE-START-PHASES timed Warm   -315974       +53  run host  spawning the VM
+IMAGE-START-PHASES timed Warm   -315827      +147  run host  the VM spawned, its process 11568
+IMAGE-START-PHASES timed Warm   -315799       +28  run host  the VM's grants: 0 of its asks answered
+IMAGE-START-PHASES timed Warm   -310292     +5507  run host  the VM's grants: 1 of its asks answered
+IMAGE-START-PHASES timed Warm   -310179      +113  run host  the VM's grants: 2 of its asks answered
+IMAGE-START-PHASES timed Warm   -310109       +70  run host  the VM's grants: 3 of its asks answered
+IMAGE-START-PHASES timed Warm   -306881     +3228  run host  its VM said READY
+IMAGE-START-PHASES timed Warm   -306878        +3  run host  its VM's start settled
+IMAGE-START-PHASES timed Warm   -303834     +3044  run host  its writable layer's name let go of
+IMAGE-START-PHASES timed Warm   -303790       +44  run host  its agent-control key made
+IMAGE-START-PHASES timed Warm   -303788        +2  run host  warm, its VM process 11568 ready (Restored)
+IMAGE-START-PHASES timed Warm   -303773       +15  caller    its host's answer 32 read
+IMAGE-START-PHASES timed Warm        24   +303797  caller    its run's request sending
+IMAGE-START-PHASES timed Warm        29        +5  caller    its run's request sent
+IMAGE-START-PHASES timed Warm        38        +9  run host  its run's request read
+IMAGE-START-PHASES timed Warm        75       +37  run host  its members staged, its ports bound
+IMAGE-START-PHASES timed Warm        88       +13  run host  its setup's security composed
+IMAGE-START-PHASES timed Warm        95        +7  run host  its run planned
+IMAGE-START-PHASES timed Warm       100        +5  run host  its VM process 11568 is ready (Warm)
+IMAGE-START-PHASES timed Warm       158       +58  run host  its VM took the run
+IMAGE-START-PHASES timed Warm       191       +33  run host  its start told its orchestrator
+IMAGE-START-PHASES timed Warm       193        +2  run host  its writable layer's name let go of
+IMAGE-START-PHASES timed Warm       198        +5  caller    its host's answer 16 read
+IMAGE-START-PHASES timed Warm       210       +12  caller    its start taken
+IMAGE-START-PHASES timed Warm       235       +25  caller    its members' outputs pumped
+IMAGE-START-PHASES timed Warm       241        +6  caller    its diagnostics' file named
+IMAGE-START-PHASES timed Warm       241        +0  caller    its diagnostics' keeper taken
+IMAGE-START-PHASES timed Warm       251       +10  caller    its diagnostics' file cut to its length
+IMAGE-START-PHASES timed Warm       278       +27  caller    its diagnostics kept
+IMAGE-START-PHASES timed Warm       282        +4  caller    the boot answered
+IMAGE-START-PHASES timed Warm      4958     +4676  run host  its VM said STARTED
+IMAGE-START-PHASES timed Warm      5165      +207  caller    its harness's first output read
+IMAGE-START-PHASES debug Booted from Booted: boot 75633 us, first output 78304 us, stop 1527 us; every timed line in us from the boot's call:
+IMAGE-START-PHASES debug Booted       153            caller    its run host 11600 started
+IMAGE-START-PHASES debug Booted       174       +21  caller    its run's request sending
+IMAGE-START-PHASES debug Booted       177        +3  caller    its run's request sent
+IMAGE-START-PHASES debug Booted      1872     +1695  run host  its clock began at unix 1794884059691585 us
+IMAGE-START-PHASES debug Booted      1898       +26  run host  its request read
+IMAGE-START-PHASES debug Booted      2767      +869  run host  its image prepared
+IMAGE-START-PHASES debug Booted      3829     +1062  run host  its microVM shaped
+IMAGE-START-PHASES debug Booted      5390     +1561  run host  its writable layer made on its own thread, in 1547 us
+IMAGE-START-PHASES debug Booted      9825     +4435  run host  its security made: its guest's kernel read, its filters compiled
+IMAGE-START-PHASES debug Booted      9863       +38  run host  its members staged, its ports bound
+IMAGE-START-PHASES debug Booted      9875       +12  run host  its setup's security composed
+IMAGE-START-PHASES debug Booted      9883        +8  run host  its run planned
+IMAGE-START-PHASES debug Booted      9891        +8  run host  prepared sha256:8ccf9ed0c9b5d579183a2f845077ef3df2090fda01e296591be7a0ded82639f6, 1 vCPUs, 512 MiB; starting its VM
+IMAGE-START-PHASES debug Booted      9935       +44  run host  its VM's binary checked
+IMAGE-START-PHASES debug Booted      9937        +2  run host  its network decided
+IMAGE-START-PHASES debug Booted      9941        +4  run host  its writable layer made, taken from its thread
+IMAGE-START-PHASES debug Booted      9946        +5  run host  launching its VM
+IMAGE-START-PHASES debug Booted     10004       +58  run host  spawning the VM
+IMAGE-START-PHASES debug Booted     10169      +165  run host  the VM spawned, its process 11604
+IMAGE-START-PHASES debug Booted     10186       +17  run host  the VM's grants: 0 of its asks answered
+IMAGE-START-PHASES debug Booted     14748     +4562  vm 11604  its log began at unix 1794884059704510 us
+IMAGE-START-PHASES debug Booted     14943      +195  run host  the VM's grants: 1 of its asks answered
+IMAGE-START-PHASES debug Booted     15214      +271  vm 11604  VM created and RAM mapped
+IMAGE-START-PHASES debug Booted     15288       +74  vm 11604  GIC created
+IMAGE-START-PHASES debug Booted     16293     +1005  vm 11604  kernel and initrd copied
+IMAGE-START-PHASES debug Booted     16328       +35  vm 11604  kernel entry 0x80200000 end 0x81570000; dtb at 0x9fe00000 (3400 bytes)
+IMAGE-START-PHASES debug Booted     16506      +178  vm 11604  vCPUs set up in 173 us, the slowest vCPU 0 in 171 us
+IMAGE-START-PHASES debug Booted     16507        +1  vm 11604  the machine's start finished in 1 us
+IMAGE-START-PHASES debug Booted     16511        +4  vm 11604  1 vCPU(s) ready to run after 1770 us
+IMAGE-START-PHASES debug Booted     22717     +6206  vm 11604  trapped write of sysreg 0x809c
+IMAGE-START-PHASES debug Booted     22723        +6  vm 11604  trapped write of sysreg 0x8084
+IMAGE-START-PHASES debug Booted     39488    +16765  vm 11604  guest marker 1 at 24747 us
+IMAGE-START-PHASES debug Booted     70522    +31034  vm 11604  a guest's flush of its writable layer in 4730 us
+IMAGE-START-PHASES debug Booted     75376     +4854  run host  its VM said READY
+IMAGE-START-PHASES debug Booted     75381        +5  run host  its VM's start settled
+IMAGE-START-PHASES debug Booted     75387        +6  run host  its VM process 11604 is ready (Booted)
+IMAGE-START-PHASES debug Booted     75452       +65  run host  its VM took the run
+IMAGE-START-PHASES debug Booted     75460        +8  vm 11604  the hold: 0 milli-CPU, held to None over 1.006708ms, from g 1.006708ms (Step { late: Some(6.708µs), clock: Some(1µs) }; its clock: Ok(1µs))
+IMAGE-START-PHASES debug Booted     75493       +33  run host  its start told its orchestrator
+IMAGE-START-PHASES debug Booted     75517       +24  caller    its host's answer 16 read
+IMAGE-START-PHASES debug Booted     75535       +18  caller    its start taken
+IMAGE-START-PHASES debug Booted     75538        +3  run host  its writable layer's name let go of
+IMAGE-START-PHASES debug Booted     75569       +31  caller    its members' outputs pumped
+IMAGE-START-PHASES debug Booted     75570        +1  caller    its diagnostics' file named
+IMAGE-START-PHASES debug Booted     75571        +1  caller    its diagnostics' keeper taken
+IMAGE-START-PHASES debug Booted     75583       +12  caller    its diagnostics' file cut to its length
+IMAGE-START-PHASES debug Booted     75631       +48  caller    its diagnostics kept
+IMAGE-START-PHASES debug Booted     75633        +2  caller    the boot answered
+IMAGE-START-PHASES debug Booted     75641        +8  vm 11604  guest marker 3 at 60900 us
+IMAGE-START-PHASES debug Booted     78107     +2466  vm 11604  guest marker 4 at 63366 us
+IMAGE-START-PHASES debug Booted     78142       +35  run host  its VM said STARTED
+IMAGE-START-PHASES debug Booted     78304      +162  caller    its harness's first output read
+IMAGE-START-PHASES debug Saved from Saved: boot 194165 us, first output 202539 us, stop 1831 us; every timed line in us from the boot's call:
+IMAGE-START-PHASES debug Saved       178            caller    its run host 11606 started
+IMAGE-START-PHASES debug Saved       201       +23  caller    its run's request sending
+IMAGE-START-PHASES debug Saved       205        +4  caller    its run's request sent
+IMAGE-START-PHASES debug Saved      1854     +1649  run host  its clock began at unix 1794884059773613 us
+IMAGE-START-PHASES debug Saved      1879       +25  run host  its request read
+IMAGE-START-PHASES debug Saved      2819      +940  run host  its image prepared
+IMAGE-START-PHASES debug Saved      3838     +1019  run host  its microVM shaped
+IMAGE-START-PHASES debug Saved      5948     +2110  run host  its writable layer made on its own thread, in 2082 us
+IMAGE-START-PHASES debug Saved      9509     +3561  run host  its security made: its guest's kernel read, its filters compiled
+IMAGE-START-PHASES debug Saved      9554       +45  run host  its members staged, its ports bound
+IMAGE-START-PHASES debug Saved      9566       +12  run host  its setup's security composed
+IMAGE-START-PHASES debug Saved      9573        +7  run host  its run planned
+IMAGE-START-PHASES debug Saved      9580        +7  run host  prepared sha256:01fbdc9ecc56beebf64bd4c0b6fd2f2ca077f104d2fc5f9989be7c0d0ab1f870, 1 vCPUs, 512 MiB; starting its VM
+IMAGE-START-PHASES debug Saved      9652       +72  run host  its VM's binary checked
+IMAGE-START-PHASES debug Saved      9664       +12  run host  its network decided
+IMAGE-START-PHASES debug Saved      9670        +6  run host  its writable layer made, taken from its thread
+IMAGE-START-PHASES debug Saved      9674        +4  run host  launching its VM
+IMAGE-START-PHASES debug Saved      9749       +75  run host  spawning the VM
+IMAGE-START-PHASES debug Saved      9918      +169  run host  the VM spawned, its process 11607
+IMAGE-START-PHASES debug Saved      9938       +20  run host  the VM's grants: 0 of its asks answered
+IMAGE-START-PHASES debug Saved     15271     +5333  vm 11607  its log began at unix 1794884059787072 us
+IMAGE-START-PHASES debug Saved     19394     +4123  run host  the VM's grants: 1 of its asks answered
+IMAGE-START-PHASES debug Saved     21370     +1976  vm 11607  VM created and RAM mapped
+IMAGE-START-PHASES debug Saved     21387       +17  vm 11607  GIC created
+IMAGE-START-PHASES debug Saved     22486     +1099  vm 11607  kernel and initrd copied
+IMAGE-START-PHASES debug Saved     22522       +36  vm 11607  kernel entry 0x80200000 end 0x81570000; dtb at 0x9fe00000 (3416 bytes)
+IMAGE-START-PHASES debug Saved     22676      +154  vm 11607  vCPUs set up in 136 us, the slowest vCPU 0 in 136 us
+IMAGE-START-PHASES debug Saved     22679        +3  vm 11607  the machine's start finished in 3 us
+IMAGE-START-PHASES debug Saved     22691       +12  vm 11607  1 vCPU(s) ready to run after 7427 us
+IMAGE-START-PHASES debug Saved     28487     +5796  vm 11607  trapped write of sysreg 0x809c
+IMAGE-START-PHASES debug Saved     28491        +4  vm 11607  trapped write of sysreg 0x8084
+IMAGE-START-PHASES debug Saved     45239    +16748  vm 11607  guest marker 1 at 29975 us
+IMAGE-START-PHASES debug Saved     73451    +28212  vm 11607  a guest's flush of its writable layer in 4110 us
+IMAGE-START-PHASES debug Saved    130912    +57461  vm 11607  its layer: 18 ranges of data, 442368 bytes of 10995367936
+IMAGE-START-PHASES debug Saved    140194     +9282  vm 11607  snapshot written to /var/folders/fm/xn3dqgj1397387_rj_1qzxbm0000gn/T/shards-tests/6148/api-cost-saved-2/templates/e9d1d32b61d848e6af78799912f5afa387686c95565bc453b3acd3349b67eb99.new-11606-0 in 51954 us
+IMAGE-START-PHASES debug Saved    140220       +26  vm 11607  its DAX windows' heads mapped back from its snapshot in 23 us: 1 parts of its heads taken from its guest in 8 us, mapped back in 11 us (1 blocks from the copy, 0 fresh, 0 runs of zeros given back; the copy's index read in 0 us, its blocks mapped in 11 us), given back in 2 us
+IMAGE-START-PHASES debug Saved    141893     +1673  vm 11607  its writable layer's head mapped back from its snapshot in 1670 us
+IMAGE-START-PHASES debug Saved    142675      +782  vm 11607  guest marker 2 at 127411 us
+IMAGE-START-PHASES debug Saved    143276      +601  vm 11607  guest marker 3 at 128012 us
+IMAGE-START-PHASES debug Saved    185623    +42347  vm 11607  snapshot made durable in 43402 us
+IMAGE-START-PHASES debug Saved    185674       +51  run host  its VM said READY
+IMAGE-START-PHASES debug Saved    193923     +8249  run host  its VM's start settled
+IMAGE-START-PHASES debug Saved    193928        +5  run host  its VM process 11607 is ready (Saved)
+IMAGE-START-PHASES debug Saved    194001       +73  run host  its VM took the run
+IMAGE-START-PHASES debug Saved    194009        +8  vm 11607  the hold: 0 milli-CPU, held to None over 1.00779ms, from g 1.00779ms (Step { late: Some(7.79µs), clock: Some(1µs) }; its clock: Ok(1µs))
+IMAGE-START-PHASES debug Saved    194039       +30  run host  its start told its orchestrator
+IMAGE-START-PHASES debug Saved    194048        +9  caller    its host's answer 16 read
+IMAGE-START-PHASES debug Saved    194058       +10  caller    its start taken
+IMAGE-START-PHASES debug Saved    194078       +20  run host  its writable layer's name let go of
+IMAGE-START-PHASES debug Saved    194090       +12  caller    its members' outputs pumped
+IMAGE-START-PHASES debug Saved    194091        +1  caller    its diagnostics' file named
+IMAGE-START-PHASES debug Saved    194091        +0  caller    its diagnostics' keeper taken
+IMAGE-START-PHASES debug Saved    194104       +13  caller    its diagnostics' file cut to its length
+IMAGE-START-PHASES debug Saved    194163       +59  caller    its diagnostics kept
+IMAGE-START-PHASES debug Saved    194165        +2  caller    the boot answered
+IMAGE-START-PHASES debug Saved    202300     +8135  vm 11607  guest marker 4 at 187036 us
+IMAGE-START-PHASES debug Saved    202330       +30  run host  its VM said STARTED
+IMAGE-START-PHASES debug Saved    202539      +209  caller    its harness's first output read
+IMAGE-START-PHASES debug Restored from Restored: boot 18424 us, first output 24232 us, stop 1499 us; every timed line in us from the boot's call:
+IMAGE-START-PHASES debug Restored       200            caller    its run host 11609 started
+IMAGE-START-PHASES debug Restored       225       +25  caller    its run's request sending
+IMAGE-START-PHASES debug Restored       228        +3  caller    its run's request sent
+IMAGE-START-PHASES debug Restored      2039     +1811  run host  its clock began at unix 1794884059979198 us
+IMAGE-START-PHASES debug Restored      2065       +26  run host  its request read
+IMAGE-START-PHASES debug Restored      2990      +925  run host  its image prepared
+IMAGE-START-PHASES debug Restored      3995     +1005  run host  its microVM shaped
+IMAGE-START-PHASES debug Restored      4339      +344  run host  its writable layer cloned on its own thread, in 291 us
+IMAGE-START-PHASES debug Restored      9471     +5132  run host  its security made: its guest's kernel read, its filters compiled
+IMAGE-START-PHASES debug Restored      9513       +42  run host  its members staged, its ports bound
+IMAGE-START-PHASES debug Restored      9526       +13  run host  its setup's security composed
+IMAGE-START-PHASES debug Restored      9533        +7  run host  its run planned
+IMAGE-START-PHASES debug Restored      9539        +6  run host  prepared sha256:8ccf9ed0c9b5d579183a2f845077ef3df2090fda01e296591be7a0ded82639f6, 1 vCPUs, 512 MiB; starting its VM
+IMAGE-START-PHASES debug Restored      9620       +81  run host  its VM's binary checked
+IMAGE-START-PHASES debug Restored      9746      +126  run host  its network decided
+IMAGE-START-PHASES debug Restored      9755        +9  run host  its writable layer cloned, taken from its thread
+IMAGE-START-PHASES debug Restored      9804       +49  run host  launching its VM
+IMAGE-START-PHASES debug Restored      9874       +70  run host  spawning the VM
+IMAGE-START-PHASES debug Restored     10056      +182  run host  the VM spawned, its process 11610
+IMAGE-START-PHASES debug Restored     10078       +22  run host  the VM's grants: 0 of its asks answered
+IMAGE-START-PHASES debug Restored     15191     +5113  vm 11610  its log began at unix 1794884059992383 us
+IMAGE-START-PHASES debug Restored     15331      +140  run host  the VM's grants: 1 of its asks answered
+IMAGE-START-PHASES debug Restored     15449      +118  run host  the VM's grants: 2 of its asks answered
+IMAGE-START-PHASES debug Restored     15513       +64  run host  the VM's grants: 3 of its asks answered
+IMAGE-START-PHASES debug Restored     15938      +425  vm 11610  VM created and RAM mapped
+IMAGE-START-PHASES debug Restored     16017       +79  vm 11610  GIC created
+IMAGE-START-PHASES debug Restored     16106       +89  vm 11610  restored a 512 MiB guest from /var/folders/fm/xn3dqgj1397387_rj_1qzxbm0000gn/T/shards-tests/6148/api-cost-home-0/templates/4cb8adddf5ca1c28290d6b9e8e515b493f4c760b941ef7c758138bc588ca4752
+IMAGE-START-PHASES debug Restored     16261      +155  vm 11610  vCPU 0: created in 105 us, 0 pages of its working set prefetched in 1 us, its state restored in 8 us
+IMAGE-START-PHASES debug Restored     16269        +8  vm 11610  vCPUs set up in 160 us, the slowest vCPU 0 in 160 us
+IMAGE-START-PHASES debug Restored     17758     +1489  vm 11610  the machine's start finished in 1489 us
+IMAGE-START-PHASES debug Restored     17761        +3  vm 11610  dropped the restore's state: 864 bytes of vCPU state, 127563 of devices, 0 of working set
+IMAGE-START-PHASES debug Restored     17770        +9  vm 11610  1 vCPU(s) ready to run after 2591 us
+IMAGE-START-PHASES debug Restored     17932      +162  vm 11610  guest marker 2 at 2753 us
+IMAGE-START-PHASES debug Restored     18220      +288  run host  its VM said READY
+IMAGE-START-PHASES debug Restored     18222        +2  run host  its VM's start settled
+IMAGE-START-PHASES debug Restored     18226        +4  run host  its VM process 11610 is ready (Restored)
+IMAGE-START-PHASES debug Restored     18277       +51  run host  its VM took the run
+IMAGE-START-PHASES debug Restored     18278        +1  vm 11610  the hold: 0 milli-CPU, held to None over 1.007249ms, from g 1.007249ms (Step { late: Some(7.249µs), clock: Some(1µs) }; its clock: Ok(1µs))
+IMAGE-START-PHASES debug Restored     18300       +22  vm 11610  guest marker 3 at 3121 us
+IMAGE-START-PHASES debug Restored     18339       +39  run host  its start told its orchestrator
+IMAGE-START-PHASES debug Restored     18346        +7  caller    its host's answer 16 read
+IMAGE-START-PHASES debug Restored     18356       +10  caller    its start taken
+IMAGE-START-PHASES debug Restored     18385       +29  run host  its writable layer's name let go of
+IMAGE-START-PHASES debug Restored     18387        +2  caller    its members' outputs pumped
+IMAGE-START-PHASES debug Restored     18388        +1  caller    its diagnostics' file named
+IMAGE-START-PHASES debug Restored     18388        +0  caller    its diagnostics' keeper taken
+IMAGE-START-PHASES debug Restored     18398       +10  caller    its diagnostics' file cut to its length
+IMAGE-START-PHASES debug Restored     18421       +23  caller    its diagnostics kept
+IMAGE-START-PHASES debug Restored     18424        +3  caller    the boot answered
+IMAGE-START-PHASES debug Restored     24009     +5585  vm 11610  guest marker 4 at 8830 us
+IMAGE-START-PHASES debug Restored     24048       +39  run host  its VM said STARTED
+IMAGE-START-PHASES debug Restored     24232      +184  caller    its harness's first output read
+IMAGE-START-PHASES debug Warm from Warm: boot 372 us, first output 5177 us, stop 1651 us; every timed line in us from the boot's call:
+IMAGE-START-PHASES debug Warm   -321841            caller    its run host 11598 started
+IMAGE-START-PHASES debug Warm   -320161     +1680  run host  its clock began at unix 1794884059683736 us
+IMAGE-START-PHASES debug Warm   -320139       +22  run host  its request read
+IMAGE-START-PHASES debug Warm   -319212      +927  run host  its image prepared
+IMAGE-START-PHASES debug Warm   -318097     +1115  run host  its microVM shaped
+IMAGE-START-PHASES debug Warm   -317751      +346  run host  its writable layer cloned on its own thread, in 289 us
+IMAGE-START-PHASES debug Warm   -312029     +5722  run host  its security made: its guest's kernel read, its filters compiled
+IMAGE-START-PHASES debug Warm   -311941       +88  run host  its VM's binary checked
+IMAGE-START-PHASES debug Warm   -311837      +104  run host  its network decided
+IMAGE-START-PHASES debug Warm   -311830        +7  run host  its writable layer cloned, taken from its thread
+IMAGE-START-PHASES debug Warm   -311782       +48  run host  launching its VM
+IMAGE-START-PHASES debug Warm   -311727       +55  run host  spawning the VM
+IMAGE-START-PHASES debug Warm   -311580      +147  run host  the VM spawned, its process 11601
+IMAGE-START-PHASES debug Warm   -311555       +25  run host  the VM's grants: 0 of its asks answered
+IMAGE-START-PHASES debug Warm   -306224     +5331  vm 11601  its log began at unix 1794884059697715 us
+IMAGE-START-PHASES debug Warm   -306083      +141  run host  the VM's grants: 1 of its asks answered
+IMAGE-START-PHASES debug Warm   -305971      +112  run host  the VM's grants: 2 of its asks answered
+IMAGE-START-PHASES debug Warm   -305902       +69  run host  the VM's grants: 3 of its asks answered
+IMAGE-START-PHASES debug Warm   -305223      +679  vm 11601  VM created and RAM mapped
+IMAGE-START-PHASES debug Warm   -305167       +56  vm 11601  GIC created
+IMAGE-START-PHASES debug Warm   -305082       +85  vm 11601  restored a 512 MiB guest from /var/folders/fm/xn3dqgj1397387_rj_1qzxbm0000gn/T/shards-tests/6148/api-cost-home-0/templates/4cb8adddf5ca1c28290d6b9e8e515b493f4c760b941ef7c758138bc588ca4752
+IMAGE-START-PHASES debug Warm   -304930      +152  vm 11601  vCPU 0: created in 99 us, 0 pages of its working set prefetched in 1 us, its state restored in 8 us
+IMAGE-START-PHASES debug Warm   -304922        +8  vm 11601  vCPUs set up in 157 us, the slowest vCPU 0 in 157 us
+IMAGE-START-PHASES debug Warm   -303193     +1729  vm 11601  the machine's start finished in 1729 us
+IMAGE-START-PHASES debug Warm   -303190        +3  vm 11601  dropped the restore's state: 864 bytes of vCPU state, 127563 of devices, 0 of working set
+IMAGE-START-PHASES debug Warm   -303186        +4  vm 11601  1 vCPU(s) ready to run after 3046 us
+IMAGE-START-PHASES debug Warm   -303011      +175  vm 11601  guest marker 2 at 3221 us
+IMAGE-START-PHASES debug Warm   -302716      +295  run host  its VM said READY
+IMAGE-START-PHASES debug Warm   -302712        +4  run host  its VM's start settled
+IMAGE-START-PHASES debug Warm   -302668       +44  run host  its writable layer's name let go of
+IMAGE-START-PHASES debug Warm   -302627       +41  vm 11601  guest marker 3 at 3605 us
+IMAGE-START-PHASES debug Warm   -302613       +14  run host  its agent-control key made
+IMAGE-START-PHASES debug Warm   -302611        +2  run host  warm, its VM process 11601 ready (Restored)
+IMAGE-START-PHASES debug Warm   -302595       +16  caller    its host's answer 32 read
+IMAGE-START-PHASES debug Warm        27   +302622  caller    its run's request sending
+IMAGE-START-PHASES debug Warm        32        +5  caller    its run's request sent
+IMAGE-START-PHASES debug Warm        39        +7  run host  its run's request read
+IMAGE-START-PHASES debug Warm        77       +38  run host  its members staged, its ports bound
+IMAGE-START-PHASES debug Warm        91       +14  run host  its setup's security composed
+IMAGE-START-PHASES debug Warm        98        +7  run host  its run planned
+IMAGE-START-PHASES debug Warm       102        +4  run host  its VM process 11601 is ready (Warm)
+IMAGE-START-PHASES debug Warm       156       +54  run host  its VM took the run
+IMAGE-START-PHASES debug Warm       164        +8  vm 11601  the hold: 0 milli-CPU, held to None over 1.014666ms, from g 1.014666ms (Step { late: Some(14.666µs), clock: Some(1µs) }; its clock: Ok(1µs))
+IMAGE-START-PHASES debug Warm       191       +27  run host  its start told its orchestrator
+IMAGE-START-PHASES debug Warm       192        +1  run host  its writable layer's name let go of
+IMAGE-START-PHASES debug Warm       205       +13  caller    its host's answer 16 read
+IMAGE-START-PHASES debug Warm       211        +6  caller    its start taken
+IMAGE-START-PHASES debug Warm       286       +75  caller    its members' outputs pumped
+IMAGE-START-PHASES debug Warm       291        +5  caller    its diagnostics' file named
+IMAGE-START-PHASES debug Warm       291        +0  caller    its diagnostics' keeper taken
+IMAGE-START-PHASES debug Warm       316       +25  caller    its diagnostics' file cut to its length
+IMAGE-START-PHASES debug Warm       366       +50  caller    its diagnostics kept
+IMAGE-START-PHASES debug Warm       372        +6  caller    the boot answered
+IMAGE-START-PHASES debug Warm      4914     +4542  vm 11601  guest marker 4 at 311146 us
+IMAGE-START-PHASES debug Warm      4969       +55  run host  its VM said STARTED
+IMAGE-START-PHASES debug Warm      5177      +208  caller    its harness's first output read
+test image_start_costs ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 47 filtered out; finished in 67.43s
+
