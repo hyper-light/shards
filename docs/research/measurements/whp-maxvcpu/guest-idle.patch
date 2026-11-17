@@ -1,0 +1,12 @@
+diff --git a/crates/vmm/src/hv/whp/mod.rs b/crates/vmm/src/hv/whp/mod.rs
+index 0764ce5f62..97a40bc6c8 100644
+--- a/crates/vmm/src/hv/whp/mod.rs
++++ b/crates/vmm/src/hv/whp/mod.rs
+@@ -85,6 +85,7 @@ const SYNTHETIC: u64 = (1 << 0) // HypervisorPresent
+     | (1 << 7) // AccessHypercallRegs
+     | (1 << 8) // AccessVpIndex
+     | (1 << 9) // AccessPartitionReferenceTsc
++    | (1 << 10) // AccessGuestIdleReg
+     | (1 << 11) // AccessFrequencyRegs
+     | (1 << 24) // ExtendedProcessorMasks
+     | (1 << 25) // TbFlushHypercalls
