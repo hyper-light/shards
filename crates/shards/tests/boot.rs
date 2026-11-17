@@ -382,12 +382,13 @@ fn bring_up_arm(max: u32, arm: &str, also: &str) -> std::thread::Result<()> {
     ran
 }
 
-/// One arm of D261's Intel experiment (.github/workflows/d261-intel.yml, which runs each arm
-/// alone, one after another, and keeps their records): [`boots_the_hosts_maximum_vcpu_count`]'s
-/// boot of `SHARDS_D261_VCPUS` vCPUs, its outcome said in its `D261 A/B arm` line, named
-/// `SHARDS_D261_ARM`. Ignored: the experiment alone runs it.
+/// One arm of D261's experiments (.github/workflows/d261-intel.yml on Intel's KVM,
+/// whp-maxvcpu.yml on WHP, each arm alone, their records kept):
+/// [`boots_the_hosts_maximum_vcpu_count`]'s boot of `SHARDS_D261_VCPUS` vCPUs, its kernel told
+/// `SHARDS_D261_ALSO` besides (`cpuhp.parallel=0`, a serial bring-up's arm), its outcome said
+/// in its `D261 A/B arm` line, named `SHARDS_D261_ARM`. Ignored: the experiments alone run it.
 #[test]
-#[ignore = "D261's Intel experiment (.github/workflows/d261-intel.yml) runs it"]
+#[ignore = "D261's experiments (.github/workflows/d261-intel.yml, whp-maxvcpu.yml) run it"]
 fn a_d261_arm_boots_the_vcpus_its_experiment_asks() {
     if cannot_run_vms() {
         return;
@@ -399,7 +400,12 @@ fn a_d261_arm_boots_the_vcpus_its_experiment_asks() {
         "{vcpus} vCPUs, where this host has 1 to {max}"
     );
     let arm = std::env::var("SHARDS_D261_ARM").unwrap_or_else(|_| format!("{vcpus} vCPUs"));
-    if let Err(failed) = bring_up_arm(vcpus, &arm, "") {
+    let also = std::env::var("SHARDS_D261_ALSO")
+        .ok()
+        .filter(|also| !also.trim().is_empty())
+        .map(|also| format!(" {}", also.trim()))
+        .unwrap_or_default();
+    if let Err(failed) = bring_up_arm(vcpus, &arm, &also) {
         std::panic::resume_unwind(failed);
     }
 }
