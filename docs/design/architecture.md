@@ -37009,6 +37009,80 @@ post-mortem read of the printk ring through VMCOREINFO, not a debug port.
        test's readiness signal (R02). VMCOREINFO is filled at subsys_initcall, so the ring
        could show "smp: Brought up" before device_initcall, but that would need a reader of
        a running guest's ring, which this entry has not got.
+- **The bring-up A/B on CI's own Intel runners, and WHP's boot said as it comes**
+  (2026-11-17, kiln goal b2124227, lane boot-ab). Owed item 2 above, one pair of boots a job,
+  and item 3's question (whether hvc0's first line comes, and when) are now part of
+  `boots_the_hosts_maximum_vcpu_count`, so every ci.yml run on main reads them. No VMM change.
+  - Where. A KVM host whose first `vendor_id` in /proc/cpuinfo is GenuineIntel, which
+    `scripts/ci/kvm-host` logs as lscpu's "Vendor ID": only VMX fails an entry with a
+    VM-instruction error (above). Every other host boots arm 1 alone, as before.
+  - Arm 1, "parallel": the boot as it was. It runs first, at the moment it always ran in its
+    binary, so that it meets the host the failures met.
+  - Arm 2, "one at a time": the same boot with `cpuhp.parallel=0`, once arm 1's VM process has
+    ended. Never beside it: the 0x7 struck every guest on its host at once.
+    - The parameter: "Enable/disable parallel bringup of secondary CPUs ... Default is enabled
+      if CONFIG_HOTPLUG_PARALLEL=y" (Linux v6.18 Documentation/admin-guide/kernel-parameters.txt
+      l. 952-956). An `early_param` (kernel/cpu.c l. 1797-1804) since v6.5 (18415f33e2ac).
+      Told 0, `bringup_nonboot_cpus` brings each AP up in turn, "Full per CPU serialized
+      bringup" (l. 1881-1893).
+    - Otherwise the pinned kernel brings its APs up in parallel. x86-64 selects
+      HOTPLUG_PARALLEL (arch/x86/Kconfig l. 303); Firecracker's base config has it (l. 711)
+      and shards' configs leave it. Only TDX and SEV-ES guests turn it off themselves
+      (arch/x86/coco/tdx/tdx.c l. 1193, arch/x86/mm/mem_encrypt_amd.c l. 509).
+    - KVM's machine adds no `cpuhp.parallel` (WHP's alone does, `ONE_AT_A_TIME_CMDLINE`), so
+      the arm's is its kernel's only one.
+  - Each arm's outcome is a line on stderr as it ends, which CI's log keeps whether the test
+    passes or not: `D261 A/B arm <arm> (<command line>): <outcome>; <time> from its start`.
+    The outcome is `brought up`; or the VM process's own line naming the failed entry, `vCPU N:
+    VM entry failed (hardware reason 0x7)` for the 0x7; or `failed otherwise`, with its panic
+    above it.
+  - The test fails as arm 1 fails, so its red stays; else as arm 2 fails. Each arm's wait is
+    a kind of its own (`Vm::sized`), so neither arm's answer judges the other's wait.
+  - No arm in the snapshot storms. Their 255-vCPU cold boots bring their APs up in parallel
+    too, so they share the trigger. But their two tests boot 255 vCPUs beside each other, so
+    an arm of one would meet the other's burst, and their restores bring no CPU up. A 0x7 of
+    theirs is one more witness of arm 1's. `brings_up_every_vcpu` and
+    `a_snapshot_keeps_the_memory_its_guest_plugged` failed only at the moment a 255-vCPU guest
+    did: victims, given no arm.
+  - What each outcome says, per x86_64 Linux job on GenuineIntel, read from its two
+    `D261 A/B arm` lines and its failure step's `kvm_intel:` dump of each refused VMCS:
+
+    | Arm 1, parallel | Arm 2, one at a time | Reading |
+    |---|---|---|
+    | 0x7 | brought up | The burst is the trigger. The remedy is this entry's R02 decision, read with the dump: serial bring-up where KVM is nested in Hyper-V, or what the refused control names. |
+    | 0x7 | 0x7 | Not the burst alone. If arm 2's failing vCPU was the one coming up at that moment, new vCPUs' first entries fail however spaced; if it was up already, the host refuses entries of its own accord. The dump decides. |
+    | brought up | brought up | The runner did not reproduce it: no reading. |
+    | brought up | 0x7 | Arm 2 met what arm 1 did not: not the burst. Read whether other guests failed in that second. |
+
+    An AMD runner says nothing: SVM never reports 7.
+  - WHP's boot said as it comes. On Windows the test starts its VM process with
+    `common::Vm::spawn_timed`: each line the process prints is also said on stderr as it
+    comes, `D261 WHP boot <time from the spawn>: <line>`. CI's log keeps them whatever ends
+    the test, its step's limit included. hvc0's first line brings the kernel's whole log, each
+    record with the guest's own time (`[seconds.micros]`): its arrival dates hvc0, and the
+    records date the guest's milestones (its bring-up, each initcall level).
+  - No bound past which WHP's test fails. None can be derived from passes in CI, so none was
+    added (R03).
+    - D215's judge bounds a wait by W*, the slowest answer of its kind on its host. A CI job
+      keeps no records (ci.yml caches no `target/judge-records`), so every kind starts cold
+      and follows its party's liveness (the person's ruling of 2026-11-13: no record seeds).
+    - Kept records would still need a pass on a nested WHP runner, and the one such run read
+      since 35e2de91e did not pass (job 133508843966).
+    - Smaller guests' passes bound nothing here. Sizes are kinds apart because a smaller
+      storm's W* refused a larger one (HVF at ddb88cd47).
+    - Before hvc0 the guest's only sign is its VM process's CPU, which a guest of more vCPUs
+      than its host has CPUs shows for ever (`Cpu::Liveness`). A number of ours would be a
+      seed.
+    - So on a nested runner the step's 122 minutes stand until the test's readiness is
+      decided (owed item 3, R02). The options:
+      1. See the bring-up where it is said. The VM process tails its guest's printk ring
+         while its console has said nothing, from subsys_initcall (VMCOREINFO) on.
+         `Handle::console_said` already falls back to the ring, and the tests'
+         `machine_ended` reads it from a running machine.
+      2. On a nested Hyper-V, boot this guest as every init's guest is booted there
+         (`vm::late_cpus_cmdline`, M379), and check its count from init.
+      3. Keep waiting through device_initcall.
+      Option 1 restores the test's scope and every boot's early log, which the UART gave.
 
 **Alternatives rejected.**
 - A write-only debug port (x86's 0xe9 debugcon): mainline x86 early_printk has no 0xe9
