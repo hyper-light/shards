@@ -49,6 +49,15 @@ fn sorted(items: &[Term]) -> Vec<Term> {
 /// sort of owned halves, each merge taking its left's next unless its right's comes
 /// strictly before it: for a total order the order `slice::sort_by` gives, for any other
 /// some order, and never a panic (ROOT's ruling, 2026-11-17).
+///
+/// Never inlined, as std keeps its own sort's work out of line (`driftsort_main`, inlining
+/// only an insertion sort of 20 or fewer): the evaluator sorts in frames that stay live
+/// through every nesting level of a policy (`unify`, `eval_term`, `eval_tree`,
+/// `eval_print`), and inlined there its halves, their iterators and the members they peek
+/// would sit in each level's frames. With it inlinable, x86_64 Windows' release build ran
+/// out of the policy thread's stack at deep.rs's 4,000 nested `every`s (CI 44123748321 and
+/// 44125576545), which it had answered with std's sort (CI 44077430171, D98).
+#[inline(never)]
 pub fn sort_by<T>(v: &mut Vec<T>, mut cmp: impl FnMut(&T, &T) -> Ordering) {
     fn merged<T>(mut v: Vec<T>, cmp: &mut impl FnMut(&T, &T) -> Ordering) -> Vec<T> {
         if v.len() < 2 {
