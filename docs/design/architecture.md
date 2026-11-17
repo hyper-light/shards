@@ -14084,6 +14084,56 @@ comes to made no progress for 399 ms, past the slowest answer of its kind seen o
   firecracker job's `The judge's records, kept` saying "Cache saved with key:
   judge-records-…-firecracker-…", the next run's restore "Cache restored from key: …", and the
   Arrival step's log each rate's table as it ends.
+- *Amended: the host, and what a cut step leaves* (CI 44164945050 at 95247a79c, goal 1453357d,
+  own-38b, 2026-11-17). Its firecracker job passed its Envelope; Arrival was cut at its own 5
+  minutes (313 s); Guest memory (M117), 22 to 35 s in its 33 passes, had run 293 s when the job
+  reached its 30 minutes, and GitHub ended the job 300 s later, keeping no log and no samples.
+  Method and records: `docs/research/measurements/arrival-drain/` (`hosts.py`, `rates.py`).
+  - *Not a change between 8247e1448 and 95247a79c: the host.* The Image step's time tells the
+    runners' hosts apart (the logged Intel Xeon 6975P-C's 45 s, the logged AMD EPYCs' 53 to
+    73 s, no run between 48 and 52 s): 95247a79c's ran on the Intel, as both of its run's x86_64
+    test jobs did, and 8247e1448's on an AMD EPYC 9V74. On the Intel, Arrival passed 5 times in
+    14 (95 to 185 s) and was cut 9 times, 8 at the job's limit before the judged drain and
+    95247a79c's at its own; on AMD it passed 28 of 31, all 7 since the judged drain. The two
+    Intel logs failed 108 and 362 of rate 40's 386 requests (the first at a p50 of 78 s, its
+    host's load 1103), the four AMD logs none (at most 34 s). What fails them there is unknown:
+    the bench sends their output to /dev/null, and its daemon's log goes with its home.
+  - *Guest memory ran beside a cut Arrival's microVMs.* A cut bench's daemon is a session of
+    its own (daemon.rs `detach`), which no step's end stops; on the Intel, Guest memory took
+    27 to 29 s in the 5 runs whose Arrival ended.
+  - *Decided* (ci.yml): the samples kept before Arrival (`Raw samples, before Arrival`) and
+    every bench's at the end in their place (`overwrite`); `Arrival's daemon, stopped`, always,
+    each home a cut bench left: its daemon stopped and its log said; Guest memory's limit a third
+    above its slowest pass, 35 s, so 47 s, in whole minutes: 1; the job's limit as M560 makes a
+    job's, its steps' limits (5 and 1) and a third above the slowest its other steps took together
+    (1420 s of 33 runs, so 1893 s, 32 minutes): 38, in place of the 30 above, whose sum left 47 s
+    and which the six snapshot pairs (4bef86c91, D36) outgrew on the Intel, 1188 s before
+    Arrival against 1085 s at most (one run; their cost on AMD unmeasured); KVM's failed entries'
+    VMCS kept (scripts/ci/kvm-host) and the kernel's log of OOM kills and failed VM entries said
+    in every run; the bench keeps its home where any request failed (benches/arrival.rs), so
+    that step says its daemon's log for a pass whose requests failed as well as for a cut.
+    Arrival keeps 5 minutes: its slowest of 33 passes is still 185 s.
+  - *A request its host refused is the host's, by D261's gate* (ROOT's brief, from code). A run
+    whose microVM's entry its host refuses fails its client unless another VM stands in: one
+    pooled before the run asked gives way to the next (daemon.rs `start_run`, `gives_way`); one
+    started for it, refused before READY, fails the run, "VM P ended before it was ready"
+    (`ready`); one refused once it had the run ends it, its client told only that its microVM
+    stopped (`VM P ended before its command started` in the daemon's log alone). The bench took
+    every client's non-zero exit for shards' failure. Now each request's words are kept (a file
+    each: a run hands its client's stdio to its microVM, whose copy a pipe would wait on), and
+    each failed request is read as the tests read a run (`common::host_refusal`, from
+    `host_refused`; `vm_refusal`, from `vm_host_refused`): the refusal its daemon's log holds of
+    the VM its words name as ended, through `limits::the_hosts`, its witness from its host model's
+    records and their learned burst width. Taken, it is counted in `rate_R_refused_by_host`;
+    not taken, or naming no refused VM, it stays in `rate_R_failed`; each is said with why. A
+    refusal its client's words do not name (the third way) stays shards' failure, as in the
+    tests. The drain's judge is unchanged: a request its host refused has ended.
+  - *What it leaves.* Whether rate 40 on the Intel ends within Arrival's 5 minutes, and what
+    fails its requests there, is open (R09: the next Intel run's per-request words, daemon log
+    and kernel's log). `daemon stop` after a cut is unmeasured, bounded by the job's limit alone.
+  - *Owed (ROOT):* main's next CI run's firecracker job: the artifact `bench-samples-<sha>` there
+    before Arrival; where Arrival is cut, `Arrival's daemon, stopped` saying the daemon's log
+    and Guest memory within its minute; the job ending inside its 38 minutes with its log kept.
 
 ### D207. A Windows host's bind sources: its drives' paths (built)
 

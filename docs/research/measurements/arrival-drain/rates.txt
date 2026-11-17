@@ -1,0 +1,6 @@
+job 133778778156 (b18952ae6, CI 44005213738): Intel(R) Xeon(R) 6975P-C; Arrival 185 s; load 1103.61 428.93 158.20; rate_20 p50 0.04 s, max 0.22 s; rate_40 p50 77.99 s, max 125.83 s, sent 386, failed 108, done 2.2/s
+job 134014115360 (8fc54dcfb, CI 44076016255): Intel(R) Xeon(R) 6975P-C; Arrival 95 s; load 1.42 1.32 1.13; rate_20 p50 0.04 s, max 0.36 s; rate_40 p50 0.17 s, max 29.33 s, sent 386, failed 362, done 0.7/s
+job 133841315154 (8d6029e4d, CI 44020677971): AMD EPYC 7763 64-Core Processor; Arrival 109 s; load 230.00 61.85 21.91; rate_20 p50 4.90 s, max 14.28 s; rate_40 p50 16.55 s, max 33.46 s, sent 386, failed 0, done 10.7/s
+job 134090721199 (a223a63bc, CI 44077430171): AMD EPYC 9V45 96-Core Processor; Arrival 84 s; load 1.45 1.46 1.23; rate_20 p50 0.73 s, max 4.44 s; rate_40 p50 8.25 s, max 20.54 s, sent 386, failed 0, done 15.8/s
+job 134191718017 (86f5c7b86, CI 44125576545): AMD EPYC 7763 64-Core Processor; Arrival 112 s; load 2.63 2.04 1.70; rate_20 p50 5.11 s, max 15.61 s; rate_40 p50 18.11 s, max 33.75 s, sent 386, failed 0, done 10/s
+job 134234527940 (8247e1448, CI 44138098584): AMD EPYC 9V74 80-Core Processor; Arrival 92 s; load 2.09 1.70 1.44; rate_20 p50 1.56 s, max 7.20 s; rate_40 p50 10.42 s, max 24.09 s, sent 386, failed 0, done 14.1/s

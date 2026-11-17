@@ -13,7 +13,7 @@ query($n:Int!, $after:String) {
                 checkRuns(first:3, filterBy:{checkName:"firecracker comparison (x86_64)"}) {
                   nodes {
                     databaseId conclusion startedAt completedAt
-                    steps(first:20) { nodes { name conclusion startedAt completedAt } }
+                    steps(first:40) { nodes { name conclusion startedAt completedAt } }
                   }
                 }
               }

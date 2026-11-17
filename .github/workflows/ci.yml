@@ -362,10 +362,14 @@ jobs:
 
   # shards against Firecracker on one KVM host: the same kernel, initrd and command line,
   # interleaved (crates/shards/benches/firecracker.rs). Hosted arm64 runners have no /dev/kvm.
+  # Its limit, as M560 makes a job's: its steps' own limits, Arrival's 5 and Guest memory's 1,
+  # and a third above the slowest its other steps took together in GitHub's records, 1420 s of
+  # 33, so 32 (D209 Part 11 amended). A job cut at its limit kept no log and ran no step after
+  # it, 12 times of 12.
   firecracker:
     name: firecracker comparison (x86_64)
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 38
     steps:
       - uses: actions/checkout@v7.0.1
       - name: Install pinned Rust
@@ -374,9 +378,11 @@ jobs:
         run: scripts/install-zig
       - name: KVM access
         run: sudo chmod 666 /dev/kvm
+      # Its CPU and KVM's parameters, a failed VM entry's VMCS kept (scripts/ci/kvm-host).
       - name: Host
         run: |
-          nproc && free -m && lscpu | grep -E 'Model name|Virtualization|Hypervisor'
+          nproc && free -m
+          scripts/ci/kvm-host
           grep -H . /sys/kernel/mm/transparent_hugepage/{enabled,defrag,hpage_pmd_size}
       - name: The runner's image
         id: image
@@ -418,9 +424,20 @@ jobs:
         env:
           SHARDS_BENCH_SAMPLES: ${{ github.workspace }}/target/bench-samples
         run: cargo bench --locked -p shards --bench image -- --runs 100 --templates 5
+      # The samples so far, kept before Arrival whatever comes of the steps after it: CI
+      # 44164945050's job ran out of its limit after Arrival, and kept neither its log nor its
+      # samples (D209 Part 11 amended). The last step keeps every bench's under the same name.
+      - name: Raw samples, before Arrival
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: bench-samples-${{ github.sha }}
+          path: target/bench-samples/
+          if-no-files-found: warn
+          overwrite: true
       # Requests arriving at rising rates, open loop, past what the host serves
       # (benches/arrival.rs): latency from when each was due, failures, and throughput. Its
-      # limit is a third above the slowest of its 18 passes in GitHub's records, 185 s, so
+      # limit is a third above the slowest of its 33 passes in GitHub's records, 185 s, so
       # 247 s, in whole minutes (D209 Part 11): a step cut at its own limit ends as a step, its
       # log and the steps after it kept, where each of the eleven runs cut at the job's 30
       # minutes in this step kept neither.
@@ -430,6 +447,23 @@ jobs:
         env:
           SHARDS_BENCH_SAMPLES: ${{ github.workspace }}/target/bench-samples
         run: cargo bench --locked -p shards --bench arrival -- --rates 2,5,10,20,40 --secs 10
+      # A bench cut at its limit leaves its home, and its daemon and microVMs running: the
+      # daemon is a session of its own (daemon.rs `detach`), which no step's end reaches. Each
+      # left is stopped and its log said, so that no step after runs beside them: Guest memory,
+      # 22 to 35 s in 33 passes, had run 293 s at the job's limit beside CI 44164945050's. A
+      # bench some of whose requests failed keeps its home too, its daemon's log saying why.
+      - name: Arrival's daemon, stopped
+        if: always()
+        run: |
+          status=0
+          for home in "$PWD"/target/bench/arrival-*; do
+            [ -d "$home" ] || continue
+            SHARDS_HOME="$home" target/release/shards daemon stop || status=$?
+            echo "::group::$home/daemon.log"
+            cat "$home/daemon.log"
+            echo "::endgroup::"
+          done
+          exit "$status"
       # Kept wherever the benches ended, passed, failed or out of time, but not in a cancelled
       # run, as the tests' records are (D261).
       - name: The judge's records, kept
@@ -439,10 +473,14 @@ jobs:
           path: target/judge-records
           key: judge-records-${{ steps.image.outputs.image }}-${{ runner.arch }}-firecracker-${{ github.run_id }}-${{ github.run_attempt }}
       # What the guest kernel keeps of a microVM's memory by its size, on x86_64 (PM M117,
-      # measured on arm64): shards sizes a microVM so that -m fits beside it.
+      # measured on arm64): shards sizes a microVM so that -m fits beside it. Its limit is a
+      # third above the slowest of its 33 passes in GitHub's records, 35 s, so 47 s, in whole
+      # minutes (D209 Part 11 amended).
       - name: Guest memory (M117)
         if: always()
+        timeout-minutes: 1
         run: SHARDS_HOME=$(mktemp -d) docs/research/measurements/guest-memory/measure-direct.sh target/release/shards
+      # Every bench's samples, in place of those kept before Arrival.
       - name: Raw samples
         if: always()
         uses: actions/upload-artifact@v7.0.1
@@ -450,6 +488,16 @@ jobs:
           name: bench-samples-${{ github.sha }}
           path: target/bench-samples/
           if-no-files-found: warn
+          overwrite: true
+      # What the kernel logged of OOM kills and failed VM entries, its whole log of them, in
+      # every run: on an Intel Xeon 6975P-C, two Arrival steps that passed failed 108 and 362 of
+      # their 386 requests at 40 a second, and no log said why (D209 Part 11 amended).
+      - name: What the kernel logged of seccomp refusals, OOM kills and failed VM entries
+        if: always()
+        run: |
+          sudo dmesg | grep -iE 'seccomp|type=1326|out of memory|oom-kill|killed process' || true
+          sudo dmesg | grep -E 'kvm' || true
+          free -m || true
 
   # Each musl target in two jobs at once: the tests; and the lints, the release build whose
   # executable must be static, and the tests measured on release. One after the other
