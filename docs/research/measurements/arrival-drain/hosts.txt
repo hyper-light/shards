@@ -1,0 +1,70 @@
+Image step, logged Intel [45, 45] s, logged AMD [53, 65, 73, 73] s: split at 49.0 s
+unlogged runs nearest the split: Intel-side max 48 s, AMD-side min 52 s
+
+commit     job           span  image host   logged              before  arrival end      m117
+8c37a8b489 132587620528  1370    55 AMD    -                     1209     135 SUCCESS  22
+ed34c4b58e 132705245316  1444    73 AMD    -                     1301     106 SUCCESS  33
+9cfded7b73 132709708294  1206    64 AMD    -                     1084      88 SUCCESS  30
+e9af2f80f1 132714551536  1538    79 AMD    -                     1390     108 SUCCESS  35
+8d732fb2d2 132715435034  1414    72 AMD    -                     1276     101 SUCCESS  33
+78753d965c 132747259162  1399    73 AMD    -                     1263     100 SUCCESS  33
+ec7de35685 132841794004  1063     - -      -                     1044      13 FAILURE  -
+b8a861356a 132902675638  1221    68 AMD    -                     1095      93 SUCCESS  29
+6a0adfc093 132908910329  1392    62 AMD    -                     1220     141 SUCCESS  27
+4124d8c708 132916447225  1563    77 AMD    -                     1416     109 SUCCESS  34
+1c4570e369 132920257445  2100    46 Intel  -                     1039       - open     -
+fb82c14da1 133067614177  2100    45 Intel  -                     1030       - open     -
+812384870e 133283300151  2100    59 AMD    -                     1243       - open     -
+1b8d1cdddf 133389461107  1059    52 AMD    -                      953      76 SUCCESS  26
+2e06f0c0ab 133508844209  2100    45 Intel  -                     1066       - open     -
+0190fe21d6 133553838916  2101    48 Intel  -                     1080       - open     -
+1793da7c22 133593633534  1205    65 AMD    -                     1082      91 SUCCESS  28
+ac44b6b9cc 133594596160  1125    45 Intel  -                     1030       - open     -
+3d91d54f13 133605984355  2100    67 AMD    -                     1341       - open     -
+f35bafe42d 133631195411  1139    47 Intel  -                     1047       - open     -
+b58e4f7ca3 133650692480  2100    46 Intel  -                     1058       - open     -
+f461e7874b 133647427703   243     - -      -                      235       4 FAILURE  -
+cbfc34c296 133642158241  1263    45 Intel  -                     1052       - open     -
+0189fecf37 133647775218  1221    56 AMD    -                     1111      82 SUCCESS  23
+01432c8b02 133649807410  1156    54 AMD    -                     1046      79 SUCCESS  27
+979a9b8a41 133654385532  2100    47 Intel  -                     1078       - open     -
+fe83503c24 133659472831  1051    52 AMD    -                      942      77 SUCCESS  27
+d768c671cf 133670532966  2100    56 AMD    -                     1018       - open     -
+9c99fb9c45 133677256220  1205    67 AMD    -                     1081      89 SUCCESS  30
+ebfa9a49fd 133676000073  1218    45 Intel  -                     1070     116 SUCCESS  28
+9cb0116b86 133717641302  1290    59 AMD    -                     1172      89 SUCCESS  25
+f6ad71083b 133729067845  2100    46 Intel  -                     1195       - open     -
+099eac0ee2 133734233201  1276    46 Intel  -                     1080     163 SUCCESS  28
+34ae410227 133754463834  1352    75 AMD    -                     1303       - open     -
+182d379336 133763583080  1359    73 AMD    -                     1304       - open     -
+bc3cd2d81d 133775661824  1089    55 AMD    -                      964      93 SUCCESS  28
+b18952ae62 133778778156  1304    45 Intel  Intel Xeon 6975P-C    1085     185 SUCCESS  29
+f6ddf9030f 133783770062  1093    53 AMD    -                      978      85 SUCCESS  26
+0c32133562 133788368749  2101    47 Intel  -                     1084       - open     -
+53f1fc1c39 133830494271  1063    53 AMD    -                      948      84 SUCCESS  27
+8d6029e4d6 133841315154  1442    73 AMD    AMD EPYC 7763         1293     109 SUCCESS  35
+286557841f 133853846199  1121    54 AMD    -                     1001      88 SUCCESS  28
+bafcde670a 133879544899  1473    74 AMD    -                     1321     114 SUCCESS  34
+e4c491e3be 133866533063  1082    56 AMD    -                      964      87 SUCCESS  28
+8fc54dcfb7 134014115360  1213    45 Intel  Intel Xeon 6975P-C    1084      95 SUCCESS  27
+a223a63bc8 134090721199  1093    53 AMD    AMD EPYC 9V45          979      84 SUCCESS  26
+2e77ab4e30 134175755174  1228    67 AMD    -                     1100      95 SUCCESS  29
+04481e36be 134182831759  1476    76 AMD    -                     1329     110 SUCCESS  34
+86f5c7b86d 134191718017  1445    73 AMD    AMD EPYC 7763         1296     112 SUCCESS  33
+0c2eb048a4 134213921017  1277    47 Intel  -                     1070     176 SUCCESS  27
+8247e14487 134234527940  1213    65 AMD    AMD EPYC 9V74         1085      92 SUCCESS  30
+95247a79c1 134333189853  2100    46 Intel  -                     1188     313 FAILURE  -
+
+Arrival on Intel hosts, before the judged drain: passed n 3, p50 163, p90 185, p99 185, max 185 s; cut at the job's limit in it 8; cut at its own limit 0
+Arrival on Intel hosts, with it: passed n 2, p50 95, p90 176, p99 176, max 176 s; cut at the job's limit in it 0; cut at its own limit 1
+Arrival on AMD hosts, before the judged drain: passed n 21, p50 91, p90 109, p99 141, max 141 s; cut at the job's limit in it 3; cut at its own limit 0
+Arrival on AMD hosts, with it: passed n 7, p50 95, p90 114, p99 114, max 114 s; cut at the job's limit in it 0; cut at its own limit 0
+
+Guest memory (M117), passed: n 33, p50 28, p90 34, p99 35, max 35 s; a third above its slowest, 46.7 s: 1 min
+  on Intel hosts: n 5, p50 28, p90 29, p99 29, max 29 s
+  on AMD hosts: n 28, p50 28, p90 34, p99 35, max 35 s
+
+The job outside Arrival and M117: n 33, p50 1091, p90 1325, p99 1420, max 1420 s; a third above its slowest, 1893.3 s: 32 min; the job: 5 + 1 + 32 = 38 min
+Before Arrival, the six pairs' runs: 95247a79c1 Intel 1188 s
+  without them, on Intel hosts (runs not cancelled): n 5, p50 1080, p90 1085, p99 1085, max 1085 s
+  without them, on AMD hosts (runs not cancelled): n 28, p50 1095, p90 1329, p99 1416, max 1416 s
