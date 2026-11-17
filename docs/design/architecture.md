@@ -37625,6 +37625,70 @@ post-mortem read of the printk ring through VMCOREINFO, not a debug port.
     | brought up | 0x7 | Arm 2 met what arm 1 did not: not the burst. Read whether other guests failed in that second. |
 
     An AMD runner says nothing: SVM never reports 7.
+  - **Amended 2026-11-17: the A/B's verdict, the experiment, and ROOT's ruling (R02).**
+    - The A/B (CI 44007524337, x86_64 gnu, Intel Xeon 6975P-C) read "0x7 | 0x7":
+      - Arm "parallel" was refused at vCPU 17, 1.73 s in; arm "one at a time" at vCPU 2,
+        19.27 s in. Serial bring-up is no remedy.
+      - 22 VMCS dumps came in three clusters, each while a 255-vCPU guest ran: dmesg
+        1835.9 s (arm 1, and a 7-vCPU guest beside it), 1855.2 s (arm 2), 3536.5 s (the
+        storm, 14 in 60 ms).
+      - All 22 had the same controls (PinBased 0xff, CPUBased 0xb5a06dfa, SecondaryExec
+        0x061013fa, Entry 0x53ff, Exit 0xbefff). Each followed an external-interrupt exit:
+        L1's timer 0xec (19) or a call-function IPI 0xfb (3).
+    - The experiment (`.github/workflows/d261-intel.yml`, run 44030858462, at c44866d727): 8
+      copies, 3 on Intel Xeon 6975P-C, each arm alone (summary.tsv per copy):
+
+      | vCPUs | outcome (3 Intel copies) |
+      |---|---|
+      | 8, 16, 32 | brought up 3/3, under 1 s |
+      | 64 | 0x7 3/3: vCPUs 13, 13, 3, at 44 s, 1172 s, 0.34 s |
+      | 128 | 0x7 2/3 (vCPUs 57 at 952 s, 75 at 28.9 s); 1 brought up in 339 s |
+      | 255 | 0x7 3/3: vCPUs 138, 29, 1 |
+      | 255, kvm_intel `enable_apicv=0` | 0x7 3/3: vCPUs 0, 1, 3, within 0.75 s |
+
+      - Its dumps refuse four distinct control sets: APICv on in x2APIC mode (SecondaryExec
+        0x061013fa) and in xAPIC mode (0x061013eb), and APICv off (0x061010eb, 0x061010fa;
+        PinBased 0x7f). No one control is the cause, and APICv is not.
+      - Refused vCPUs include 0, 1 and 3: the refusal is not of vCPUs past 32.
+      - The Intel copies ran on Amazon EC2: lscpu's hypervisor vendor KVM, `systemd-detect-virt:
+        amazon`. The 5 AMD copies (EPYC 9V74, 7763, 9V45) ran on Azure's Hyper-V (vendor
+        Microsoft), where 255 vCPUs are entered.
+    - Not a fault of shards'.
+      - CPUID gives each vCPU its APIC ID by its index (leaf 1 EBX[31:24], 0xB and 0x1F EDX) in
+        one flat topology. The MADT holds 8-bit IDs to 254.
+      - shards sets only the TSC and TSC-deadline MSRs, and no IA32_FEATURE_CONTROL.
+      - VMX's control fields are L1 KVM's own, chosen from what L0 offers. VM-instruction error
+        7 is L0's VMfailValid on L1's VMRESUME.
+      - What varies with the refusal is how many L2 vCPUs L1 switches among on its 4 vCPUs:
+        EC2's nested KVM refuses a machine of 64 or more.
+    - **Ruled.** The host's real vCPU limit is stated from its own machines, with no number
+      chosen anywhere (`vm::limits`).
+      - *Typed.* A refused entry ends its machine `ExitReason::Refused(EntryRefused)`, from
+        KVM's FAIL_ENTRY (`hv::Exit::Refused`). It is said as the host's, never a hang or a
+        crash: `vCPU N: VM entry failed (hardware reason 0x7): the host's hypervisor (KVM under
+        Amazon EC2) refused to enter it`.
+      - *Kept per host model.* A host model is its CPU's model (CPUID's brand string) and what
+        it runs under: on Linux its platform's vendor (`/sys/class/dmi/id/sys_vendor`), else
+        CPUID 0x40000000's signature. For each count it keeps how many ran, how many were
+        refused, and the vCPU the last refusal named (`Limits::record`).
+      - *Refused at once* (`Limits::admit`): a count refused on its host model and never run
+        there, and every larger count. Said as the host's with the evidence: "the host's
+        hypervisor (KVM under Amazon EC2) refused to enter vCPU N; on this host model, counts
+        ≥ M have only been refused".
+      - *Tried:* a count that has both run and been refused, and every other.
+      - *Ceiling:* the hypervisor's own most stays it.
+      - *Tests.* `boots_the_hosts_maximum_vcpu_count` proves the most on hosts that enter it.
+        Where the host refuses, it asserts the refusal is typed, said as the host's and kept,
+        then proves the host's known-good count: its largest never refused, or the refused
+        count halved until a boot comes up, each kept.
+      - The storms size their largest arm by that count (`common::vcpus_admitted`).
+      - CI keeps the counts beside the judge's records (`target/judge-records/<class>/vcpus`).
+      - The A/B is retired; its experiment's arm stays (`a_d261_arm_boots_the_vcpus_its_experiment_asks`).
+      - *Owed:* the product's runs keeping and asking the counts. vm_run.rs, the VM process of
+        `run --kernel` and of the daemon's runs, asks `admit` before `vm::start` and keeps each
+        outcome. Its directory is the user's cache (`helpers::cache`, made shared with the VM
+        process), which a confined VM process may not reach; that does not matter where entries
+        are never refused (HVF, WHP).
   - WHP's boot said as it comes. On Windows the test starts its VM process with
     `common::Vm::spawn_timed`: each line the process prints is also said on stderr as it
     comes, `D261 WHP boot <time from the spawn>: <line>`. CI's log keeps them whatever ends

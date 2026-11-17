@@ -3735,6 +3735,35 @@ pub const PROGRESS: &str = "its guest's progress";
 /// What a [`Following`] awaits.
 pub const STREAM: &str = "a guest's stream";
 
+/// This host model's vCPU counts and what each came to (D261, `shards_vmm::vm::limits`),
+/// kept beside the judge's records (`target/judge-records`, under this host's class), which CI
+/// keeps from run to run: each its CPU's model and what it runs under, so that one image's
+/// runners of two models (CI's x86_64 runners: AMD on Azure, Intel on EC2) keep theirs apart.
+pub fn vcpu_limits() -> shards_vmm::vm::limits::Limits {
+    shards_vmm::vm::limits::Limits::at(
+        workspace()
+            .join("target/judge-records")
+            .join(host_class())
+            .join("vcpus"),
+        shards_vmm::vm::limits::HostModel::here(),
+    )
+}
+
+/// The most vCPUs a machine is tried at here, of `most` (D261): `most`, unless this host
+/// model has only refused that many, then its known-good count, or, while it knows none, one
+/// less than the least count it has only refused.
+pub fn vcpus_admitted(most: u32) -> u32 {
+    let limits = vcpu_limits();
+    match limits.admit(most) {
+        Ok(()) => most,
+        Err(only) => limits
+            .known_good()
+            .unwrap_or_else(|| only.from.saturating_sub(1))
+            .min(most)
+            .max(1),
+    }
+}
+
 /// This host, as the records of its waits are kept for it ([`WaitKind`]): its OS, its
 /// architecture and its logical CPUs, which tell two machines' own target directories apart
 /// and which every runner of one CI image shares, whose cached target a CI cache restores.
@@ -7354,6 +7383,10 @@ pub fn machine_says(
         // of its own.
         Saying::Ended(Some(ExitReason::Error(e))) => {
             format!("no {text:?} from its guest: its machine ended:\n{e}")
+        }
+        // The host's refusal to enter a vCPU (D261), said as the host's.
+        Saying::Ended(Some(ExitReason::Refused(refused))) => {
+            format!("no {text:?} from its guest: its machine ended:\n{refused}")
         }
         Saying::Ended(end) => format!("no {text:?} from its guest: its machine ended: {end:?}"),
         Saying::Refused(refused) => format!("no {text:?} from its guest: {refused}"),
