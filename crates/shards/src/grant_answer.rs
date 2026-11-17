@@ -882,7 +882,10 @@ fn reply(link: &crate::grant::Link, answer: Result<Vec<u8>, String>, what: &str)
     .map_err(|e| format!("answering {what}: {e}"))
 }
 
-#[cfg(all(test, windows))]
+// `cfg(test)` alone, as clippy reads a test module (clippy_utils `is_cfg_test`), so that
+// clippy.toml's in-tests allowances cover its helpers; `all(test, windows)` is not read so.
+#[cfg(test)]
+#[cfg(windows)]
 #[allow(clippy::unwrap_used)]
 mod windows_tests {
     use std::io::{Read as _, Write as _};
