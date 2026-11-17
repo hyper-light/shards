@@ -44,9 +44,10 @@ mod windows_process;
 mod windows_watch;
 #[cfg(windows)]
 pub use windows_files::{
-    FileIdentity, allocation_unit, append_new_in, create_in, deallocate, deallocation_unit, file_identity,
-    make_sparse, names_in, newest_in, open_beneath, open_dir_beneath, open_in, open_newest_beneath,
-    open_newest_in, punch_hole, remove_in, sync_entries, unlink_in, version_of, write_in,
+    EntryKind, FileIdentity, allocation_unit, append_new_in, create_in, deallocate, deallocation_unit,
+    entry_kind, file_identity, make_sparse, names_in, newest_in, open_beneath, open_dir_beneath, open_in,
+    open_newest_beneath, open_newest_in, punch_hole, remove_in, sync_entries, unlink_in, version_of,
+    write_in,
 };
 #[cfg(windows)]
 pub use windows_process::{

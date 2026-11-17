@@ -40584,6 +40584,69 @@ host's write after the guest's end taken without an error; a process other than 
 opening its pipe; an instance's name taken before its VM's first; a client's write up that
 waits on its read down; a half-close its client doesn't read as its end.
 
+**Amended 2026-11-17 (own-36b, kiln goal a8b1ce42; ROOT's ruling): a dial to a host port an
+AF_UNIX listener holds is carried by its spawner, decided by what listens there.**
+- *Found* (CI 44164945050 at 95247a79c, both x86_64 Windows images): every test whose build
+  starts a builder microVM failed, "the builder ended as it started" (build.rs 43 and 42 of
+  141, build_windows.rs 6 of 6), each builder's VM process ending 1.6 s into its start, its
+  guest's init begun (marker 1) and never powering off (no marker 6). A builder alone listens
+  on host ports its guest dials (launch.rs: "a builder alone has a vsock path"), with
+  AF_UNIX listeners at `<vsock>_<port>` on every OS (build/builder.rs `Builder::start`: the
+  build port, the give-back port, the SSH agents' port). S3's dial (`dial_for`, c26e40d7f9,
+  2026-11-16) reads `<vsock>_<port>` as a pair's file (`VsockNames::read`), which a socket is
+  not: every Windows builder's dial was refused, its init's `dial(build::PORT)?` failed
+  (init/src/build.rs), PID 1 ended and the VM with it (`panic=-1`). Linux's and macOS's
+  `dial_for` connect AF_UNIX, as builders listen. CI never showed it before: W1's 122-minute
+  boot cut every x86_64 Windows job before build.rs. Read from the logs and the code; its
+  live run on bare-metal WHP is ROOT's (jupiter).
+- *Decided:* `dial_for` reads what is at `<vsock>_<port>` once, by its entry's handle, never
+  followed (`platform::entry_kind`: FileAttributeTagInfo of a handle opened with
+  FILE_FLAG_OPEN_REPARSE_POINT), and takes exactly one way: a regular file is a pair's file,
+  opened as before (`vsock_open`); an AF_UNIX socket's file, a reparse point tagged
+  IO_REPARSE_TAG_AF_UNIX, 0x80000023 (Microsoft, "Reparse Point Tags"; [MS-FSCC] 2.1.2.1), is
+  connected there and its connection carried (`carried`); anything else, a directory or
+  another reparse point, is refused, its path named. Never one tried and the other fallen
+  back on.
+- *Carried:* the spawner connects the AF_UNIX socket before it answers the VM, then makes a
+  pair whole itself (`shards_ipc::vsock_carried`: fresh names' first instances, its client
+  ends opened as `vsock_open` opens them, its server ends connected), hands the VM the
+  client ends as it hands a pair file's, and carries each way on a thread of its own, in
+  chunks of a way's quota (`VSOCK_QUOTA`: one read takes what its pipe holds, one write
+  fills it). Connected before the answer, a guest's connections reach their host in the order
+  the guest dials them, as Unix's spawner connects them: a builder's init dials its
+  give-back port before its build's, and its builder takes the give-back connection once the
+  build's has come (`take_first`). A listener of pipes in the builder with a thread accepting
+  each port would let the build port's connect overtake a give-back thread the host had not
+  yet run, and that builder would run with no give-back at all.
+- *One builder, with an adapter at Windows' vsock boundary,* rather than a second builder
+  that speaks pipes: the builder keeps one readiness design on every OS, its non-blocking
+  accepts judged by its VM's progress (`dialed`) and its waits over sockets, the proxy's and
+  the SSH agents' wake sockets among them; a pipe-native builder would be a second one of
+  each (R12, R13).
+- *Ends:* the guest's end of its writes is told its host by a shutdown of the socket's writes
+  alone, after every byte (D251's first invariant); the host's end is the guest's way down
+  closed after every byte; each way ends with its peers, so nothing is left to stop. Where the
+  guest's pipe refuses the host's bytes (the guest gone), the socket is read on to its end,
+  those bytes dropped: a Windows AF_UNIX socket closed while it holds its peer's bytes unread
+  resets and loses the peer what it had not read (PM M358), here the guest's bytes its host
+  had still to read.
+- *What it leaves:* a host's write after its guest's end is taken, not refused at once (the
+  invariant this entry holds for pipes); the host finds that end by its read. M358 remains for
+  the host's own last writes where it closes holding guest bytes unread, at a builder's
+  teardown. The hop's cost, a copy each way and two threads a connection, is **unmeasured**:
+  owed (ROOT), one `shards build` of a large context through the adapter against the same on
+  Linux, or before and after on jupiter; if it measures material, the pipe-native builder is
+  reopened with those numbers.
+- *Tests* (Windows, written, not built or run, the lane's no-test rule): grant_answer
+  `a_dial_to_an_af_unix_listener_is_carried_whole_both_ways` (three quotas each way, the
+  guest's end first) and `a_carried_dials_host_ends_first_and_its_guest_answers_after`, both
+  through `serve` and the VM's own dial; `a_dial_to_neither_a_pairs_file_nor_a_socket_is_refused_naming_it`;
+  the pair's file's way in `a_vms_vsock_pipes_are_made_and_dialled_for_it`, as before;
+  windows_files `an_entrys_kind_is_what_its_handle_says` (a file, a directory, an AF_UNIX
+  socket, a junction, a missing one). Red with the AF_UNIX way taken out (g121-tmp
+  lanes/redgreen/dial-carried.patch): the carried tests' dials are refused, as every
+  builder's was.
+
 ### D273. An orchestrator's run's grants past its microVM changed as it runs, within its image's: `ImageGuest::grant_egress` and `revoke_egress`, its network process's rule table under its image's ceiling (built: within the image's grants; past them owed with the guest's side; its real-VM test passing on HVF and KVM x86-64, PM M605; WHP and KVM arm64 owed)
 
 **Why.** The person (2026-11-15, plan Phase 6b, P6b.1 AC2): grant and revoke egress

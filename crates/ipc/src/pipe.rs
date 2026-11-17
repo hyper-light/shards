@@ -63,7 +63,8 @@ mod poll;
 mod vsock;
 pub use poll::{ExitWatch, Poller};
 pub use vsock::{
-    VSOCK_QUOTA, VsockConn, VsockListener, VsockNames, vsock_instance, vsock_listen, vsock_open, vsock_pair,
+    VSOCK_QUOTA, VsockConn, VsockListener, VsockNames, vsock_carried, vsock_instance, vsock_listen,
+    vsock_open, vsock_pair,
 };
 
 /// The longest message a [`Stream`] carries ([`send`]): its header, the most payload a

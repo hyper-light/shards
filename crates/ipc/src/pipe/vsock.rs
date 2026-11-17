@@ -190,6 +190,30 @@ pub fn vsock_open(path: &Path, deadline: Option<Instant>) -> io::Result<(OwnedHa
     Ok((down, up))
 }
 
+/// A connection whose two sides this process makes (D272, amended 2026-11-17): a pair under
+/// fresh names, their first instances, its client ends opened as [`vsock_open`] opens them,
+/// its way down first, and its server ends connected to them, the [`VsockConn`] a
+/// [`VsockListener`] would hand its host program. For a host port no listener of pipes
+/// holds: its spawner carries the connection between the server ends and that host side.
+pub fn vsock_carried() -> io::Result<(VsockConn, (OwnedHandle, OwnedHandle))> {
+    let names = VsockNames::fresh()?;
+    let (down, up) = vsock_pair(&names, true)?;
+    // Free instances just made, which nothing else knows the names of: open at once.
+    let now = Some(Instant::now());
+    let theirs = (open_waiting(&names.down, now)?, open_waiting(&names.up, now)?);
+    for end in [&down, &up] {
+        // Its client already there: ConnectNamedPipe says ERROR_PIPE_CONNECTED at once.
+        if !super::connected(end.as_raw_handle(), &[])? {
+            return Err(io::ErrorKind::Interrupted.into());
+        }
+    }
+    let ours = VsockConn {
+        down: super::Pipe::from_handle(down),
+        up: super::Pipe::from_handle(up),
+    };
+    Ok((ours, theirs))
+}
+
 /// The client end of the pipe `name`, waited for while busy until `deadline`.
 fn open_waiting(name: &str, deadline: Option<Instant>) -> io::Result<OwnedHandle> {
     let wide = super::wide(name);

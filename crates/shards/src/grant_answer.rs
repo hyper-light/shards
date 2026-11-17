@@ -492,10 +492,14 @@ fn handed(access: Access, path: &Path) -> Result<Handed, String> {
 }
 
 /// A connection to vsock host port `port` beside `listening`, the vsock path the VM was
-/// granted, the only ports it may have dialled for it: the client ends of the pair the host
-/// port's file at `<path>_<port>` names, its way down opened first (D272). Waited for not at
-/// all: a host port whose pair another client holds refuses at once, as one whose backlog is
-/// full, so that the VM's device, which waits for this answer, waits on no host program.
+/// granted, the only ports it may have dialled for it: the client ends of a pair of pipes,
+/// its way down first (D272). What listens at `<path>_<port>` is read once, by its entry's
+/// handle, and decides (D272, amended 2026-11-17): a pair's file (a regular file) is opened
+/// as its host program's listener named it; an AF_UNIX listener's socket (a builder's, on
+/// every OS) is connected here and the connection carried ([`carried`]); anything else is
+/// refused, its path named. Waited for not at all: a host port whose pair another client
+/// holds refuses at once, as one whose backlog is full, so that the VM's device, which
+/// waits for this answer, waits on no host program.
 #[cfg(windows)]
 fn dial_for(
     listening: Option<&Path>,
@@ -507,12 +511,126 @@ fn dial_for(
     ),
     String,
 > {
+    use shards_vmm::platform::EntryKind;
     let path = listening.ok_or("a dial from a VM granted no vsock path")?;
     let mut target = path.as_os_str().to_owned();
     target.push(format!("_{port}"));
     let target = Path::new(&target);
-    shards_ipc::vsock_open(target, Some(std::time::Instant::now()))
-        .map_err(|e| format!("{}: {e}", target.display()))
+    let at = |e: std::io::Error| format!("{}: {e}", target.display());
+    match shards_vmm::platform::entry_kind(target).map_err(at)? {
+        EntryKind::File => shards_ipc::vsock_open(target, Some(std::time::Instant::now())).map_err(at),
+        EntryKind::UnixSocket => carried(target).map_err(at),
+        EntryKind::Directory => Err(format!(
+            "{}: a directory, neither a vsock pair's file nor an AF_UNIX socket",
+            target.display()
+        )),
+        EntryKind::Reparse(tag) => Err(format!(
+            "{}: a reparse point tagged {tag:#010x}, neither a vsock pair's file nor an AF_UNIX \
+             socket",
+            target.display()
+        )),
+    }
+}
+
+/// A connection to the AF_UNIX listener at `target` (D272, amended 2026-11-17): connected
+/// here, before the VM is answered, so that a host takes its guest's connections in the
+/// order the guest dials them, as Unix's spawner connects them (a builder's init dials its
+/// give-back port before its build's, and its builder takes them in that order); carried
+/// both ways between that socket and a pair of pipes made whole here
+/// ([`shards_ipc::vsock_carried`]), whose client ends are the VM's, by a thread for each
+/// way ([`carry_up`], [`carry_down`]), each ending with its peers.
+#[cfg(windows)]
+fn carried(
+    target: &Path,
+) -> std::io::Result<(
+    std::os::windows::io::OwnedHandle,
+    std::os::windows::io::OwnedHandle,
+)> {
+    let unix = shards_vmm::platform::UnixStream::connect(target)?;
+    let to_host = unix.try_clone()?;
+    let (ours, theirs) = shards_ipc::vsock_carried()?;
+    let shards_ipc::VsockConn { down, up } = ours;
+    // A chunk of a way's quota: one read takes what its pipe holds, one write fills it.
+    let chunk = usize::try_from(shards_ipc::VSOCK_QUOTA).map_err(std::io::Error::other)?;
+    std::thread::Builder::new()
+        .name("carried up".into())
+        .spawn(move || carry_up(&up, &to_host, chunk))?;
+    std::thread::Builder::new()
+        .name("carried down".into())
+        .spawn(move || carry_down(&unix, down, chunk))?;
+    Ok(theirs)
+}
+
+/// `chunk` bytes to carry through, none where they cannot be had.
+#[cfg(windows)]
+fn chunk_of(chunk: usize) -> Option<Vec<u8>> {
+    let mut buf = Vec::new();
+    buf.try_reserve_exact(chunk).ok()?;
+    buf.resize(chunk, 0);
+    Some(buf)
+}
+
+/// The guest's way: what it writes up its pipe, written to its host's socket, to its end,
+/// which the socket is told by a shutdown of its writes alone, so that its host reads every
+/// byte, then that end (D251's first invariant). Where the host's socket refuses them (its
+/// host gone), it ends at once, its pipe let go with it, so that the guest's next write
+/// fails, as a pipe's does whose host has closed.
+#[cfg(windows)]
+fn carry_up(up: &shards_ipc::Pipe, to_host: &shards_vmm::platform::UnixStream, chunk: usize) {
+    use std::io::{Read as _, Write as _};
+    let Some(mut buf) = chunk_of(chunk) else {
+        let _ = to_host.shutdown(std::net::Shutdown::Write);
+        return;
+    };
+    let mut from_guest = up;
+    loop {
+        let n = match from_guest.read(&mut buf) {
+            Ok(n) => n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => 0,
+        };
+        let Some(bytes) = buf.get(..n).filter(|b| !b.is_empty()) else {
+            let _ = to_host.shutdown(std::net::Shutdown::Write);
+            return;
+        };
+        let mut to = to_host;
+        if to.write_all(bytes).is_err() {
+            return;
+        }
+    }
+}
+
+/// The host's way: what it writes on its socket, written down the guest's pipe, to its end,
+/// then the pipe let go, so that the guest reads every byte, then that end. The socket is
+/// read to its end all the same once the guest's pipe refuses its bytes (the guest gone),
+/// those bytes dropped: a Windows AF_UNIX socket closed while it holds its peer's bytes
+/// unread resets and loses the peer what it had not read (PM M358), here the guest's bytes
+/// its host had still to read. So a host's write after its guest's end is taken, not
+/// refused; its host finds that end by its read.
+#[cfg(windows)]
+fn carry_down(from_host: &shards_vmm::platform::UnixStream, down: shards_ipc::Pipe, chunk: usize) {
+    use std::io::{Read as _, Write as _};
+    let Some(mut buf) = chunk_of(chunk) else {
+        return;
+    };
+    let mut down = Some(down);
+    let mut from = from_host;
+    loop {
+        let n = match from.read(&mut buf) {
+            Ok(n) => n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => 0,
+        };
+        let Some(bytes) = buf.get(..n).filter(|b| !b.is_empty()) else {
+            return;
+        };
+        if let Some(pipe) = down.as_ref() {
+            let mut to = pipe;
+            if to.write_all(bytes).is_err() {
+                down = None;
+            }
+        }
+    }
 }
 
 /// `down` and `up`, a pair of pipes' ends, put in `to`: the answer that hands them over, each
@@ -1182,6 +1300,130 @@ mod windows_tests {
             drop(vm);
             let _ = serving.join();
         });
+    }
+
+    /// What a dialled connection reads to its end, as its VM's device reads it: a look, and a
+    /// read once one would not wait.
+    fn read_to_end(p: &mut shards_vmm::platform::Pipes) -> Vec<u8> {
+        use std::time::{Duration, Instant};
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let mut got = Vec::new();
+        let mut buf = vec![0u8; 1 << 16];
+        loop {
+            p.look();
+            if p.readable() {
+                match std::io::Read::read(p, &mut buf) {
+                    Ok(0) => return got,
+                    Ok(n) => got.extend_from_slice(&buf[..n]),
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                    Err(e) => panic!("reading the carried connection: {e}"),
+                }
+            } else {
+                assert!(
+                    Instant::now() < deadline,
+                    "not at its end after 30 s, {} bytes read",
+                    got.len()
+                );
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+    }
+
+    /// Three ways' quotas of bytes, none of their places alike.
+    fn three_quotas() -> Vec<u8> {
+        let quota = usize::try_from(shards_ipc::VSOCK_QUOTA).unwrap();
+        (0..3 * quota).map(|i| u8::try_from(i % 251).unwrap()).collect()
+    }
+
+    /// A dial to a host port an AF_UNIX listener holds, as a builder's are on every OS (D272,
+    /// amended 2026-11-17), is connected there and carried over pipes its VM is handed: three
+    /// quotas of bytes cross whole each way; the guest's end of its writes reaches its host
+    /// after the last of them, and its host's answer, written after, still reaches the guest,
+    /// then the host's end.
+    #[test]
+    fn a_dial_to_an_af_unix_listener_is_carried_whole_both_ways() {
+        let sent = three_quotas();
+        let dir = shards_testdir::TempDir::new("carry").unwrap();
+        let vsock = dir.join("v");
+        let host = shards_vmm::platform::UnixListener::bind(dir.join("v_6000")).unwrap();
+        let (spawner, vm) = link();
+        std::thread::scope(|scope| {
+            let serving = scope.spawn(|| serve(&spawner, &Here));
+            obtain(&vm, &[(Access::Listen, vsock.clone())]).unwrap();
+            // The host reads to its guest's end, then answers with every byte and ends.
+            let answering = scope.spawn(|| {
+                let (conn, ()) = host.accept().unwrap();
+                let mut got = Vec::new();
+                (&conn).read_to_end(&mut got).unwrap();
+                (&conn).write_all(&got).unwrap();
+                conn.shutdown(std::net::Shutdown::Write).unwrap();
+                got
+            });
+            let mut dialled = dial(&vm, 6000).unwrap();
+            dialled.write_all_waiting(&sent).unwrap();
+            // The guest's way ended, its host's still read.
+            dialled.shut_down();
+            let back = read_to_end(&mut dialled);
+            assert!(
+                answering.join().unwrap() == sent,
+                "the host read every byte, then the guest's end"
+            );
+            assert!(back == sent, "the guest read every byte, then the host's end");
+            drop((dialled, vm));
+            let _ = serving.join();
+        });
+    }
+
+    /// A carried connection's host may end its way first: its guest reads every byte, then
+    /// that end, and its own way goes on, its bytes read whole by the host after it ended
+    /// its writes.
+    #[test]
+    fn a_carried_dials_host_ends_first_and_its_guest_answers_after() {
+        let sent = three_quotas();
+        let dir = shards_testdir::TempDir::new("carry-host").unwrap();
+        let vsock = dir.join("v");
+        let host = shards_vmm::platform::UnixListener::bind(dir.join("v_6001")).unwrap();
+        let (spawner, vm) = link();
+        std::thread::scope(|scope| {
+            let serving = scope.spawn(|| serve(&spawner, &Here));
+            obtain(&vm, &[(Access::Listen, vsock.clone())]).unwrap();
+            let sending = scope.spawn(|| {
+                let (conn, ()) = host.accept().unwrap();
+                (&conn).write_all(&sent).unwrap();
+                conn.shutdown(std::net::Shutdown::Write).unwrap();
+                let mut got = Vec::new();
+                (&conn).read_to_end(&mut got).unwrap();
+                got
+            });
+            let mut dialled = dial(&vm, 6001).unwrap();
+            let back = read_to_end(&mut dialled);
+            assert!(back == sent, "the guest read every byte, then the host's end");
+            dialled.write_all_waiting(&back).unwrap();
+            dialled.shut_down();
+            assert!(
+                sending.join().unwrap() == sent,
+                "the host read every byte after its own end"
+            );
+            drop((dialled, vm));
+            let _ = serving.join();
+        });
+    }
+
+    /// A host port is a vsock pair's file or an AF_UNIX socket, read once by its entry's
+    /// handle: a directory there is neither, and is refused with its path named, as a port
+    /// nothing listens on is.
+    #[test]
+    fn a_dial_to_neither_a_pairs_file_nor_a_socket_is_refused_naming_it() {
+        let dir = shards_testdir::TempDir::new("carry-none").unwrap();
+        let vsock = dir.join("v");
+        std::fs::create_dir(dir.join("v_7000")).unwrap();
+        let refused = dial_for(Some(vsock.as_path()), 7000).unwrap_err();
+        assert!(
+            refused.contains("v_7000") && refused.contains("a directory"),
+            "{refused}"
+        );
+        let absent = dial_for(Some(vsock.as_path()), 7001).unwrap_err();
+        assert!(absent.contains("v_7001"), "{absent}");
     }
 }
 

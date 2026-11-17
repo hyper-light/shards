@@ -2550,8 +2550,8 @@ mod pipe;
 pub use pipe::{
     Arriving, Event, ExitWatch, Listener, Message, Pipe, Poller, RandomFailed, Stream, VSOCK_QUOTA,
     VsockConn, VsockListener, VsockNames, await_any, await_streams, byte_pair, end, fill_random, hung_up,
-    input_pair, output_pair, readable_raw, recv, recv_by, recv_judged, send, send_judged, vsock_instance,
-    vsock_listen, vsock_open, vsock_pair,
+    input_pair, output_pair, readable_raw, recv, recv_by, recv_judged, send, send_judged, vsock_carried,
+    vsock_instance, vsock_listen, vsock_open, vsock_pair,
 };
 
 /// When a judged wait (`send_judged`, `recv_judged`) next asks its judge, and whether it goes

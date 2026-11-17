@@ -42,17 +42,17 @@ use windows_sys::Win32::Storage::FileSystem::{
     DELETE, FILE_APPEND_DATA, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT,
     FILE_ATTRIBUTE_TAG_INFO, FILE_CASE_SENSITIVE_INFO, FILE_DISPOSITION_FLAG_DELETE,
     FILE_DISPOSITION_FLAG_POSIX_SEMANTICS, FILE_DISPOSITION_INFO, FILE_DISPOSITION_INFO_EX,
-    FILE_FLAG_BACKUP_SEMANTICS, FILE_FULL_DIR_INFO, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
-    FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
-    FILE_WRITE_DATA, FileAttributeTagInfo, FileCaseSensitiveInfo, FileDispositionInfo, FileDispositionInfoEx,
-    FileFullDirectoryInfo, FlushFileBuffers, GetFileInformationByHandleEx, SYNCHRONIZE,
-    SetFileInformationByHandle,
+    FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_FULL_DIR_INFO, FILE_GENERIC_READ,
+    FILE_GENERIC_WRITE, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
+    FILE_SHARE_WRITE, FILE_WRITE_DATA, FileAttributeTagInfo, FileCaseSensitiveInfo, FileDispositionInfo,
+    FileDispositionInfoEx, FileFullDirectoryInfo, FlushFileBuffers, GetFileInformationByHandleEx,
+    SYNCHRONIZE, SetFileInformationByHandle,
 };
 use windows_sys::Win32::System::IO::{DeviceIoControl, IO_STATUS_BLOCK};
 use windows_sys::Win32::System::Ioctl::{
     FILE_SET_SPARSE_BUFFER, FILE_ZERO_DATA_INFORMATION, FSCTL_SET_SPARSE, FSCTL_SET_ZERO_DATA,
 };
-use windows_sys::Win32::System::SystemServices::FILE_CS_FLAG_CASE_SENSITIVE_DIR;
+use windows_sys::Win32::System::SystemServices::{FILE_CS_FLAG_CASE_SENSITIVE_DIR, IO_REPARSE_TAG_AF_UNIX};
 
 /// Every sharing a handle allows, as std's opens and unix.rs's: another may read, write,
 /// rename or delete what this holds open.
@@ -128,8 +128,9 @@ fn walk_beneath(root: &Path, rel: &[&str]) -> io::Result<File> {
     Ok(dir)
 }
 
-/// What `file`'s handle says it is: its attributes (FileAttributeTagInfo).
-fn attributes(file: &File) -> io::Result<u32> {
+/// What `file`'s handle says it is: its attributes and, of a reparse point, its tag
+/// (FileAttributeTagInfo).
+fn tag_info(file: &File) -> io::Result<FILE_ATTRIBUTE_TAG_INFO> {
     let mut info = FILE_ATTRIBUTE_TAG_INFO::default();
     let size = u32::try_from(size_of::<FILE_ATTRIBUTE_TAG_INFO>()).map_err(io::Error::other)?;
     // SAFETY: a handle `file` holds open, and a FILE_ATTRIBUTE_TAG_INFO of `size` bytes.
@@ -144,7 +145,48 @@ fn attributes(file: &File) -> io::Result<u32> {
     {
         return Err(io::Error::last_os_error());
     }
-    Ok(info.FileAttributes)
+    Ok(info)
+}
+
+/// What `file`'s handle says it is: its attributes (FileAttributeTagInfo).
+fn attributes(file: &File) -> io::Result<u32> {
+    Ok(tag_info(file)?.FileAttributes)
+}
+
+/// What a path's own entry is: what a host port's dial decides by (D272, amended 2026-11-17).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EntryKind {
+    /// A regular file: no directory, no reparse point.
+    File,
+    Directory,
+    /// An AF_UNIX socket's file: a reparse point tagged IO_REPARSE_TAG_AF_UNIX, 0x80000023
+    /// (Microsoft, "Reparse Point Tags"; [MS-FSCC] 2.1.2.1).
+    UnixSocket,
+    /// Any other reparse point, its tag: a symbolic link's, a junction's, a cloud file's.
+    Reparse(u32),
+}
+
+/// The entry at `path`, never followed (FILE_FLAG_OPEN_REPARSE_POINT): read once, by its
+/// handle, its attributes and its reparse tag together (FileAttributeTagInfo), opened for
+/// them alone, a directory too (FILE_FLAG_BACKUP_SEMANTICS).
+pub fn entry_kind(path: &Path) -> io::Result<EntryKind> {
+    let entry = std::fs::OpenOptions::new()
+        .access_mode(FILE_READ_ATTRIBUTES)
+        .share_mode(SHARE_ALL)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)?;
+    let info = tag_info(&entry)?;
+    Ok(if info.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        if info.ReparseTag == IO_REPARSE_TAG_AF_UNIX {
+            EntryKind::UnixSocket
+        } else {
+            EntryKind::Reparse(info.ReparseTag)
+        }
+    } else if info.FileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0 {
+        EntryKind::Directory
+    } else {
+        EntryKind::File
+    })
 }
 
 /// The directory `rel` names beneath the directory at `root`, opened: no component below
@@ -1482,5 +1524,34 @@ mod tests {
         assert!(all[..MIB].iter().all(|&b| b == 0xaa));
         assert!(all[MIB..3 * MIB].iter().all(|&b| b == 0));
         assert!(all[3 * MIB..].iter().all(|&b| b == 0xaa));
+    }
+
+    /// An entry's kind is read once by its handle, never followed: a regular file, a
+    /// directory, an AF_UNIX socket's file (IO_REPARSE_TAG_AF_UNIX) and a junction (another
+    /// reparse point, its tag IO_REPARSE_TAG_MOUNT_POINT) each as what it is, a missing one
+    /// refused as missing.
+    #[test]
+    fn an_entrys_kind_is_what_its_handle_says() {
+        use windows_sys::Win32::System::SystemServices::IO_REPARSE_TAG_MOUNT_POINT;
+        let base = shards_testdir::TempDir::new("entry-kind").unwrap();
+        let file = base.join("f");
+        std::fs::write(&file, b"x").unwrap();
+        let dir = base.join("d");
+        std::fs::create_dir(&dir).unwrap();
+        let socket = base.join("s");
+        let _listening = crate::platform::UnixListener::bind(&socket).unwrap();
+        let link = base.join("j");
+        junction(&link, &dir);
+        assert_eq!(entry_kind(&file).unwrap(), EntryKind::File);
+        assert_eq!(entry_kind(&dir).unwrap(), EntryKind::Directory);
+        assert_eq!(entry_kind(&socket).unwrap(), EntryKind::UnixSocket);
+        assert_eq!(
+            entry_kind(&link).unwrap(),
+            EntryKind::Reparse(IO_REPARSE_TAG_MOUNT_POINT)
+        );
+        assert_eq!(
+            entry_kind(&base.join("absent")).unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
     }
 }
