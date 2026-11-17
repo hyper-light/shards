@@ -1,0 +1,23 @@
+# What Windows' AF_UNIX takes where a pair's directory is longer than sun_path holds (kiln goal
+# 3cd82843, r735: every VM process in an AppContainer under a long LOCALAPPDATA ended making its
+# first pair), before shards' pairs are built on any of it: a relative name and what it resolves
+# against, afunix.h's parent-path ioctls (UTF-8 and UTF-16), an abstract address (M340 again),
+# and a pipe pair beside them.
+[package]
+name = "afunix-long-paths"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+windows-sys = { version = "=0.61.2", features = [
+  "Win32_Foundation",
+  "Win32_Networking_WinSock",
+  "Win32_Security",
+  "Win32_Storage_FileSystem",
+  "Win32_System_IO",
+  "Win32_System_Pipes",
+  "Win32_System_Threading",
+] }
