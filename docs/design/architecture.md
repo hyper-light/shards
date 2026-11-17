@@ -1675,6 +1675,21 @@ removes it; `--rm` removes it once it ends.
     daemon fails (the command ran, exit 7, after its record was removed or the
     daemon stopped) and this one passes (`containers::rm_cancels_a_run_whose_vm_is_not_ready`,
     `a_stopping_daemon_starts_no_pending_run`).
+  - *The gate, 2026-11-16 (ci-fixes, kiln goal fb3528f9).* On x86_64 gnu CI (job
+    133659472581) `rm_cancels_a_run_whose_vm_is_not_ready` ran over 13 minutes, to its
+    step's limit, with no dump. Two causes left it blind:
+    - The gate polled for its open every 10 ms. Each judged wait's party (its client, the
+      daemon and what descends from it) so always ran, and no stuck client was ever refused.
+    - CI's hang watcher (`scripts/ci/hang-watch.sh`) took only the e2e copy's commands, never
+      the gate's own copy in its test directory.
+    Now the gate's VM process waits in its open of a FIFO (`Gated`), running nothing, until the
+    test opens the gate or ends. A stuck client's wait is then refused, and its failure says
+    its home's daemon log and processes, read with no client of its own: one of another build
+    than its daemon's would replace it (`Identity::of_build`). The watcher takes the gated
+    copies too, and asks their guests nothing, for the same reason. No cause of the hang was
+    found from the code: `wait` registers its waiter, and `rm` wakes it, both under the
+    registry's lock, and a pending run learns of its cancel as a VM comes for it (`commit`).
+    Owed (ROOT): the three gated tests on Linux and macOS, and the next red's dump.
 - **Commands** (`crates/shards/src/daemon/commands.rs`), answering with dockerd's and the
   CLI's words:
   - A microVM is named by its ID, its name, or the start of its ID and of no other's
@@ -9986,10 +10001,38 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
     (ROOT's (3), 2026-11-13). Each keeps W*, the slowest answer seen from a
     wait's start to its exec's end, and R*, the least CPU rate a microVM still answered at
     (`shards_api::Record`). Only an exec's own end teaches: one the daemon ended teaches
-    nothing, and neither does one there as its wait begins, read as D185's `Asked::waited`
-    is: it was waited for not at all (D222's wait of nothing), and its W* of next to nothing
-    would have its kind's next asks looked at each microsecond
-    (`an_exit_said_before_its_wait_teaches_nothing`).
+    nothing. Each wait begins before its exec is asked (amended below), so every answer of
+    the microVM's came within it and teaches.
+  - *Amended (ci-fixes, 2026-11-16, kiln goal fb3528f9): the wait begins before its ask.*
+    - *Before.* `exec_followed` began its wait (`await_exit`) after `send_exec` and after
+      spawning its output's reader. An answer already there as the wait began taught nothing,
+      read as D185's `Asked::waited` is: it was waited for not at all (D222's wait of
+      nothing), and its W* of next to nothing would have had its kind's next asks looked at
+      each microsecond. A microVM that answers faster than a thread is spawned so taught
+      nothing, ever. On CI's Windows arm64 (CI 43968984258, job 133659472771, fe83503c2) the
+      daemon test `a_microvm_that_does_not_give_back_keeps_no_other_waiting` never ended: its
+      stand-in answers as it reads the ask, and its give-back was never learned in ~24k passes
+      ("gave back 24165 MiB … in 24165 passes"), until the step's limit.
+    - *Decided.* The wait begins before its exec is asked, in `exec_followed` and `exec_on`
+      alike (health.rs `Begun::now`, then `send_exec`, then `await_exit`): its judge's follow
+      of the microVM's process begun, or its `Cut::Unread`, which ends the exec once asked.
+      No answer can come before it, so the check of one there as the wait begins is gone,
+      and W* runs from the wait's start, before the ask, as D215 counts a wait. A W* of mere
+      microseconds no longer has looks made each microsecond: a judge looks each W* or each
+      least window its counters resolve, whichever is longer (shards-api `Judge::window`, b26,
+      `a_wait_is_never_refused_within_what_its_reading_resolves`).
+      Not changed: the waits on what the daemon does not ask (a VM's READY and holds, a
+      client's requests) keep D222's wait of nothing, as their party may speak before they
+      begin.
+    - No literal; no cache touched; the wait's start moved before its ask.
+    - *Tests* (written, not run: the person's rule of 2026-11-16). health.rs
+      `an_answer_there_before_its_waiter_reads_teaches_from_its_ask` (replaces
+      `an_exit_said_before_its_wait_teaches_nothing`: the answer said 1 ms past the wait's
+      start, before its waiter reads, teaches a W* no shorter);
+      `a_cold_wait_follows_its_microvm_while_it_lives` (its W* holds the answer's whole 0.8 s);
+      the daemon's `a_microvm_that_does_not_give_back_keeps_no_other_waiting` (one answered
+      give-back teaches, where it looped until one did). Owed (ROOT): the daemon's bin tests on
+      Linux and macOS, and that test on Windows arm64 (CI's windows-11-arm), red at fe83503c2.
   - *Cold start*: before its kind's first answer, a wait follows its microVM's liveness
     alone, to its exec's end or its microVM's.
   - *The judge*: past W* from its start, the wait looks at the microVM's process once each
@@ -37366,6 +37409,37 @@ count standing unknown); shards-vmm `hold::tests::a_vcpu_run_apart_from_its_thre
 (a thread spending none while its guest clock runs a whole CPU: held within a quarter CPU's
 periods when `Apart`, and never when counted by its thread alone, as the hold did before). Results and hosts are in the landing commit and ROOT's record.
 
+**Amended (ci-fixes, 2026-11-16, kiln goal fb3528f9): a test's bound where guest time is
+counted in ticks.**
+- *Found.* `boot.rs` `a_managed_guest_is_held_to_the_rate_its_client_asks_on_its_socket` on
+  x86_64 KVM (CI 43968984258, job 133659472581, fe83503c2): "521827968 ns of guest in
+  2001445122 ns, held to a quarter CPU over 4549416 ns, read in 10000000 ns steps". That is
+  2.37 ms past its bound, a quarter of the wall plus two periods plus one step. Its log could
+  not tell a governor overrun from its count's error.
+- *Why one step does not hold a tick count.* KVM's guest time is charged a whole scheduler
+  tick at a time, to whatever the vCPU's thread ran as each tick landed
+  (`platform::thread_guest_ns`; kernel/sched/cputime.c `account_guest_time`). Its governor
+  lets a held vCPU run once a period, here 440 periods in the window. Each run is counted a
+  tick more or less than it lasted. So over a window the count's error is a sum of per-run
+  errors, as much as one tick a run at worst, and no tick or step bounds it. The display step
+  (USER_HZ's 10 ms, `guest_time_step`) is only the last part of that error. A wider bound
+  would hide an overrun as well as the error.
+- *Decided: a precise witness, not a wider bound.* The test reads, in each `USE` answer, its
+  vCPU's guest time and its VM process's CPU time (`HostUse::cpu_ns`). On Linux that time is
+  the process's CPU-time clock, counted to the nanosecond (`task_sched_runtime`, never
+  ticks), and it holds the vCPU's guest time (`ToThread`). The hold holds where either count
+  shows it: the guest time within its old bound, or, on Linux, the VM process's CPU time
+  within a quarter of the wall and two periods, with nothing added. Its failure says both
+  counts. It says which one passed: the process within, so the guest time's ticks over-counted;
+  or the process past, so the governor let the vCPU overrun, or the process's own threads ran
+  the rest. macOS (HVF's guest time is its exec time) and WHP keep their guest time's own
+  bound alone. Windows' CPU times move in its clock's 15.625 ms steps
+  (`granule::measure_clock`, above), so they are no witness.
+- No literal: the witness's bound is the governor's own, and `cfg!(target_os = "linux")` is
+  the precise clock's platform.
+- **Owed** (ROOT): the test on x86_64 KVM, n ≥ 50 under the boot suite's load, each red
+  saying which count passed its bound; the same on HVF and WHP, whose bound is unchanged.
+
 **Evidence owed.** The two `boot.rs` tests green on hex-winvm; the probe on a client Windows
 host under the root scheduler (whether its thread holds its guest time: `ToThread` told); a
 run host's stats told the charge by its VM process.
@@ -39118,6 +39192,35 @@ typed too.**
     guest's `fs rmdir:DIR trap:TERM`; `fs` gains `trap:SIG`). Restarted, it is refused
     `ImageRefusal::Workdir`, naming the directory and errno 2, its first generation having ended
     on its SIGTERM (`got 15`). On a run of its own, a swap now (`restore`) is refused the same.
+
+**Amended (ci-fixes, 2026-11-16, kiln goal fb3528f9): a next generation starts where its
+first did.**
+- *Found.* P6-fix-3's real-VM test failed "its restart: Ok(())" on x86_64 KVM (CI 43968984258,
+  job 133659472581, fe83503c2) and on HVF (ROOT's gate r607). The darwin and arm64 Linux CI jobs
+  that reported it passing skipped it: no nested virtualization there, and no `/dev/kvm`. From
+  the code, every run fails it. init's `next_generation` took the working directory its start
+  names, else its image's (`Domain::workdir`, its config's `run.workdir` in its directory). It
+  never took the one its run staged (`member-workdir=`), which its first generation started in
+  (`start`). A restart's start names none (api_run `restart`: `workdir: None`). So the next
+  generation entered its image's directory, which exists, and was answered started. Two harms:
+  `Workdir` could never come from a restart or a swap now, and every restarted member whose run
+  named its working directory (kiln's harness in its project) started outside its project.
+- *Decided.* Every generation takes its working directory by one rule (domains.rs
+  `workdir_of`): its start's where it names one, else its run's staged one, else its image's.
+  The first start and the next share it (R12). A next generation's environment was already
+  made this way (`staged::env` over its run's setup, D270: "made as its first's was").
+- *Where the refusal comes: unchanged.* As P6-fix-2 says, a restart waits for its next
+  generation's launch (init's `lifecycle.launched()`), so a chdir(2) that fails is answered
+  `StartRefusal::Workdir` before the restart returns. shards-api refuses `restart`, and `swap`
+  or `restore` now, with `ImageRefusal::Workdir` as their own answer. Only a first generation,
+  which its boot does not wait for, is refused at `wait_member` (P6.1). The real-VM test reads
+  each where it comes.
+- No literal; no wait, cache or wire touched.
+- **Tests** (written, not run: the person's rule of 2026-11-16). init
+  `a_generations_working_directory_is_its_starts_else_its_runs_else_its_images` (Linux).
+  Owed (ROOT): init's Linux suite and musl clippy; the real-VM test above on HVF, KVM and WHP,
+  red at fe83503c2 and green here. Its mutation, `workdir_of`'s staged arm removed, fails it as
+  CI did.
 
 ### D278. A member's own grants past its microVM, changed as the run goes: per-member live egress (b1, the guest, and b2, its host and API: built; b3, its real-VM tests: passing on HVF, KVM and WHP owed)
 

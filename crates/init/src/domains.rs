@@ -2315,9 +2315,7 @@ pub fn start(
         let argv0 = d.argv.first().ok_or_else(|| format!("{}: no program", d.label))?;
         // Its run-time arguments (D256): its command line points into them until it execs.
         let given_args = crate::staged::args(member, setup).map_err(|e| format!("{}: {e}", d.label))?;
-        let workdir = crate::staged::workdir(member, setup)
-            .map_err(|e| format!("{}: {e}", d.label))?
-            .unwrap_or_else(|| d.workdir.clone());
+        let workdir = workdir_of(None, member, setup, &d.workdir).map_err(|e| format!("{}: {e}", d.label))?;
         let home = env
             .iter()
             .rev()
@@ -2789,10 +2787,7 @@ pub fn next_generation(
         .collect::<Result<Vec<_>, _>>()?;
     let (explicit, paths) = executable(&domain, &env).map_err(|e| (R::Failed, e))?;
     let program = domain.argv.first().ok_or_else(|| failed("no program".into()))?;
-    let workdir = match &start.workdir {
-        Some(w) => cstr(w)?,
-        None => d.workdir.clone(),
-    };
+    let workdir = workdir_of(start.workdir.as_deref(), member, &again.setup, &d.workdir).map_err(failed)?;
     // Its confinement as its first's, but for a Landlock ruleset of its own, whose rules it lays
     // in this generation's view, its components at their paths among them.
     let confinement = Confinement {
@@ -3394,6 +3389,22 @@ impl Server {
                 )))
             }
         }
+    }
+}
+
+/// Member `member`'s working directory as a generation of it starts (D270, D277): the one its
+/// start names, `named` (a next generation's), else the one its run staged for it in `setup`,
+/// else its image's, `declared`. A next generation whose start names none so starts where its
+/// first did, as its environment is its run's staged one each generation.
+fn workdir_of(
+    named: Option<&[u8]>,
+    member: u32,
+    setup: &[Vec<u8>],
+    declared: &CStr,
+) -> Result<CString, String> {
+    match named {
+        Some(w) => CString::new(w).map_err(|_| "a working directory holding a NUL".to_string()),
+        None => Ok(crate::staged::workdir(member, setup)?.unwrap_or_else(|| declared.to_owned())),
     }
 }
 
@@ -4331,6 +4342,40 @@ mod tests {
         ] {
             assert_eq!(unentered_of(1, &other, c"/w"), None, "{other}");
         }
+    }
+
+    /// D277, amended (ci-fixes): a generation starts in the working directory its start names,
+    /// else the one its run staged for its member, else its image's. A restart's next
+    /// generation, its start naming none, started in its image's directory, so a harness whose
+    /// project had gone was answered started (CI 43968984258 on x86_64 KVM, ROOT's r607 on HVF).
+    #[test]
+    fn a_generations_working_directory_is_its_starts_else_its_runs_else_its_images() {
+        let declared = c"/harness/codex/.";
+        let staged = [shards_abi::run::members::workdir(1, b"/work/proj").unwrap()];
+        let of = |named: Option<&[u8]>, member, setup: &[Vec<u8>]| {
+            workdir_of(named, member, setup, declared).unwrap()
+        };
+        assert_eq!(
+            of(None, 1, &staged).as_c_str(),
+            c"/work/proj",
+            "its run's, as its first's"
+        );
+        assert_eq!(
+            of(Some(b"/elsewhere".as_slice()), 1, &staged).as_c_str(),
+            c"/elsewhere",
+            "its start's"
+        );
+        assert_eq!(
+            of(None, 2, &staged).as_c_str(),
+            declared,
+            "another member's is not its"
+        );
+        assert_eq!(
+            of(None, 1, &[]).as_c_str(),
+            declared,
+            "its image's where its run stages none"
+        );
+        assert!(workdir_of(Some(b"/a\0b".as_slice()), 1, &staged, declared).is_err());
     }
 
     /// A member's leaves (D270) are directories made beneath its cgroup's and opened, each once:
