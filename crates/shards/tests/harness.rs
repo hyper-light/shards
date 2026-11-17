@@ -2377,6 +2377,55 @@ fn an_unreaped_daemon_is_gone() {
     assert!(ended, "an exited daemon held its wait: {}", patience.account());
 }
 
+/// A stream no process writes any more is taken whole however late its reader thread runs
+/// (`common::taken_whole`), and one a process still holds is taken as it came, its end not
+/// waited for. CI 44164945050, x86_64 musl: `shards --version` ended with status 0 in 40 ms
+/// and both its streams were said held open, their reader threads yet to hand over what their
+/// pipes held, as its call site's kind, cold, refused its gone party a W* (its own run) past
+/// its end. Red where what came is taken alone: nothing, its reader late. The reader is let go
+/// a tenth of a second after the take begins, far past what the take itself does.
+#[cfg(unix)]
+#[test]
+fn a_stream_whose_writers_are_gone_is_taken_whole_however_late_its_reader() {
+    /// A reader that reads nothing until it is let go.
+    struct Late {
+        pipe: std::io::PipeReader,
+        go: Option<std::sync::mpsc::Receiver<()>>,
+    }
+    impl std::io::Read for Late {
+        fn read(&mut self, b: &mut [u8]) -> std::io::Result<usize> {
+            if let Some(go) = self.go.take() {
+                let _ = go.recv();
+            }
+            std::io::Read::read(&mut self.pipe, b)
+        }
+    }
+    let said = b"shards version 0.8.0\n";
+    let (reader, mut writer) = std::io::pipe().unwrap();
+    let probe = common::probe(&reader);
+    let (go, late) = std::sync::mpsc::channel();
+    let rx = common::collect(Box::new(Late {
+        pipe: reader,
+        go: Some(late),
+    }));
+    writer.write_all(said).unwrap();
+    let mut got = (Vec::new(), false);
+    common::taken_whole(&rx, &probe, &mut got);
+    assert_eq!(
+        got,
+        (Vec::new(), false),
+        "a stream its writer holds was waited for"
+    );
+    drop(writer);
+    let letting = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(100));
+        go.send(()).unwrap();
+    });
+    common::taken_whole(&rx, &probe, &mut got);
+    letting.join().unwrap();
+    assert_eq!(got, (said.to_vec(), true));
+}
+
 /// A command's streams another process holds open past its end are read for as long as
 /// that holder makes progress, judged from its end by the record its end taught, its kind
 /// cold or not (#77 waits-10: a cold wait kept past its client's end followed a silent

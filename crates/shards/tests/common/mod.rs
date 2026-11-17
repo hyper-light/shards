@@ -2191,8 +2191,10 @@ pub fn client_output(cmd: &mut Command, home: Option<&Path>) -> std::process::Ou
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawning a client");
-    let out = collect(Box::new(child.stdout.take().unwrap()));
-    let err = collect(Box::new(child.stderr.take().unwrap()));
+    let (stdout, stderr) = (child.stdout.take().unwrap(), child.stderr.take().unwrap());
+    let (out_probe, err_probe) = (probe(&stdout), probe(&stderr));
+    let out = collect(Box::new(stdout));
+    let err = collect(Box::new(stderr));
     let (mut out_got, mut err_got) = ((Vec::new(), false), (Vec::new(), false));
     let mut wait = Wait::begin(kind, child.id(), home, &asked);
     let mut status = None;
@@ -2217,7 +2219,10 @@ pub fn client_output(cmd: &mut Command, home: Option<&Path>) -> std::process::Ou
         }
         match (wait.look(output), status) {
             (Ok(()), _) => {}
+            // What came, or the whole of a stream no process holds any more ([`taken_whole`]).
             (Err(_), Some(status)) => {
+                taken_whole(&out, &out_probe, &mut out_got);
+                taken_whole(&err, &err_probe, &mut err_got);
                 break std::process::Output {
                     status,
                     stdout: out_got.0,
@@ -2264,10 +2269,92 @@ fn quit(child: &mut std::process::Child, home: Option<&Path>) {
     let _ = child.wait();
 }
 
+/// A second handle of a client's pipe's read end, by which [`taken_whole`] tells whether any
+/// process still holds its write end; none where it could not be made.
+#[cfg(unix)]
+pub type Probe = Option<std::os::fd::OwnedFd>;
+
+/// A second handle of a client's pipe's read end, by which [`taken_whole`] tells whether any
+/// process still holds its write end; none where it could not be made.
+#[cfg(windows)]
+pub type Probe = Option<std::os::windows::io::OwnedHandle>;
+
+/// [`Probe`] of `end`, a pipe's read end.
+#[cfg(unix)]
+pub fn probe(end: &impl std::os::fd::AsFd) -> Probe {
+    end.as_fd().try_clone_to_owned().ok()
+}
+
+/// [`Probe`] of `end`, a pipe's read end.
+#[cfg(windows)]
+pub fn probe(end: &impl std::os::windows::io::AsHandle) -> Probe {
+    end.as_handle().try_clone_to_owned().ok()
+}
+
+/// Whether no process holds the write end of the pipe `probe` reads, so that its stream's end
+/// is certain: poll(2)'s POLLHUP of its read end, which a pipe says once its last writer has
+/// closed (Linux fs/pipe.c `pipe_poll`; XNU's poll(2), from `filt_piperead`'s EV_EOF).
+#[cfg(unix)]
+fn writers_gone(probe: &Probe) -> bool {
+    use std::os::fd::AsRawFd as _;
+    let Some(end) = probe else {
+        return false;
+    };
+    let mut look = libc::pollfd {
+        fd: end.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    // SAFETY: poll(2) of one descriptor this holds, with no wait.
+    let ready = unsafe { libc::poll(&raw mut look, 1, 0) };
+    ready == 1 && look.revents & libc::POLLHUP != 0
+}
+
+/// Whether no process holds the write end of the pipe `probe` reads: PeekNamedPipe's
+/// ERROR_BROKEN_PIPE, which Windows says only once the pipe is empty too, so that a pipe with
+/// bytes still to read says nothing and its reader is waited for no more than before.
+#[cfg(windows)]
+fn writers_gone(probe: &Probe) -> bool {
+    use std::os::windows::io::AsRawHandle as _;
+    let Some(end) = probe else {
+        return false;
+    };
+    let mut waiting = 0u32;
+    // SAFETY: a peek of no bytes at a pipe's read end this holds, its count on this stack.
+    let peeked = unsafe {
+        windows_sys::Win32::System::Pipes::PeekNamedPipe(
+            end.as_raw_handle(),
+            std::ptr::null_mut(),
+            0,
+            std::ptr::null_mut(),
+            &raw mut waiting,
+            std::ptr::null_mut(),
+        )
+    };
+    peeked == 0 && io::Error::last_os_error().kind() == io::ErrorKind::BrokenPipe
+}
+
+/// What came of a stream [`collect`] reads, taken whole where no process holds its pipe any
+/// more ([`writers_gone`]): its end certain, its reader thread is waited for to it, however late
+/// it runs. A stream a process still holds is taken as it came, its end not waited for. Taken
+/// as it came alone, a client that ended at once on a busy host had both its streams said held
+/// open, their reader threads yet to hand over what their pipes held (CI 44164945050, x86_64
+/// musl: `shards --version`, its status 0 after 40 ms, its kind's W* its own run).
+pub fn taken_whole(rx: &std::sync::mpsc::Receiver<Vec<u8>>, probe: &Probe, got: &mut (Vec<u8>, bool)) {
+    more(rx, got);
+    if got.1 || !writers_gone(probe) {
+        return;
+    }
+    for chunk in rx.iter() {
+        got.0.extend_from_slice(&chunk);
+    }
+    got.1 = true;
+}
+
 /// A stream read on a thread of its own and handed over by channel as it comes, so that a
 /// pipe another process still holds (a VM given a client's stdio) never holds a wait, and
 /// what came before it is kept.
-fn collect(mut r: Box<dyn Read + Send>) -> std::sync::mpsc::Receiver<Vec<u8>> {
+pub fn collect(mut r: Box<dyn Read + Send>) -> std::sync::mpsc::Receiver<Vec<u8>> {
     let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
     std::thread::spawn(move || {
         let mut b = vec![0u8; 64 * 1024];
@@ -3242,9 +3329,12 @@ fn run_ending(
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawning shards");
-    // Read as it comes ([`collect`]): a command that never ends shows how far it got.
-    let out = collect(Box::new(child.stdout.take().unwrap()));
-    let err = collect(Box::new(child.stderr.take().unwrap()));
+    // Read as it comes ([`collect`]): a command that never ends shows how far it got. Each
+    // pipe probed by a second handle of its read end ([`taken_whole`]).
+    let (stdout, stderr) = (child.stdout.take().unwrap(), child.stderr.take().unwrap());
+    let (out_probe, err_probe) = (probe(&stdout), probe(&stderr));
+    let out = collect(Box::new(stdout));
+    let err = collect(Box::new(stderr));
     // What it wrote, each stream with whether it has ended, its every writer gone.
     let (mut out_got, mut err_got) = ((Vec::new(), false), (Vec::new(), false));
     let came = more;
@@ -3309,8 +3399,13 @@ fn run_ending(
         match (wait.look(output), status) {
             (Ok(()), _) => {}
             // Its streams' end never came, their holder doing nothing of its own past the
-            // slowest answer of its kind: what came is what it said.
-            (Err(_), Some(status)) => break Ok(finished(status, text(&out_got), text(&err_got), start)),
+            // slowest answer of its kind: what came is what it said, but the whole of a stream
+            // no process holds any more, however late its reader ([`taken_whole`]).
+            (Err(_), Some(status)) => {
+                taken_whole(&out, &out_probe, &mut out_got);
+                taken_whole(&err, &err_probe, &mut err_got);
+                break Ok(finished(status, text(&out_got), text(&err_got), start));
+            }
             (Err(stall), None) => {
                 let said = wait.refused(&stall);
                 let seen = stuck(child.id(), home.as_deref());
