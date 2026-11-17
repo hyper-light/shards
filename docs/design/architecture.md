@@ -29320,7 +29320,9 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
         and judge by stillness alone.
       An answer whose VM process could not be read at it teaches W* alone
       (`Follow::answered`, `Follow::ended`). No literal: W*, R*, C* and every window are
-      learned where they run, and a kind with no rated answer has no floor.
+      learned where they run, and a kind with no rated answer has no floor. One derived count
+      stands beside them: `judge::SPREAD`, 2, the fewest answers whose least and most can be
+      two answers' (below).
     - *Held by* crates/api judge.rs:
       - `a_wait_slower_than_any_answer_is_refused_though_it_progresses`: b24's shape, refused
         at the first look its work passes C* and not the look before;
@@ -29345,6 +29347,41 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
         sleeper was served at its own end 95.2 s in, its kind `served 95238910958 rated
         1999931084 95238910958 1999931084`), and red with the old unrated record read as rated
         (R* 0 ns kept: served 103.4 s in).
+    - *R* and C* refuse once two answers have taught them* (ROOT's ruling of 2026-11-17, goal
+      fb3528f9's cluster 1). A record counts the rated answers that taught its R* and C*
+      (`Rated::answers`), and `Judge` refuses a party by its rate only from two
+      (`judge::SPREAD`).
+      - *Why.* Four live, progressing waits on CI's loaded x86_64 runners were refused by rate
+        against kinds one answer had taught: each record's R* CPU was its C* and its R* wall
+        its W*, to the nanosecond. On a single answer, a new answer's work is above it, and
+        its rate below it, each with probability ½ where a kind's answers are exchangeable,
+        so one answer's bounds refuse its kind's own answers about as often as a coin. A
+        refused wait teaches nothing, so such a record never widened.
+        | CI run, job (revision) | wait | its work | C* | its rate | R* | W* |
+        |---|---|---|---|---|---|---|
+        | 44076016255 x86_64 musl (8fc54dcfb7) | engine.rs `exec prov … api POST /containers/web2/wait`, its answer already printed | 12.888561 ms over 26.602167 ms unheld, 55.3 ms in | 12.055769 ms | 0.55× R* | 12.055769 ms in 13.66951 ms | 13.66951 ms |
+        | same job | engine_ring.rs `exec prov … api-bulk ping 200` | 124.251167 ms over 79.756791 ms, 135.6 ms in | 85.736684 ms | 0.82× R* | 85.736684 ms in 45.075451 ms | 45.075451 ms |
+        | 43950458285 x86_64 musl (1793da7c22) | containers.rs `shards export -o … exported` | 84.490594 ms over 111.063723 ms, 252.3 ms in | 70.457552 ms | 0.67× R* | 70.457552 ms in 62.346488 ms | 62.346488 ms |
+        | same job | containers.rs `run --pull never -d --name user … sleep` | 594.112474 ms over 1.193788288 s, 1.86 s in | 524.831958 ms | 0.29× R* | 524.831958 ms in 309.39505 ms | 309.39505 ms |
+        The first job restored its records from 44031797055's musl job, the same host model
+        (Intel Xeon 6975P-C).
+      - *Two, derived.* One answer's least rate and most work are that one answer, so two is
+        the fewest answers with any spread. No constant beside it; R*, C* and W* stay learned.
+      - *Counted once.* An answer taught adds one (`Record::teach`); a record merged in
+        (`Record::merge`, a kept record read back) counts the more of the two, never their sum,
+        as the same kept record merged in again would count its answers twice. Two processes'
+        answers may so count as one's: a count low refuses later, never sooner.
+      - *Kept.* A test's kept record is `served W* [rated R*cpu R*wall C* answers]`. One kept
+        before answers were counted, `rated` with three numbers, is read as one answer's, until
+        its next rated answer counts it two (tests' `WaitKind::learn_kept`).
+      - *b24 still caught.* Its sleeper is refused once a second answer has taught its kind,
+        at the first due look past C*, as before.
+      - *Held by* crates/api judge.rs `one_answers_rates_refuse_nothing` (the engine wait's
+        own numbers: unrefused on one answer, refused at the same look once the same answer
+        is taught again; red without the count) and `a_sleeper_is_refused_once_two_answers_taught_its_kind`
+        (40 looks unrefused on one answer, refused at look 16 on two). The rate tests above,
+        judge.rs' and progress.rs `a_rate_bound_refuses_only_a_ticking_sleeper`, now teach
+        their kinds twice; harness.rs' teaches three. Written, not run (ROOT's runs owed).
     - A look at a process whose exit is under way (a zombie; on Windows, a process of its
       tree that exited since) judges nothing. Its end is the wait's answer, and wins over a
       refusal it races.

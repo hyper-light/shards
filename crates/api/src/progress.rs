@@ -2265,8 +2265,9 @@ mod tests {
         assert!(matches!(refused, Unfollowed::Stalled(_)), "{refused:?}");
     }
 
-    /// D215's rate bound on real processes, a kind taught W* 200 ms, R* 1/2 and C* 100 ms
-    /// (each burst of work 10 ms or more, so that a macOS CPU counter moving in ticks of
+    /// D215's rate bound on real processes, a kind taught W* 200 ms, R* 1/2 and C* 100 ms by
+    /// two answers, as R* and C* refuse once two have taught them (each burst of work 10 ms
+    /// or more, so that a macOS CPU counter moving in ticks of
     /// 10 ms shows it in every window, and stillness never decides): a process asleep for
     /// good but ticking, 10 ms of work in each 100 ms, is refused for its rate under
     /// `Bound::Rate` and goes on under `Bound::Stillness` (a user's command asleep by design);
@@ -2277,6 +2278,7 @@ mod tests {
     fn a_rate_bound_refuses_only_a_ticking_sleeper() {
         let ms = Duration::from_millis;
         let record = Record::new();
+        record.teach(ms(200), ms(100));
         record.teach(ms(200), ms(100));
         let started = |mode: &str| {
             let mut child = std::process::Command::new(std::env::current_exe().unwrap())
@@ -3042,20 +3044,21 @@ mod tests {
         let records = Records::new();
         assert_eq!(records.seen(Awaited::Boot), Seen::Cold);
         records.teach(Awaited::Boot, ms(2), ms(1));
-        let learned = |slowest, cpu, over| Seen::Learned {
+        let learned = |slowest, cpu, over, answers| Seen::Learned {
             slowest,
             rated: Some(crate::Rated {
                 least: Rate { cpu, over },
                 most: ms(1),
+                answers,
             }),
         };
-        assert_eq!(records.seen(Awaited::Boot), learned(ms(2), ms(1), ms(2)));
+        assert_eq!(records.seen(Awaited::Boot), learned(ms(2), ms(1), ms(2), 1));
         records.teach(Awaited::Boot, ms(1), ms(1));
-        assert_eq!(records.seen(Awaited::Boot), learned(ms(2), ms(1), ms(2)));
+        assert_eq!(records.seen(Awaited::Boot), learned(ms(2), ms(1), ms(2), 2));
         records.teach(Awaited::Boot, ms(4), ms(1));
-        assert_eq!(records.seen(Awaited::Boot), learned(ms(4), ms(1), ms(4)));
+        assert_eq!(records.seen(Awaited::Boot), learned(ms(4), ms(1), ms(4), 3));
         records.teach(Awaited::Boot, Duration::ZERO, Duration::ZERO);
-        assert_eq!(records.seen(Awaited::Boot), learned(ms(4), ms(1), ms(4)));
+        assert_eq!(records.seen(Awaited::Boot), learned(ms(4), ms(1), ms(4), 3));
         assert_eq!(records.seen(Awaited::Connect), Seen::Cold);
         assert_eq!(records.seen(Awaited::End), Seen::Cold);
     }

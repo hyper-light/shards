@@ -3572,8 +3572,9 @@ impl WaitKind {
         &self.record
     }
 
-    /// Teaches its record what this host kept of it, W*, and R* and C* where they were
-    /// rated ([`RATED`]), each as it was kept (`shards_api::Record::merge`). Nothing where
+    /// Teaches its record what this host kept of it, W*, and R*, C* and the count of answers
+    /// that taught them where they were rated ([`RATED`]), each as it was kept
+    /// (`shards_api::Record::merge`). Nothing where
     /// nothing whole is kept (one kept before answers were rated, W* and R* alone, leaves its
     /// kind cold until its next answer rewrites it: its R* may be of none read, 0 ns), and,
     /// for a command's kind, nothing that does not say it is of served answers alone
@@ -3590,13 +3591,23 @@ impl WaitKind {
         };
         let rated = match words.next() {
             None => None,
-            Some(RATED) => match (ns(words.next()), ns(words.next()), ns(words.next()), words.next()) {
-                (Some(cpu), Some(over), Some(most), None) => Some(shards_api::Rated {
-                    least: shards_api::Rate { cpu, over },
-                    most,
-                }),
-                _ => return,
-            },
+            Some(RATED) => {
+                let (cpu, over, most) = (ns(words.next()), ns(words.next()), ns(words.next()));
+                // One kept before answers were counted is one answer's, until its next rated
+                // answer counts it two (D215, ROOT's ruling of 2026-11-17).
+                let answers = match words.next() {
+                    None => Some(1),
+                    Some(n) => n.parse::<u64>().ok().filter(|&n| n > 0),
+                };
+                match (cpu, over, most, answers, words.next()) {
+                    (Some(cpu), Some(over), Some(most), Some(answers), None) => Some(shards_api::Rated {
+                        least: shards_api::Rate { cpu, over },
+                        most,
+                        answers,
+                    }),
+                    _ => return,
+                }
+            }
             Some(_) => return,
         };
         self.record.merge(shards_api::Seen::Learned { slowest, rated });
@@ -3695,11 +3706,12 @@ impl WaitKind {
             &temporary,
             match rated {
                 Some(rated) => format!(
-                    "{tag}{} {RATED} {} {} {}\n",
+                    "{tag}{} {RATED} {} {} {} {}\n",
                     ns(slowest),
                     ns(rated.least.cpu),
                     ns(rated.least.over),
-                    ns(rated.most)
+                    ns(rated.most),
+                    rated.answers
                 ),
                 None => format!("{tag}{}\n", ns(slowest)),
             },
@@ -3715,8 +3727,10 @@ impl WaitKind {
 /// its kind cold until its next served answer rewrites it.
 const SERVED: &str = "served";
 
-/// The word before a kept record's R* and C* ([`WaitKind::keep`]): of answers whose work was
-/// read through their end alone (`shards_api::Rated`). A record kept without it has none.
+/// The word before a kept record's R*, C* and the count of the answers that taught them
+/// ([`WaitKind::keep`]): of answers whose work was read through their end alone
+/// (`shards_api::Rated`). A record kept without it has none; one kept with no count, before
+/// answers were counted, is one answer's (D215, ROOT's ruling of 2026-11-17).
 const RATED: &str = "rated";
 
 /// Which answers teach a [`WaitKind`].
