@@ -904,9 +904,11 @@ pub fn serve(
     // they are an ext4 file system in a file of their own (D190), they stay there, its
     // journal written in place, for its host to read once the microVM has gone, unless
     // joiners of its network go on in it past the run (D119): their files are
-    // its, and a microVM that goes on keeps it in use.
+    // its, and a microVM that goes on keeps it in use. Any joiner it ever had may have
+    // outlived the command in its guest's count, which then takes `SAVE` alone
+    // (`warm::joined`).
     if let (Ok(_), Some(out)) = (&status, layer_out) {
-        if crate::vm_run::layered() && !crate::warm::joining() {
+        if crate::vm_run::layered() && !crate::warm::joined() {
             match keep_layer_from(&conn, &mut reader, &mut beyond) {
                 Ok(used) => {
                     if let Some(kept) = kept {
@@ -930,8 +932,9 @@ pub fn serve(
     // connection, and what waits for the guest, stay theirs; and what the guest says on
     // the run's connection is passed on until it closes it, as it powers off. The host
     // says it asks no more of it (no layer, or its layer had), and the guest takes that
-    // as its end of asking.
-    let joined = crate::warm::joining();
+    // as its end of asking. Its run's end is had here: where its daemon has gone, its
+    // machine ends now, and nothing its guest goes on with is served (D26, `warm::run_over`).
+    let joined = !crate::warm::run_over() && crate::warm::joining();
     if joined {
         let _ = conn.shutdown(std::net::Shutdown::Write);
         drain(&mut reader, &mut beyond);

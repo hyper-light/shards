@@ -1448,17 +1448,20 @@ fn a_guest_grows_and_gives_back_its_memory() {
     if cannot_run_vms() {
         return;
     }
-    let mut child = common::command()
-        .env("SHARDS_TIMING", "1")
-        .args(["run", "--kernel", kernel().to_str().unwrap()])
-        .args(["--init", test_guest().to_str().unwrap()])
-        .args(["--memory", "256", "--memory-max", "1280", "--cmdline"])
-        .arg("console=hvc0 panic=-1 shards_test=hotplug shards_plug_mib=1024 memhp_default_state=online_movable")
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
+    // Killed as it drops, as this test's panic unwinds too: its guest waits on its stdin.
+    let mut child = common::Reaped(
+        common::command()
+            .env("SHARDS_TIMING", "1")
+            .args(["run", "--kernel", kernel().to_str().unwrap()])
+            .args(["--init", test_guest().to_str().unwrap()])
+            .args(["--memory", "256", "--memory-max", "1280", "--cmdline"])
+            .arg("console=hvc0 panic=-1 shards_test=hotplug shards_plug_mib=1024 memhp_default_state=online_movable")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
     // `shards run --kernel` becomes the VM process on Unix, the same pid; on Windows it
     // starts the VM process, its child, found once the guest has said it plugged.
     let front = child.id();
@@ -2312,6 +2315,98 @@ fn shards_api_shares_a_directory_and_a_read_only_one() {
     assert!(!ro.join("from-guest").exists());
 }
 
+/// Waits until VM `child`'s vsock socket accepts, which it does once its VM process has made its
+/// device and listens. On macOS its spawner binds the path first and a client is refused until
+/// the VM listens, so the path's being there says nothing: a dial that connects does. On
+/// Windows its spawner makes its pipes and names them at the path first (D272): a dial opens
+/// them at once, its connection taken as the device comes up, and the next dial waits for the
+/// device's next pair. Waited for while its VM process lives, each dial paced as shards-api
+/// paces its own (`shards_api::pause`), with no clock of the test's (WHP at 0a3dde0db: a dial
+/// as the path appeared was refused, WSAECONNREFUSED).
+fn listening(socket: &std::path::Path, child: &mut common::Reaped) {
+    let began = std::time::Instant::now();
+    loop {
+        let dialed = std::time::Instant::now();
+        if socket.exists() {
+            match common::vsock_dial(socket) {
+                Ok(_) => return,
+                Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => {}
+                Err(e) => panic!("dialing {}: {e}", socket.display()),
+            }
+        }
+        assert!(
+            matches!(child.try_wait(), Ok(None)),
+            "its VM ended before it listened"
+        );
+        std::thread::sleep(shards_api::pause(
+            dialed.elapsed(),
+            began.elapsed(),
+            Duration::MAX,
+        ));
+    }
+}
+
+/// A VM a failing test boots ends with that test: its panic unwinds through the
+/// [`common::Reaped`] it holds, which ends the VM process as it drops. Before, a bare child ran
+/// on past its test and its binary (CI 43968984258, x86_64 gnu: the rate test's guest, told to
+/// spin ten minutes, ran 6.5 minutes past boot.rs's end). Its guest serves and does nothing
+/// else, so that a VM left running is one whose wait for its end sees no progress.
+#[test]
+fn a_failing_tests_vm_ends_with_it() {
+    if cannot_run_vms() {
+        return;
+    }
+    let dir = common::TempDir::new("reaped");
+    let socket = dir.join("v");
+    let mut vm = 0;
+    let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut child = common::Reaped(
+            common::command()
+                .args(["run", "--kernel", kernel().to_str().unwrap()])
+                .args(["--init", test_guest().to_str().unwrap()])
+                .args(["--cpus", "1", "--memory", "256", "--no-console", "--vsock"])
+                .arg(&socket)
+                .args(["--cmdline", "console=hvc0 panic=-1 quiet shards_test=echo"])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        listening(&socket, &mut child);
+        // `run --kernel` becomes the VM process on Unix; on Windows it starts it.
+        #[cfg(unix)]
+        {
+            vm = child.id();
+        }
+        #[cfg(windows)]
+        {
+            let found = common::vm_processes(child.id());
+            assert_eq!(found.len(), 1, "shards {}'s VM processes: {found:?}", child.id());
+            vm = found[0];
+        }
+        panic!("a test failing with its VM running");
+    }));
+    assert!(failed.is_err(), "the test went on past its failure");
+    assert_ne!(vm, 0, "no VM process found");
+    let mut ending = common::Wait::begin(
+        common::WaitKind::at(std::panic::Location::caller()),
+        vm,
+        None,
+        "a failed test's VM process",
+    );
+    while common::alive(i32::try_from(vm).unwrap()) {
+        if let Err(stall) = ending.look(false) {
+            panic!(
+                "VM process {vm} outlived its failed test: {}",
+                ending.refused(&stall)
+            );
+        }
+        std::thread::sleep(ending.next_look());
+    }
+    ending.answered();
+}
+
 /// A managed guest's rate (D255): a guest booted `--host-managed`, spinning its one vCPU, is
 /// held by its VM's governor to the quarter CPU a client asks on its vsock socket (`RATE`,
 /// `shards_abi::rate`), as `ManagedGuest::rate` asks it. Its vCPU runs its guest no more than
@@ -2347,42 +2442,16 @@ fn a_managed_guest_is_held_to_the_rate_its_client_asks_on_its_socket() {
         if managed {
             cmd.arg("--host-managed");
         }
-        cmd.arg("--cmdline")
-            .arg("console=hvc0 panic=-1 quiet shards_test=spin shards_spin_ms=600000 shards_idle_ms=0")
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .unwrap()
-    };
-    // Its socket accepts once its VM process has made its device and listens. On macOS its
-    // spawner binds the path first and a client is refused until the VM listens, so the path's
-    // being there says nothing: a dial that connects does. On Windows its spawner makes its
-    // pipes and names them at the path first (D272): a dial opens them at once, its connection
-    // taken as the device comes up, and the next dial waits for the device's next pair. Waited for while its VM process lives, each dial paced as shards-api paces its
-    // own (`shards_api::pause`), with no clock of the test's (WHP at 0a3dde0db: a dial as the
-    // path appeared was refused, WSAECONNREFUSED).
-    let listening = |socket: &std::path::Path, child: &mut std::process::Child| {
-        let began = Instant::now();
-        loop {
-            let dialed = Instant::now();
-            if socket.exists() {
-                match common::vsock_dial(socket) {
-                    Ok(_) => return,
-                    Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => {}
-                    Err(e) => panic!("dialing {}: {e}", socket.display()),
-                }
-            }
-            assert!(
-                child.try_wait().unwrap().is_none(),
-                "its VM ended before it listened"
-            );
-            std::thread::sleep(shards_api::pause(
-                dialed.elapsed(),
-                began.elapsed(),
-                Duration::MAX,
-            ));
-        }
+        // Killed as it drops, as this test's panic unwinds too: its guest spins ten minutes.
+        common::Reaped(
+            cmd.arg("--cmdline")
+                .arg("console=hvc0 panic=-1 quiet shards_test=spin shards_spin_ms=600000 shards_idle_ms=0")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .unwrap(),
+        )
     };
     // One ask, and the line its VM answers before it closes the ask: none where it closes it
     // unanswered.

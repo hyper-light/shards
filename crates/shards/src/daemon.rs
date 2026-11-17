@@ -16940,32 +16940,34 @@ mod tests {
         });
     }
 
-    /// `--rm` microVMs that end together are made durable together: the removals that
-    /// queue while one sync waits take one more, for them all.
+    /// Removals that end together are made durable together: those that queue while one
+    /// sync waits take one more, for them all. Each is a `--rm` run's that ended before
+    /// its record was written, taken out of its reservation: one whose record says `--rm`
+    /// needs no sync (D215's amendment of 2026-11-16, `Removal::needs_sync`).
     #[test]
     fn removals_ending_together_take_one_sync() {
         let t = Test::on("rm-batch", Held::default());
         t.run(|t| {
             t.t.daemon.start_completer(t.threads);
+            t.daemon.disk.holding_writes.store(true, Ordering::SeqCst);
             let runs: Vec<_> = (0..3)
                 .map(|i| {
                     let id = t.reserve_with(&format!("batch{i}"), None, true);
-                    t.t.daemon.await_arrival(&id);
                     let starting = t.start(&id);
                     let (ready, vm) = t.warm_vm(None);
                     starting.warm.send(ready).unwrap();
                     assert_eq!(heard(&vm).0, kind::RUN);
+                    // Its command never starts: nothing asks for its record after the first.
                     say(&vm, kind::TAKEN, &[]);
-                    say(&vm, kind::STARTED, &[]);
                     (starting, vm)
                 })
                 .collect();
-            say(&runs[0].1, kind::DONE, &[0]);
+            say(&runs[0].1, kind::DONE, &[127]);
             t.until("the first removal's sync waits", |d| {
                 d.disk.syncing.load(Ordering::SeqCst)
             });
-            say(&runs[1].1, kind::DONE, &[0]);
-            say(&runs[2].1, kind::DONE, &[0]);
+            say(&runs[1].1, kind::DONE, &[127]);
+            say(&runs[2].1, kind::DONE, &[127]);
             t.until("the others queued", |d| lock(&d.completing.pending).len() == 2);
             t.daemon.disk.let_through();
             for (starting, _) in runs {
@@ -16982,6 +16984,55 @@ mod tests {
                 d.disk.syncs.load(Ordering::SeqCst) >= syncs
             });
             assert_eq!(t.daemon.disk.syncs.load(Ordering::SeqCst), syncs);
+        });
+    }
+
+    /// `--rm` runs whose records say `--rm` take no sync as they end together (D215's
+    /// amendment of 2026-11-16, `Removal::needs_sync`): one a power loss brings back goes
+    /// as the next start opens. Their names go and what they set aside is deleted, on
+    /// Windows with no sync of its deletion either.
+    #[test]
+    fn rm_runs_ending_together_take_no_sync() {
+        let t = Test::on("rm-unsynced", Held::default());
+        t.run(|t| {
+            t.t.daemon.start_completer(t.threads);
+            // A sync begun is counted, not held.
+            t.daemon.disk.let_through();
+            let runs: Vec<_> = (0..3)
+                .map(|i| {
+                    let id = t.reserve_with(&format!("unsynced{i}"), None, true);
+                    t.t.daemon.await_arrival(&id);
+                    let starting = t.start(&id);
+                    let (ready, vm) = t.warm_vm(None);
+                    starting.warm.send(ready).unwrap();
+                    assert_eq!(heard(&vm).0, kind::RUN);
+                    say(&vm, kind::TAKEN, &[]);
+                    say(&vm, kind::STARTED, &[]);
+                    (id, starting, vm)
+                })
+                .collect();
+            for (_, _, vm) in &runs {
+                say(vm, kind::DONE, &[0]);
+            }
+            let ids: Vec<String> = runs.iter().map(|(id, ..)| id.clone()).collect();
+            for (_, starting, _) in runs {
+                joined(starting.run).unwrap();
+            }
+            t.until("every name let go", |d| {
+                let registry = lock(&d.containers);
+                (0..3).all(|i| registry.name_taken(&format!("unsynced{i}")).is_none())
+            });
+            let containers = t.home.join("containers");
+            t.until("what was set aside was not deleted", |_| {
+                ids.iter().all(|id| {
+                    !containers.join(id).exists() && !containers.join(format!(".{id}.removing")).exists()
+                })
+            });
+            assert_eq!(
+                t.daemon.disk.syncs.load(Ordering::SeqCst),
+                0,
+                "a --rm run's removal synced"
+            );
         });
     }
 

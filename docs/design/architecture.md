@@ -194,6 +194,56 @@ the crypto self-tests first, since every clone would replay the rest (PM M21).
   pending SError; the GIC through its registers, as the writes that remake it; the counter
   set once for the VM at the release; working sets recorded as on x86_64, and mapped ahead
   by the prefetch program on vCPU 0.
+- **The storms, each sized by what it shows** (tests/snapshot.rs `storm`, audit A02;
+  2026-11-17, kiln goal b2124227, lane ci-storms-judge; the person's rule, R03: sizes from
+  data and the host's own resources). Both storm tests had run 2, 8 and the most vCPUs a
+  machine may have. 8 was picked: on M45's M5 Max (18 cores) it gave every vCPU a core of
+  its own, on CI's 4-CPU runners twice as many vCPUs as CPUs. The most is 255 on x86-64
+  since d77ef9948. On CI's x86_64 musl runner (AMD, 4 CPUs; CI 43968984258, job
+  133659472864) both 255-vCPU storms ran at once, 338 vCPU threads runnable on its 4 CPUs
+  (lane ci-read-4), and neither ended within the step's 58 minutes.
+  - Both take two vCPUs, the least whose CPUs wake one another (the guest's pairs; it
+    refuses fewer). Both take the host's CPUs, or the most where it has more: the most it
+    runs at once, every vCPU on a CPU of its own as the barrier parks them, the races of the
+    phases above (M45's lost kick). The host's CPUs are those the test may run on, which its
+    VM processes inherit (`available_parallelism`: affinity, and Linux's cgroup quota).
+  - The restores' storm also takes the most a machine may have (D13: the hypervisor's limit
+    and the pinned kernel's `CONFIG_NR_CPUS`). A restore alone reads back what a snapshot
+    keeps of each vCPU, and only the most crosses those bounds: the 255-vCPU storm found
+    "sequence of 255 (limit 254)" (D13), and a restore's per-vCPU states, its LAPICs or GIC,
+    are the hypervisor's at that count too.
+  - The resumed storm also takes one vCPU more than its host has CPUs, the least its host
+    cannot run at once, so that the barrier kicks a vCPU its host is not running; where that
+    is more than a machine may have, none. A resume adds to a snapshot only the barrier's
+    release and the stream through the pause, which cross no bound of the machine's own: the
+    largest snapshot is the restores' storm's, which it writes and reads back.
+  - So on CI's x86_64 runners the restores' storm runs 2, 4 and 255 vCPUs and the resumed
+    one 2, 4 and 5; on an 18-core Mac whose machines take 64, 2, 18 and 64, and 2, 18 and 19.
+    One storm at the most runs at a time. `SHARDS_STORM_CPUS` still names one size alone.
+    Held by snapshot.rs `a_storms_sizes_are_the_regimes_its_claim_needs` (starts no VM).
+  - No wall clock bounds a storm (D209). Each round's reads and each wait on its guest are
+    D215's judged waits, each size its own kind: past the slowest of their kind they go on
+    while the guest says something new or carries the stream, and cold they follow liveness,
+    as on CI until a passing job has kept that size's records (D261, *CI's judge learns
+    across runs*: a job that runs out of time keeps none). A slow host that makes progress
+    passes; its time is its host's. Whether the restores' 255-vCPU storm ends within a 4-CPU
+    runner's 58 minutes, now that no other runs beside it, is unmeasured: owed.
+  - The "Broken pipe" of that run (`255 vCPUs: round 8, 236.2 s to 273.6 s in, sending:
+    Broken pipe (os error 32)`, 23:30:45) was the restores' storm's, not the resumed one's.
+    The round's costs name VM 203206, whose round 1 had named `storm255-13/v.sock`, the
+    restores' original; its first restore started at 23:30:49. An original told
+    `--snapshot-then stop` ends its VM process after its snapshot, which closes the device's
+    end of the stream's socket as an exiting process's descriptors close. The host's reader
+    read the end, and its writer's next write was refused (EPIPE). The test expects that
+    break and drops the original's rounds ("Its stream breaks where it stopped, at the
+    snapshot"): no guest or host side ended early, under load or not. Both tests' storms of
+    a size had said only "255 vCPUs". Each stream's lines now name their storm and VM
+    (`storm 255 vCPUs, its original (it stops at its snapshot)`, `storm 255 vCPUs, restore
+    0`, `resume 5 vCPUs`).
+  - Owed (ROOT): snapshot.rs's storms on KVM x86-64, an AMD host held to 4 CPUs (`taskset -c
+    0-3 cargo test --locked --profile test-release -p shards --test snapshot -- storm::
+    --nocapture`, timing each size), on HVF and on WHP; and the next ci.yml run's x86_64
+    Tests steps, whether the storms end within their limit.
 
 ### Platforms (D13)
 
@@ -1439,7 +1489,28 @@ for the exit status.
     a killed daemon's waiting VMs ended and its running ones ran on, reached by nothing: a
     failed test's restored microVM ran for a day and a half
     (`a_killed_daemons_runs_end_with_it`, a run and a restored run; mutation-checked: the
-    order not sent, not taken). `stop` returns
+    order not sent, not taken). Its machine goes with them (ci-leaks, 2026-11-17): the order
+    ends a run's command alone, and a guest goes on past that command where joiners run in it
+    (D119) or it waits on its host, which nothing reaches once its daemon has gone. So each VM
+    keeps its course (warm.rs `Course`): its run going, its end told, its end had (told, its
+    layer kept or sent as asked), and its daemon there or gone; once its end is had and its
+    daemon gone, it stops its machine, whatever its guest still serves. A link closing shows
+    the daemon gone only while the run on it goes on, since a daemon that goes on lets go of a
+    run's link once done with it, its end taken, its layer settled and its joiners ended: the
+    VM's own link closing before its run's end is told, or a joiner's before that joiner's.
+    Told no order (a visit's VM, D37, whose standby holds until it is killed, or a run whose
+    daemon died before sending one), the command is SIGKILLed at once, as the daemon sends
+    SIGKILL for a signal it cannot send; a grace waited out ends early at the run's end, its
+    SIGKILL then unsent. Before, a joiner running as its daemon died held its microVM up for
+    ever. (CI 43968984258's two microVMs, 20 minutes past their daemons, were held instead by
+    a layer's ask their guests never answered, fixed where it was asked: D119, `SAVE` where a
+    joiner ever joined.) Tests: daemon.rs
+    `a_killed_daemons_joined_microvms_end_with_it` (a microVM whose command the daemon's going
+    stops, and one whose command had ended, each with its joiner running), warm.rs
+    `a_vms_machine_ends_once_its_run_is_over_and_its_daemon_gone` (every order of the
+    course's moves). Not covered: a guest that never ends its command once SIGKILLed, nor
+    answers its layer's ask, holds its VM still, as a cold home's daemon waits on one (D217);
+    and a microVM held at a live move's last save (D176 part 7) stays held. `stop` returns
     once the daemon has let go of its home: the daemon unlocks it and closes the stop
     connections itself, last, since the kernel closes an exiting process's descriptors
     in no order to rely on (XNU `fdt_invalidate` closes the highest first).
@@ -12249,7 +12320,8 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
     client's own end; R* and C*, a bound on a party past W* that ticks but never answers, D215), the test process keeps in
     memory and under `target/judge-records/<os>-<arch>-<logical CPUs>/<call site>`, read
     back by the next run on the host (ROOT: a record learned on the host is data, not a
-    seed; every runner of one CI image shares its key, so a cached target keeps CI warm).
+    seed; every runner of one CI image shares its key, and CI keeps the records from run to
+    run by its runner's image: D261, *CI's judge learns across runs*).
     Each answer is taught in, merged with what another process kept, and written whole and
     renamed into place, by a name of its own (its process's and its keep's), the read, merge
     and rename one transaction under the record's lock (`.<record>.lock`, std's
@@ -22769,7 +22841,18 @@ the boundary is a container's, which is what the mode asks for.
   outlives it, running or ended with its layer still to come, not after that layer: held
   till the layer was sent, its end came after `kill`'s 10 s, whose escalation killed the
   microVM, the end and the rest of the layer with it (PM M303: 5 runs of 5 on the Mac, the
-  provider's status 255; said at once, `kill` took 11 to 123 ms). Put back
+  provider's status 255; said at once, `kill` took 11 to 123 ms). From then on its guest
+  takes the provider's layer asked for as one sent (`SAVE`), or its host's end of asking,
+  and drops a `KEEP` (D190's layer kept in its file); so its VM asks `SAVE` of any microVM a
+  joiner ever joined (warm.rs `joined`, ci-leaks). It asked `KEEP` where its count of joiners
+  running read none, which a joiner whose end its guest had just said had left already, and
+  each then waited on the other for ever, past the run and past its daemon (CI 43968984258,
+  x86_64 musl: containers.rs `a_container_joins_another_containers_network` and
+  engine_ring.rs `a_give_back_lets_an_idle_slot_go`, each provider's VM 20 minutes past its
+  daemon's end, its `workload` thread reading its run's connection and its guest's relay
+  never ended). That test now waits for its microVM's end too, its daemon going on. Its cost,
+  a provider whose joiners all ended well before it packing its layer where it could have
+  kept it in place, is unmeasured. Put back
   as it starts again: the VM process appends the layer to the join disk beside its image
   (`join-layer=OFFSET,LEN`), and the joiner's child applies it over its root as ApplyLayer
   does, before it reads its users and before anything is mounted in its root, with its
@@ -28687,13 +28770,58 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
             window, its host's disks idle or not (`progress::vouches`, `Follow::sampled`).
             Leaving a window out of the rate refuses nothing, and a party stuck so that runs
             nothing is refused by stillness.
-          - Windows unchanged, as the rule has nothing to qualify there: its judge reads no
-            thread as waiting on its host's storage (a flush's wait reason, `Executive`, is a
-            pipe reader's too, PM M606), and its storage shows only by its own processes' I/O
-            counts (`Io::done`). Its memory waits (`FreePage`, `PageIn`, `PoolAllocation`)
-            stay its host's hold unqualified, as Linux's memory pressure does; `PageIn` is a
-            storage wait, and qualifying it would need its disks' counts
-            (IOCTL_DISK_PERFORMANCE on each physical disk), unmeasured: owed.
+          - Windows, amended 2026-11-17 (kiln goal b2124227, lane ci-storms-judge; ROOT's
+            brief: count Windows' hold only while its host shows progress, as Linux's and
+            macOS's now are). A flush still shows by no wait reason (`Executive`, a pipe
+            reader's too, PM M606), only by its processes' own I/O counts (`Io::done`). But
+            its waits on its host's paging had been its host's hold at every look, whatever
+            its disks did: a thread waiting `FreePage`, `PageIn` or `PoolAllocation` (their
+            `Wr` forms too) was read runnable, and so was one in transition, whose kernel
+            stack is out of memory ("waiting for resources other than the processor", WMI's
+            `Win32_Thread`). A party so waiting with its disks idle was never refused.
+            - Now each of those is its wait in its kernel (`os::pages`, `Hold::uninterruptible`),
+              under this rule: held only where its host's disks completed I/O since the look
+              before, and its look vouches for no window of its rate. Its disks serve each: a
+              page-in is their read, and a page is freed by writing it out.
+            - Its disks: every physical disk's `BytesRead` and `BytesWritten`, summed
+              (IOCTL_DISK_PERFORMANCE, winioctl.h's DISK_PERFORMANCE; `os::disks`). Each disk
+              is found by its MS-DOS name `PhysicalDriveN` in QueryDosDeviceW's list of every
+              name (fileapi.h), and opened for no access, as Win32's "Calling DeviceIoControl"
+              opens `\\.\PhysicalDrive0`: the IOCTL asks FILE_ANY_ACCESS. Bytes, as its
+              `ReadCount` and `WriteCount` are 32 bits wide and wrap, which would read as no
+              I/O. Every call is kernel32's, which every process has loaded: no library joins a
+              launch (shards-api adds windows-sys's `Win32_System_Ioctl` feature, and names
+              `Win32_Security`, which its `CreateFileW` already took through shards-ipc).
+            - Why its disks, not its process's counts: a page-in is the memory manager's
+              paging read, which shows in no documented count of its process (its hard faults
+              are in the records' undocumented part, M606's `HardFaultCount`), and a process
+              that ran nothing faulted nothing. Its own I/O counts hold it where they grow, as
+              before (`Io::done`).
+            - R03: no literal. The window is the judge's; growth is any byte; the names' room
+              grows from one character, doubled at each ERROR_INSUFFICIENT_BUFFER, as the call
+              says no size it needs. Cold: a look whose look before read no disks holds
+              nothing by them. A host whose disks this user cannot open holds no paging wait,
+              which its other evidence then decides. A sum that fell (a disk gone) is no
+              growth. Host-wide by design, as Linux's and macOS's: a page-in stuck on a host
+              whose disks are busy with others' I/O is held while they are.
+            - What it does not cure: windows-2025's contested-UDP wait (CI 43968984258, job
+              133659473368, api_image.rs:5242, 71 minutes to the step's limit) was kept by its
+              party's CPU, not by a hold. Its last account says "its last progress process
+              7348 ran 7.595ms ago; its host not holding it". A test's wait on a state reads
+              any CPU of its party as progress (`Cpu::Progress`), and a microVM's VM process
+              on WHP runs CPU while its guest idles (up to 63 ms in 10 s on windows-2025, PM
+              M357). Which process 7348 was is owed (ROOT), read with SHARDS_JUDGE_TRACE on a
+              WHP run of that test at a revision before fad34cf85; the reading to change is
+              then an R02 decision, not this rule's.
+            - Held by progress.rs `a_party_in_its_kernel_is_held_only_while_its_hosts_disks_complete_io`
+              (now on every OS), and on Windows `a_thread_waiting_on_its_hosts_paging_waits_in_its_kernel`
+              (which states and reasons are paging) and `a_hosts_disks_are_read_and_grow_with_a_flush`
+              (a flusher's writes grow the disks read). None has run (the person's rule of
+              2026-11-16: implementers build no code). Owed (ROOT): those on jupiter and
+              windows-2025; clippy on both Windows targets; R09's live red and green, a party
+              paging on a device that serves nothing while its local disks are idle (a file
+              mapped from an SMB share whose server is paused): held for ever before, refused
+              past W* after; R14, the cost of a disks read on a look that finds a paging wait.
           - Held by progress.rs
             `a_party_in_its_kernel_is_held_only_while_its_hosts_disks_complete_io` (the rule
             through `found`), `a_hosts_completed_io_is_summed_from_every_diskstats_line`
@@ -28719,7 +28847,13 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
           `a_power_loss_after_an_unsynced_rm_removal_shares_no_name` (every state the
           power-loss model allows, the name taken by the next microVM: none shared, the `--rm`
           one never seen, nothing set aside left) and
-          `a_rm_removal_needs_no_sync_unless_its_record_may_lack_its_rm`.
+          `a_rm_removal_needs_no_sync_unless_its_record_may_lack_its_rm`; and by daemon.rs
+          `rm_runs_ending_together_take_no_sync` (the completer's batches of `--rm` runs whose
+          records say so: no sync begun, on Windows for their deletions neither) and
+          `removals_ending_together_take_one_sync`, whose batch is now of `--rm` runs that end
+          before their records are written. Written for runs recorded as `--rm`, that test
+          waited for a sync that no longer comes, refused by the judge 198.8 s into its wait
+          (CI 43990298220 at f6ad71083, aarch64-unknown-linux-gnu).
         - *Owed to ROOT* (the person's rule of 2026-11-16: ROOT runs every test). None of the
           tests above has run. The live red and green (R09), on a Linux btrfs host (adacachy;
           a btrfs image loop-mounted under ~/.cache otherwise): in a directory on it,
@@ -37143,7 +37277,8 @@ post-mortem read of the printk ring through VMCOREINFO, not a debug port.
   - No arm in the snapshot storms. Their 255-vCPU cold boots bring their APs up in parallel
     too, so they share the trigger. But their two tests boot 255 vCPUs beside each other, so
     an arm of one would meet the other's burst, and their restores bring no CPU up. A 0x7 of
-    theirs is one more witness of arm 1's. `brings_up_every_vcpu` and
+    theirs is one more witness of arm 1's. (Since 2026-11-17 only the restores' storm boots
+    the most, D14's storm sizes; the resumed one takes one vCPU more than its host's CPUs.) `brings_up_every_vcpu` and
     `a_snapshot_keeps_the_memory_its_guest_plugged` failed only at the moment a 255-vCPU guest
     did: victims, given no arm.
   - What each outcome says, per x86_64 Linux job on GenuineIntel, read from its two
@@ -37166,8 +37301,9 @@ post-mortem read of the printk ring through VMCOREINFO, not a debug port.
   - No bound past which WHP's test fails. None can be derived from passes in CI, so none was
     added (R03).
     - D215's judge bounds a wait by W*, the slowest answer of its kind on its host. A CI job
-      keeps no records (ci.yml caches no `target/judge-records`), so every kind starts cold
-      and follows its party's liveness (the person's ruling of 2026-11-13: no record seeds).
+      then kept no records (ci.yml cached no `target/judge-records` until *CI's judge learns
+      across runs*, below), so every kind started cold and followed its party's liveness (the
+      person's ruling of 2026-11-13: no record seeds).
     - Kept records would still need a pass on a nested WHP runner, and the one such run read
       since 35e2de91e did not pass (job 133508843966).
     - Smaller guests' passes bound nothing here. Sizes are kinds apart because a smaller
@@ -37243,10 +37379,8 @@ post-mortem read of the printk ring through VMCOREINFO, not a debug port.
     it earlier needs the kernel's symbols, which an arm64 Image does not carry.
     - A guest that never gets there says nothing, and its first line's wait follows its
       liveness until its kind has a pass on that host.
-    - CI keeps no records (ci.yml caches no `target/judge-records`), so every CI job's wait is
-      cold. On CI "fails fast" needs that cache, which is ROOT's to decide (the person's
-      ruling of 2026-11-13: a record learned on the host is data, not a seed; `host_class`
-      already keys records by a runner image's OS, architecture and CPUs).
+    - CI then kept no records, so every CI job's wait was cold, and on CI "fails fast" needed
+      that cache. ROOT decided to keep them: *CI's judge learns across runs*, below.
   - **What the next ci.yml run's x86_64 Windows jobs should show** (grep `D261 WHP boot`):
     - Expected: a burst of lines at the ring's first read, from "Linux version" through "smp:
       Brought up 1 node, 240 CPUs" (WHP's 240 at most on GitHub's runners, NR_CPUS 255), each
@@ -37270,6 +37404,64 @@ post-mortem read of the printk ring through VMCOREINFO, not a debug port.
     VMCOREINFO (printk.rs `infos`). In the test process that faults in a 1 GiB guest's
     untouched pages (shared memory on Linux, committed memory on Windows). The pace bounds its
     CPU; its resident memory is unmeasured.
+- **CI's judge learns across runs** (2026-11-17, kiln goal b2124227, lane ci-judge-cache).
+  ROOT's answer to the question above: CI keeps the judge's records. Until now every CI job
+  began with none, so each kind was cold and followed its party's liveness alone: no wait on
+  CI could fail fast.
+  - **What is kept.** `target/judge-records` alone, never the build: each kind's W*, R* and
+    C*, as the tests' waits keep them (`WaitKind::keep`, D209's waits). Its source is the
+    passing jobs' own answers.
+  - **Its key** (`actions/cache@v6.1.0`, pinned by tag as ci.yml's other actions are):
+    `judge-records-<ImageOS>-<ImageVersion>-<runner.arch>-<target>-<run id>-<run attempt>`,
+    restored by its prefix through `<target>-`, the newest entry kept for it.
+    - The runner's image, its OS and version (`$ImageOS-$ImageVersion`, which keys the GPU
+      renderer's cache too). A record is data of the host it was learned on (the person's
+      ruling of 2026-11-13), and a new image version is other software: its kernel, its
+      hypervisor. An image's first run starts cold.
+    - The runner's architecture and the target. `host_class` (OS, architecture, CPUs) names
+      the records' directory within an entry, but not the image or the build: the glibc and
+      musl jobs run other builds on one image, and windows-2022 and windows-2025 are one OS
+      and architecture on two images.
+    - The run's id and attempt: an entry once kept is never written again, so each run keeps
+      its own.
+    - No format version: the judge has none. A kept record says what it holds (`served`,
+      `rated`), and one the reader cannot read whole is read as none (`learn_kept`), its kind
+      cold until its next answer rewrites it.
+  - **Kept only by a passing job.** The action restores at its step and keeps in its post
+    step, which runs only where the job succeeded (its action.yml: `post-if: success()`). A
+    job that failed, ran out of time or was cancelled keeps nothing.
+    - Records only widen: a merge takes the larger W* and C* and the lesser R*
+      (`Record::merge`). So what a job keeps stays in every later bound.
+    - The judge already learns from passes alone. A wait teaches its kind only at an answer
+      that came while it was awaited (`Wait::ended`), a command's only when served
+      (`Wait::unserved` teaches nothing), `guest_says` only once its text is found while its
+      machine runs, and the give-back wait (`Falling`) the time to the last fall it saw. A wait
+      that stalls, ends or is refused returns before any teaching.
+  - **One writer.** A restore takes one entry, and GitHub's cache never merges two.
+    - ci.yml is the records' one writer. Each of its keys is one job's, and its runs on one
+      branch follow each other (its concurrency group: main's wait for the run under way, a
+      branch's newer push cancels the older). So each run restores the last passing run's
+      records and keeps them grown, and none shrinks, as the keep's lock keeps a host's from
+      shrinking (waits-11, PM M576).
+    - A branch's runs restore their own entries, then main's; main never reads a branch's.
+    - budget-e2e.yml's `e2e` and `windows-e2e` jobs and slates-fs.yml restore CI's records
+      and keep none (`actions/cache/restore@v6.1.0`): their runs overlap CI's, and an entry of
+      theirs would replace CI's newer one. `windows-e2e` restores none where it asks for a log
+      level: its programs then answer at another pace than CI's, which sets none.
+    - Not cached: budget-e2e.yml's `windows` job (libraries' own tests, which keep no
+      records), ci.yml's `musl` release part (shards-rego's stack guards alone), and the
+      benches of ci.yml's `firecracker` job and the measurement workflows.
+  - **Bounds.** A record is one line of at most 97 bytes (`served `, `rated ` and four u64
+    nanosecond counts of at most 20 digits), beside an empty lock file. Their number is the
+    suite's kinds. An entry's size is unmeasured: this Mac keeps no records now, and the post
+    step's log says each entry's size. GitHub removes entries unused for 7 days, and the least
+    recently used past the repository's cache limit.
+  - **Owed to ROOT.** Read main's next two passing runs: the first's post step says "Cache
+    saved with key: judge-records-…", the second's restore "Cache restored from key: …",
+    on every leg (the musl jobs' records are written in Alpine as the checkout's owner, whom
+    the action runs as). Then a stall of a learned kind is refused "past the slowest answer of
+    its kind seen on this host" before any step limit. The benefit is unmeasured until then,
+    and a nested WHP job keeps records only once one of its jobs passes whole.
 
 **Alternatives rejected.**
 - A write-only debug port (x86's 0xe9 debugcon): mainline x86 early_printk has no 0xe9

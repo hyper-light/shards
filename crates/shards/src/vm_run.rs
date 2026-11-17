@@ -2486,6 +2486,8 @@ fn serve_workload(
                         let outcome = match TAKEN.get() {
                             Some(_) => {
                                 finish(&served);
+                                // Its end had however `serve` returned (D26).
+                                crate::warm::run_over();
                                 (served, true)
                             }
                             // No run taken: its daemon reads the VM's end where TAKEN would be.

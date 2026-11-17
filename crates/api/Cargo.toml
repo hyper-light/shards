@@ -37,11 +37,15 @@ shards-afunix = { path = "../afunix" }
 # A guest's VM process followed (D215): Toolhelp32's snapshot of its descendants,
 # QueryProcessCycleTime's count of the cycles they ran, and NtQuerySystemInformation's
 # records of their threads' states and wait reasons (KWAIT_REASON), which tell one its host
-# holds from one that waits on itself.
+# holds from one that waits on itself; and its host's physical disks' completed I/O
+# (IOCTL_DISK_PERFORMANCE, through CreateFileW), which tells whether a wait on its host's
+# paging is its host's.
 windows-sys = { workspace = true, features = [
   "Wdk_System_SystemInformation",
   "Wdk_System_SystemServices",
+  "Win32_Security",
   "Win32_System_Diagnostics_ToolHelp",
+  "Win32_System_Ioctl",
   "Win32_System_Pipes",
   "Win32_System_WindowsProgramming",
 ] }

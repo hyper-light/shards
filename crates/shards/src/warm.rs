@@ -312,6 +312,9 @@ impl Taken {
         if self.told.swap(true, std::sync::atomic::Ordering::SeqCst) {
             return;
         }
+        // Before its owner hears it, which may then let go of the link: a link closed from
+        // here on is no sign of its owner's going.
+        course(Event::Told, |_| true);
         let (timing, working_set) = facts();
         finish(
             link,
@@ -780,8 +783,12 @@ enum From<'a> {
     Client,
     /// A joiner's own connection to the daemon (D119), which brings its log's answers, its
     /// signals, for its id in the guest once it has one, execs into it, and clients to
-    /// attach to it.
-    Joiner(mpsc::Sender<Segment>, &'a std::sync::atomic::AtomicU32),
+    /// attach to it; and whether its run's end is had, before which its daemon holds it open.
+    Joiner(
+        mpsc::Sender<Segment>,
+        &'a std::sync::atomic::AtomicU32,
+        &'a std::sync::atomic::AtomicBool,
+    ),
 }
 
 /// A pause (true) or resume the daemon asked for: its number, and a copy of the daemon's
@@ -820,6 +827,149 @@ fn pauses() -> Result<&'static mpsc::Sender<Pause>, String> {
         .map_err(Clone::clone)
 }
 
+/// How far this VM's run has come, as its machine's end with its daemon's (D26) needs it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Run {
+    /// Its end not yet told: its daemon holds its link open for it.
+    Going,
+    /// Its end told ([`Taken::end`]), its layer still to keep or send: from here its daemon
+    /// lets go of its link once done with it, its layer settled and its joiners ended, and goes
+    /// on.
+    Told,
+    /// Its end had: told, its layer kept or sent as asked ([`run_over`]). Its machine goes on
+    /// only for what its guest serves past it: its joiners (D119).
+    Over,
+}
+
+/// Whether this VM's daemon is there, as its links show it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Daemon {
+    There,
+    /// A link of its closed while the run on it went on, which a daemon that goes on closes
+    /// only past that run's end: nothing reaches a run of this VM again.
+    Gone,
+}
+
+/// This VM's course: its run's and its daemon's. Its machine ends once its run's end is had and
+/// its daemon has gone ([`Course::ends`]), whatever its guest keeps up past that end, which no
+/// one can reach then: a joiner its guest serves (D119), and anything else its guest waits on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Course {
+    run: Run,
+    daemon: Daemon,
+}
+
+/// What moves a [`Course`] on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Event {
+    Told,
+    Over,
+    DaemonGone,
+}
+
+impl Course {
+    const START: Course = Course {
+        run: Run::Going,
+        daemon: Daemon::There,
+    };
+
+    /// Where `event` takes it: each part only goes on.
+    fn after(self, event: Event) -> Course {
+        match event {
+            Event::Told => Course {
+                run: self.run.max(Run::Told),
+                ..self
+            },
+            Event::Over => Course {
+                run: Run::Over,
+                ..self
+            },
+            Event::DaemonGone => Course {
+                daemon: Daemon::Gone,
+                ..self
+            },
+        }
+    }
+
+    /// Its machine ends: its run's end had, and its daemon gone.
+    fn ends(self) -> bool {
+        self.run == Run::Over && self.daemon == Daemon::Gone
+    }
+}
+
+/// One run a VM process (M34), and so one course.
+static COURSE: std::sync::Mutex<Course> = std::sync::Mutex::new(Course::START);
+/// Told as its course moves: a stop's grace waited out as its daemon goes hears the run's end.
+static COURSE_MOVED: std::sync::Condvar = std::sync::Condvar::new();
+
+fn lock_course() -> std::sync::MutexGuard<'static, Course> {
+    COURSE.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Moves this VM's course on by `event`, where `only` holds of it, and stops its machine where
+/// that makes it end: once, the one move that does, as each part only goes on. What it was
+/// before.
+fn course(event: Event, only: impl FnOnce(Course) -> bool) -> Course {
+    let (before, after) = {
+        let mut course = lock_course();
+        let before = *course;
+        if only(before) {
+            *course = before.after(event);
+        }
+        (before, *course)
+    };
+    COURSE_MOVED.notify_all();
+    if after.ends() && !before.ends() {
+        let _ = writeln!(
+            io::stderr(),
+            "shards: its daemon gone and its run's end had: its microVM ends"
+        );
+        crate::vm_run::stop();
+    }
+    before
+}
+
+/// The run's end had: told, and its layer kept or sent as asked. Where its daemon has gone, its
+/// machine ends here, whatever its guest serves past that end (D26, D119): whether it does.
+pub fn run_over() -> bool {
+    course(Event::Over, |_| true).after(Event::Over).ends()
+}
+
+/// Waits up to `grace` for the run's end to be told: whether it was.
+fn told_within(grace: std::time::Duration) -> bool {
+    let course = lock_course();
+    let (course, _) = COURSE_MOVED
+        .wait_timeout_while(course, grace, |c| c.run == Run::Going)
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    course.run != Run::Going
+}
+
+/// Stops the run whose daemon has gone as its `order` said (`STOP_ORDER`): its signal, then
+/// SIGKILL once its grace is up unless its end has come by then, and none where it has no
+/// grace (a negative stop timeout: its machine ends as its command does). Told no order (a
+/// visit's, D37, whose standby holds until it is killed, or a run whose order its daemon had
+/// yet to send), SIGKILL at once, as its daemon sends one for a signal it cannot send.
+fn stop_orphaned(to: &ToGuest, order: Option<(u32, Option<std::time::Duration>)>) {
+    let Some((signal, grace)) = order else {
+        kill_command(to);
+        return;
+    };
+    if signal != 0 {
+        let sent = workload::signal_guest(to, signal);
+        match grace {
+            // Its grace is the command's, to end on the signal it was sent.
+            Some(grace) if sent.is_ok() => {
+                if told_within(grace) {
+                    return;
+                }
+            }
+            Some(_) => {}
+            None => return,
+        }
+    }
+    kill_command(to);
+}
+
 /// Passes the signals that arrive on `conn` to the workload until it closes: the client's,
 /// or the daemon's (`shards stop vm`, `kill`), and the client's terminal sizes. When the
 /// client hangs up, the VM lets go of its stdio. A workload outlives its client, as a
@@ -827,7 +977,7 @@ fn pauses() -> Result<&'static mpsc::Sender<Pause>, String> {
 fn relay_signals(conn: &UnixStream, to: &'static ToGuest, from: From<'_>) {
     let client = matches!(from, From::Client);
     let joiner = match &from {
-        From::Joiner(_, id) => Some(*id),
+        From::Joiner(_, id, _) => Some(*id),
         _ => None,
     };
     // How the run stops if its daemon goes (`STOP_ORDER`).
@@ -1244,21 +1394,21 @@ fn relay_signals(conn: &UnixStream, to: &'static ToGuest, from: From<'_>) {
         HOST.gone.store(true, std::sync::atomic::Ordering::Relaxed);
         HOST.said.notify_all();
     }
-    // The daemon gone with the run going: its stop, its signal and then SIGKILL once its
-    // grace is up, so that no run outlives its daemon unreachable. A run already over
-    // takes no signal.
-    if let (From::Daemon(_), Some((signal, grace))) = (&from, order) {
+    // A joiner's link closed before its end: its daemon has gone. This VM's machine ends once
+    // its run's end is had, the joiner with it (D119 holds the machine up for joiners alone).
+    if let From::Joiner(_, _, ended) = &from
+        && !ended.load(std::sync::atomic::Ordering::SeqCst)
+    {
+        course(Event::DaemonGone, |_| true);
+    }
+    // The daemon gone with the run going: its stop, so that no run outlives its daemon
+    // unreachable ([`stop_orphaned`]), and its machine's end once its end is had ([`Course`]).
+    // Past its end told, its daemon lets go of the link once done with it and goes on: what
+    // then shows it gone is its joiners' links, above.
+    if matches!(from, From::Daemon(_)) && course(Event::DaemonGone, |c| c.run == Run::Going).run == Run::Going
+    {
         let _ = writeln!(io::stderr(), "shards: the daemon is gone: the run stops");
-        if signal != 0 {
-            let sent = workload::signal_guest(to, signal);
-            match grace {
-                // Its grace is the command's, to end on the signal it was sent.
-                Some(grace) if sent.is_ok() => std::thread::sleep(grace),
-                Some(_) => {}
-                None => return,
-            }
-        }
-        kill_command(to);
+        stop_orphaned(to, order);
     }
 }
 
@@ -1454,6 +1604,15 @@ fn exec_request(
 /// The joiners this VM serves (D119), which it waits for before it ends: each tells the
 /// daemon how it ended.
 static JOINERS: std::sync::Mutex<usize> = std::sync::Mutex::new(0);
+/// Whether a joiner ever joined this VM (D119), set before its guest can hear of it. A guest
+/// whose command ends with any joiner unfinished, ended or not but its connection still open,
+/// says the run's end at once and from then on takes only `SAVE` for the run's layer, or its
+/// host's end of asking: a `KEEP` it drops. [`JOINERS`] is no witness of that: a joiner whose
+/// end its guest has just said leaves it before the run's end is read, and a `KEEP` asked then
+/// was never answered, its VM waiting on its guest and its guest on it, past its run and its
+/// daemon (CI 43968984258, x86_64 musl: containers.rs `a_container_joins_another_containers_
+/// network` and engine_ring.rs `a_give_back_lets_an_idle_slot_go`).
+static JOINED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 /// Whether this VM is being saved (D176), from its `SAVE` on: no joiner joins it then.
 static SAVING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static JOINER_ENDED: std::sync::Condvar = std::sync::Condvar::new();
@@ -1461,6 +1620,13 @@ static JOINER_ENDED: std::sync::Condvar = std::sync::Condvar::new();
 /// Whether a joiner of this VM's network runs (D119).
 pub fn joining() -> bool {
     *JOINERS.lock().unwrap_or_else(std::sync::PoisonError::into_inner) > 0
+}
+
+/// Whether a joiner ever joined this VM's network ([`JOINED`]): its run's layer is then asked
+/// for as one sent (`SAVE`), which its guest takes whether its joiners outlived its command or
+/// not.
+pub fn joined() -> bool {
+    JOINED.load(std::sync::atomic::Ordering::SeqCst)
 }
 
 /// Waits, up to `within`, until every joiner this VM served has told the daemon its end:
@@ -1501,6 +1667,7 @@ fn join_request(message: shards_ipc::Message, to: &'static ToGuest) -> Result<()
             .map_err(|e| format!("its image: {e}")),
         None => Err("this microVM has no join disk".into()),
     };
+    JOINED.store(true, std::sync::atomic::Ordering::SeqCst);
     *JOINERS.lock().unwrap_or_else(std::sync::PoisonError::into_inner) += 1;
     let spawned = std::thread::Builder::new().name("joiner".into()).spawn(move || {
         if let Err(e) = joiner(&link, range, to) {
@@ -1595,6 +1762,9 @@ fn joiner(link: &UnixStream, range: Result<(u64, u64), String>, to: &'static ToG
         return Err(format!("telling the daemon its run is taken: {e}"));
     }
     let id = std::sync::atomic::AtomicU32::new(0);
+    // Its run's end had, before its daemon is told it: its daemon holds its link open until
+    // then, so the link closing before is its daemon's going ([`relay_signals`]).
+    let end_had = std::sync::atomic::AtomicBool::new(false);
     let attached = range.as_ref().ok().copied();
     // Its writable layer from before on the join disk beside its image, which its child
     // reads as it builds its root: let go of once its command has started.
@@ -1618,8 +1788,8 @@ fn joiner(link: &UnixStream, range: Result<(u64, u64), String>, to: &'static ToG
         // Its signals, its log's segments and execs into it, from the daemon, until its
         // connection goes.
         let relayed = link.try_clone().ok().map(|from| {
-            let id = &id;
-            s.spawn(move || relay_signals(&from, to, From::Joiner(segments, id)))
+            let (id, end_had) = (&id, &end_had);
+            s.spawn(move || relay_signals(&from, to, From::Joiner(segments, id, end_had)))
         });
         let joined = range.and_then(|(offset, len)| {
             spec.setup.push(format!("join={offset},{len}").into_bytes());
@@ -1659,6 +1829,7 @@ fn joiner(link: &UnixStream, range: Result<(u64, u64), String>, to: &'static ToG
                 },
             )
         });
+        end_had.store(true, std::sync::atomic::Ordering::SeqCst);
         let (ended, conn) = match joined {
             Ok((ended, conn)) => (Ok(ended), Some(conn)),
             Err(e) => (Err(e), None),
@@ -2603,6 +2774,39 @@ mod tests {
         assert_eq!(done(3, None), [3]);
         let words = "mkdir /data: not a directory";
         assert_eq!(done(127, Some(words)), [&[127u8][..], words.as_bytes()].concat());
+    }
+
+    /// Do take a VM's course through its run's end told, its end had and its daemon's going, in
+    /// every order. Expect: its machine ends at the one move that brings both its end had and
+    /// its daemon gone, never before and only once, and its run never goes back: an end told
+    /// after it was had leaves it had (D26).
+    #[test]
+    fn a_vms_machine_ends_once_its_run_is_over_and_its_daemon_gone() {
+        use Event::{DaemonGone, Over, Told};
+        let orders = [
+            [Told, Over, DaemonGone],
+            [Told, DaemonGone, Over],
+            [Over, Told, DaemonGone],
+            [Over, DaemonGone, Told],
+            [DaemonGone, Told, Over],
+            [DaemonGone, Over, Told],
+        ];
+        for order in orders {
+            let mut course = Course::START;
+            let mut ended_at = Vec::new();
+            for (step, event) in order.into_iter().enumerate() {
+                let next = course.after(event);
+                assert!(next.run >= course.run, "{order:?}: {course:?} then {next:?}");
+                if next.ends() && !course.ends() {
+                    ended_at.push(step);
+                }
+                course = next;
+            }
+            let at = |e: Event| order.iter().position(|o| *o == e);
+            assert_eq!(ended_at, [at(Over).max(at(DaemonGone)).unwrap()], "{order:?}");
+            assert!(course.ends(), "{order:?}: {course:?}");
+        }
+        assert!(!Course::START.ends());
     }
 
     /// A side [`pass`] reads: its bytes, then how it ends (`Ok(0)`, its writes' end, or an

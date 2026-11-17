@@ -76,6 +76,20 @@ jobs:
       - name: Build the test
         shell: bash
         run: cargo test --locked -p shards --profile test-release --test slates_fs --no-run
+      - name: The runner's image
+        id: image
+        shell: bash
+        run: echo "image=$ImageOS-$ImageVersion" >> "$GITHUB_OUTPUT"
+      # What CI's passing runs on this image taught the tests' judge (ci.yml `native`, D261);
+      # its target is this runner's own, which cargo builds for here. Read alone: CI's runs are
+      # the records' one writer, as a restore takes one entry, and a second writer's entry would
+      # drop the answers CI's kept after it.
+      - name: The judge's records, as CI kept them
+        uses: actions/cache/restore@v6.1.0
+        with:
+          path: target/judge-records
+          key: judge-records-${{ steps.image.outputs.image }}-${{ runner.arch }}-x86_64-pc-windows-msvc-${{ github.run_id }}
+          restore-keys: judge-records-${{ steps.image.outputs.image }}-${{ runner.arch }}-x86_64-pc-windows-msvc-
       - name: A guest mounts, reads and writes a slates volume, three times
         shell: bash
         env:
