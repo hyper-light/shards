@@ -243,6 +243,75 @@ pub fn cannot_snapshot() -> bool {
     false
 }
 
+/// Whether `said`, what a run printed or a daemon's log, tells of a vCPU entry its host
+/// refused that D261's gate takes for its host's (ROOT's ruling of 2026-11-17,
+/// `shards_vmm::vm::limits::the_hosts`): VMX's error 7, on a host that is itself a VM, its
+/// guest having run, or another VM process whose guest had run refused within its host model's
+/// burst width. Then a SKIP line says the refusal, with its evidence, and its witness, even
+/// where `SHARDS_REQUIRE_VMS=1` says VMs must run: such a host runs VMs. Any other refusal is
+/// said with why the gate does not take it, and its test's failure stands. Its witnesses are
+/// read from the records its VM process kept it in, and from the tests' own ([`vcpu_limits`]),
+/// where the machines a test boots in its own process keep theirs. The burst width is waited
+/// out from the refusal's moment first, so that a witness kept just after it is read.
+pub fn host_refused(said: &str) -> bool {
+    use shards_vmm::vm::limits;
+    let Some(refused) = limits::Said::find(said) else {
+        return false;
+    };
+    let records: Vec<limits::Limits> = refused
+        .file
+        .clone()
+        .map(|file| limits::Limits::kept_in(file, limits::HostModel::here()))
+        .into_iter()
+        .chain([vcpu_limits()])
+        .collect();
+    let width = || {
+        records
+            .iter()
+            .map(limits::Limits::burst_width_us)
+            .max()
+            .unwrap_or_else(limits::measured_width_us)
+    };
+    let wait = refused
+        .refusal
+        .at_us
+        .saturating_add(width())
+        .saturating_sub(limits::now_us());
+    std::thread::sleep(Duration::from_micros(wait));
+    let kept: Vec<limits::Refusal> = records.iter().flat_map(limits::Limits::refusals).collect();
+    match limits::the_hosts(&refused, &kept, width()) {
+        Ok(witness) => {
+            let _ = writeln!(
+                std::io::stderr(),
+                "SKIP: {}: the host's, by D261's gate: {witness}",
+                refused.line
+            );
+            true
+        }
+        Err(not) => {
+            let _ = writeln!(
+                std::io::stderr(),
+                "a refused entry D261's gate does not take for its host's ({not}): {}",
+                refused.line
+            );
+            false
+        }
+    }
+}
+
+/// [`host_refused`] of what a daemon's `log` says of the VM a run's error, `said`, names as
+/// ended (`VM N ended`): its refusal, not another VM's the same log holds.
+pub fn vm_host_refused(log: &str, said: &str) -> bool {
+    let of_vm: Vec<&str> = log
+        .lines()
+        .filter(|line| {
+            shards_vmm::vm::limits::Said::find(line)
+                .is_some_and(|refused| said.contains(&format!("VM {} ended", refused.refusal.machine)))
+        })
+        .collect();
+    host_refused(&of_vm.join("\n"))
+}
+
 /// Whether the daemon here keeps the snapshots it keeps, its templates, warm pools and saves
 /// (D25, D26, D176): wherever snapshots restore ([`cannot_snapshot`]).
 pub fn pools() -> bool {

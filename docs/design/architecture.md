@@ -38151,6 +38151,83 @@ post-mortem read of the printk ring through VMCOREINFO, not a debug port.
           let go of, the refinement, a refusal said with its evidence), `devices::control` (the
           announcement's hook runs once); the E2E of every boot on HVF, KVM and WHP, whose VMs
           now ask for their records.
+      - **A refusal the tests read as SKIP** (amended 2026-11-17, ROOT's ruling on lane own-35's
+        reading of the small machines' 0x7: a gated SKIP; `limits::the_hosts`,
+        `common::host_refused`).
+        - *The evidence: bursts.* Every small machine's 0x7 on CI's EC2 Intel runners came in a
+          burst of other machines' refusals. Each failure step's `kvm_intel:` dumps, timed
+          against wall time through its kernel's audit records:
+          - 44076016255, x86_64 musl: 15 vCPUs of the A/B arm "parallel" (255 vCPUs, 82.65 s
+            in) at dmesg 2419.069529 to 2419.086547; `runs_init_as_pid_1_and_powers_off`'s
+            1-vCPU machine at 2419.727678, 0.641131 s later, at its first VMLAUNCH (RIP at its
+            kernel's entry, RSP 0, no exit before it); the arm "one at a time", an AP after SIPI,
+            at 2420.149415.
+          - 44076016255, x86_64 gnu: the arm "parallel", 233.9 s in, at 2020.190759 to
+            2020.355355; three machines at their first entries at 2020.888223 to 2021.057607,
+            0.532868 to 0.702252 s later, the two `shards_api` tests' among them.
+          - 44077430171, x86_64 musl: `pools_keep_what_their_runs_need_while_they_come`'s two
+            APs at their first entries after SIPI, 3040.956945 and 3040.958893; then two running
+            machines, at 3041.052547 (after an EPT violation's exit) and 3041.409103 (after
+            HLT). No large machine was up: daemon.rs's tests ran four at a time beside it, their
+            daemons' microVMs of 4 vCPUs each.
+          - 44031797055, x86_64 musl: `a_snapshot_keeps_memory_to_plug` (vCPU 0, 2.7 s in) and
+            `brings_up_every_vcpu` (16 vCPUs, vCPU 5), each beside an arm's refusal.
+          - D261's bench on the same CPU model (vm-text, run 44117236848) booted 30 1-vCPU
+            machines an arm one at a time, restored 30, and held a fleet of 16 idle, at a load
+            of 0.58 to 1.57: no refusal.
+        - *The refused controls entered elsewhere.* The refused entries had three control sets:
+          a 64-bit boot's first entry (CPUBased 0xb5a06dfa, SecondaryExec 0x061013eb, Entry
+          0xd3ff, Exit 0x2befff), an AP's first after SIPI (Entry 0xd1ff), and a running vCPU's
+          in x2APIC mode (SecondaryExec 0x061013fa, Entry 0x53ff, Exit 0x0befff). The last was
+          refused of vCPUs that had resumed with it for 82.65 s and 233.9 s; the first two are
+          those KVM gives every boot of the same CPUID, which the jobs' other boots entered. No
+          refused entry injected an event.
+        - *nested.c's error 7.* An outer KVM says error 7 (VMXERR_ENTRY_INVALID_CONTROL_FIELD)
+          to the KVM inside it both of controls its checks refuse (`nested_vmx_run`) and of its
+          own entry of the nested guest that its hardware refused (`__nested_vmx_vmexit`, "After
+          an early L2 VM-entry failure ... nested_vmx_fail(vcpu,
+          VMXERR_ENTRY_INVALID_CONTROL_FIELD)"; Linux 7.4-rc3 arch/x86/kvm/vmx/nested.c). The
+          number does not tell which; the moments, the controls and the vCPUs do. The VMM sets
+          a vCPU's state only before it first runs, so none of these was the VMM's.
+        - *The gate* (`limits::the_hosts`). A refusal is its host's, and its test prints SKIP
+          with the refusal's words, its evidence and its witness, only with VMX's error 7 (said
+          on an x86-64 host), on a host that is itself a VM (`HostModel::under`), and a witness:
+          - its guest had run (`Refusal::entered`): port or MMIO I/O, which only its guest's
+            instructions make, on its vCPU, or, in a booted machine, on any of its vCPUs
+            (`runtime::Entered`); a restored vCPU's state is the VMM's, so only its own counts;
+          - or another VM process whose guest had run was refused within the host model's
+            burst width. One witnessed only by machines refused before their guests ran is not
+            taken: a VMM error that refuses every first entry refuses many machines at once.
+
+          Every other refusal stays a failure, its line saying why the gate did not take it.
+        - *What a VMM's own 0x7 looks like*, which the gate never takes: the same vCPU refused
+          at its first entry, before its guest ran, on every run, alone on an idle host, no
+          machine whose guest ran refused within the burst width of it, its controls never seen
+          entering there.
+        - *The burst width, learned* (`limits::keep_refusal`; no number in code). Each
+          refusal's moment, VM process and whether its guest had run are kept beside the counts
+          while a burst may join them (`refusal AT_US MACHINE ran|first`). A chain of refusals,
+          each within the width of the one before, of two VM processes or more and one whose
+          guest had run, is a burst; the widest one's span is kept (`burst SPAN_US`). The first
+          value is the widest burst measured (`limits/bursts.txt`, each with its run): 1.132342
+          s, 44077430171's two arms' refusals, first to last. The measured bursts' dumps came
+          at most 1.13 s apart, the bursts 15.4 s or more apart.
+        - *Where it is read* (`common::host_refused`). Witnesses come from the records the
+          refusal's VM process kept it in and from the tests' own (`common::vcpu_limits`), where
+          `boots_the_hosts_maximum_vcpu_count` keeps its in-process machines' refusals with
+          their moments (`Limits::record_refusal`). The SKIP waits out the burst width from the
+          refusal's moment, so that a witness kept just after it is read too. Its callers are
+          the tests that failed so: boot.rs `runs_init_as_pid_1_and_powers_off`,
+          `brings_up_every_vcpu`, `a_snapshot_keeps_memory_to_plug` and both `shards_api` tests,
+          and daemon.rs `pools_keep_what_their_runs_need_while_they_come`, of the VM its run's
+          error names (`common::vm_host_refused`).
+        - *No witness yet:* a machine past its init's announcement keeps no refusal, as its
+          records are let go of then; a restore keeps none either, since it is given no records.
+          Their refusals are said, but witness nothing, and a restore's refusal before its guest
+          ran stays a failure.
+        - *Tests* (written, not run; ROOT's): vmm `vm::limits`, the gate: the observed shapes
+          taken, the VMM's shape failed every run, the width measured and learned, and a
+          refusal read back as said.
   - WHP's boot said as it comes. On Windows the test starts its VM process with
     `common::Vm::spawn_timed`: each line the process prints is also said on stderr as it
     comes, `D261 WHP boot <time from the spawn>: <line>`. CI's log keeps them whatever ends

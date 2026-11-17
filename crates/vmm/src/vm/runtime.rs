@@ -1112,6 +1112,8 @@ struct Shared {
     /// Its host model's vCPU records (D261) until its outcome is kept there
     /// ([`take_records`](Self::take_records)).
     records: Mutex<Option<Limits>>,
+    /// Whether its guest has run on any of its vCPUs, as D261's gate reads it ([`Entered`]).
+    ran: AtomicBool,
 }
 
 /// What a snapshot the host asks for reads of the machine (D176): its VM and devices by
@@ -1201,6 +1203,7 @@ impl Shared {
             governor: Mutex::new(None),
             group_governor: Mutex::new(None),
             records: Mutex::new(None),
+            ran: AtomicBool::new(false),
         }
     }
 
@@ -1242,10 +1245,11 @@ impl Shared {
     }
 
     /// Keeps that its host refused to enter vCPU `vcpu` (D261), on that vCPU as its machine
-    /// ends: what its host model's records hold of its count then, for its refusal to say.
-    fn keep_refused(&self, vcpu: usize) -> Option<super::limits::Evidence> {
+    /// ends, and `refusal` beside the counts for D261's gate: what its host model's records hold
+    /// of its count then, for its refusal to say.
+    fn keep_refused(&self, vcpu: usize, refusal: super::limits::Refusal) -> Option<super::limits::Evidence> {
         let (records, file, vcpus) = self.take_records()?;
-        match super::limits::keep(file, vcpus, Outcome::Refused { vcpu }) {
+        match super::limits::keep_refusal(file, vcpus, vcpu, refusal) {
             Ok(all) => Some(records.evidence(vcpus, &all)),
             Err(e) => {
                 debug!("keeping its refusal in {}: {e}", records.file().display());
@@ -1929,6 +1933,8 @@ fn vcpu_thread(
             None
         }
     };
+    // Whether its state is a snapshot's, which the VMM restores (D261's gate, [`Entered`]).
+    let restored = matches!(start, machine::VcpuStart::Restore { .. });
     // Its part of the start goes with its setup.
     let (mut vcpu, set_up) = match machine::setup_vcpu(vm, index, start) {
         Ok(v) => v,
@@ -1965,6 +1971,12 @@ fn vcpu_thread(
     if index == 0 {
         let _ = sh.entered_at_us.set(crate::log::uptime_us());
     }
+    // Its way to its machine's devices, which tells D261's gate whether its guest has run.
+    let entered = Entered {
+        io,
+        own: AtomicBool::new(false),
+        machine: &sh.ran,
+    };
     loop {
         if sh.exiting() {
             return;
@@ -1974,21 +1986,78 @@ fn vcpu_thread(
         if sh.hold.wait(&|| sh.exiting() || sh.snapshot.requested()) {
             vcpu.went_on();
         }
-        match vcpu.run(io) {
+        match vcpu.run(&entered) {
             Ok(hv::Exit::Canceled) => sh.park_for_snapshot(index, &vcpu),
             Ok(hv::Exit::Shutdown) => return sh.stop(ExitReason::PowerOff),
             Ok(hv::Exit::Reset) => return sh.stop(ExitReason::Reset),
             Ok(hv::Exit::Refused(reason)) => {
-                let evidence = sh.keep_refused(index);
+                let refusal = super::limits::Refusal::now(entered.ran(restored));
+                let evidence = sh.keep_refused(index, refusal);
                 return sh.stop(ExitReason::Refused(super::limits::EntryRefused {
                     vcpu: index,
                     reason,
+                    refusal,
                     host: super::limits::HostModel::here(),
                     evidence,
                 }));
             }
             Err(e) => return sh.stop(ExitReason::Error(format!("vCPU {index}: {e}"))),
         }
+    }
+}
+
+/// A vCPU's way to its machine's devices that tells D261's gate whether its guest has run
+/// (`limits::Refusal::entered`): port and memory-mapped I/O come only of a guest's own
+/// instructions, so its host had entered whatever made one. Kept for the vCPU and for its
+/// machine ([`Shared::ran`]). The VMM sets a booted machine's vCPUs' state before any of them
+/// runs (their CPUID, the boot vCPU's registers), so once one has run, its host had entered
+/// the state the VMM gave each; a restored vCPU's state is its own, and only its own I/O
+/// counts.
+struct Entered<'a> {
+    io: &'a dyn hv::Io,
+    own: AtomicBool,
+    machine: &'a AtomicBool,
+}
+
+impl Entered<'_> {
+    /// An exit only the guest's own instructions make, seen.
+    fn saw(&self) {
+        if !self.own.load(Ordering::Relaxed) {
+            self.own.store(true, Ordering::Relaxed);
+            self.machine.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// Whether its guest had run, as D261's gate reads it: on this vCPU, or, unless it was
+    /// `restored`, on any of its machine's.
+    fn ran(&self, restored: bool) -> bool {
+        self.own.load(Ordering::Relaxed) || (!restored && self.machine.load(Ordering::Relaxed))
+    }
+}
+
+impl hv::Io for Entered<'_> {
+    fn mmio_read(&self, addr: u64, data: &mut [u8]) {
+        self.saw();
+        self.io.mmio_read(addr, data);
+    }
+
+    fn mmio_write(&self, addr: u64, data: &[u8]) {
+        self.saw();
+        self.io.mmio_write(addr, data);
+    }
+
+    fn pio_read(&self, port: u16, data: &mut [u8]) {
+        self.saw();
+        self.io.pio_read(port, data);
+    }
+
+    fn pio_write(&self, port: u16, data: &[u8]) {
+        self.saw();
+        self.io.pio_write(port, data);
+    }
+
+    fn memory_fault(&self, gpa: Option<u64>) -> bool {
+        self.io.memory_fault(gpa)
     }
 }
 
