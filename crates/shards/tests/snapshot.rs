@@ -508,21 +508,13 @@ mod storm {
         format!("{cpus} vCPUs")
     }
 
-    /// A storm's VM of `cpus` vCPUs, `shards` run with `args`, each line it says also said on
-    /// stderr as it comes after `who`, its storm and which VM of it (`Vm::spawn_timed`): what
-    /// CI's log keeps of a storm whatever ends it (CI 43968984258: a 255-vCPU restore said
-    /// nothing of its last 28 minutes before the step's limit ended it).
-    fn spawn<S: AsRef<std::ffi::OsStr>>(args: &[S], cpus: u32, who: &str) -> Vm {
-        Vm::spawn_timed(args, Box::leak(who.to_owned().into_boxed_str())).sized(size(cpus))
-    }
-
     /// Streams rounds of 4 MiB through the echo of the VM at `sock`, a guest of `size`
     /// ([`size`]), until `stop`, from when it answers, counting what comes back in
     /// `carried`; returns each round's result, a failed one saying when it began and ended
-    /// from `start` (its VM's). Each round it says is said after `who`, its storm and VM
-    /// ([`spawn`]): both tests run storms of one size at once, and a stopping original's last
-    /// round breaks as its VM ends, as it should (CI 43968984258: that break, `sending: Broken
-    /// pipe`, was read as the resumed storm's).
+    /// from `start` (its VM's). Each round it says is said after `who`, its storm and VM:
+    /// both tests run storms of one size at once, and a stopping original's last round breaks
+    /// as its VM ends, as it should (CI 43968984258: that break, `sending: Broken pipe`, was
+    /// read as the resumed storm's).
     ///
     /// No wall clock bounds a storm: each round's reads are a wait judged by its kind's
     /// slowest round seen ([`common::Following`]), and each wait on its guest by its next new
@@ -836,12 +828,11 @@ mod storm {
             let stop = Arc::new(AtomicBool::new(false));
             let carried = Arc::new(AtomicU64::new(0));
             let start = Instant::now();
-            let who = format!("storm {cpus} vCPUs, its original (it stops at its snapshot)");
-            let mut original = spawn(&storm_args(&s, cpus, &sock, "stop"), cpus, &who);
+            let mut original = Vm::spawn(&storm_args(&s, cpus, &sock, "stop")).sized(size(cpus));
             let streamer = stream(
                 sock.clone(),
                 size(cpus),
-                who,
+                format!("storm {cpus} vCPUs, its original (it stops at its snapshot)"),
                 stop.clone(),
                 carried.clone(),
                 start,
@@ -863,21 +854,17 @@ mod storm {
                 let stop = Arc::new(AtomicBool::new(false));
                 let carried = Arc::new(AtomicU64::new(0));
                 let start = Instant::now();
-                let who = format!("storm {cpus} vCPUs, restore {i}");
-                let mut copy = spawn(
-                    &[
-                        "restore".as_ref(),
-                        s.snapshot().as_os_str(),
-                        "--vsock".as_ref(),
-                        sock.as_os_str(),
-                    ],
-                    cpus,
-                    &who,
-                );
+                let mut copy = Vm::spawn(&[
+                    "restore".as_ref(),
+                    s.snapshot().as_os_str(),
+                    "--vsock".as_ref(),
+                    sock.as_os_str(),
+                ])
+                .sized(size(cpus));
                 let streamer = stream(
                     sock.clone(),
                     size(cpus),
-                    who,
+                    format!("storm {cpus} vCPUs, restore {i}"),
                     stop.clone(),
                     carried.clone(),
                     start,
@@ -914,12 +901,11 @@ mod storm {
             let stop = Arc::new(AtomicBool::new(false));
             let carried = Arc::new(AtomicU64::new(0));
             let start = Instant::now();
-            let who = format!("resume {cpus} vCPUs");
-            let mut vm = spawn(&storm_args(&s, cpus, &sock, "resume"), cpus, &who);
+            let mut vm = Vm::spawn(&storm_args(&s, cpus, &sock, "resume")).sized(size(cpus));
             let streamer = stream(
                 sock.clone(),
                 size(cpus),
-                who,
+                format!("resume {cpus} vCPUs"),
                 stop.clone(),
                 carried.clone(),
                 start,

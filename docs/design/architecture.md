@@ -222,13 +222,12 @@ the crypto self-tests first, since every clone would replay the rest (PM M21).
     One storm at the most runs at a time. `SHARDS_STORM_CPUS` still names one size alone.
     Held by snapshot.rs `a_storms_sizes_are_the_regimes_its_claim_needs` (starts no VM).
   - No wall clock bounds a storm (D209). Each round's reads and each wait on its guest are
-    D215's judged waits: past the slowest of their kind they go on while the guest says
-    something new or carries the stream, and cold, as on CI, which keeps no records (D261),
-    they follow liveness. A slow host that makes progress passes; its time is its host's.
-    Whether the restores' 255-vCPU storm ends within a 4-CPU runner's 58 minutes, now that
-    no other runs beside it, is unmeasured: owed. Each storm's guest now says its lines on
-    stderr as they come (`Vm::spawn_timed`), so CI's log keeps where a storm stood when a
-    step's limit ended it: the 255-vCPU restore said nothing of its last 28 minutes.
+    D215's judged waits, each size its own kind: past the slowest of their kind they go on
+    while the guest says something new or carries the stream, and cold they follow liveness,
+    as on CI until a passing job has kept that size's records (D261, *CI's judge learns
+    across runs*: a job that runs out of time keeps none). A slow host that makes progress
+    passes; its time is its host's. Whether the restores' 255-vCPU storm ends within a 4-CPU
+    runner's 58 minutes, now that no other runs beside it, is unmeasured: owed.
   - The "Broken pipe" of that run (`255 vCPUs: round 8, 236.2 s to 273.6 s in, sending:
     Broken pipe (os error 32)`, 23:30:45) was the restores' storm's, not the resumed one's.
     The round's costs name VM 203206, whose round 1 had named `storm255-13/v.sock`, the
