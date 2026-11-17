@@ -3934,8 +3934,10 @@ pub const STREAM: &str = "a guest's stream";
 /// kept beside the judge's records (`target/judge-records`, under this host's class), which CI
 /// keeps from run to run: each its CPU's model and what it runs under, so that one image's
 /// runners of two models (CI's x86_64 runners: AMD on Azure, Intel on EC2) keep theirs apart.
+/// Read beside what D261 measured of this host model (`Limits::measured_at`), so that a cold
+/// one is sized by its measured known-good count, never by a first boot of its most vCPUs.
 pub fn vcpu_limits() -> shards_vmm::vm::limits::Limits {
-    shards_vmm::vm::limits::Limits::at(
+    shards_vmm::vm::limits::Limits::measured_at(
         workspace()
             .join("target/judge-records")
             .join(host_class())

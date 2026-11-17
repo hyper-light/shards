@@ -276,9 +276,15 @@ jobs:
         if: matrix.test
         uses: actions/cache/restore@v6.1.0
         with:
-          path: target/judge-records
+          path: target/judge-records-kept
           key: judge-records-${{ steps.image.outputs.image }}-${{ runner.arch }}-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: judge-records-${{ steps.image.outputs.image }}-${{ runner.arch }}-${{ matrix.target }}-
+      # Put in place for the tests, which write it as they run; the cache's copy kept apart
+      # (`The judge's records, staged`).
+      - name: The judge's records, in place
+        if: matrix.test
+        shell: bash
+        run: mkdir -p target/judge-records && if [ -d target/judge-records-kept ]; then cp -a target/judge-records-kept/. target/judge-records/; fi
       # Where the job's build of the tests has a limit of its own (`build_minutes`, above), they
       # are built here; the tests' step then builds nothing, as no variable it sets reaches a
       # build script.
@@ -319,11 +325,23 @@ jobs:
       # run (D261, ROOT's ruling of 2026-11-17): a record holds only waits that were answered,
       # evidence whatever became of their job. Kept only by a passing job, the x86_64 musl
       # job, which failed run after run, began cold every time (CI 43968984258).
+      # The records as their tests left them, copied whole and renamed into place, for the cache
+      # to read a tree no process writes: read in place, a cut test step's processes still wrote
+      # them as tar read ("target/judge-records/linux-x86_64-4: file changed as we read it"),
+      # nothing was kept, and every next run began cold (CI 44164945050, x86_64 gnu). A record a
+      # process replaces as it is copied is said and left out; the rest are kept.
+      - name: The judge's records, staged
+        if: ${{ !cancelled() && matrix.test }}
+        shell: bash
+        run: |
+          rm -rf target/judge-records-kept.new && mkdir -p target/judge-records
+          cp -a target/judge-records target/judge-records-kept.new || echo "records replaced as they were copied are left out"
+          rm -rf target/judge-records-kept && mv target/judge-records-kept.new target/judge-records-kept
       - name: The judge's records, kept
         if: ${{ !cancelled() && matrix.test }}
         uses: actions/cache/save@v6.1.0
         with:
-          path: target/judge-records
+          path: target/judge-records-kept
           key: judge-records-${{ steps.image.outputs.image }}-${{ runner.arch }}-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
       - name: What hung tests' processes were doing
         if: ${{ !cancelled() && matrix.test && matrix.target == 'x86_64-unknown-linux-gnu' }}
@@ -393,9 +411,13 @@ jobs:
       - name: The judge's records
         uses: actions/cache/restore@v6.1.0
         with:
-          path: target/judge-records
+          path: target/judge-records-kept
           key: judge-records-${{ steps.image.outputs.image }}-${{ runner.arch }}-firecracker-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: judge-records-${{ steps.image.outputs.image }}-${{ runner.arch }}-firecracker-
+      # Put in place for the benches, the cache's copy kept apart, as the tests' are.
+      - name: The judge's records, in place
+        shell: bash
+        run: mkdir -p target/judge-records && if [ -d target/judge-records-kept ]; then cp -a target/judge-records-kept/. target/judge-records/; fi
       # Every sample, in the order taken, for the envelope and the artifact below.
       - name: Compare
         env:
@@ -466,11 +488,19 @@ jobs:
           exit "$status"
       # Kept wherever the benches ended, passed, failed or out of time, but not in a cancelled
       # run, as the tests' records are (D261).
+      # Copied whole and renamed into place first, as the tests' are.
+      - name: The judge's records, staged
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          rm -rf target/judge-records-kept.new && mkdir -p target/judge-records
+          cp -a target/judge-records target/judge-records-kept.new || echo "records replaced as they were copied are left out"
+          rm -rf target/judge-records-kept && mv target/judge-records-kept.new target/judge-records-kept
       - name: The judge's records, kept
         if: ${{ !cancelled() }}
         uses: actions/cache/save@v6.1.0
         with:
-          path: target/judge-records
+          path: target/judge-records-kept
           key: judge-records-${{ steps.image.outputs.image }}-${{ runner.arch }}-firecracker-${{ github.run_id }}-${{ github.run_attempt }}
       # What the guest kernel keeps of a microVM's memory by its size, on x86_64 (PM M117,
       # measured on arm64): shards sizes a microVM so that -m fits beside it. Its limit is a

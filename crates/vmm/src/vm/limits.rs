@@ -308,6 +308,9 @@ pub fn now_us() -> u64 {
 pub struct Limits {
     file: PathBuf,
     host: HostModel,
+    /// Whether what D261 measured of its host model is read beside them
+    /// ([`measured_at`](Self::measured_at)).
+    measured: bool,
 }
 
 impl Limits {
@@ -316,13 +319,29 @@ impl Limits {
         Limits {
             file: dir.join(host.key()),
             host,
+            measured: false,
+        }
+    }
+
+    /// [`at`](Self::at), what D261 measured of its host model read beside its records
+    /// (`limits/vcpus.txt`): the tests' sizing, which a cold host model
+    /// (its records' cache missed, or a save that failed) sizes by what was measured there,
+    /// never by a first boot of its most vCPUs. The product's records are its file's alone.
+    pub fn measured_at(dir: PathBuf, host: HostModel) -> Limits {
+        Limits {
+            measured: true,
+            ..Limits::at(dir, host)
         }
     }
 
     /// The records kept in `file`, of host model `host`: a refusal's, as its evidence names
     /// them ([`Evidence::file`]), read back by the tests ([`Said::file`]).
     pub fn kept_in(file: PathBuf, host: HostModel) -> Limits {
-        Limits { file, host }
+        Limits {
+            file,
+            host,
+            measured: false,
+        }
     }
 
     /// The host model they are of.
@@ -352,9 +371,19 @@ impl Limits {
     }
 
     /// Each count's outcomes as kept: none where nothing is, a line that says nothing whole
-    /// left out.
+    /// left out; and, read [`measured_at`](Self::measured_at), what D261 measured of each
+    /// count on its host model added to them.
     pub fn outcomes(&self) -> BTreeMap<u32, Outcomes> {
-        parse(&self.kept())
+        let mut all = parse(&self.kept());
+        if self.measured {
+            for (count, seen) in measured_counts(&self.host.key()) {
+                let o = all.entry(count).or_default();
+                o.ran = o.ran.saturating_add(seen.ran);
+                o.refused = o.refused.saturating_add(seen.refused);
+                o.last_refused_vcpu = o.last_refused_vcpu.or(seen.last_refused_vcpu);
+            }
+        }
+        all
     }
 
     /// The refusals kept beside the counts: those a burst may yet join ([`keep_refusal`]).
@@ -385,6 +414,7 @@ impl Limits {
                 vcpu: o.last_refused_vcpu,
                 host: self.host.clone(),
                 file: self.file.clone(),
+                measured: self.measured,
             }),
             _ => Ok(()),
         }
@@ -641,6 +671,25 @@ fn refusals_text(refusals: &[Refusal], gap: Option<u64>) -> String {
 /// each burst's largest gap between consecutive refusals, followed by where each was measured:
 /// every host model's first burst width.
 const MEASURED: &str = include_str!("limits/bursts.txt");
+
+/// What D261's experiment measured of each count on a host model (`limits/vcpus.txt`): the
+/// tests' sizing reads it beside the host model's records ([`Limits::measured_at`]), as a
+/// burst's width reads `limits/bursts.txt`'s.
+const MEASURED_COUNTS: &str = include_str!("limits/vcpus.txt");
+
+/// What `limits/vcpus.txt` says of the counts of the host model whose records' file name is
+/// `key` ([`HostModel::key`]): each line its key, a count's `COUNT RAN REFUSED LAST` as records
+/// keep it, and where it was measured.
+fn measured_counts(key: &str) -> BTreeMap<u32, Outcomes> {
+    let lines: String = MEASURED_COUNTS
+        .lines()
+        .filter_map(|line| {
+            let mut words = line.split_whitespace();
+            (words.next() == Some(key)).then(|| words.take(4).collect::<Vec<_>>().join(" ") + "\n")
+        })
+        .collect();
+    parse(&lines)
+}
 
 /// The largest gap between consecutive refused entries of one burst D261 measured, in
 /// microseconds (`limits/bursts.txt`): a host model's burst width, unless its records keep a
@@ -977,6 +1026,9 @@ pub struct OnlyRefused {
     pub vcpu: Option<usize>,
     pub host: HostModel,
     pub file: PathBuf,
+    /// Whether D261's measurements of its host model were read beside its file
+    /// ([`Limits::measured_at`]).
+    pub measured: bool,
 }
 
 impl fmt::Display for OnlyRefused {
@@ -984,11 +1036,16 @@ impl fmt::Display for OnlyRefused {
         let which = self
             .vcpu
             .map_or_else(|| "a vCPU".to_string(), |v| format!("vCPU {v}"));
+        let measured = if self.measured {
+            ", beside D261's measurements of this host model (vm/limits/vcpus.txt)"
+        } else {
+            ""
+        };
         write!(
             f,
             "{} vCPUs: the host's hypervisor ({}) refused to enter {which}; on this host model \
              ({}), counts \u{2265} {} have only been refused ({} times), so it is not tried (kept in \
-             {})",
+             {}{measured})",
             self.vcpus,
             hypervisor_under(&self.host),
             self.host.cpu,
@@ -1133,6 +1190,52 @@ mod tests {
                 last_refused_vcpu: Some(75)
             })
         );
+    }
+
+    /// D261's measurements size a cold host model's tests (`Limits::measured_at`,
+    /// `limits/vcpus.txt`): on EC2's Intel runners, with no records kept, 32 vCPUs known good and
+    /// 255 refused at once, from run 44030858462's arms; a count kept adds to them; the
+    /// product's records (`Limits::at`) and a model measured nowhere read their file alone.
+    /// Cold, a first boot of 255 vCPUs there ran 2954.6 s, starving the tests beside it, before
+    /// its host refused it (CI 44164945050, x86_64 gnu). Red where the measurements are unread.
+    #[test]
+    fn the_measured_outcomes_size_a_cold_host_models_tests() {
+        let dir = shards_testdir::TempDir::new("limits-seed").unwrap();
+        let measured = Limits::measured_at(dir.path().to_path_buf(), ec2());
+        assert_eq!(measured.known_good(), Some(32), "cold: measured known good");
+        let refused = measured.admit(255).unwrap_err();
+        assert_eq!((refused.from, refused.refused, refused.vcpu), (64, 3, Some(3)));
+        assert!(
+            refused
+                .to_string()
+                .ends_with(", beside D261's measurements of this host model (vm/limits/vcpus.txt))")
+        );
+        assert!(measured.admit(32).is_ok());
+        assert_eq!(
+            measured.outcomes().get(&128),
+            Some(&Outcomes {
+                ran: 1,
+                refused: 2,
+                last_refused_vcpu: Some(75)
+            })
+        );
+        measured.record(32, Outcome::Ran).unwrap();
+        assert_eq!(measured.outcomes().get(&32).map(|o| o.ran), Some(4));
+        let product = Limits::at(dir.path().to_path_buf(), ec2());
+        assert!(
+            product.admit(255).is_ok(),
+            "the product's records: its file alone"
+        );
+        assert_eq!(product.known_good(), Some(32));
+        let elsewhere = Limits::measured_at(
+            dir.path().to_path_buf(),
+            HostModel {
+                cpu: "AMD EPYC 7763 64-Core Processor".into(),
+                under: Some("Microsoft Corporation".into()),
+            },
+        );
+        assert!(elsewhere.admit(255).is_ok(), "measured nowhere: cold");
+        assert_eq!(elsewhere.known_good(), None);
     }
 
     /// A count that has run is tried though it was refused too; another host model's records

@@ -38339,6 +38339,36 @@ post-mortem read of the printk ring through VMCOREINFO, not a debug port.
         count halved until a boot comes up, each kept.
       - The storms size their largest arm by that count (`common::vcpus_admitted`).
       - CI keeps the counts beside the judge's records (`target/judge-records/<class>/vcpus`).
+      - *Seeded with what was measured, kept whole* (amended 2026-11-17, own-36, ROOT's
+        ruling). CI 44164945050's x86_64 gnu job (Intel Xeon 6975P-C on EC2, 4 CPUs) began
+        with cold records (restored from 44076016255, before these counts were kept), and
+        `boots_the_hosts_maximum_vcpu_count` tried 255 vCPUs in its process. Its guest ran
+        2954.6 s, 185 to 242 of its 255 vCPU threads runnable in every hang-watch snapshot
+        (20:43:38 to 21:22:23Z), starving the boots beside it (`brings_up_every_vcpu`
+        2935.1 s, `runs_init_where_its_kernel_opened_no_console` 2796.0 s,
+        `shards_api_boot_under_the_suites_load` 2658.8 s) until its host refused its entries
+        (21:27:18.12 to 19.46Z); boot.rs took 2962 s of the Tests step's 56 minutes, cut in
+        build.rs. The same model's musl job took 130.5 s. And that job's records were not
+        kept: tar read them as the cut step's processes still wrote them
+        ("target/judge-records/linux-x86_64-4: file changed as we read it"), so the next run
+        would be cold again.
+        - `vm/limits/vcpus.txt` keeps what the experiment measured of each count on that
+          model (run 44030858462, copies c, e and f, kvm_intel's default `enable_apicv=Y`:
+          8, 16 and 32 vCPUs ran 3 of 3, 32 in 0.73 to 0.90 s; 64 refused 3 of 3; 128 ran
+          once and was refused twice; 255 refused 3 of 3), read beside a host model's records
+          by `Limits::measured_at`, the tests' sizing (`common::vcpu_limits`), as a burst's
+          width reads `bursts.txt`. Cold, that model's known-good count is 32 and 255 is
+          refused at once (from 64), said "beside D261's measurements of this host model".
+          The product's records (`Limits::at`) read their file alone.
+        - ci.yml restores the records' staged copy (`target/judge-records-kept`) and puts it
+          in place; as the job ends, a whole copy is renamed into the staged path, and that is
+          what the cache reads. budget-e2e.yml and slates-fs.yml, which read ci.yml's caches,
+          restore the same path. The path is new, so each job begins cold once.
+        - No lock over the other boot tests: on that model a 32-vCPU guest came up in 0.73 to
+          0.90 s (3 of 3), where the 255-vCPU guest held the runner 49 minutes. The max-vCPU
+          test keeps the machine turn as before.
+        - Test (written, not built or run): vmm `vm::limits::tests::the_measured_outcomes_size_a_cold_host_models_tests`,
+          red where the measurements are unread (known good none, 255 tried).
       - The A/B is retired; its experiment's arm stays (`a_d261_arm_boots_the_vcpus_its_experiment_asks`).
       - *The product's runs* (built 2026-11-17, ROOT's ruling: "the VM process consults the
         records before it starts and records each outcome at its end", the user's cache shared

@@ -87,9 +87,13 @@ jobs:
       - name: The judge's records, as CI kept them
         uses: actions/cache/restore@v6.1.0
         with:
-          path: target/judge-records
+          path: target/judge-records-kept
           key: judge-records-${{ steps.image.outputs.image }}-${{ runner.arch }}-x86_64-pc-windows-msvc-${{ github.run_id }}
           restore-keys: judge-records-${{ steps.image.outputs.image }}-${{ runner.arch }}-x86_64-pc-windows-msvc-
+      # Put in place, as ci.yml puts its own (its cache keeps a staged copy, `target/judge-records-kept`).
+      - name: The judge's records, in place
+        shell: bash
+        run: mkdir -p target/judge-records && if [ -d target/judge-records-kept ]; then cp -a target/judge-records-kept/. target/judge-records/; fi
       - name: A guest mounts, reads and writes a slates volume, three times
         shell: bash
         env:

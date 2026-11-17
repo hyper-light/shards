@@ -1,0 +1,24 @@
+# What D261's experiment measured of each count on a host model (.github/workflows/d261-intel.yml,
+# run 44030858462): the tests' sizing reads it beside the host model's own records
+# (vm::limits, `Limits::measured_at`, `measured_counts`), as a burst's width reads bursts.txt, so
+# that a host model whose records are cold (a cache missed, or a save that failed) is sized by
+# what was measured there, never by a first boot of its most vCPUs. On EC2's Intel runners such a
+# boot of 255 vCPUs ran 2954.6 s before its host refused it, its threads runnable on every one of
+# the runner's 4 CPUs, the tests beside it starved (CI 44164945050, x86_64 gnu).
+#
+# Each line is one count of one host model: its records' file name (HostModel::key), then
+# `COUNT RAN REFUSED LAST` as its records keep them (LAST the vCPU the last refusal named, `-` for
+# none), then where it was measured: the run and the experiment's copies. Run 44030858462's Intel
+# copies c, e and f (Intel Xeon 6975P-C on EC2, KVM under Amazon EC2, 4 CPUs, kvm_intel's
+# default enable_apicv=Y): 8, 16 and 32 vCPUs came up 3 of 3 (32 in 0.73 to 0.90 s); 64 was
+# refused 3 of 3 (vCPUs 13, 13, 3; 0.34 s to 1172 s in); 128 came up once (339 s) and was refused
+# twice (vCPUs 57, 75); 255 was refused 3 of 3 (vCPUs 138, 29, 1). Its arm with enable_apicv=N,
+# a configuration CI's runners do not run, is not kept here. LAST is copy f's, the last listed.
+#
+# MODEL COUNT RAN REFUSED LAST RUN COPIES
+Intel_R__Xeon_R__6975P-C_under_Amazon_EC2 8 3 0 - 44030858462 c,e,f
+Intel_R__Xeon_R__6975P-C_under_Amazon_EC2 16 3 0 - 44030858462 c,e,f
+Intel_R__Xeon_R__6975P-C_under_Amazon_EC2 32 3 0 - 44030858462 c,e,f
+Intel_R__Xeon_R__6975P-C_under_Amazon_EC2 64 0 3 3 44030858462 c,e,f
+Intel_R__Xeon_R__6975P-C_under_Amazon_EC2 128 1 2 75 44030858462 c,e,f
+Intel_R__Xeon_R__6975P-C_under_Amazon_EC2 255 0 3 1 44030858462 c,e,f
