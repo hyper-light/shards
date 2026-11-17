@@ -25455,10 +25455,66 @@ as its archive held them: `out/` (each process), `run.log`, `carrier.log`, `smok
 `looks.log`, `kiln.log` (empty: no line matched) and both builds' logs. The archive's SHA-256 is
 56850adbdf314599e1ef068ed3fee009c7e27924ef7f76d6d12d9fc294f61a6f.
 
+Numbers on HVF, B alone: this entry's own command at B, ROOT's run r666, 2026-11-17 02:40Z.
+- The same Studio and macOS. B is 26c1ea5df.
+- Run from kiln by the carrier's `bash run.sh costs` (54dee80), through `launchd-run.sh`, in one
+  process: `SHARDS_IMAGE_COST_N=100`, so n=100 of each kind. Its starts took 71 s.
+- The condition as the run recorded it: nice 10, priorities 20, 31 and 97, the VM threads at 31
+  and 97 (no QoS clamp). kiln's log had no line on its job or on headroom.
+- Load 1.94 before it, with 12.06 of the 14 CPUs idle (8 asked), and 2.66 at its one look.
+
+The `MEASURED IMAGE START` lines; ms, p50 / p90 / p99 / max:
+
+| kind | boot | first output | stop |
+|---|---|---|---|
+| Booted | 72.404 / 74.629 / 76.385 / 79.742 | 74.954 / 77.454 / 79.629 / 80.185 | 1.543 / 1.625 / 1.914 / 4.289 |
+| Saved | 194.127 / 201.597 / 206.500 / 207.166 | 202.145 / 210.052 / 215.150 / 215.585 | 2.053 / 2.173 / 7.115 / 12.409 |
+| Restored | 18.233 / 19.951 / 20.612 / 22.350 | 23.409 / 25.145 / 25.717 / 26.404 | 1.491 / 1.628 / 1.899 / 3.801 |
+| Warm | 0.272 / 0.351 / 0.407 / 0.573 | 5.328 / 5.835 / 6.181 / 6.371 | 1.636 / 1.799 / 4.853 / 5.220 |
+
+Where one start of each kind spent its time: r666's timed phase pass, one start a kind (n=1), the
+differences of its lines' times. Its spread is unmeasured here; r644's logs hold ten such passes
+of B a kind. ms:
+
+| kind | run host up | image prepared | microVM shaped | security made | to launching | VM spawned | to `READY` | to the boot's answer | to `STARTED` | to first output |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Booted | 1.548 | 0.829 | 1.095 | 6.077 | 0.124 | 0.217 | 64.340 | 0.267 | 2.338 | 0.199 |
+| Saved | 1.687 | 0.919 | 1.014 | 5.589 | 0.162 | 0.233 | 178.990 | 11.489 | 8.231 | 0.192 |
+| Restored | 1.767 | 0.935 | 1.056 | 5.484 | 0.298 | 0.221 | 7.897 | 0.211 | 4.864 | 0.170 |
+| Warm | 1.710 | 0.904 | 1.107 | 5.716 | 0.239 | 0.200 | 8.946 | 0.258 | 4.676 | 0.207 |
+
+What each column spans:
+- **run host up:** from the caller's `its run host N started` to the host's `its request read`.
+- **image prepared, microVM shaped, security made:** each from the step before it. The layer's
+  thread runs within *security made*. It made Booted's and Saved's layers in 1.690 and 1.512 ms,
+  and cloned Restored's and the warm host's in 0.289 and 0.304 ms.
+- **to launching:** from `its security made…` to `launching its VM`. This covers its planning,
+  its binary's check, its network and its layer taken.
+- **VM spawned:** from `launching its VM` to `the VM spawned`.
+- **to `READY`:** from the VM's spawn to its `READY`. This is the VM process's start, its grants,
+  its boot or restore, and its guest's init.
+- **to the boot's answer:** from `READY` to the caller's `the boot answered`. A Saved start
+  settles its template here.
+- **to `STARTED`, to first output:** from the boot's answer to the VM's `STARTED`, then to the
+  caller's `its harness's first output read`.
+- **Warm:** its first seven columns are its host's, before its run asked. Its answer comes 0.258
+  ms after its run's request, and the boot answered at 0.282 ms; first output came at 5.165 ms.
+
+Read:
+- In this pass, timed from the boot's call, a warm run's VM took the run at 0.158 ms and said
+  `STARTED` at 4.958 ms. Its first output was read 0.207 ms later, at 5.165 ms. So the start
+  path's 5 ms target is missed between a warm VM taking its run and its `STARTED`, past the run
+  host's own steps, not on cut (a)'s way.
+- Before its launch, every kind's run host spent the most time in *security made*: 5.484 to
+  6.077 ms, from its microVM's shape to its guest's kernel read and its filters compiled. A warm
+  host spends it before its run asks.
+
+Raw results: `docs/research/measurements/image-start-ab/results/r666/` holds the run's 6 logs, as
+its archive held them: `m593.log` (the starts, their samples and both phase passes),
+`carrier.log`, `smoke.log`, `looks.log`, `kiln.log` (empty: no line matched) and `build-b.log`.
+The archive's SHA-256 is 220bf39730a6b110f9bdba64b56b58b15797d06a0e4e387e0fa9093af632b11f.
+
 Owed (ROOT):
-- B's single-arm costs at N=100, with their phase timelines (where the time goes). r644's carrier
-  refused them: the Studio was no longer quiet, with 4.13 CPUs idle where 8 were asked. They run
-  as r666, the carrier's `bash run.sh costs`.
 - The p90 and p99: the A/B again with 38 rounds of N=10, n=380 per arm and kind. 38 is the fewest
   rounds whose n reaches 368 and that is even, so that each arm goes first as often. The
   carrier's `bash run.sh` with `CUT_A_ROUNDS=38`.
