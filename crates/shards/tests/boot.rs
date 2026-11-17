@@ -335,11 +335,12 @@ fn boots_the_hosts_maximum_vcpu_count() {
     let limits = common::vcpu_limits();
     let refused = match limits.admit(max) {
         Ok(()) => match brings_up_the_most(max, "") {
-            Ok(()) => {
+            Brought::Said(lines) => {
+                brought_every_cpu(max, &lines);
                 limits.record(max, Outcome::Ran).unwrap();
                 return;
             }
-            Err(refused) => {
+            Brought::Refused(refused) => {
                 limits
                     .record(max, Outcome::Refused { vcpu: refused.vcpu })
                     .unwrap();
@@ -360,11 +361,12 @@ fn boots_the_hosts_maximum_vcpu_count() {
         assert!(vcpus > 0, "the host refused every count it was asked: {refused}");
         if limits.admit(vcpus).is_ok() {
             match brings_up_the_most(vcpus, "") {
-                Ok(()) => {
+                Brought::Said(lines) => {
+                    brought_every_cpu(vcpus, &lines);
                     limits.record(vcpus, Outcome::Ran).unwrap();
                     return;
                 }
-                Err(again) => limits
+                Brought::Refused(again) => limits
                     .record(vcpus, Outcome::Refused { vcpu: again.vcpu })
                     .unwrap(),
             }
@@ -381,10 +383,18 @@ fn boots_the_hosts_maximum_vcpu_count() {
 fn bring_up_arm(max: u32, arm: &str, also: &str) -> std::thread::Result<()> {
     use std::io::Write as _;
     let start = std::time::Instant::now();
-    let ran = std::panic::catch_unwind(|| brings_up_the_most(max, also));
+    // Its boot, each of its CPUs checked brought up where its guest said what it said; or the
+    // host's refusal to enter one.
+    let ran = std::panic::catch_unwind(|| match brings_up_the_most(max, also) {
+        Brought::Said(lines) => {
+            brought_every_cpu(max, &lines);
+            None
+        }
+        Brought::Refused(refused) => Some(refused),
+    });
     let outcome = match &ran {
-        Ok(Ok(())) => "brought up".to_string(),
-        Ok(Err(refused)) => refused.to_string(),
+        Ok(None) => "brought up".to_string(),
+        Ok(Some(refused)) => refused.to_string(),
         Err(failed) => failed
             .downcast_ref::<String>()
             .map(String::as_str)
@@ -402,8 +412,8 @@ fn bring_up_arm(max: u32, arm: &str, also: &str) -> std::thread::Result<()> {
         start.elapsed()
     );
     match ran {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(refused)) => Err(Box::new(refused.to_string())),
+        Ok(None) => Ok(()),
+        Ok(Some(refused)) => Err(Box::new(refused.to_string())),
         Err(failed) => Err(failed),
     }
 }
@@ -463,6 +473,14 @@ fn brought_online() -> &'static str {
     }
 }
 
+/// What [`brings_up_the_most`]'s boot came to: what its guest said as it powered off, each line,
+/// which [`brought_every_cpu`] checks; or the host's refusal to enter one of its vCPUs (D261),
+/// boxed, as it carries what its host model's records hold beside it.
+enum Brought {
+    Said(common::Lines),
+    Refused(Box<shards_vmm::vm::limits::EntryRefused>),
+}
+
 /// [`boots_the_hosts_maximum_vcpu_count`]'s boot of `max` vCPUs in this process, booted as the
 /// product boots its machines (vm_run.rs `boot_into`, build/builder.rs): shards-init its PID 1,
 /// and its kernel told [`late_cpus_cmdline`](shards_vmm::vm::late_cpus_cmdline)'s words for
@@ -471,11 +489,11 @@ fn brought_online() -> &'static str {
 /// kernel brings up its boot CPU alone and its init the rest (PM M379): a boot of all of them
 /// at once there is one the product never makes, and tests nothing of it (D261, ROOT's ruling
 /// of 2026-11-17). Waited for until it powers off, its init having said it runs, its CPUs
-/// online; then each is checked brought up, at boot or by its init. The late words, `also` and
-/// its count key its waits apart beside their call site, so that one arm's or count's answers
-/// judge no other's. The host's refusal to enter one of its vCPUs is its end, typed (D261); any
-/// other failure panics.
-fn brings_up_the_most(max: u32, also: &str) -> Result<(), shards_vmm::vm::limits::EntryRefused> {
+/// online: what it said, which its caller checks ([`brought_every_cpu`]). The late words,
+/// `also` and its count key its waits apart beside their call site, so that one arm's or
+/// count's answers judge no other's. The host's refusal to enter one of its vCPUs is its end,
+/// typed (D261); any other failure panics.
+fn brings_up_the_most(max: u32, also: &str) -> Brought {
     use shards_vmm::vm::{self, Config, Console, ExitReason};
     let _turn = machine_turn();
     let mut cfg = Config::new(kernel().to_path_buf(), Some(guest_init().to_path_buf()));
@@ -498,13 +516,21 @@ fn brings_up_the_most(max: u32, also: &str) -> Result<(), shards_vmm::vm::limits
     });
     let tag = cfg!(windows).then_some("D261 WHP boot");
     let key = format!("{late}{also} {max} vCPUs");
-    let (_, lines) = match common::machine_says(&handle, &ended, POWERS_OFF, &key, max, tag) {
-        Ok(said) => said,
+    match common::machine_says(&handle, &ended, POWERS_OFF, &key, max, tag) {
+        Ok((_, lines)) => Brought::Said(lines),
         Err(failed) => match end.try_recv() {
-            Ok(ExitReason::Refused(refused)) => return Err(refused),
+            Ok(ExitReason::Refused(refused)) => Brought::Refused(Box::new(refused)),
             _ => panic!("{failed}"),
         },
-    };
+    }
+}
+
+/// Checks that [`brings_up_the_most`]'s guest of `max` vCPUs, which said `lines`, brought each of
+/// its CPUs up, at boot or by its init, its init having said it runs, and named those past what
+/// its kernel was built for as it refused them. A count other than the one asked for fails, with
+/// what the guest said.
+fn brought_every_cpu(max: u32, lines: &common::Lines) {
+    let late = shards_vmm::vm::late_cpus_cmdline(max);
     let configured = kernel_nr_cpus();
     let up = max.min(configured);
     // Its kernel brought up every CPU at boot, or its boot CPU alone and its init the rest.
@@ -536,7 +562,6 @@ fn brings_up_the_most(max: u32, also: &str) -> Result<(), shards_vmm::vm::limits
         };
         assert!(text.contains(&refused), "{seen}");
     }
-    Ok(())
 }
 
 #[test]
