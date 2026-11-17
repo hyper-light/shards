@@ -38250,8 +38250,25 @@ post-mortem read of the printk ring through VMCOREINFO, not a debug port.
     under the rule it replaces, the partition's most alone, which admitted 5 to 240 on the
     runners' description); `vm::tests::guests_are_brought_up_late_on_a_nested_hyperv_alone`
     (the documented signal; an interface other than "Hv#1" is not one).
-  - **Owed.** The 60+ arms' outcomes, read from their artifacts when they come (each ends
-    at its 122-minute bound at the latest). ci.yml's x86_64 Windows jobs (`boots_the_hosts_maximum_vcpu_count` at 4
+  - **The arms past 30 vCPUs** (the same run, its records read once its arms ended): every
+    one was cut at its 122-minute bound, its guest's boot CPU alone up, its init still bringing
+    the rest online, none to its line, each with hundreds of soft lockups (292 to 1,398). The
+    last CPU each brought online, and when (guest uptime):
+
+    | arm | windows-2025 | windows-2022 |
+    |---|---|---|
+    | 30 | (above: up at 2500 s, Intel) | CPU 15 at 5699 s (EPYC 7763) |
+    | 60 | CPU 49 at 7101 s (EPYC 9V74) | CPU 16 at 6167 s (EPYC 9V74) |
+    | 120 | CPU 37 at 7293 s (Intel 8573C) | CPU 14 at 6862 s (Intel 8573C) |
+    | 240 | CPU 46 at 6065 s (EPYC 9V74) | CPU 13 at 6481 s (EPYC 7763) |
+    | 240, `cpuhp.parallel=0` | CPU 49 at 6239 s | CPU 13 at 1836 s |
+    | 240, the guest idle register offered (PV spinlocks) | CPU 47 at 6753 s | CPU 14 at 5549 s |
+
+    - A serial bring-up changes nothing here: the late path brings CPUs up one at a time
+      anyway. Neither do paravirtual spinlocks: what waits is the rendezvous, not a lock.
+    - A nested KVM host brings every CPU up at boot and so holds one rendezvous. CI 44138098584's
+      x86_64 gnu runner (AMD EPYC 7763 in Azure, 4 CPUs) brought a guest's 255 CPUs up by
+      26.9 s and its init up at 34.0 s. The cap stays WHP's. ci.yml's x86_64 Windows jobs (`boots_the_hosts_maximum_vcpu_count` at 4
     vCPUs, the storms sized so). The 8 lint targets.
 - **CI's judge learns across runs** (2026-11-17, kiln goal b2124227, lane ci-judge-cache).
   ROOT's answer to the question above: CI keeps the judge's records. Until now every CI job
