@@ -37742,7 +37742,8 @@ post-mortem read of the printk ring through VMCOREINFO, not a debug port.
       - *Refused at once* (`Limits::admit`): a count refused on its host model and never run
         there, and every larger count. Said as the host's with the evidence: "the host's
         hypervisor (KVM under Amazon EC2) refused to enter vCPU N; on this host model, counts
-        ≥ M have only been refused".
+        ≥ M have only been refused". **Amended (ROOT's decision, below): the tests' sizing
+        alone. The product tries every count.**
       - *Tried:* a count that has both run and been refused, and every other.
       - *Ceiling:* the hypervisor's own most stays it.
       - *Tests.* `boots_the_hosts_maximum_vcpu_count` proves the most on hosts that enter it.
@@ -37755,21 +37756,37 @@ post-mortem read of the printk ring through VMCOREINFO, not a debug port.
       - *The product's runs* (built 2026-11-17, ROOT's ruling: "the VM process consults the
         records before it starts and records each outcome at its end", the user's cache shared
         with it through D30's grants, never by widening its sandbox).
+        - **The product always tries** (ROOT's decision of 2026-11-17, on lane ci-linux-35's
+          evidence). EC2's Intel hosts refused even vCPU 0 of small machines at times, once a
+          4-vCPU microVM's with no large machine beside it: CI 44076016255 (x86_64 gnu: `brings_up_every_vcpu` at
+          vCPU 9, `shards_api_conforms_on_real_guests` and
+          `shards_api_shares_a_directory_and_a_read_only_one` at vCPU 0; musl:
+          `runs_init_as_pid_1_and_powers_off` at vCPU 0) and 44077430171 (musl:
+          `pools_keep_what_their_runs_need_while_they_come`, vCPU 3 of a 4-vCPU microVM).
+          Refused at once, one early refusal of a count not yet run would have refused it, and
+          every larger count not run, for as long as its records were kept: a CI job, or a
+          user's machine until they removed the file. So no machine is refused for the
+          records. They shape the refusal's message alone, and the tests' sizing (above).
+          `StartError::OnlyRefused` and the product's call to `admit` are gone.
         - *Where.* `<the user's cache>/vcpu-limits/<host model>` (`helpers::cache`). The
-          spawner names the directory (`--vcpu-records DIR`, `helpers::vcpu_records_words`):
-          launch.rs, for the daemon's runs and warm VMs, an orchestrator's runs and builders;
-          and the CLI's `run --kernel` and `restore DIR`. The VM is told it, never left to find
-          it: App Sandbox starts a VM process in its container (hence `--cwd`), and its
+          spawner names the directory to a boot (`run`) alone (`--vcpu-records DIR`,
+          `helpers::vcpu_records_words`): launch.rs, for the daemon's runs and warm VMs, an
+          orchestrator's runs and builders; and the CLI's `run --kernel`. A restore keeps no
+          outcome and reads none, so it is named none. The VM is told the directory, never left
+          to find it: App Sandbox starts a VM process in its container (hence `--cwd`), and its
           environment is filtered (`netproc::child_env`).
-        - *Granted, one file.* On macOS and Windows it is asked for with the VM's other files:
-          `Access::Keep` for a boot (opened read-write, made with its directory where it is
-          not, `platform::open_made`), `ReadIfThere` for a restore. On Linux the VM holds it
-          open before Landlock (`Limits::hold`), which gives it no rule for the file. Its
-          reads and writes go through `platform::open_input`, as its disks' do.
-        - *Consulted* before the machine is built (`vm::start`, `start_gpu_report`,
-          `restore_reported`). A count only refused there is refused, typed
-          (`StartError::OnlyRefused`), said as the host's with its evidence and the file that
-          keeps it, which its user may remove where the host has changed.
+        - *Granted, one file.* On macOS and Windows it is asked for with the VM's other files,
+          `Access::Keep` (opened read-write, made with its directory where it is not,
+          `platform::open_made`). On Linux the VM holds it open before Landlock
+          (`Limits::hold`), which gives it no rule for the file. Its reads and writes go
+          through `platform::open_input`, as its disks' do.
+        - *Said with the refusal.* A refused entry is said as the host's with what the records
+          hold of its count, this refusal kept (`EntryRefused::evidence`, `limits::Evidence`):
+          "vCPU N: VM entry failed (hardware reason 0x7): the host's hypervisor (KVM under
+          Amazon EC2) refused to enter it; on this host model (CPU), machines of C vCPUs have
+          run R times and been refused F times, the fewest vCPUs it has only refused M (kept
+          in FILE)". `run --kernel` (`supervise`) and a run's or warm VM's workload path both
+          say it.
         - *Kept once, as the outcome comes.* Ran: as the guest's init announces its contract
           (`control::ABI`, `Control::on_announced`), which shards-init does once its CPUs are
           online and before anything it runs. Refused: on the vCPU the host refused to enter,
@@ -37780,17 +37797,16 @@ post-mortem read of the printk ring through VMCOREINFO, not a debug port.
         - *Let go of as kept.* The VM forgets its grant (`platform::forget_input`) before the
           write, which a thread of its own makes on a descriptor of its own. Nothing its guest
           runs past its init, a workload that took the process over included, can then write
-          what later machines are refused by (review 8.2's reasoning for the snapshot a VM
-          gives up). A restore reads, then lets go: its template's boot kept its count.
+          in them (review 8.2's reasoning for the snapshot a VM gives up).
         - *Written in place* under the file's own lock (flock; LockFileEx on Windows), padded
           with empty lines where shorter. A VM process may not rename another file over it,
           and App Sandbox may not let it cut the file short.
-        - *`admit` refined:* a count that has run is tried, even past one only refused ("A
-          count that has both run and been refused is attempted").
+        - *`admit` refined*, for the tests' sizing: a count that has run is asked, even past
+          one only refused ("A count that has both run and been refused is attempted").
         - *Tests* (written, not run; ROOT's): vmm `vm::limits` (in place, the grant used until
-          let go of, the refinement), `devices::control` (the announcement's hook runs once);
-          the E2E of every boot and restore on HVF, KVM and WHP, whose VMs now ask for their
-          records.
+          let go of, the refinement, a refusal said with its evidence), `devices::control` (the
+          announcement's hook runs once); the E2E of every boot on HVF, KVM and WHP, whose VMs
+          now ask for their records.
   - WHP's boot said as it comes. On Windows the test starts its VM process with
     `common::Vm::spawn_timed`: each line the process prints is also said on stderr as it
     comes, `D261 WHP boot <time from the spawn>: <line>`. CI's log keeps them whatever ends

@@ -4,10 +4,13 @@
 //! the entry of a machine of 64 vCPUs or more on 4 CPUs (VM-instruction error 7), where Azure's
 //! Hyper-V entered 255 (D261's experiment, run 44030858462). No count is chosen here: each
 //! count's outcomes are kept per host model, the CPU's model and the hypervisor it runs under,
-//! as its machines come to them ([`Limits::record`]). A count that has only been refused on its
-//! host model, and every larger one never run there, is refused at once, said as the host's
-//! with that evidence ([`Limits::admit`]); a count that has run is tried, its refusal, if it
-//! comes, the host's ([`EntryRefused`]). The hypervisor's own most stays the ceiling.
+//! as its machines come to them ([`Limits::record`]). Every count is tried, the hypervisor's
+//! own most the ceiling: EC2's Intel hosts refused even vCPU 0 of small machines at times, so
+//! no refusal, early or not, turns into a lasting refusal (ROOT's decision of 2026-11-17). A
+//! refusal is the host's ([`EntryRefused`]), said with what the records hold of its count and
+//! the file that keeps them ([`Evidence`]). The tests size themselves by them: a count only
+//! refused, and every larger one never run, is not asked of the host again
+//! ([`Limits::admit`]), and its known-good count is ([`Limits::known_good`]).
 //!
 //! A host model's records are one file, read and written through
 //! [`open_input`](crate::platform::open_input): in a VM process the one its spawner granted it
@@ -290,9 +293,9 @@ impl Limits {
         parse(&String::from_utf8_lossy(&read().unwrap_or_default()))
     }
 
-    /// Whether a machine of `vcpus` is tried: refused at once where it has never run on this
-    /// host model and a count no larger has only been refused there ([`OnlyRefused`]). A count
-    /// that has run is tried, whatever else it and others came to.
+    /// Whether the tests ask a machine of `vcpus` of this host model: not where it has never run
+    /// there and a count no larger has only been refused there ([`OnlyRefused`]). A count that
+    /// has run is asked, whatever else it and others came to. The product asks every count.
     pub fn admit(&self, vcpus: u32) -> Result<(), OnlyRefused> {
         let all = self.outcomes();
         if all.get(&vcpus).is_some_and(|o| o.ran > 0) {
@@ -323,7 +326,21 @@ impl Limits {
 
     /// Keeps a machine of `vcpus` vCPUs' outcome ([`keep`]).
     pub fn record(&self, vcpus: u32, outcome: Outcome) -> io::Result<()> {
-        keep(self.opened()?, vcpus, outcome)
+        keep(self.opened()?, vcpus, outcome).map(|_| ())
+    }
+
+    /// What `all`, these records as kept, say of a machine of `vcpus` ([`Evidence`]).
+    pub fn evidence(&self, vcpus: u32, all: &BTreeMap<u32, Outcomes>) -> Evidence {
+        Evidence {
+            vcpus,
+            outcomes: all.get(&vcpus).copied().unwrap_or_default(),
+            fewest_only_refused: all
+                .iter()
+                .find(|(_, o)| o.refused > 0 && o.ran == 0)
+                .map(|(count, _)| *count),
+            cpu: self.host.cpu.clone(),
+            file: self.file.clone(),
+        }
     }
 
     /// The records' file, to be read and written: the one granted where it was (a Linux VM
@@ -336,25 +353,13 @@ impl Limits {
         }
     }
 
-    /// Holds the records' file open from now on, as granted (`platform::grant_input`): to be
-    /// read and written where `write`, made where it is not there; else to be read where it is.
-    /// A VM process on Linux, before Landlock confines it (D30), which then gives it no rule
-    /// for the file: it reaches its records through this alone, and not once it lets go of
-    /// them ([`let_go`](Self::let_go)).
+    /// Holds the records' file open from now on, to be read and written, made where it is not
+    /// there, as granted (`platform::grant_input`): a VM process on Linux, before Landlock
+    /// confines it (D30), which then gives it no rule for the file. It reaches its records
+    /// through this alone, and not once it lets go of them ([`let_go`](Self::let_go)).
     #[cfg(target_os = "linux")]
-    pub fn hold(&self, write: bool) -> io::Result<()> {
-        let file = if write {
-            crate::platform::open_made(&self.file)?
-        } else {
-            match std::fs::File::open(&self.file) {
-                Ok(file) => file,
-                Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                    crate::platform::grant_input(self.file.clone(), None);
-                    return Ok(());
-                }
-                Err(e) => return Err(e),
-            }
-        };
+    pub fn hold(&self) -> io::Result<()> {
+        let file = crate::platform::open_made(&self.file)?;
         crate::platform::grant_input(self.file.clone(), Some(file.into()));
         Ok(())
     }
@@ -370,16 +375,19 @@ impl Limits {
 /// under its lock, what other processes kept since read in and its count's line made or
 /// changed, written over the file from its start, padded with empty lines where it is shorter
 /// than it was. Its holder may neither rename another file over it nor be sure to cut it short
-/// (App Sandbox), and a line it shortens leaves no line of its tail behind to be read.
-pub fn keep(mut file: std::fs::File, vcpus: u32, outcome: Outcome) -> io::Result<()> {
+/// (App Sandbox), and a line it shortens leaves no line of its tail behind to be read. Returns
+/// every count's outcomes as kept now.
+pub fn keep(mut file: std::fs::File, vcpus: u32, outcome: Outcome) -> io::Result<BTreeMap<u32, Outcomes>> {
     file.lock()?;
     let kept = rewrite(&mut file, vcpus, outcome);
     let unlocked = file.unlock();
-    kept.and(unlocked)
+    let all = kept?;
+    unlocked?;
+    Ok(all)
 }
 
 /// [`keep`]'s write, under its lock.
-fn rewrite(file: &mut std::fs::File, vcpus: u32, outcome: Outcome) -> io::Result<()> {
+fn rewrite(file: &mut std::fs::File, vcpus: u32, outcome: Outcome) -> io::Result<BTreeMap<u32, Outcomes>> {
     let mut was = Vec::new();
     file.read_to_end(&mut was)?;
     let mut all = parse(&String::from_utf8_lossy(&was));
@@ -394,7 +402,8 @@ fn rewrite(file: &mut std::fs::File, vcpus: u32, outcome: Outcome) -> io::Result
     let mut now = text(&all);
     now.extend(std::iter::repeat_n('\n', was.len().saturating_sub(now.len())));
     file.seek(io::SeekFrom::Start(0))?;
-    file.write_all(now.as_bytes())
+    file.write_all(now.as_bytes())?;
+    Ok(all)
 }
 
 /// Records' text: a line a count, in order.
@@ -448,12 +457,42 @@ fn parse(text: &str) -> BTreeMap<u32, Outcomes> {
 }
 
 /// A machine whose vCPU its host's hypervisor refused to enter (KVM_EXIT_FAIL_ENTRY's hardware
-/// reason, VMX's VM-instruction error): the host's, never the guest's (D261).
+/// reason, VMX's VM-instruction error): the host's, never the guest's (D261). With what its host
+/// model's records hold of its count, this refusal kept, where its process keeps them (a VM
+/// process's, its user's cache's).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EntryRefused {
     pub vcpu: usize,
     pub reason: u64,
     pub host: HostModel,
+    pub evidence: Option<Evidence>,
+}
+
+/// What a host model's records hold of a count as its host refuses a machine of it (D261): its
+/// outcomes there, the refusal kept; the fewest vCPUs that host model has only refused; and the
+/// file that keeps them, which its user may remove where the host has changed. Said with the
+/// refusal; nothing is refused for it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Evidence {
+    pub vcpus: u32,
+    pub outcomes: Outcomes,
+    pub fewest_only_refused: Option<u32>,
+    pub cpu: String,
+    pub file: PathBuf,
+}
+
+impl fmt::Display for Evidence {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "on this host model ({}), machines of {} vCPUs have run {} times and been refused {} times",
+            self.cpu, self.vcpus, self.outcomes.ran, self.outcomes.refused
+        )?;
+        if let Some(fewest) = self.fewest_only_refused {
+            write!(f, ", the fewest vCPUs it has only refused {fewest}")?;
+        }
+        write!(f, " (kept in {})", self.file.display())
+    }
 }
 
 impl fmt::Display for EntryRefused {
@@ -464,13 +503,17 @@ impl fmt::Display for EntryRefused {
             self.vcpu,
             self.reason,
             hypervisor_under(&self.host)
-        )
+        )?;
+        match &self.evidence {
+            Some(evidence) => write!(f, "; {evidence}"),
+            None => Ok(()),
+        }
     }
 }
 
-/// A machine refused at once ([`Limits::admit`]): its count, and the least count its host
-/// model has only refused, how often, the vCPU the last refusal named, and the file that keeps
-/// them, which its user may remove where the host has changed.
+/// A machine the tests do not ask of their host ([`Limits::admit`]): its count, and the least
+/// count its host model has only refused, how often, the vCPU the last refusal named, and the
+/// file that keeps them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OnlyRefused {
     pub vcpus: u32,
@@ -682,9 +725,50 @@ mod tests {
             vcpu: 17,
             reason: 7,
             host: ec2(),
+            evidence: None,
         }
         .to_string();
         assert!(said.starts_with("vCPU 17: VM entry failed (hardware reason 0x7): the host's hypervisor ("));
         assert!(said.ends_with(" under Amazon EC2) refused to enter it"), "{said}");
+    }
+
+    /// A refusal kept says what the records now hold of its count, the fewest vCPUs only
+    /// refused, and the file that keeps them (ROOT's decision of 2026-11-17: the records shape
+    /// the refusal's message alone, the product trying every count).
+    #[test]
+    fn a_refusal_kept_is_said_with_its_counts_evidence() {
+        let dir = shards_testdir::TempDir::new("limits-said").unwrap();
+        let limits = Limits::at(dir.path().to_path_buf(), ec2());
+        limits.record(4, Outcome::Ran).unwrap();
+        limits.record(64, Outcome::Refused { vcpu: 13 }).unwrap();
+        let all = keep(limits.opened().unwrap(), 4, Outcome::Refused { vcpu: 0 }).unwrap();
+        let evidence = limits.evidence(4, &all);
+        assert_eq!(
+            (
+                evidence.outcomes.ran,
+                evidence.outcomes.refused,
+                evidence.fewest_only_refused
+            ),
+            (1, 1, Some(64))
+        );
+        let said = EntryRefused {
+            vcpu: 0,
+            reason: 7,
+            host: ec2(),
+            evidence: Some(evidence),
+        }
+        .to_string();
+        assert!(
+            said.ends_with(
+                &("refused to enter it; on this host model (Intel(R) Xeon(R) 6975P-C), machines of 4 \
+                   vCPUs have run 1 times and been refused 1 times, the fewest vCPUs it has only \
+                   refused 64 (kept in "
+                    .to_string()
+                    + &limits.file().display().to_string()
+                    + ")")
+            ),
+            "{said}"
+        );
+        assert!(limits.admit(4).is_ok(), "a count that ran is asked");
     }
 }

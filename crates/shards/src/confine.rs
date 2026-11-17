@@ -587,12 +587,11 @@ pub struct Paths {
     /// The vsock socket path it was given, which its spawner binds for it, and beside
     /// which it dials for it (grant).
     pub vsock: Option<std::path::PathBuf>,
-    /// Its host model's vCPU records (D261), and whether it writes them: a boot's, which keeps
-    /// its outcome there, made where they are not (`Access::Keep`), or a restore's, which reads
-    /// them where they are (`Access::ReadIfThere`). On Linux none: a VM process holds them open
-    /// before Landlock, which gives no rule for them (vmm `Limits::hold`).
+    /// Its host model's vCPU records (D261), which a boot keeps its outcome in: read and
+    /// written, made where they are not (`Access::Keep`). On Linux none: a VM process holds them
+    /// open before Landlock, which gives no rule for them (vmm `Limits::hold`).
     #[cfg(any(target_os = "macos", windows))]
-    pub records: Option<(std::path::PathBuf, bool)>,
+    pub records: Option<std::path::PathBuf>,
 }
 
 /// Applies `paths` to every thread of this process with Landlock

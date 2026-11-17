@@ -451,8 +451,8 @@ fn launch_with(
         granted.as_ref().map(|g| g.as_fd()),
         started.as_ref().map(|(_, side, mac)| (side, mac)),
     );
-    // Where its host model's vCPU records are kept (D261), which it is granted (D30).
-    words.extend(crate::helpers::vcpu_records_words());
+    // Where a boot's host model's vCPU records are kept (D261), which it is granted (D30).
+    words.extend(crate::helpers::vcpu_records_words(args.first().copied()));
     let args = absolute(args)?;
     let args: Vec<&OsStr> = args.iter().map(OsString::as_os_str).collect();
     let argv = after_command(&args, &words);
@@ -639,8 +639,8 @@ fn launch(plan: Plan<'_>, kind: Kind) -> Result<Launched, String> {
         ],
         network.as_ref().map(|(_, side, mac)| (side, mac)),
     );
-    // Where its host model's vCPU records are kept (D261), which it is granted (D30).
-    words.extend(crate::helpers::vcpu_records_words());
+    // Where a boot's host model's vCPU records are kept (D261), which it is granted (D30).
+    words.extend(crate::helpers::vcpu_records_words(args.first().copied()));
     let argv = after_command(args, &words);
     let err = std::io::stderr();
     let suspended = shards_ipc::spawn_suspended(&shards_ipc::Spawn {

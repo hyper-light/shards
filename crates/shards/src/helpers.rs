@@ -686,10 +686,14 @@ pub fn containers() -> Result<PathBuf, String> {
     Ok(dir)
 }
 
-/// What tells a VM process where its host model's vCPU records are kept (`--vcpu-records`,
-/// D261): the user's cache's `vcpu-limits`, which the VM is granted through its spawner (D30).
-/// None where no cache is named whole: its VM then keeps no records.
-pub(crate) fn vcpu_records_words() -> Vec<std::ffi::OsString> {
+/// What tells a VM process of `command` where its host model's vCPU records are kept
+/// (`--vcpu-records`, D261): the user's cache's `vcpu-limits`, which the VM is granted through
+/// its spawner (D30). A boot's (`run`) alone, which keeps its outcome there; none for a restore,
+/// which keeps none, nor where no cache is named whole: its VM then keeps no records.
+pub(crate) fn vcpu_records_words(command: Option<&std::ffi::OsStr>) -> Vec<std::ffi::OsString> {
+    if command.is_none_or(|command| command != "run") {
+        return Vec::new();
+    }
     match cache() {
         Ok(cache) if cache.is_absolute() => vec![
             "--vcpu-records".into(),

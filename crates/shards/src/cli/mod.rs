@@ -1579,8 +1579,10 @@ fn vm(args: &[OsString]) -> ExitCode {
     with.push(fd.to_string().into());
     with.push("--cwd".into());
     with.push(cwd.into());
-    // Where its host model's vCPU records are kept (D261), which its broker grants it.
-    with.extend(crate::helpers::vcpu_records_words());
+    // Where a boot's host model's vCPU records are kept (D261), which its broker grants it.
+    with.extend(crate::helpers::vcpu_records_words(
+        args.first().map(OsString::as_os_str),
+    ));
     with.extend(args.iter().skip(1).cloned());
     if let Err(e) = shares::inherit(shared)
         .and_then(|()| said_kept(said_to))
@@ -1641,12 +1643,14 @@ fn vm(args: &[OsString]) -> ExitCode {
     if let Err(why) = carried.keep_for_exec() {
         return carried_io_failure(why);
     }
-    // Where its host model's vCPU records are kept (D261), which it holds open before Landlock
-    // confines it (D30).
+    // Where a boot's host model's vCPU records are kept (D261), which it holds open before
+    // Landlock confines it (D30).
     let with = with.unwrap_or_else(|| args.to_vec());
     let mut words: Vec<OsString> = Vec::with_capacity(with.len() + 2);
     words.extend(with.first().cloned());
-    words.extend(crate::helpers::vcpu_records_words());
+    words.extend(crate::helpers::vcpu_records_words(
+        with.first().map(OsString::as_os_str),
+    ));
     words.extend(with.iter().skip(1).cloned());
     instead(&words)
 }
@@ -1957,8 +1961,8 @@ fn vm(args: &[OsString]) -> ExitCode {
         Ok(cwd) => cwd,
         Err(e) => return failed(&format!("the working directory: {e}")),
     };
-    // Where its host model's vCPU records are kept (D261), which this process grants it.
-    let records = crate::helpers::vcpu_records_words();
+    // Where a boot's host model's vCPU records are kept (D261), which this process grants it.
+    let records = crate::helpers::vcpu_records_words(args.first().map(OsString::as_os_str));
     let mut with: Vec<&std::ffi::OsStr> = Vec::with_capacity(args.len() + 6);
     with.extend(args.first().map(OsString::as_os_str));
     with.push("--cwd".as_ref());

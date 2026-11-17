@@ -1107,7 +1107,7 @@ struct Shared {
     /// Its group's governor's thread (D183), made as its run's group comes.
     group_governor: Mutex<Option<JoinHandle<()>>>,
     /// Its host model's vCPU records (D261) until its outcome is kept there
-    /// ([`keep_outcome`](Self::keep_outcome)).
+    /// ([`take_records`](Self::take_records)).
     records: Mutex<Option<Limits>>,
 }
 
@@ -1201,42 +1201,52 @@ impl Shared {
         }
     }
 
-    /// Keeps this machine's outcome with its host model's vCPU records (D261), once, and lets
-    /// go of them: that it ran, as its guest's init announces itself with its CPUs online
-    /// (`refused` none), written on a thread of its own as the vCPU that said so goes on; or
-    /// that its host refused to enter vCPU `refused`, on that vCPU, as its machine ends. They
-    /// are let go of before anything is written, so that nothing its guest runs past its init,
-    /// a workload that took its process over among them, may write what later machines are
-    /// refused by: the write has its own descriptor.
-    fn keep_outcome(&self, refused: Option<usize>) {
-        let Some(records) = lock(&self.records).take() else {
-            return;
-        };
+    /// Takes its host model's vCPU records to keep its outcome in (D261), once: them, their
+    /// file opened, and its count; none where they were taken already or cannot be. They are
+    /// let go of before anything is written, so that nothing its guest runs past its init, a
+    /// workload that took its process over among them, may write in them: the write has its
+    /// own descriptor.
+    fn take_records(&self) -> Option<(Limits, std::fs::File, u32)> {
+        let records = lock(&self.records).take()?;
         let opened = records.opened().map_err(|e| e.to_string());
         records.let_go();
-        let at = records.file().to_path_buf();
         let counted = u32::try_from(self.kickers.len()).map_err(|e| e.to_string());
-        let (file, vcpus) = match opened.and_then(|file| counted.map(|vcpus| (file, vcpus))) {
-            Ok(kept) => kept,
+        match opened.and_then(|file| counted.map(|vcpus| (file, vcpus))) {
+            Ok((file, vcpus)) => Some((records, file, vcpus)),
             Err(e) => {
-                debug!("its vCPU records, {}: {e}", at.display());
-                return;
+                debug!("its vCPU records, {}: {e}", records.file().display());
+                None
             }
+        }
+    }
+
+    /// Keeps that this machine ran (D261), as its guest's init announces itself with its CPUs
+    /// online: on a thread of its own, the vCPU that said so going on.
+    fn keep_ran(&self) {
+        let Some((records, file, vcpus)) = self.take_records() else {
+            return;
         };
-        let keep = move |outcome: Outcome| {
-            if let Err(e) = super::limits::keep(file, vcpus, outcome) {
-                debug!("keeping its outcome in {}: {e}", at.display());
-            }
-        };
-        match refused {
-            Some(vcpu) => keep(Outcome::Refused { vcpu }),
-            None => {
-                let spawned = std::thread::Builder::new()
-                    .name("vcpu-records".into())
-                    .spawn(move || keep(Outcome::Ran));
-                if let Err(e) = spawned {
-                    debug!("keeping that it ran: {e}");
+        let spawned = std::thread::Builder::new()
+            .name("vcpu-records".into())
+            .spawn(move || {
+                if let Err(e) = super::limits::keep(file, vcpus, Outcome::Ran) {
+                    debug!("keeping that it ran in {}: {e}", records.file().display());
                 }
+            });
+        if let Err(e) = spawned {
+            debug!("keeping that it ran: {e}");
+        }
+    }
+
+    /// Keeps that its host refused to enter vCPU `vcpu` (D261), on that vCPU as its machine
+    /// ends: what its host model's records hold of its count then, for its refusal to say.
+    fn keep_refused(&self, vcpu: usize) -> Option<super::limits::Evidence> {
+        let (records, file, vcpus) = self.take_records()?;
+        match super::limits::keep(file, vcpus, Outcome::Refused { vcpu }) {
+            Ok(all) => Some(records.evidence(vcpus, &all)),
+            Err(e) => {
+                debug!("keeping its refusal in {}: {e}", records.file().display());
+                None
             }
         }
     }
@@ -1476,7 +1486,6 @@ fn check_vcpus(vcpus: u32) -> Result<(), String> {
 pub fn start(cfg: &Config) -> Result<(Handle, Running), super::StartError> {
     check_host()?;
     check_vcpus(cfg.vcpus)?;
-    admit(cfg.vcpu_records.as_ref(), cfg.vcpus)?;
     launch(
         machine::build(cfg)?,
         cfg.snapshot.clone(),
@@ -1485,15 +1494,6 @@ pub fn start(cfg: &Config) -> Result<(Handle, Running), super::StartError> {
         cfg.vcpu_records.clone(),
     )
     .map_err(super::StartError::from)
-}
-
-/// Refuses at once a machine of `vcpus` its host model has only refused to enter, as `records`
-/// keep it (D261): the host's, typed.
-fn admit(records: Option<&Limits>, vcpus: u32) -> Result<(), super::StartError> {
-    match records {
-        Some(records) => records.admit(vcpus).map_err(super::StartError::OnlyRefused),
-        None => Ok(()),
-    }
 }
 
 /// The same boot, with one borrowed initial-report writer at GPU construction.
@@ -1507,7 +1507,6 @@ pub fn start_gpu_report(
     }
     check_host()?;
     check_vcpus(cfg.vcpus)?;
-    admit(cfg.vcpu_records.as_ref(), cfg.vcpus)?;
     launch(
         machine::build_reported(cfg, Some(report))?,
         cfg.snapshot.clone(),
@@ -1587,13 +1586,6 @@ pub fn restore_reported(
         name,
     } = pinned;
     check_vcpus(snap.config.vcpus)?;
-    // Its count refused where its host model has only refused it (D261), and its records let
-    // go of: a restore keeps no outcome, its template's boot having kept its count's.
-    if let Some(records) = &cfg.vcpu_records {
-        let admitted = records.admit(snap.config.vcpus);
-        records.let_go();
-        admitted.map_err(|refused| refused.to_string())?;
-    }
     let mut working_set = if cfg.prefetch {
         snapshot::read_working_set(&generation, machine::PAGE, guest_pages(&snap)).unwrap_or_else(|e| {
             warn!("{e}; restoring without prefetching it");
@@ -1784,7 +1776,7 @@ fn launch(
     if let Some(records) = records {
         *lock(&shared.records) = Some(records);
         let sh = shared.clone();
-        control.on_announced(Box::new(move || sh.keep_outcome(None)));
+        control.on_announced(Box::new(move || sh.keep_ran()));
     }
 
     let _ = shared.parts.set(Parts {
@@ -1987,11 +1979,12 @@ fn vcpu_thread(
             Ok(hv::Exit::Shutdown) => return sh.stop(ExitReason::PowerOff),
             Ok(hv::Exit::Reset) => return sh.stop(ExitReason::Reset),
             Ok(hv::Exit::Refused(reason)) => {
-                sh.keep_outcome(Some(index));
+                let evidence = sh.keep_refused(index);
                 return sh.stop(ExitReason::Refused(super::limits::EntryRefused {
                     vcpu: index,
                     reason,
                     host: super::limits::HostModel::here(),
+                    evidence,
                 }));
             }
             Err(e) => return sh.stop(ExitReason::Error(format!("vCPU {index}: {e}"))),

@@ -216,9 +216,6 @@ struct Common {
     /// `--host-managed`: its native launcher contains it (D233), and its host's clients may
     /// hold its vCPUs to a rate on its vsock socket (D255).
     host_managed: bool,
-    /// `--vcpu-records DIR`: where its host model's vCPU records are kept (D261), its user's
-    /// cache's, which its spawner names and grants it (D30).
-    vcpu_records: Option<PathBuf>,
 }
 
 impl Common {
@@ -235,7 +232,6 @@ impl Common {
             workload: Options::default(),
             workload_options: false,
             host_managed: false,
-            vcpu_records: None,
         }
     }
 
@@ -304,16 +300,6 @@ impl Common {
                 CWD.set(dir).map_err(|_| "--cwd given twice".to_string())?;
             }
             "--grants" => grants(&text(value("--grants")?)?)?,
-            "--vcpu-records" => {
-                let dir = PathBuf::from(value("--vcpu-records")?);
-                if !dir.is_absolute() {
-                    return Err(format!(
-                        "--vcpu-records: {} is not an absolute path",
-                        dir.display()
-                    ));
-                }
-                self.vcpu_records = Some(dir);
-            }
             "-e" | "--env" => w.env.push(text(value("--env")?)?),
             "-w" | "--workdir" => w.workdir = text(value("--workdir")?)?,
             "-u" | "--user" => w.user = text(value("--user")?)?,
@@ -540,6 +526,18 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
             }
             "--gpu-report-scope" => report_scope(&text(value("--gpu-report-scope")?)?, &mut gpu_scope)?,
             "--kernel" => kernel = Some(PathBuf::from(value("--kernel")?)),
+            // Where its host model's vCPU records are kept (D261), its user's cache's, which its
+            // spawner names and grants it (D30).
+            "--vcpu-records" => {
+                let dir = PathBuf::from(value("--vcpu-records")?);
+                if !dir.is_absolute() {
+                    return Err(format!(
+                        "--vcpu-records: {} is not an absolute path",
+                        dir.display()
+                    ));
+                }
+                cfg.vcpu_records = Some(records_at(dir));
+            }
             "--initrd" => cfg.initrd = Some(PathBuf::from(value("--initrd")?)),
             "--init" => cfg.init = Some(PathBuf::from(value("--init")?)),
             "--cmdline" => cfg.cmdline = text(value("--cmdline")?)?,
@@ -706,7 +704,6 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
     cfg.console = common.console;
     cfg.vsock = common.vsock.map(VsockHost::at);
     cfg.net = common.net.take();
-    cfg.vcpu_records = common.vcpu_records.take().map(records_at);
     let command = !common.workload.argv.is_empty();
     if gpu_probe
         && (warm.is_some()
@@ -929,7 +926,6 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String
         // Its components' images (D270 slice 5): none yet, so a snapshot holding one is
         // refused, saying which, until its spawner gives them.
         components: Vec::new(),
-        vcpu_records: common.vcpu_records.take().map(records_at),
     };
     Ok(Restore {
         cfg,
@@ -2555,8 +2551,12 @@ fn serve_workload(
         if !warm {
             report_timing(&handle, Some(timing));
         }
-        if let ExitReason::Error(e) = &reason {
-            report(e);
+        match &reason {
+            ExitReason::Error(e) => report(e),
+            // The host's hypervisor refused to enter a vCPU (D261): said as the host's, with
+            // what its host model's records hold of its count.
+            ExitReason::Refused(refused) => report(refused),
+            _ => {}
         }
         // The guest waits for its status to be read before it powers off, so the relay
         // has finished unless the guest never ran the command.
@@ -2753,7 +2753,7 @@ fn start_reported(
     }
     // Its host model's vCPU records (D261), which it keeps its outcome in.
     if let Some(records) = &cfg.vcpu_records {
-        records_granted(&mut paths, records, true)?;
+        records_granted(&mut paths, records)?;
     }
     confine(&paths)?;
     match report_to {
@@ -2853,10 +2853,6 @@ fn restore_reported(
     #[cfg(target_os = "linux")]
     if shards_vmm::devices::virtio::gpu::RENDERS {
         crate::confine::gpu_paths(&mut paths);
-    }
-    // Its host model's vCPU records (D261), which it reads its count's in.
-    if let Some(records) = &cfg.vcpu_records {
-        records_granted(&mut paths, records, false)?;
     }
     let add = |paths: &mut crate::confine::Paths, files: &[(PathBuf, bool)]| {
         for (path, read_only) in files {
@@ -3436,10 +3432,7 @@ fn granted(paths: &crate::confine::Paths) -> Result<(), String> {
         .map(|p| (Access::Read, p.clone()))
         .chain(paths.write.iter().map(|p| (Access::Write, p.clone())))
         .chain(paths.write_under.iter().map(|p| (Access::MakeDir, p.clone())))
-        .chain(paths.records.iter().map(|(p, write)| {
-            let access = if *write { Access::Keep } else { Access::ReadIfThere };
-            (access, p.clone())
-        }))
+        .chain(paths.records.iter().map(|p| (Access::Keep, p.clone())))
         .chain(paths.vsock.iter().map(|p| (Access::Listen, p.clone())))
         .collect();
     // The last it asks for: on macOS its link closes after unless it dials (`confine`); on
@@ -3452,26 +3445,25 @@ fn granted(paths: &crate::confine::Paths) -> Result<(), String> {
     last(&wanted)
 }
 
-/// Has `records`, its host model's vCPU records (D261), reached through what this process is
-/// granted (D30), to be written where `write` (a boot's, which keeps its outcome there), else
-/// read (a restore's): on macOS and Windows asked of its spawner with its other files, made
-/// where they are not when written (`Access::Keep`); on Linux held open now, before Landlock,
-/// which gives no rule for them, so that letting go of them leaves this process none.
+/// Has `records`, its host model's vCPU records (D261), which a boot keeps its outcome in,
+/// reached through what this process is granted (D30): on macOS and Windows asked of its
+/// spawner with its other files, made where they are not (`Access::Keep`); on Linux held open
+/// now, before Landlock, which gives no rule for them, so that letting go of them leaves this
+/// process none.
 fn records_granted(
     paths: &mut crate::confine::Paths,
     records: &shards_vmm::vm::limits::Limits,
-    write: bool,
 ) -> Result<(), String> {
     #[cfg(any(target_os = "macos", windows))]
     {
-        paths.records = Some((records.file().to_path_buf(), write));
+        paths.records = Some(records.file().to_path_buf());
         Ok(())
     }
     #[cfg(target_os = "linux")]
     {
         let _ = paths;
         records
-            .hold(write)
+            .hold()
             .map_err(|e| format!("{}: its vCPU records: {e}", records.file().display()))
     }
 }
