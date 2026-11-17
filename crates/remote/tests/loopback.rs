@@ -2266,7 +2266,22 @@ impl Relay {
             // client come back on.
             let mut upstream: HashMap<SocketAddr, std::net::UdpSocket> = HashMap::new();
             let mut datagram = vec![0u8; 65536];
-            while let Ok((n, from)) = front.recv_from(&mut datagram) {
+            loop {
+                let (n, from) = match front.recv_from(&mut datagram) {
+                    Ok(got) => got,
+                    // Winsock tells an unconnected socket, at its next receive, of the ICMP port
+                    // unreachable one of its sends drew (WSAECONNRESET, "a previous send operation
+                    // resulted in an ICMP Port Unreachable message": recvfrom's documentation):
+                    // here an answer of the daemon's let through to a client whose socket has
+                    // closed since, as a test's first command's has before its second. Linux and
+                    // macOS tell an unconnected UDP socket of none. It says nothing of the next
+                    // datagram, so the relay goes on, as the driver does at one peer's refusal of
+                    // many (`net`). Both tests through it waited until the step's limit on CI's
+                    // aarch64 Windows runner (run 44007524337), this loop ending at the first
+                    // error.
+                    Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => continue,
+                    Err(_) => return,
+                };
                 let up = upstream.entry(from).or_insert_with(|| {
                     let up = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
                     up.connect(daemon).unwrap();

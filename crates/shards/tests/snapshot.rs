@@ -524,9 +524,10 @@ mod storm {
     /// slowest rate measured, 196,608 bytes in 120 s (1,638.4 B/s: 64 vCPUs on an arm64
     /// Windows host nested under QEMU's TCG on 4 CPUs, the parity plan's step 10), a busy
     /// machine's restores carry 13 MiB, 1 MiB before its snapshot (the guest's own wait) and
-    /// a whole round in each of three restores (`all_whole`), in 8,320 s (2 h 19 min); the
-    /// one that goes on 12 MiB, 1 MiB before its snapshot, 8 after (the guest's) and the
-    /// rest of the round they end in, in 7,680 s (2 h 8 min).
+    /// a whole round in each of three restores (`all_whole`), in 8,320 s (2 h 19 min), and at
+    /// the most, restored once ([`restores`]), 5 MiB in 3,200 s (53 min); the one that goes on
+    /// 12 MiB, 1 MiB before its snapshot, 8 after (the guest's) and the rest of the round they
+    /// end in, in 7,680 s (2 h 8 min).
     fn stream(
         sock: PathBuf,
         size: String,
@@ -785,12 +786,29 @@ mod storm {
     /// kernel's account of a stall only once its main thread and the stream through its echo
     /// have both stood still past their own pace (the test guest's `stall::Watch`).
     fn storm_cpus(largest: Largest) -> Vec<u32> {
-        let most = shards_vmm::vm::max_vcpus().unwrap().min(common::kernel_nr_cpus());
+        let most = most();
         if let Ok(only) = std::env::var("SHARDS_STORM_CPUS") {
             return vec![only.parse().unwrap()];
         }
         let host = std::thread::available_parallelism().unwrap().get();
         sizes(u32::try_from(host).unwrap(), most, largest)
+    }
+
+    /// The most vCPUs a machine may have here: those its hypervisor and the pinned kernel both
+    /// take (D13).
+    fn most() -> u32 {
+        shards_vmm::vm::max_vcpus().unwrap().min(common::kernel_nr_cpus())
+    }
+
+    /// How many restores the restores' storm of `cpus` vCPUs takes, `most` the most a machine
+    /// may have here (D14): three below the most, each a trial of a loss that comes in one
+    /// restore of several (180 restores in 20 runs, 00519521d1), and one at it. What the most
+    /// alone shows, each vCPU's state read back at the machine's bounds, every restore shows or
+    /// none does (D13's "sequence of 255 (limit 254)" refused every one), and one restore of 255
+    /// vCPUs on CI's 4-CPU x86_64 runner took 1,782 s (run 44007524337), past the step's 58
+    /// minutes for three.
+    fn restores(cpus: u32, most: u32) -> u32 {
+        if cpus >= most { 1 } else { 3 }
     }
 
     /// A storm's sizes are the regimes its claim needs, from its host's CPUs and the most vCPUs
@@ -807,6 +825,18 @@ mod storm {
         assert_eq!(sizes(2, 255, Largest::Overcommitted), [2, 3]);
         assert_eq!(sizes(192, 123, Largest::Most), [2, 123]);
         assert_eq!(sizes(192, 123, Largest::Overcommitted), [2, 123]);
+        // Restored three times below the most, once at it: CI's x86_64 runners, a Mac, a
+        // `SHARDS_STORM_CPUS` past the most.
+        let restored = |host: u32, most: u32| -> Vec<u32> {
+            sizes(host, most, Largest::Most)
+                .into_iter()
+                .map(|cpus| restores(cpus, most))
+                .collect()
+        };
+        assert_eq!(restored(4, 255), [3, 3, 1]);
+        assert_eq!(restored(18, 64), [3, 3, 1]);
+        assert_eq!(restored(192, 123), [3, 1]);
+        assert_eq!(restores(300, 255), 1);
     }
 
     /// A snapshot of a machine busy in every way at once, its CPUs waking one another, its
@@ -814,12 +844,13 @@ mod storm {
     /// whole (audit A02): each restore finds every activity going on, no interrupt lost, every
     /// record on the writable disk written exactly once, and the host's stream whole. Of every
     /// size a machine may have, up to the most ([`Largest::Most`]): a restore alone reads back
-    /// what its snapshot keeps of each vCPU.
+    /// what its snapshot keeps of each vCPU. Each size restores [`restores`] times.
     #[test]
     fn restores_of_a_busy_machine_lose_no_interrupt_and_repeat_no_write() {
         if cannot_run_vms() || cannot_snapshot() {
             return;
         }
+        let most = most();
         for cpus in storm_cpus(Largest::Most) {
             let s = Scratch::new(&format!("storm{cpus}"));
             let rw = s.0.join("rw.img");
@@ -848,7 +879,7 @@ mod storm {
 
             // The writable disk as the snapshot left it, in the same file, for each restore.
             let taken = std::fs::read(&rw).unwrap();
-            for i in 0..3 {
+            for i in 0..restores(cpus, most) {
                 std::fs::write(&rw, &taken).unwrap();
                 let sock = s.0.join(format!("r{i}.sock"));
                 let stop = Arc::new(AtomicBool::new(false));
