@@ -20568,21 +20568,31 @@ was built on [PM M200-M203]:
   its share process, which ends as its streams close with the VM, before the job closes.
   The daemon's runs are untouched: their processes are the daemon's, in its groups' jobs
   (D195, D183).
-- **No profile left behind.** Each lives with a record its spawner holds open
-  (`%LOCALAPPDATA%\shards\containers`); the next spawner deletes the profile of each record
-  no process holds.
+- **No profile left behind.** Each lives with a record its spawner holds open, kept per user
+  beside the profiles: `shards\containers` in the user's own LocalAppData
+  (`shards_ipc::app_container_records`), whatever the spawner's `LOCALAPPDATA` or
+  `SHARDS_CACHE` says. The next spawner, from any home, deletes the profile of each record no
+  process holds. Windows keeps every profile's folder in the user's own LocalAppData and its
+  registry entries in the user's hive (PM M615), so records kept with a home (`<cache>\containers`
+  until 2026-11-17, its `SHARDS_CACHE`'s or its `LOCALAPPDATA`'s) went with a removed home, and a
+  spawner killed under it left its profile for no sweep to find (r769's review; a stand-in home is
+  kiln's runners' and the tests'). Those records were not carried over: there were no users.
   - **A managed VM's, at once (2026-11-14, Hex's ask).** A managed VM whose native owner
     ends it by killing its job (D215's `ManagedProcess`) leaves its `shards`' profiles, their
     registry entries, their `%LOCALAPPDATA%\Packages` folders and their records, until
     some VM's spawner next sweeps. So the owner calls
-    `shards_api::release_app_containers(&paths, &identity, end)` once it has ended the
-    scope: `paths` its `RuntimePaths`, whose cache is the VM's `SHARDS_CACHE`, so the
-    records are `<cache>\containers`; `identity` the VM's recorded `Identity`, whose pid
-    names its profiles (`shards.<role>.<pid>.<n>`); `end` its `ManagedEnd`. It deletes each
-    profile recorded there under that pid, then its record (`shards_ipc::release`, the
-    sweep's own open-and-delete for one maker), and answers how many: none where a sweep
-    took them first or none was made. Profiles of another cache, or of no record, are never
-    touched.
+    `shards_api::release_app_containers(&identity, end)` once it has ended the scope:
+    `identity` the VM's recorded `Identity`, whose pid names its profiles
+    (`shards.<role>.<pid>.<n>`); `end` its `ManagedEnd`. It deletes each profile recorded
+    under that pid in the user's records (`shards_api::app_container_records`, above), then
+    its record (`shards_ipc::release`, the sweep's own open-and-delete for one maker), and
+    answers how many: none where a sweep took them first or none was made. Profiles of
+    another maker, or of no record, are never touched. Amended 2026-11-17: the call took the
+    VM's `RuntimePaths` too, whose cache held its records, and a controller taken back after
+    its node's end, which has none, left its profiles to a sweep; it now releases them as any
+    owner does. Hex's caller (`crates/hex-runtime/src/windows/managed.rs`) and its guest_cost
+    smoke's look for records left (`crates/hex-cli/examples/guest_cost/managed.rs`) change
+    with it on Hex's p/v080-vendor, building once that vendors Shards at this amendment.
   - Refusals, nothing deleted (R04): `Refusal::Release(ReleaseRefusal::ScopeLive)` for an
     end short of `TerminalScope::Released`, as a process of the VM's may still run in a
     profile; `ReleaseRefusal::Held` where a record is held open, which only a live process
@@ -20600,7 +20610,13 @@ was built on [PM M200-M203]:
       makes and records its profile as a VM's `shards` does, and is killed. The call is
       refused while the child lives (Held) and for an end of `Process` (ScopeLive). Then,
       Released, the profile's Packages folder and its record are gone, and a second call
-      answers 0.
+      answers 0. Since 2026-11-17 its records are the user's, its own found among them by
+      its child's pid (unrun since).
+    - `confined.rs` `a_killed_spawners_profile_under_a_removed_home_is_swept_from_another`
+      (2026-11-17, unrun in its lane): a VM booted under a stand-in home, its spawner killed,
+      the home removed, then a run from another home; its profile's folder must be gone and
+      its name free in the registry (CreateAppContainerProfile makes it again). Red where
+      records were kept per home, the folder left; green with them per user.
     - `shards_ipc` `windows::tests::release_deletes_one_ended_makers_profiles_and_records`:
       only the named maker's profiles go, each name then makes a new profile where it said
       ERROR_ALREADY_EXISTS; a record whose profile had gone is released; a held record is
@@ -20696,9 +20712,8 @@ was built on [PM M200-M203]:
   - *Profiles left behind.* A profile's folder is beneath the user's own LocalAppData, wherever
     the spawner's `LOCALAPPDATA` points, and goes with the profile: deleted as its VM ends
     (`AppContainer`'s drop), under a stand-in too (M615). A spawner killed leaves its profile to
-    the next spawner's sweep of the same records (`<cache>\containers`, its `SHARDS_CACHE`'s or
-    its `LOCALAPPDATA`'s), or to Hex's release; a home removed before either leaves the profile
-    and its folder in the user's own LocalAppData, as it did before this amendment.
+    the next spawner's sweep, from any home, of the records kept per user beside the profiles,
+    or to Hex's release ("No profile left behind", above).
   - *Tests.* `shards_ipc` `a_child_is_given_its_variables_and_what_windows_needs_alone` and
     `a_confined_child_is_given_the_local_app_data_its_profile_is_beneath`; `shards_afunix`
     `a_refused_bind_or_connect_says_its_path`; `confined.rs`

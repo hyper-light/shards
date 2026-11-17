@@ -64,6 +64,8 @@ pub use client::{
 };
 pub use host::{CheckRefusal, HostCheck, Unusable, host_check};
 pub use judge::{Found, Judge, Rate, Rated, Record, Seen, Span, Stall};
+#[cfg(windows)]
+pub use native::app_container_records;
 pub use native::{
     ImageIdentity, NativeBoot, NativeImages, NativeStartup, release_app_containers, verify_native_image,
 };

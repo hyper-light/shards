@@ -757,6 +757,21 @@ impl Drop for Record {
     }
 }
 
+/// Where this user's AppContainer profiles are recorded as they live (D141): beside the
+/// profiles, in the user's own LocalAppData (`shards\containers` beneath
+/// `users_local_app_data`'s), whatever this process's `LOCALAPPDATA` or `SHARDS_CACHE` says.
+/// Windows makes a profile's folder there under any `LOCALAPPDATA` (PM M615) and its registry
+/// entries in the user's hive, so a record kept with a home went with the home: a spawner
+/// killed under a home since removed left its profile for no sweep to find. Here the next
+/// spawner, from any home, finds its record and deletes the profile ([`sweep`]).
+pub fn app_container_records() -> io::Result<std::path::PathBuf> {
+    let dir = std::path::PathBuf::from(users_local_app_data()?)
+        .join("shards")
+        .join("containers");
+    std::fs::create_dir_all(&dir).map_err(|e| io::Error::new(e.kind(), format!("{}: {e}", dir.display())))?;
+    Ok(dir)
+}
+
 /// Deletes the profiles recorded in `records` whose makers went without deleting them:
 /// each record no process holds, which opens here (its maker's open shares it with none).
 /// Two sweeping at once cannot both open one.
