@@ -642,6 +642,11 @@ fn runs_init_where_its_kernel_opened_no_console() {
     for console in ["console=hvc1", "console=ttyS0"] {
         let line = format!("{console} quiet panic=-1");
         let r = vm_run(&["--kernel", k, "--init", init, "--cmdline", line.as_str()]);
+        // A refusal D261's gate takes for its host's skips it (CI 44164945050, x86_64 musl on
+        // EC2's Intel 6975P-C: console=ttyS0's vCPU 0 refused, 0x7, beside other tests' refusals).
+        if common::host_refused(&r.stderr) {
+            return;
+        }
         assert_eq!(r.status, Some(0), "{console}: {r}");
         assert!(r.marker_us(1).is_some(), "{console}: {r}");
     }

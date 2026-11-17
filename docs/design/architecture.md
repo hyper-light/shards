@@ -38405,7 +38405,9 @@ post-mortem read of the printk ring through VMCOREINFO, not a debug port.
           the tests that failed so: boot.rs `runs_init_as_pid_1_and_powers_off`,
           `brings_up_every_vcpu`, `a_snapshot_keeps_memory_to_plug` and both `shards_api` tests,
           and daemon.rs `pools_keep_what_their_runs_need_while_they_come`, of the VM its run's
-          error names (`common::vm_host_refused`).
+          error names (`common::vm_host_refused`); and boot.rs
+          `runs_init_where_its_kernel_opened_no_console`, refused so on CI 44164945050's x86_64
+          musl job (its `console=ttyS0` boot's vCPU 0, beside the `shards_api` tests' refusals).
         - *No witness yet:* a machine past its init's announcement keeps no refusal, as its
           records are let go of then; a restore keeps none either, since it is given no records.
           Their refusals are said, but witness nothing, and a restore's refusal before its guest
