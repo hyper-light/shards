@@ -56,10 +56,22 @@ bytes now: the cut is the boot path ordered first.
 
 **The A/B** (ROOT's). `run.sh OUT order ROUNDS` (`gh workflow run vm-text.yml --ref main -f
 run='order 2'`): arm A as main builds it, its comparison with fault-around at one page, its
-boot's pages of shards-vm (the bench's `pages.tsv`, `pages_to`) made an ordering file
-(`order.py`), arm B linked by it, each in a target directory of its own, then the rounds of
-both, their order alternating, n = 30 pairs a run. `run.sh OUT ab ROUNDS` does the same for
-any `B_RUSTFLAGS` (`-f run='ab 2' -f b_rustflags='-C opt-level=s'`). Each keeps each arm's
-sections (`readelf -lSdW`, `size -A`), each run's samples, stdout, stderr and envelope, and
-`maps.txt`. B's flags reach the init's musl build too, whose memory the comparison does not
-count.
+boot's pages of shards-vm (the bench's `pages.tsv`, `pages_to`) made an order by `order.py`,
+and arm B main's tree again (a git worktree) with that order kept as
+`crates/vm-process/order/<arch>.txt`, which vm-process/build.rs links by (LLD's
+`--symbol-ordering-file`): B is the change that would land. Each arm is built in a target
+directory of its own, then the rounds of both alternate, n = 30 pairs a run. `run.sh OUT ab
+ROUNDS REF` compares main with any revision REF the same way (`-f run='ab 2 BRANCH'`). Each
+keeps each arm's sections (`readelf -lSdW`, `size -A`), each run's samples, stdout, stderr
+and envelope, and `maps.txt`.
+
+**The first A/B measured nothing** (run 44076339609 at fc9f30ccc, AMD EPYC 9V74,
+2026-11-17; `ab-44076339609.txt`). Its arm B was to be linked by its order through
+`CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS`, which the nested build of the VM process
+never read: Cargo sets `CARGO_ENCODED_RUSTFLAGS` for a build script, which crates/shards/
+build.rs's nested cargo inherits, and the first of "four mutually exclusive sources of extra
+flags", "checked in order, with the first one being used", is `CARGO_ENCODED_RUSTFLAGS`
+(Cargo's configuration reference, `build.rustflags`; its environment variables reference).
+So B built as A: every section of its VM process the same size, and every boot of both
+arms 2,240,512 bytes of text resident. Its order, 2,923 symbols from A's 490 touched pages,
+was made; no arm linked by it. Arms are trees since.

@@ -3,7 +3,10 @@
 //! (docs/research/macos-confinement.md §2).
 //!
 //! On Linux its relative relocations are packed (DT_RELR, D36): its static-PIE start reads
-//! every one before `main`, and what it reads stays resident, file-backed, in every VM.
+//! every one before `main`, and what it reads stays resident, file-backed, in every VM. Where
+//! an order is kept for its architecture, the functions its boot runs are laid out first,
+//! together (D36): a read fault maps the 64 KiB of cached pages around it, so a boot whose
+//! code lies scattered keeps nearly every page of its binary.
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -32,7 +35,33 @@ fn main() {
     }
     if packs_relocations() {
         let _ = writeln!(out, "cargo::rustc-link-arg-bin=shards-vm=--pack-dyn-relocs=relr");
+        if let Some(order) = boot_order() {
+            // Named only where it is there: a path that is not makes every build run this
+            // script again.
+            let _ = writeln!(out, "cargo::rerun-if-changed={}", order.display());
+            let _ = writeln!(
+                out,
+                "cargo::rustc-link-arg-bin=shards-vm=--symbol-ordering-file={}",
+                order.display()
+            );
+            // A symbol it names that this build no longer has is passed over.
+            let _ = writeln!(
+                out,
+                "cargo::rustc-link-arg-bin=shards-vm=--no-warn-symbol-ordering"
+            );
+        }
     }
+}
+
+/// The order kept for this architecture's VM process, `order/<arch>.txt` beside this script:
+/// the functions on the pages a boot touched, by their symbols, made by
+/// docs/research/measurements/vm-text/order.py, for LLD's `--symbol-ordering-file`. None
+/// where none is kept.
+fn boot_order() -> Option<PathBuf> {
+    let manifest = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR")?);
+    let arch = std::env::var("CARGO_CFG_TARGET_ARCH").ok()?;
+    let order = manifest.join("order").join(format!("{arch}.txt"));
+    order.is_file().then_some(order)
 }
 
 /// Whether the link packs the VM process's relative relocations: musl's static PIE, whose

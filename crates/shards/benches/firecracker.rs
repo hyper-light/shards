@@ -1631,8 +1631,8 @@ mod compare {
             // Each run: whether its pages are private copies, its first page's file offset, and
             // how many pages it has.
             let mut runs: Vec<(bool, u64, u64)> = Vec::new();
-            for (i, entry) in entries.chunks_exact(8).enumerate() {
-                let entry = u64::from_ne_bytes(entry.try_into().unwrap());
+            for (i, entry) in entries.as_chunks::<8>().0.iter().enumerate() {
+                let entry = u64::from_ne_bytes(*entry);
                 if (entry & (1 << 63)) == 0 {
                     continue;
                 }
