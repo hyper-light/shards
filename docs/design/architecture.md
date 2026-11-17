@@ -3303,7 +3303,8 @@ one CLI.
     same cut takes the boot's `overhead` (+2 and +3 pages, the file's 24 less shards' smaller
     anonymous memory) under too. The restore reads better on every axis but one: in
     b18952ae6 its `rss_anon` read +0.0253906 MiB, worse, and in 8d6029e4d better; that is
-    not row 11, and its cause is unread.
+    not row 11: it is 6 pages of guest RAM written by the first beat on Intel, every restore
+    alike, no allocation of shards-vm's or KVM's (`docs/research/measurements/restore-anon`).
     - *What decides the cut* (owed, the coordinator's, R14): the comparison with
       fault-around at the host's size and at one page, where each VMM's text keeps only the
       pages its boot touches (`run.sh OUT windows`; on CI's runner `gh workflow run
@@ -3316,6 +3317,24 @@ one CLI.
       (`run.sh OUT ab ROUNDS` with `B_RUSTFLAGS`; `gh workflow run vm-text.yml --ref main -f
       run='ab 2' -f b_rustflags='-C opt-level=s'`), its arms built apart and alternated, n =
       30 pairs a run. No memory is cut before it.
+    - *What it decided* (vm-text's run 44031672087 at 2893961893, AMD EPYC 9V74,
+      2026-11-17). With fault-around at one page, shards-vm's boot touched 490 of its text's
+      579 pages (2,007,040 bytes) and 48 of its read-only segment's; Firecracker's 196 of 617
+      (802,816 bytes) and 33. shards-vm's boot runs code on 85% of its text's pages,
+      Firecracker's on 32%: its boot path lies scattered, not wide. Laid out together the
+      490 take 31 windows, 32 as the text's start falls, where its boot keeps 2,240,512
+      bytes now: at least 2 fewer. So the cut is the boot path ordered first; size
+      (`opt-level=s`) is not taken. Ordered by whole touched pages, the boot would keep at
+      most 32 windows and the read-only segment's 196,608 bytes, 2,293,760 in all, under
+      Firecracker's 2,338,816. A second round, from the ordered binary's own touched pages,
+      drops the functions those pages held that the boot did not run.
+    - *Its A/B* (owed, the coordinator's): `gh workflow run vm-text.yml --ref main -f
+      run='order 2'`, run.sh's `order`: arm A's comparison with fault-around at one page,
+      its boot's pages of shards-vm (the bench's `pages.tsv`, `pages_to`) made an ordering
+      file (`order.py`: the functions on them, in their order), arm B linked by it (LLD
+      `--symbol-ordering-file`), then 2 rounds of both, alternated. If B keeps the envelope
+      and its time, its ordering file joins the VM process's link (vm-process/build.rs), and
+      how it follows the code as the code changes is decided then.
 - A daemon's build is its binary's identity, which includes what it carries; one given
   another VM binary (`SHARDS_VM_BINARY`, for VMM work and tests) is another build.
 - **Tests:** `helpers::tests` (written whole once, found after, a cut copy replaced);

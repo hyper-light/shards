@@ -1588,6 +1588,79 @@ mod compare {
             ));
         }
         let _ = std::io::Write::write_all(&mut std::io::stderr(), out.as_bytes());
+        if let Some(dir) = std::env::var_os("SHARDS_BENCH_SAMPLES") {
+            let dir = PathBuf::from(dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            pages_to(&dir.join("pages.tsv"), pid, vmm);
+        }
+    }
+
+    /// Appends to `path` a line for each of `pid`'s mappings of a file: `vmm`, the pid, the
+    /// file, the mapping's file offset, the page size, and its pages present as
+    /// /proc/PID/pagemap says them (bit 63), in runs of pages from their file offsets, `F` a
+    /// file's page and `A` a private copy of one (bit 61 clear; fs/proc/task_mmu.c
+    /// `PM_FILE`): with the host's fault-around off, the pages of its binary a boot touched
+    /// (docs/research/measurements/vm-text), and of a restored guest's memory file, those it
+    /// wrote (docs/research/measurements/restore-anon).
+    fn pages_to(path: &Path, pid: libc::pid_t, vmm: &str) {
+        use std::os::unix::fs::FileExt as _;
+        let maps = std::fs::read_to_string(format!("/proc/{pid}/maps")).unwrap();
+        let pagemap = std::fs::File::open(format!("/proc/{pid}/pagemap")).unwrap();
+        // SAFETY: sysconf(3) of a name, which only reads.
+        let page = u64::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) }).expect("a page size");
+        let mut out = String::new();
+        for line in maps.lines() {
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            let [range, _, offset, _, _, file, ..] = fields.as_slice() else {
+                continue;
+            };
+            let (Some((start, end)), Ok(offset)) = (range.split_once('-'), u64::from_str_radix(offset, 16))
+            else {
+                continue;
+            };
+            let (Ok(start), Ok(end)) = (u64::from_str_radix(start, 16), u64::from_str_radix(end, 16)) else {
+                continue;
+            };
+            if !file.starts_with('/') {
+                continue;
+            }
+            let mut entries = vec![0u8; usize::try_from((end - start) / page * 8).unwrap()];
+            if pagemap.read_exact_at(&mut entries, start / page * 8).is_err() {
+                continue;
+            }
+            // Each run: whether its pages are private copies, its first page's file offset, and
+            // how many pages it has.
+            let mut runs: Vec<(bool, u64, u64)> = Vec::new();
+            for (i, entry) in entries.chunks_exact(8).enumerate() {
+                let entry = u64::from_ne_bytes(entry.try_into().unwrap());
+                if (entry & (1 << 63)) == 0 {
+                    continue;
+                }
+                let (copy, at) = ((entry & (1 << 61)) == 0, offset + i as u64 * page);
+                let extends = runs
+                    .last()
+                    .is_some_and(|&(was, first, n)| was == copy && first + n * page == at);
+                if !extends {
+                    runs.push((copy, at, 1));
+                } else if let Some(last) = runs.last_mut() {
+                    last.2 += 1;
+                }
+            }
+            let runs: Vec<String> = runs
+                .iter()
+                .map(|(copy, first, n)| format!("{}{first:#x}+{n}", if *copy { 'A' } else { 'F' }))
+                .collect();
+            out.push_str(&format!(
+                "{vmm}\t{pid}\t{file}\t{offset:#x}\t{page}\t{}\n",
+                runs.join(",")
+            ));
+        }
+        let mut tsv = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .unwrap();
+        std::io::Write::write_all(&mut tsv, out.as_bytes()).unwrap();
     }
 
     /// Resident bytes of `pid` outside guest memory, by Firecracker's rule

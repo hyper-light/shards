@@ -14,15 +14,22 @@
 #     helpers (B: CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS, which the nested helper
 #     build inherits, crates/shards/build.rs), each built in a target directory of its own,
 #     ROUNDS rounds, their order alternating (A B, then B A), each round's envelope.
+#   run.sh OUT order ROUNDS
+#     `ab` with B the VM process linked in the order of the functions A's boot touched: A's
+#     comparison with fault-around at one page, its boot's pages of shards-vm (pages.tsv)
+#     made an ordering file (order.py), and B linked by it (LLD --symbol-ordering-file).
 #
-# OUT keeps each run's samples, stdout, stderr and envelope, each arm's sections, and the
-# summary of the binaries' mappings (maps.py).
+# OUT keeps each run's samples (pages.tsv among them), stdout, stderr and envelope, each
+# arm's sections, and the summary of the binaries' mappings (maps.py).
 set -euo pipefail
 out=${1:?an output directory}
-mode=${2:?windows or ab}
+mode=${2:?windows, ab or order}
 here=$(cd "$(dirname "$0")" && pwd)
 mkdir -p "$out"
 out=$(cd "$out" && pwd)
+musl=CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS
+knob=/sys/kernel/debug/fault_around_bytes
+host=""
 
 # One run of the comparison as LABEL, VAR=VALUE settings before it; its status kept.
 compare() {
@@ -36,42 +43,66 @@ compare() {
   scripts/bench-envelope "$out/$label" >"$out/$label.envelope" 2>&1 || true
 }
 
-case "$mode" in
-windows)
-  knob=/sys/kernel/debug/fault_around_bytes
-  host=$(sudo -n cat "$knob")
-  page=$(getconf PAGESIZE)
-  restore() { sudo -n sh -c "echo $host > $knob"; }
-  trap restore EXIT
-  for bytes in "$host" "$page"; do
-    sudo -n sh -c "echo $bytes > $knob"
-    compare "windows-$bytes"
-  done
-  python3 -I "$here/maps.py" "$out"/windows-*.stderr | tee "$out/maps.txt"
-  ;;
-ab)
-  rounds=${3:?rounds}
-  # Checked here: a failure inside the substitutions below would not stop the script.
-  : "${B_RUSTFLAGS:?B_RUSTFLAGS names the flags of arm B}"
-  musl=CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS
-  flags() { if [ "$1" = b ]; then echo "$B_RUSTFLAGS"; fi; }
-  for arm in a b; do
-    env CARGO_TARGET_DIR="$out/target-$arm" "$musl=$(flags "$arm")" \
-      cargo bench --locked -p shards --bench firecracker --no-run >"$out/build-$arm.log" 2>&1
-    vm="$out/target-$arm/helpers/x86_64-unknown-linux-musl/release/shards-vm"
-    readelf -lSdW "$vm" >"$out/readelf-$arm.txt"
-    size -A "$vm" >"$out/size-$arm.txt"
-  done
-  for round in $(seq "$rounds"); do
+# The host's fault-around: noted before the first change, and put back as this ends.
+fault_around() {
+  if [ -z "$host" ]; then host=$(sudo -n cat "$knob"); fi
+  sudo -n sh -c "echo $1 > $knob"
+}
+restore() { if [ -n "$host" ]; then sudo -n sh -c "echo $host > $knob"; fi; }
+trap restore EXIT
+
+flags() { if [ "$1" = b ]; then echo "$B_RUSTFLAGS"; fi; }
+vm() { echo "$out/target-$1/helpers/x86_64-unknown-linux-musl/release/shards-vm"; }
+
+# Arm ARM built in its own target directory, its VM process's sections kept.
+build() {
+  env CARGO_TARGET_DIR="$out/target-$1" "$musl=$(flags "$1")" \
+    cargo bench --locked -p shards --bench firecracker --no-run >"$out/build-$1.log" 2>&1
+  readelf -lSdW "$(vm "$1")" >"$out/readelf-$1.txt"
+  size -A "$(vm "$1")" >"$out/size-$1.txt"
+}
+
+# ROUNDS rounds of both arms, their order alternating, and their mappings summed.
+rounds() {
+  for round in $(seq "$1"); do
     if [ $((round % 2)) = 1 ]; then order="a b"; else order="b a"; fi
     for arm in $order; do
       compare "$arm-$round" CARGO_TARGET_DIR="$out/target-$arm" "$musl=$(flags "$arm")"
     done
   done
   python3 -I "$here/maps.py" "$out"/[ab]-*.stderr | tee "$out/maps.txt"
+}
+
+case "$mode" in
+windows)
+  page=$(getconf PAGESIZE)
+  for bytes in "$(sudo -n cat "$knob")" "$page"; do
+    fault_around "$bytes"
+    compare "windows-$bytes"
+  done
+  restore
+  python3 -I "$here/maps.py" "$out"/windows-*.stderr | tee "$out/maps.txt"
+  ;;
+ab)
+  # Checked here: a failure inside the substitutions below would not stop the script.
+  : "${B_RUSTFLAGS:?B_RUSTFLAGS names the flags of arm B}"
+  build a
+  build b
+  rounds "${3:?rounds}"
+  ;;
+order)
+  rounds=${3:?rounds}
+  build a
+  fault_around "$(getconf PAGESIZE)"
+  compare touched CARGO_TARGET_DIR="$out/target-a" "$musl="
+  restore
+  python3 -I "$here/order.py" "$(vm a)" "$out/touched/pages.tsv" >"$out/order.txt"
+  B_RUSTFLAGS="-C link-arg=--symbol-ordering-file=$out/order.txt -C link-arg=--no-warn-symbol-ordering"
+  build b
+  rounds "$rounds"
   ;;
 *)
-  echo "run.sh OUT windows | run.sh OUT ab ROUNDS" >&2
+  echo "run.sh OUT windows | run.sh OUT ab ROUNDS | run.sh OUT order ROUNDS" >&2
   exit 2
   ;;
 esac
