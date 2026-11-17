@@ -29961,9 +29961,24 @@ jupiter (PM M606), on the start path of every `shards run`.
   its RUN or its TAKEN. W* runs from the ask, as it did where the send asked first; R* and C*
   are taught only from work a follow read. `commands::guest_timed`, which asks its `Judged`
   itself, looks at its answer first too.
-- *Unchanged.* A wait that has to wait reads its party's process at its first ask; on Windows
-  that is the two listings above, and an answer that comes during the read is taken once it
-  ends.
+- *Amended again the same day (ROOT's ruling): the read waits for W\*.* Read at the first ask,
+  the party was still read before nearly every run's TAKEN: right after RUN goes the first
+  look almost never finds it, as the VM must wake, read RUN and reply; and the answer read the
+  process again (`Follow::answered`, whose look on Windows takes another ToolHelp snapshot).
+  Now `Judged` reads its party only once its wait has lasted W*, its kind's slowest answer
+  timed from the ask, and its answer reads the process only where that read began. Until W*
+  the wait is its socket's readiness, asked again at W*; a kind with no answer yet waits on
+  its readiness alone, as before, and its first answer teaches W* alone. The trade-off, in
+  plain words: before W* the judge could not refuse a still party anyway, so the one change
+  in behaviour is that a stalled party is refused about one W* later, its first judged window
+  beginning at W* instead of at the ask. Answers within W* teach W* only, and R* and C* are
+  learned from the waits that needed a read, which are the ones a rate judges. On Windows this
+  takes the ToolHelp snapshots and the records read (13.1 to 13.8 ms, PM M606) off every run
+  whose TAKEN comes within W*; on Linux and macOS the reads it skips are the process's own
+  files and records. One rule on every OS. Held by health.rs
+  `an_answer_within_w_star_reads_no_process` (red at e081918540, where the first ask read the
+  process; past W*, its next ask follows it). Not changed by this: an exec's wait (D188) and
+  a visit's hold (D222) read at their first look that finds nothing.
 - *Tests* (written, not built or run: the lane's no-test rule). health.rs
   `a_take_there_at_its_waiters_first_look_teaches_from_its_ask`: red at 3c117f5204, where the
   judge, asked first, read this busy test process and taught the take its CPU and a W* timed

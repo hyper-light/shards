@@ -935,20 +935,22 @@ fn await_exit(ours: &shards_ipc::Stream, begun: Begun<'_>) -> Ended {
 /// socket's readiness alone; then its party looked at once each W* and the wait ended, typed
 /// ([`Stalled`]), where it ran nothing since the look before or could not be read.
 ///
-/// Its clock is taken as it is made, before its ask, and its party's process is read first
-/// at its first ask, which shards_ipc's judged waits make only once a look finds their socket
-/// not ready ([`shards_ipc::Judge`]): an answer there before teaches its kind its time from
-/// the ask alone ([`teach_answer`]; D215, amended 2026-11-17). Read as its wait began, as it
-/// was, before its RUN was even sent, its process held every run's handoff for that read, on
-/// Windows a ToolHelp snapshot of every process and the system's records of every process and
-/// thread, each read of which took 13.1 to 13.8 ms on jupiter (PM M606).
+/// Its clock is taken as it is made, before its ask, and its party's process is read only
+/// once its wait has lasted W*, its kind's slowest answer timed from the ask: before then its
+/// judge could refuse nothing. It is asked only once a look finds its socket not ready
+/// ([`shards_ipc::Judge`]), and an answer within W* teaches its kind its time from the ask
+/// alone, with no read of its party ([`teach_answer`]; D215, amended 2026-11-17, ROOT's
+/// rulings). Read as its wait began, as it was, before its RUN was even sent, its process held
+/// every run's handoff for that read, and the answer read it again: on Windows a ToolHelp
+/// snapshot of every process with each, and the system's records of every process and thread,
+/// each read of which took 13.1 to 13.8 ms on jupiter (PM M606).
 pub(super) struct Judged<'r> {
     pid: u32,
     record: &'r Record,
     /// When its exchange began, near enough: taken as it was made, before its ask.
     asked: Instant,
-    /// Its party's process, followed from its first ask (within: none where its process had
-    /// gone); none before.
+    /// Its party's process, followed from its first ask past W* (within: none where its
+    /// process had gone); none before.
     follow: Option<Option<Follow<'r>>>,
 }
 
@@ -963,10 +965,19 @@ impl<'r> Judged<'r> {
     }
 
     /// When its wait next asks, or why it ends: asked once a look finds its socket not ready,
-    /// its party's process followed from then, and at each time it named that passed with the
-    /// socket not ready still.
+    /// and at each time it named that passed with the socket not ready still. Until its wait
+    /// has lasted W*, its socket's readiness alone, asked again at W*; a kind with no answer
+    /// yet, its readiness alone throughout. Past W*, its party's process followed from then.
     pub(super) fn judge(&mut self) -> std::io::Result<Option<Instant>> {
         if self.follow.is_none() {
+            let shards_api::Seen::Learned { slowest, .. } = self.record.seen() else {
+                return Ok(None);
+            };
+            if let Some(due) = self.asked.checked_add(slowest)
+                && Instant::now() < due
+            {
+                return Ok(Some(due));
+            }
             let followed = following(self.pid, self.record).map_err(Stalled::error)?;
             let due = followed.as_ref().and_then(Follow::due);
             self.follow = Some(followed);
@@ -1184,6 +1195,41 @@ mod tests {
             "{slowest:?} from its ask, its answer {answered:?} past it"
         );
         assert_eq!(rated, None, "its process read before its waiter first looked");
+    }
+
+    /// An answer within its kind's W* comes with no read of its party's process: its judge,
+    /// asked as a look finds its socket not ready, reads the process only once its wait has
+    /// lasted W* (D215, amended 2026-11-17, ROOT's ruling), as before then it could refuse
+    /// nothing; until then its wait is the socket's readiness, asked again at W*. The answer
+    /// teaches W* alone. Past W*, its next ask follows the process. Before, its first ask read
+    /// the process, on Windows a ToolHelp snapshot of every process and 13.1 to 13.8 ms of the
+    /// system's records (PM M606), and the answer read it again. Its party is this process,
+    /// which lives throughout.
+    #[test]
+    fn an_answer_within_w_star_reads_no_process() {
+        let record = Record::new();
+        let slowest = Duration::from_secs(10);
+        record.teach_unrated(slowest);
+        let mut judged = Judged::of(std::process::id(), &record);
+        let due = judged.judge().unwrap();
+        assert!(judged.follow.is_none(), "its process read within W*");
+        assert_eq!(due, Some(judged.asked + slowest), "not asked again at W*");
+        judged.answered();
+        assert_eq!(
+            record.seen(),
+            shards_api::Seen::Learned { slowest, rated: None },
+            "an answer within W* taught a rate"
+        );
+        let record = Record::new();
+        let slowest = Duration::from_millis(1);
+        record.teach_unrated(slowest);
+        let mut judged = Judged::of(std::process::id(), &record);
+        std::thread::sleep(slowest * 2);
+        judged.judge().unwrap();
+        assert!(
+            matches!(judged.follow, Some(Some(_))),
+            "past W*, its process not followed"
+        );
     }
 
     /// Set in the child of `a_microvm_that_runs_at_any_rate_is_waited_for`: it runs a CPU a
