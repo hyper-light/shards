@@ -28719,7 +28719,13 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
           `a_power_loss_after_an_unsynced_rm_removal_shares_no_name` (every state the
           power-loss model allows, the name taken by the next microVM: none shared, the `--rm`
           one never seen, nothing set aside left) and
-          `a_rm_removal_needs_no_sync_unless_its_record_may_lack_its_rm`.
+          `a_rm_removal_needs_no_sync_unless_its_record_may_lack_its_rm`; and by daemon.rs
+          `rm_runs_ending_together_take_no_sync` (the completer's batches of `--rm` runs whose
+          records say so: no sync begun, on Windows for their deletions neither) and
+          `removals_ending_together_take_one_sync`, whose batch is now of `--rm` runs that end
+          before their records are written. Written for runs recorded as `--rm`, that test
+          waited for a sync that no longer comes, refused by the judge 198.8 s into its wait
+          (CI 43990298220 at f6ad71083, aarch64-unknown-linux-gnu).
         - *Owed to ROOT* (the person's rule of 2026-11-16: ROOT runs every test). None of the
           tests above has run. The live red and green (R09), on a Linux btrfs host (adacachy;
           a btrfs image loop-mounted under ~/.cache otherwise): in a directory on it,
