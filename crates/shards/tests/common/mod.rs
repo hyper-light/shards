@@ -2526,6 +2526,19 @@ impl Patience {
         Patience::with(Some(home), site)
     }
 
+    /// [`at`](Self::at) waiting for `awaited`, a kind kept apart from the site's other waits
+    /// ([`WaitKind::awaiting`]; [`STATE`] is `at`'s own): an answer's body, which comes when
+    /// what it answers comes (a container's end, an event stream's end), read after its
+    /// head, which comes at once and would teach the body's wait a W* of one read (CI
+    /// 43968984258's x86_64 musl job: engine.rs' waits for a container's end and for an
+    /// events stream's last chunk refused 4 to 16 ms into a stillness past their heads').
+    pub fn awaiting(home: &Path, site: &'static std::panic::Location<'static>, awaited: &str) -> Patience {
+        Patience {
+            wait: Wait::on(WaitKind::awaiting(site, awaited), Party::own(Some(home)), awaited),
+            state: Patient::Holds,
+        }
+    }
+
     /// Patience with client `client`, what descends from it, and the daemon of `home`: a
     /// wait on what a command brings about, which starts its home's daemon, or waits out one
     /// of another build stepping aside, before any daemon is there to follow.
