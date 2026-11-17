@@ -1446,7 +1446,7 @@ impl Outputs {
         let number = accepted.number;
         held.hold(number, accepted.member, conn)?;
         let watching = Arc::clone(&held);
-        let watcher = std::thread::Builder::new()
+        let watcher = crate::daemon::DaemonThread::new()
             .name("mcp-held".into())
             .spawn(move || watching.watch(number));
         if let Err(e) = watcher {
@@ -2036,7 +2036,7 @@ impl<D: Disk> Daemon<D> {
             *entry = Entry::Serving(Arc::clone(&owner));
         }
         for (endpoint, output) in endpoints {
-            std::thread::Builder::new()
+            crate::daemon::DaemonThread::new()
                 .name("managed-output".into())
                 .spawn_scoped(threads, move || {
                     if let Err(e) = endpoint.run() {
@@ -2047,7 +2047,7 @@ impl<D: Disk> Daemon<D> {
         }
         for (endpoint, relay, input) in input_workers {
             let relaying = Arc::clone(&input);
-            std::thread::Builder::new()
+            crate::daemon::DaemonThread::new()
                 .name("managed-stdin".into())
                 .spawn_scoped(threads, move || {
                     relay_input(&relay, &|| relaying.wait(), &|| relaying.close())
@@ -2055,7 +2055,7 @@ impl<D: Disk> Daemon<D> {
             let Some(endpoint) = endpoint else {
                 continue;
             };
-            std::thread::Builder::new()
+            crate::daemon::DaemonThread::new()
                 .name("managed-input".into())
                 .spawn_scoped(threads, move || {
                     if let Err(e) = endpoint.run() {
@@ -2077,7 +2077,7 @@ impl<D: Disk> Daemon<D> {
                 .try_reserve_exact(owner.inputs.len())
                 .map_err(io::Error::other)?;
             agent_inputs.extend(owner.inputs.iter().flatten().map(Arc::clone));
-            std::thread::Builder::new()
+            crate::daemon::DaemonThread::new()
                 .name("agent-control".into())
                 .spawn_scoped(threads, move || {
                     if let Err(e) = endpoint.run() {
@@ -2101,7 +2101,7 @@ impl<D: Disk> Daemon<D> {
             shown.to,
             shown.retention,
         ) {
-            std::thread::Builder::new()
+            crate::daemon::DaemonThread::new()
                 .name("managed-shown".into())
                 .spawn_scoped(threads, move || drain.show(&mut to))?;
         }
@@ -2115,7 +2115,7 @@ impl<D: Disk> Daemon<D> {
                 .map_err(io::Error::other)?;
             running.extend_from_slice(active);
             let run_dir = dir.clone();
-            std::thread::Builder::new()
+            crate::daemon::DaemonThread::new()
                 .name("agent-execs".into())
                 .spawn_scoped(threads, move || {
                     execs::host(
@@ -2152,7 +2152,7 @@ impl<D: Disk> Daemon<D> {
                 .try_reserve_exact(active.len())
                 .map_err(io::Error::other)?;
             running.extend_from_slice(active);
-            std::thread::Builder::new()
+            crate::daemon::DaemonThread::new()
                 .name("agent-members".into())
                 .spawn_scoped(threads, move || {
                     members::host(
@@ -2178,7 +2178,7 @@ impl<D: Disk> Daemon<D> {
         // Members' segments rotated as they fill, compressed on the packer's thread as the run's
         // own are (D162).
         let (packed_credit, packed_capture) = (id.to_owned(), id.to_owned());
-        std::thread::Builder::new()
+        crate::daemon::DaemonThread::new()
             .name("managed-credit".into())
             .spawn_scoped(threads, move || {
                 let pack = |dir, seq| {
@@ -2197,7 +2197,7 @@ impl<D: Disk> Daemon<D> {
                 }
             })?;
         let reader_owner = Arc::clone(&owner);
-        std::thread::Builder::new()
+        crate::daemon::DaemonThread::new()
             .name("managed-capture".into())
             .spawn_scoped(threads, move || {
                 let pack = |dir, seq| {
@@ -3455,7 +3455,7 @@ mod tests {
         assert_ne!(endpoint.fingerprint, other.fingerprint, "two runs share a key");
         assert_ne!(endpoint.fingerprint, owner.fingerprint());
         let (vm, address) = (endpoint.fingerprint, endpoint.address);
-        let serving = std::thread::spawn(move || endpoint.run());
+        let serving = crate::daemon::party::spawn_member(move || endpoint.run());
         let subscriptions = [(scope, out, 0)];
         let dial = |own: &identity::Identity| {
             let (controller, dialed) = Controller::dial(
@@ -3470,7 +3470,7 @@ mod tests {
                 },
             )
             .unwrap();
-            let driver = std::thread::spawn(move || controller.run());
+            let driver = crate::daemon::party::spawn_member(move || controller.run());
             (dialed, driver)
         };
         let stranger = identity::Identity::generate().unwrap();
@@ -3535,7 +3535,7 @@ mod tests {
             bind_agent(owner.fingerprint(), &[(scope, out)], &[], admissions, &[]).unwrap();
         let (vm, address) = (endpoint.fingerprint, endpoint.address);
         let starts = served.execs.unwrap();
-        let serving = std::thread::spawn(move || endpoint.run());
+        let serving = crate::daemon::party::spawn_member(move || endpoint.run());
         let budget = Arc::new(Mutex::new(Some(0)));
         let charge = Charge::reserve(&budget, 0).unwrap();
         let (hand, handed) = std::sync::mpsc::channel::<Handed>();
@@ -3567,7 +3567,7 @@ mod tests {
         };
         std::thread::scope(|s| {
             let (charged, launcher, logs) = (&charge, &launch, &logs);
-            let hosting = s.spawn(move || {
+            let hosting = crate::daemon::party::spawn_in(s, move || {
                 let hosting = execs::Hosting {
                     admissions,
                     charge: charged,
@@ -3580,7 +3580,7 @@ mod tests {
             });
             // Its VM process: the first exec it runs, an echo of its stdin; the second its member
             // refuses.
-            let process = s.spawn(move || {
+            let process = crate::daemon::party::spawn_in(s, move || {
                 let (spec, flags, [stdin, stdout, stderr], conn) = handed.recv_timeout(AT_ONCE).unwrap();
                 assert_eq!(flags, shards_ipc::EXEC_TOLD | shards_ipc::EXEC_INTERACTIVE);
                 assert_eq!(spec.setup, vec![b"in-member=0".to_vec()]);
@@ -3621,7 +3621,7 @@ mod tests {
                 },
             )
             .unwrap();
-            let driver = s.spawn(move || controller.run());
+            let driver = crate::daemon::party::spawn_in(s, move || controller.run());
             let execs = dialed.execs.as_ref().unwrap();
             let spec = run::Spec {
                 argv: vec![b"cat".to_vec()],
@@ -3757,7 +3757,7 @@ mod tests {
             bind_agent(owner.fingerprint(), &[(scope, out)], &[], admissions, &[]).unwrap();
         let (vm, address) = (endpoint.fingerprint, endpoint.address);
         let starts = served.execs.unwrap();
-        let serving = std::thread::spawn(move || endpoint.run());
+        let serving = crate::daemon::party::spawn_member(move || endpoint.run());
         let budget = Arc::new(Mutex::new(Some(0)));
         let charge = Charge::reserve(&budget, 0).unwrap();
         let launch = |_: &run::Spec,
@@ -3792,7 +3792,7 @@ mod tests {
         let at = |seq, no, byte| LogPos { seq, no, byte };
         std::thread::scope(|s| {
             let (charged, launcher, logs) = (&charge, &launch, &logs);
-            let hosting = s.spawn(move || {
+            let hosting = crate::daemon::party::spawn_in(s, move || {
                 let hosting = execs::Hosting {
                     admissions,
                     charge: charged,
@@ -3815,7 +3815,7 @@ mod tests {
                 },
             )
             .unwrap();
-            let driver = s.spawn(move || controller.run());
+            let driver = crate::daemon::party::spawn_in(s, move || controller.run());
             let execs = dialed.execs.as_ref().unwrap();
             let mut ran =
                 answered!(execs.log(LogSource::Command, LogChannels::BOTH, LogCursor::OLDEST, false))
@@ -3902,7 +3902,7 @@ mod tests {
         .unwrap();
         let (vm, address) = (endpoint.fingerprint, endpoint.address);
         let starts = served.execs.unwrap();
-        let serving = std::thread::spawn(move || endpoint.run());
+        let serving = crate::daemon::party::spawn_member(move || endpoint.run());
         let budget = Arc::new(Mutex::new(Some(0)));
         let charge = Arc::new(Charge::reserve(&budget, 0).unwrap());
         let charged = Arc::clone(&charge);
@@ -3928,7 +3928,7 @@ mod tests {
         let answer = b"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n";
         std::thread::scope(|s| {
             let bridges = &bridges;
-            let hosting = s.spawn(move || {
+            let hosting = crate::daemon::party::spawn_in(s, move || {
                 let hosting = execs::Hosting {
                     admissions,
                     charge: &charge,
@@ -3941,10 +3941,12 @@ mod tests {
             });
             // Its harness gone before any ask: let go.
             drop(held(first));
-            s.spawn(move || bridges.watch(first)).join().unwrap();
+            crate::daemon::party::spawn_in(s, move || bridges.watch(first))
+                .join()
+                .unwrap();
             let mut harness = held(first + 1);
             harness.write_all(request).unwrap();
-            s.spawn(move || bridges.watch(first + 1));
+            crate::daemon::party::spawn_in(s, move || bridges.watch(first + 1));
             let (controller, mut dialed) = Controller::dial(
                 &owner,
                 vm,
@@ -3957,7 +3959,7 @@ mod tests {
                 },
             )
             .unwrap();
-            let driver = s.spawn(move || controller.run());
+            let driver = crate::daemon::party::spawn_in(s, move || controller.run());
             // Its endpoint's report names member 0's bridge among its lanes (D254).
             let report = dialed.link.report().unwrap();
             let lanes: Vec<String> = report.lanes.iter().map(Granted::name).collect();
@@ -4075,7 +4077,7 @@ mod tests {
             ..
         } = served;
         let lanes = lanes.unwrap();
-        let serving = std::thread::spawn(move || endpoint.run());
+        let serving = crate::daemon::party::spawn_member(move || endpoint.run());
         let budget = Arc::new(Mutex::new(Some(0)));
         let charge = Charge::reserve(&budget, 0).unwrap();
         let ends = members::Ends::new(2).unwrap();
@@ -4106,9 +4108,9 @@ mod tests {
                 builtin: &builtin,
                 say: &|_: &str| {},
             };
-            let host = s.spawn(move || members::host(&lanes, &hosting));
+            let host = crate::daemon::party::spawn_in(s, move || members::host(&lanes, &hosting));
             // Its VM process: the first SIGNAL it is handed exits 0, the second SIGNAL_ENDED.
-            let process = s.spawn(move || {
+            let process = crate::daemon::party::spawn_in(s, move || {
                 for status in [0, run::builtin::SIGNAL_ENDED] {
                     let (spec, conn, stdio) = handed.recv_timeout(AT_ONCE).unwrap();
                     assert_eq!(spec.builtin, run::builtin::SIGNAL);
@@ -4131,7 +4133,7 @@ mod tests {
                 },
             )
             .unwrap();
-            let driver = s.spawn(move || controller.run());
+            let driver = crate::daemon::party::spawn_in(s, move || controller.run());
             let execs = dialed.execs.as_ref().unwrap();
             let Member::Running(MemberControl {
                 mut steering,
@@ -4275,7 +4277,9 @@ mod tests {
         assert_eq!(second.read(&mut byte).unwrap(), 0);
         assert!(input.wait().is_some());
         std::thread::scope(|threads| {
-            let relaying = threads.spawn(|| relay_input(&relay, &|| input.wait(), &|| input.close()));
+            let relaying = crate::daemon::party::spawn_in(threads, || {
+                relay_input(&relay, &|| input.wait(), &|| input.close())
+            });
             input.control.abort();
             relaying.join().unwrap();
         });
@@ -4832,9 +4836,12 @@ mod tests {
         }
         let (credited, bridged) = std::thread::scope(|threads| {
             let (owner, labels) = (&owner, &labels);
-            let crediting = threads.spawn(move || send_credits(writing, owner, &[], &|_, _| {}));
-            let bridging =
-                threads.spawn(move || bridge(reading, owner, labels, vec![StreamState::New; 2], &|_, _| {}));
+            let crediting = crate::daemon::party::spawn_in(threads, move || {
+                send_credits(writing, owner, &[], &|_, _| {})
+            });
+            let bridging = crate::daemon::party::spawn_in(threads, move || {
+                bridge(reading, owner, labels, vec![StreamState::New; 2], &|_, _| {})
+            });
             let (peer, mut vm, _unwound) = (peer, vm, Unwound(&owner.credits));
             let (mut offsets, mut sent, mut opened, mut ended) = ([0u64; 2], [0usize; 2], [false; 2], 0);
             while ended < 2 {
@@ -5002,10 +5009,13 @@ mod tests {
         let labels: Vec<String> = vec!["agent main".into()];
         let (credited, bridged, shown) = std::thread::scope(|threads| {
             let (owned, labels) = (&*owner, &labels);
-            let crediting = threads.spawn(move || send_credits(writing, owned, &[], &|_, _| {}));
-            let bridging =
-                threads.spawn(move || bridge(reading, owned, labels, vec![StreamState::New; 2], &|_, _| {}));
-            let viewing = threads.spawn(|| {
+            let crediting = crate::daemon::party::spawn_in(threads, move || {
+                send_credits(writing, owned, &[], &|_, _| {})
+            });
+            let bridging = crate::daemon::party::spawn_in(threads, move || {
+                bridge(reading, owned, labels, vec![StreamState::New; 2], &|_, _| {})
+            });
+            let viewing = crate::daemon::party::spawn_in(threads, || {
                 let mut to = Vec::new();
                 drain.show(&mut to);
                 to
@@ -5058,10 +5068,11 @@ mod tests {
         let labels: Vec<String> = vec!["agent main".into()];
         let (told, shown) = std::thread::scope(|threads| {
             let (owned, labels) = (&*owner, &labels);
-            let crediting = threads.spawn(move || run_credits(writing, owned, &[], &|_, _| {}));
+            let crediting =
+                crate::daemon::party::spawn_in(threads, move || run_credits(writing, owned, &[], &|_, _| {}));
             let bridging = threads
                 .spawn(move || run_bridge(reading, owned, labels, vec![StreamState::New; 2], &|_, _| {}));
-            let viewing = threads.spawn(|| {
+            let viewing = crate::daemon::party::spawn_in(threads, || {
                 let mut to = Vec::new();
                 drain.show(&mut to);
                 to
@@ -5140,9 +5151,13 @@ mod tests {
         let (told, shown) = std::thread::scope(|threads| {
             let (owned, labels) = (&*owner, &labels);
             let (gave, given) = std::sync::mpsc::channel();
-            threads.spawn(move || gave.send(run_credits(writing, owned, &[], &|_, _| {})));
-            threads.spawn(move || run_bridge(reading, owned, labels, vec![StreamState::New; 2], &|_, _| {}));
-            let viewing = threads.spawn(|| {
+            crate::daemon::party::spawn_in(threads, move || {
+                gave.send(run_credits(writing, owned, &[], &|_, _| {}))
+            });
+            crate::daemon::party::spawn_in(threads, move || {
+                run_bridge(reading, owned, labels, vec![StreamState::New; 2], &|_, _| {})
+            });
+            let viewing = crate::daemon::party::spawn_in(threads, || {
                 let mut to = Stalled(held, Vec::new());
                 drain.show(&mut to);
                 to.1
@@ -5284,15 +5299,15 @@ mod tests {
         let (worked, work) = std::sync::mpsc::sync_channel(1);
         let (granted, ended, sibling) = std::thread::scope(|threads| {
             for endpoint in endpoints {
-                threads.spawn(move || endpoint.run());
+                crate::daemon::party::spawn_in(threads, move || endpoint.run());
             }
             let mut subscriber = subscriber;
-            threads.spawn(move || subscriber.run());
+            crate::daemon::party::spawn_in(threads, move || subscriber.run());
             sender
                 .send(shards_remote::net::Command::Handler(stdout.address))
                 .unwrap();
             let (owner_side, producers) = (&owner_side, &producers);
-            threads.spawn(move || {
+            crate::daemon::party::spawn_in(threads, move || {
                 // As the run's own credit worker ends (start_managed_capture): its owner, and
                 // every channel of the run, with it.
                 let result = send_credits(writing, owner_side, producers, &|_, _| {});

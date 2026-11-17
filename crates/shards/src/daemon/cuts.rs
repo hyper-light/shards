@@ -55,6 +55,7 @@ fn fired(watched: i32) {
 fn looking() -> bool {
     static STARTED: OnceLock<bool> = OnceLock::new();
     *STARTED.get_or_init(|| {
+        // std's, not a `DaemonThread`: this process's, of no test's party (D215).
         std::thread::Builder::new()
             .name("cuts".into())
             .spawn(look)

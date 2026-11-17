@@ -137,7 +137,7 @@ impl Taker {
         use windows_sys::Win32::System::Threading::{INFINITE, WaitForMultipleObjects, WaitForSingleObject};
         let stop = shards_ipc::Event::new()?;
         let stopped = stop.try_clone()?;
-        let thread = std::thread::Builder::new()
+        let thread = crate::daemon::DaemonThread::new()
             .name("relay-taker".into())
             .spawn(move || {
                 let waited = [listener.event(), stopped.raw()];
@@ -481,7 +481,7 @@ impl<D: Disk> Daemon<D> {
             *lock(&self.last) = Instant::now();
             self.wake_listener();
         };
-        let spawned = std::thread::Builder::new()
+        let spawned = crate::daemon::DaemonThread::new()
             .name("relay".into())
             .spawn_scoped(threads, move || {
                 let request = shards_remote::frame::Request {

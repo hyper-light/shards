@@ -533,7 +533,7 @@ mod tests {
         assert!(unsafe { libc::inotify_add_watch(raw, name.as_ptr(), libc::IN_ACCESS) } >= 0);
         let record = shards_api::Record::new();
         std::thread::scope(|scope| {
-            let waiting = scope.spawn(|| emptied(&events, &procs, &record));
+            let waiting = crate::daemon::party::spawn_in(scope, || emptied(&events, &procs, &record));
             let mut first = [0u8; size_of::<libc::inotify_event>()];
             // SAFETY: a valid buffer on a blocking descriptor; the leaf's first read wakes it.
             assert!(unsafe { libc::read(raw, first.as_mut_ptr().cast(), first.len()) } > 0);
@@ -576,7 +576,7 @@ mod tests {
         std::fs::write(&events, "populated 1\nfrozen 0\n").unwrap();
         std::fs::write(&procs, format!("{}\n", busy.id())).unwrap();
         std::thread::scope(|s| {
-            s.spawn(|| {
+            crate::daemon::party::spawn_in(s, || {
                 std::thread::sleep(late);
                 std::fs::write(&events, "populated 0\nfrozen 0\n").unwrap();
             });

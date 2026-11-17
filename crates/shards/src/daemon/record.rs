@@ -70,7 +70,7 @@ impl<D: Disk> Daemon<D> {
     pub(super) fn start_recorder<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>) {
         let r = &self.recording;
         if !r.started.swap(true, Ordering::SeqCst)
-            && let Err(e) = std::thread::Builder::new()
+            && let Err(e) = crate::daemon::DaemonThread::new()
                 .name("recorder".into())
                 .spawn_scoped(threads, move || self.record_all())
         {

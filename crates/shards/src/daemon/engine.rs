@@ -545,7 +545,7 @@ impl<D: Disk> Daemon<D> {
             self.wake_listener();
         };
         let theirs = provider.clone();
-        let spawned = std::thread::Builder::new()
+        let spawned = crate::daemon::DaemonThread::new()
             .name("engine".into())
             .spawn_scoped(threads, move || {
                 // A client's of another machine's (D228): what its calls make is its.
@@ -884,7 +884,7 @@ impl<D: Disk> Daemon<D> {
         let ipc = self.command_conn_with(threads, argv, shards_ipc::registry_env(), &[from.as_fd()])?;
         drop(from);
         std::thread::scope(|s| {
-            let answer = std::thread::Builder::new()
+            let answer = crate::daemon::DaemonThread::new()
                 .name("engine-upload".into())
                 .spawn_scoped(s, || {
                     let (mut out, mut err) = (Vec::new(), Vec::new());
@@ -1117,7 +1117,7 @@ fn version() -> Answer {
 /// `said`.
 fn run_answer(conn: &UnixStream, said: PipeReader) -> RunAnswer {
     std::thread::scope(|s| {
-        let reader = std::thread::Builder::new()
+        let reader = crate::daemon::DaemonThread::new()
             .name("engine-said".into())
             .spawn_scoped(s, move || {
                 let mut text = Vec::new();

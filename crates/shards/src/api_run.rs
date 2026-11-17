@@ -3314,7 +3314,7 @@ mod hosted {
         let home = shards_ipc::home().map_err(no(Cause::Boot))?;
         let (shaped, layering) = shape(request, &home, &mut checking)?;
         let made = shaped.made.clone();
-        let plan = plan(request, ready_by, shaped).inspect_err(|_| end(&home, None, &made))?;
+        let plan = plan(request, ready_by, shaped).inspect_err(|_| end(&home, None, &made, Vec::new()))?;
         launch_and_serve(answers, input, &home, plan, checking, layering)
     }
 
@@ -3601,7 +3601,7 @@ mod hosted {
             }
             Ok((opened, server, microvm))
         };
-        let (opened, server, microvm) = rest().inspect_err(|_| end(home, None, &made))?;
+        let (opened, server, microvm) = rest().inspect_err(|_| end(home, None, &made, Vec::new()))?;
         super::step(format_args!("its microVM shaped"));
         let template = microvm.template.as_ref().map(|t| t.dir.as_path());
         let layering = Layering::begin(
@@ -7511,7 +7511,7 @@ mod hosted {
         answers: &Answers,
         input: super::Input,
         home: &Path,
-        plan: Plan,
+        mut plan: Plan,
         checking: Checking,
         layering: Layering,
     ) -> Result<(), No> {
@@ -7527,7 +7527,7 @@ mod hosted {
             && let Err(e) = answers.send(wire::to_client::GPU_REPORT, &[&frame])
         {
             if let Ok(launched) = launched {
-                end(home, Some(launched), &plan.made);
+                end(home, Some(launched), &plan.made, std::mem::take(&mut plan.dirs));
             }
             return Err(No(Cause::Boot, format!("its orchestrator: {e}")));
         }
@@ -7566,7 +7566,7 @@ mod hosted {
         let mut launched = match launch(&home, &shaped.launch(), checking, layering, &mut None) {
             Ok(launched) => launched,
             Err(e) => {
-                end(&home, None, &shaped.made);
+                end(&home, None, &shaped.made, std::mem::take(&mut shaped.opened.dirs));
                 return Err(e);
             }
         };
@@ -7634,18 +7634,29 @@ mod hosted {
         let (request, ready_by) = match taken {
             Ok(Some(taken)) => taken,
             Ok(None) => {
-                end(&home, Some(launched), &made);
+                end(
+                    &home,
+                    Some(launched),
+                    &made,
+                    std::mem::take(&mut shaped.opened.dirs),
+                );
                 return Ok(());
             }
             Err(e) => {
-                end(&home, Some(launched), &made);
+                end(
+                    &home,
+                    Some(launched),
+                    &made,
+                    std::mem::take(&mut shaped.opened.dirs),
+                );
                 return Err(e);
             }
         };
         let plan = match plan(&request, ready_by, shaped) {
             Ok(plan) => plan,
+            // Its shares' directories went with `shaped`, as `plan` failed.
             Err(e) => {
-                end(&home, Some(launched), &made);
+                end(&home, Some(launched), &made, Vec::new());
                 return Err(e);
             }
         };
@@ -7656,8 +7667,12 @@ mod hosted {
     /// Ends what of a run was made: its processes, `launched` (its VM killed, then each reaped
     /// once nothing of this process's holds it up, the share process as its connections to
     /// the VM close, `Shares::end`; on Windows its job let go of last, which ends whatever of
-    /// them is left); and its anonymous volumes `made`, removed as `--rm`'s are.
-    fn end(home: &Path, launched: Option<Launched>, made: &[String]) {
+    /// them is left); its shares' directories, `dirs`, let go of; and then its anonymous
+    /// volumes `made`, removed as `--rm`'s are. Not before: a removal renames its volume
+    /// aside, and Windows renames no directory while a handle within it is open, this
+    /// process's own share of the volume's files included ("Access is denied", CI
+    /// 43990298220, windows-2022 and windows-2025: the run's anonymous volume kept).
+    fn end(home: &Path, launched: Option<Launched>, made: &[String], dirs: Vec<(OwnedFd, bool, OsString)>) {
         if let Some(Launched {
             vm,
             link,
@@ -7688,6 +7703,7 @@ mod hosted {
             #[cfg(windows)]
             drop(job);
         }
+        drop(dirs);
         if !made.is_empty() {
             let store = crate::volumes::Store::new(home);
             let _held = crate::volumes::lock();
@@ -7912,7 +7928,7 @@ mod hosted {
         // connections to the VM close (`Shares::end`); on Windows its job let go of last,
         // which ends whatever of them is left; its anonymous volumes removed, as `--rm`'s
         // are.
-        end(home, Some(launched), &plan.made);
+        end(home, Some(launched), &plan.made, std::mem::take(&mut plan.dirs));
         served
     }
 
@@ -10142,6 +10158,33 @@ mod hosted {
         if let Some(i) = asked.iter().position(|(n, _)| *n == number) {
             let (_, told) = asked.swap_remove(i);
             let _ = told.send(E::read(said));
+        }
+    }
+
+    #[cfg(test)]
+    #[allow(clippy::unwrap_used)]
+    mod ending {
+        use super::*;
+
+        /// A run's anonymous volume goes as its run ends though this process held its share of
+        /// the volume's files, a directory handle, through the run (D281): its shares'
+        /// directories are let go of before its volumes are removed, as Windows renames no
+        /// directory while a handle within it is open (CI 43990298220, windows-2022 and
+        /// windows-2025: "Access is denied", the volume kept). Red on Windows where `end`
+        /// lets them go after the removal; Unix renames it either way.
+        #[test]
+        fn a_runs_anonymous_volume_goes_though_its_share_was_held_through_the_run() {
+            let home = shards_testdir::TempDir::new("api-run-end").unwrap();
+            let store = crate::volumes::Store::new(&home);
+            let name = {
+                let _held = crate::volumes::lock();
+                let none = std::collections::BTreeMap::new();
+                store.create("", &none, &none, "").unwrap().0.name
+            };
+            let share = shards_vmm::platform::open_dir(&store.data(&name)).unwrap();
+            let dirs = vec![(OwnedFd::from(share), false, OsString::new())];
+            end(&home, None, std::slice::from_ref(&name), dirs);
+            assert!(store.get(&name).is_none(), "its volume kept");
         }
     }
 

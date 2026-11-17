@@ -329,7 +329,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         self.due_after(id, interval(&cfg, Duration::ZERO, Status::Starting));
         let c = &self.checks;
         if !c.started.swap(true, Ordering::SeqCst)
-            && let Err(e) = std::thread::Builder::new()
+            && let Err(e) = crate::daemon::DaemonThread::new()
                 .name("health".into())
                 .spawn_scoped(threads, move || self.check_all(threads))
         {
@@ -405,7 +405,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                 continue;
             }
             let watched = id.clone();
-            if let Err(e) = std::thread::Builder::new()
+            if let Err(e) = crate::daemon::DaemonThread::new()
                 .name("probe".into())
                 .spawn_scoped(threads, move || self.probe_once(&watched, &cfg, &argv))
             {
@@ -619,22 +619,32 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         let ours = self.send_exec(id, spec, argv, false, [null.as_fd(), into.as_fd(), into.as_fd()])?;
         // The VM holds the rest: its end sees the output end.
         drop((into, null));
-        Ok(std::thread::scope(|scope| {
+        std::thread::scope(|scope| {
             let control = &ours;
-            let reader = scope.spawn(move || {
-                let mut buf = [0u8; 16 << 10];
-                while let Ok(n @ 1..) = out.read(&mut buf) {
-                    if !sink(buf.get(..n).unwrap_or_default()) {
-                        // Nobody wants the rest: the exec goes, and its output with it.
-                        kill(control);
-                        break;
+            let reader = crate::daemon::DaemonThread::new()
+                .name("exec output".into())
+                .spawn_scoped(scope, move || {
+                    let mut buf = [0u8; 16 << 10];
+                    while let Ok(n @ 1..) = out.read(&mut buf) {
+                        if !sink(buf.get(..n).unwrap_or_default()) {
+                            // Nobody wants the rest: the exec goes, and its output with it.
+                            kill(control);
+                            break;
+                        }
                     }
+                });
+            let reader = match reader {
+                Ok(reader) => reader,
+                // No thread to read it: the exec goes, as one whose output nobody wants.
+                Err(e) => {
+                    kill(control);
+                    return Err(e);
                 }
-            });
+            };
             let ended = await_exit(&ours, begun);
             let _ = reader.join();
-            ended
-        }))
+            Ok(ended)
+        })
     }
 
     /// An exec of `spec` in microVM `id` on the asker's own descriptors: what it
@@ -991,7 +1001,7 @@ mod tests {
         let (ours, theirs) = shards_ipc::Stream::pair().unwrap();
         let (go, gone) = std::sync::mpsc::channel();
         std::thread::scope(|s| {
-            s.spawn(move || {
+            crate::daemon::party::spawn_in(s, move || {
                 if gone.recv().is_ok() {
                     answer(theirs);
                 }
@@ -1160,7 +1170,7 @@ mod tests {
         let record = learned(slowest);
         let busy = std::sync::atomic::AtomicBool::new(true);
         std::thread::scope(|s| {
-            s.spawn(|| {
+            crate::daemon::party::spawn_in(s, || {
                 while busy.load(Ordering::Relaxed) {
                     std::hint::spin_loop();
                 }

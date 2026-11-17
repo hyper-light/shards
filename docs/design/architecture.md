@@ -28923,6 +28923,44 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
           Green: none of those without the host's disks' completed I/O within them. Then
           nesting.rs on KVM, its stops not refused; and the stop's daemon.log stage lines
           (`daemon finishing` to `its removals done`) before and after.
+    - *A test's wait counts its own test's party* (2026-11-17, kiln goal b2124227, lane
+      ci-read-6; ROOT's r669). The daemon's unit tests share one process, and their judge
+      (daemon.rs tests' `Wait`) took this process for its party: any thread's CPU but its
+      waiters' was progress (`others`: CLOCK_PROCESS_CPUTIME_ID, QueryProcessCycleTime), and
+      no look was judged before the latest deadline any daemon thread of the process waited
+      until (`latest_deadline`). Other tests' threads, and what ended tests left, held a wait
+      that had stalled: CI 43990298220's aarch64-apple-darwin job held
+      `removals_ending_together_take_one_sync`'s wait, which could not end, for 21 minutes, to
+      its step's limit, where ROOT's r669 (f6ad71083, macOS arm64, that test alone) refused it
+      81 ms in; Linux's jobs refused it only 198 s (gnu) and 853 s (musl) in.
+      - *The rule.* A test's party is its own thread and every thread made from one of its
+        party's: the daemon's, made through `DaemonThread` (std's builder, whose thread under
+        test is a member of its maker's party), and the test's helpers (`party::spawn_in`,
+        `party::spawn_member`). `Test::on` opens it (`party::of_test`) before its daemon makes
+        a thread. A wait (`Counted::here`) counts what its party's members ran, each read by
+        its own clock (Unix: `platform::ThreadClock`, D191; Windows: QueryThreadCycleTime, in
+        the cycles the tests' `cpu` counts there, as GetThreadTimes moves in 15.625 ms ticks,
+        coarser than a W*), the totals of those that ended kept, less what a member ran
+        while it waited judged; and it is judged from no earlier than the latest deadline a
+        thread of its own party waits until (`Waiting`, registered with its thread's party).
+      - *Of no party* (counted by no party's wait): a thread made by another crate, by std, or
+        by a module outside the daemon's (netproc's dial servers, context, the build proxy);
+        the cuts watcher (daemon/cuts.rs), which is this process's and serves every daemon in
+        it. A test's own thread is of its party but no member: it is its waiter. A wait on a
+        thread of no party counts this process, as before.
+      - *Production is unchanged.* Every judged wait of the daemon's and shards-api's follows
+        another process by its ID and start (a VM process, its holder, a home's daemon), so no
+        other home's work is in its party. `DaemonThread` is std's builder there; two daemon
+        threads made by `Scope::spawn`, which panics where no thread is made (R01), now are
+        made through it: an exec's output reader (health.rs, the exec killed and the error
+        returned) and `stats`' asks (commands.rs, a sample not taken).
+      - *Tested* (written, not run; ROOT's): daemon.rs
+        `a_waits_party_is_its_own_tests_threads_alone`, two tests' parties in one process, W*
+        20 ms: one party's member waits on nothing; the other's spins for 250 W*, then sleeps
+        until this wait has ended, its deadline 500 W* from its start. Green: the waiting
+        party's wait is refused within a few W*, while the other still spins. Red where
+        `Counted::here` counts this process: the other's spin, then its deadline, hold the wait
+        past the 5 s the other spun.
     - *Rated answers alone teach R* and C*.* Many kept records held R* 0 ns: answers reaped
       before any look read their CPU (`run_ending`'s `try_wait` reaped a quick client between
       paced looks), a floor that refuses nothing. `Seen::Learned` is now `{ slowest, rated:
@@ -40501,6 +40539,29 @@ named ones are.**
     lock file a removal deleted while open). Real VM (HVF, KVM, WHP): an orchestrator's run of an
     image with a `VOLUME`, `shards volume prune -f` while it runs passing its volume by, its
     files kept; the volume and its lock file gone once the run ends.
+
+**Amended (lane ci-read-6, 2026-11-17, kiln goal b2124227): a run host lets go of its shares'
+directories before it removes its anonymous volumes.**
+- *Read.* CI 43990298220 (f6ad71083), both x86_64 Windows jobs (windows-2022 job 133729068080,
+  windows-2025 job 133729068115): api_image
+  `a_runs_anonymous_volume_is_passed_by_a_prune_while_it_runs_and_goes_with_it` kept its run's
+  volume ("gone with its run", api_image.rs:4550), its run host saying
+  `its volume <id>: remove <id>: Access is denied. (os error 5)`. A removal sets its volume
+  aside by renaming its directory (`Store::set_aside`), and Windows renames no directory while
+  a handle within it is open. The run host's end (api_run `end`) removed the volume while its
+  own plan still held the share's directory handle of the volume's `_data` (`Plan::dirs`,
+  opened by `platform::open_dir` for the share process), let go only as `serve_launched`
+  returned. Its lock and count files lie beside the volume, not in it; its share process is
+  reaped before the removal. Unix renames a directory whatever is open in it.
+- *Decided.* `end` takes the shares' directories and lets go of them after the run's
+  processes are reaped and before its anonymous volumes are removed, on every path that ends a
+  run that opened them (a failed launch, a run its pool let go, a refused orchestrator, a run
+  served to its end). A path where `plan` failed has none left: they went with its `shaped`.
+- *Tested* (written, not run; ROOT's): the binary's
+  `api_run::hosted::ending::a_runs_anonymous_volume_goes_though_its_share_was_held_through_the_run`
+  (a volume made, its `_data` held open as a share's, ended: gone). Red on Windows where `end`
+  lets the directories go after the removal; green on Unix either way. Owed: that test on
+  jupiter, then api_image's test above on WHP.
 
 ### D285. Networks shared by runs: a member of one microVM reaches a member of another on a named network, each flow granted at both of its ends (designed 2026-11-16; slices 1 to 5, a network's leases held across processes, the daemon's runs on them, the network process's switch, the API, wire and run host, and the guest's side, built; slice 6, a network made and removed by shards-api and a run's names withdrawn as its link ends and, first of all, as its VM ends, built, its real-VM tests written, their runs lane xnet-v's)
 

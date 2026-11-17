@@ -180,7 +180,7 @@ pub(crate) fn host(lanes: &mpsc::Receiver<MemberStart>, hosting: &Hosting<'_>) {
     std::thread::scope(|scope| {
         while let Ok(start) = lanes.recv() {
             let (number, replies) = (start.lane, start.replies.try_clone());
-            let spawned = std::thread::Builder::new()
+            let spawned = crate::daemon::DaemonThread::new()
                 .name("agent-member".into())
                 .spawn_scoped(scope, move || serve(start, hosting));
             if let Err(e) = spawned {
@@ -255,7 +255,7 @@ fn serve(start: MemberStart, hosting: &Hosting<'_>) {
     std::thread::scope(|s| {
         let gone = &gone;
         // Its steering before it is told running, so that no steer goes unanswered.
-        let steering = std::thread::Builder::new()
+        let steering = crate::daemon::DaemonThread::new()
             .name("member-steer".into())
             .spawn_scoped(s, move || {
                 while let Ok(taken) = steer.recv() {
@@ -407,7 +407,7 @@ mod tests {
         let gone = AtomicBool::new(false);
         assert_eq!(ends.now(1), Some((0, None)));
         std::thread::scope(|s| {
-            let waiting = s.spawn(|| ends.wait(1, 0, &gone));
+            let waiting = crate::daemon::party::spawn_in(s, || ends.wait(1, 0, &gone));
             ends.told(1, members::End::Signaled(9)).unwrap();
             assert_eq!(waiting.join().unwrap(), Some(members::End::Signaled(9)));
         });
@@ -425,14 +425,14 @@ mod tests {
         assert_eq!(ends.wait(2, 0, &gone), None);
         assert_eq!(ends.now(2), None);
         std::thread::scope(|s| {
-            let waiting = s.spawn(|| ends.wait(0, 0, &gone));
+            let waiting = crate::daemon::party::spawn_in(s, || ends.wait(0, 0, &gone));
             gone.store(true, Ordering::Release);
             ends.wake();
             assert_eq!(waiting.join().unwrap(), None);
         });
         let gone = AtomicBool::new(false);
         std::thread::scope(|s| {
-            let waiting = s.spawn(|| ends.wait(0, 0, &gone));
+            let waiting = crate::daemon::party::spawn_in(s, || ends.wait(0, 0, &gone));
             ends.close();
             assert_eq!(waiting.join().unwrap(), None);
         });
@@ -455,7 +455,7 @@ mod tests {
         assert_eq!(ends.now(1), Some((1, None)), "its next generation runs");
         assert!(!ends.over(1, 1));
         std::thread::scope(|s| {
-            let waiting = s.spawn(|| ends.wait(1, 1, &gone));
+            let waiting = crate::daemon::party::spawn_in(s, || ends.wait(1, 1, &gone));
             ends.told(1, next).unwrap();
             assert_eq!(waiting.join().unwrap(), Some(next));
         });

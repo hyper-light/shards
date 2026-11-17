@@ -494,7 +494,7 @@ mod tests {
     fn an_event_acked_on_no_connection_is_refused_as_too_long() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap().to_string();
-        std::thread::spawn(move || {
+        crate::daemon::party::spawn_member(move || {
             const CHUNK: &[u8] = b"\xa5chunk\xb8";
             for conn in listener.incoming() {
                 let Ok(mut conn) = conn else { return };
@@ -678,7 +678,7 @@ mod tests {
                 let port = listener.local_addr().unwrap().port();
                 let tls = matches!(via, Via::Tls).then(super::super::stream::tests::tls);
                 let server = tls.as_ref().map(|(server, _)| server.clone());
-                std::thread::spawn(move || {
+                crate::daemon::party::spawn_member(move || {
                     let mut kept = Vec::new();
                     for conn in listener.incoming() {
                         let Ok(conn) = conn else { return };
@@ -709,7 +709,7 @@ mod tests {
             Via::Unix => {
                 let path = home.join("f.sock");
                 let listener = shards_vmm::platform::UnixListener::bind(&path).unwrap();
-                std::thread::spawn(move || {
+                crate::daemon::party::spawn_member(move || {
                     loop {
                         let Ok((conn, _)) = listener.accept() else { return };
                         if !serve(conn, ends, &got, drop) {

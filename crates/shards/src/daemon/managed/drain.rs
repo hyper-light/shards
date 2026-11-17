@@ -797,7 +797,7 @@ mod tests {
         let drain = Drain::open(&run, &labels(), &[0, 1], &[], Some(KEEPING), 64).unwrap();
         let mut shown = Vec::new();
         std::thread::scope(|threads| {
-            let viewer = threads.spawn(|| {
+            let viewer = crate::daemon::party::spawn_in(threads, || {
                 let mut to = Vec::new();
                 drain.show(&mut to);
                 to
@@ -918,7 +918,7 @@ mod tests {
             let (mut reader, writer) = std::io::pipe().unwrap();
             let shown = std::thread::scope(|threads| {
                 let drain = &drain;
-                let viewer = threads.spawn(move || {
+                let viewer = crate::daemon::party::spawn_in(threads, move || {
                     let mut to = writer;
                     drain.show(&mut to);
                 });

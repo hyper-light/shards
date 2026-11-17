@@ -159,7 +159,7 @@ pub(super) fn serve(start: Start, logs: &Logs<'_>, admissions: exec::Admissions,
     std::thread::scope(|scope| {
         let (let_go, waiting) = gone;
         // It takes no steering; its steering closes as the endpoint lets the lane go.
-        let watched = std::thread::Builder::new()
+        let watched = crate::daemon::DaemonThread::new()
             .name("log-lane-gone".into())
             .spawn_scoped(scope, move || {
                 while steer.recv().is_ok() {}

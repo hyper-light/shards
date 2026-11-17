@@ -1186,19 +1186,22 @@ impl<D: crate::containers::Disk> Daemon<D> {
                     .map(|(id, _, pid)| {
                         pid.map(|_| {
                             let paused = paused.contains(id);
-                            scope.spawn(move || {
-                                if paused {
-                                    lock(&LAST_USAGE).get(id).cloned()
-                                } else {
-                                    self.usage_of(id)
-                                }
-                            })
+                            super::DaemonThread::new()
+                                .name("stats".into())
+                                .spawn_scoped(scope, move || {
+                                    if paused {
+                                        lock(&LAST_USAGE).get(id).cloned()
+                                    } else {
+                                        self.usage_of(id)
+                                    }
+                                })
                         })
                     })
                     .collect();
+                // One whose thread was not made has no sample, as one whose sample failed.
                 asked
                     .into_iter()
-                    .map(|h| h.and_then(|h| h.join().ok().flatten()))
+                    .map(|h| h.and_then(|h| h.ok()?.join().ok().flatten()))
                     .collect()
             })
         };
@@ -3254,12 +3257,12 @@ mod tests {
         let (told, answer) = std::sync::mpsc::channel();
         let busy = AtomicBool::new(true);
         let said = std::thread::scope(|s| {
-            s.spawn(|| {
+            crate::daemon::party::spawn_in(s, || {
                 while busy.load(Ordering::Relaxed) {
                     std::hint::black_box(std::time::Instant::now());
                 }
             });
-            s.spawn(move || {
+            crate::daemon::party::spawn_in(s, move || {
                 std::thread::sleep(Duration::from_millis(10_500));
                 let _ = told.send(Ok(shards_vmm::vm::GuestTimes::default()));
             });
@@ -3302,7 +3305,7 @@ mod tests {
         let vm = idle.id();
         std::thread::scope(|s| {
             let record = &record;
-            s.spawn(move || {
+            crate::daemon::party::spawn_in(s, move || {
                 let _ = done.send(super::guest_timed(&answer, vm, record));
             });
             let said = finished.recv_timeout(Duration::from_secs(10));
@@ -3421,7 +3424,7 @@ mod tests {
         let (ours, theirs) = UnixStream::pair().unwrap();
         theirs.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
         // Read as it is sent: more than a socket's buffer goes.
-        let reading = std::thread::spawn(move || {
+        let reading = crate::daemon::party::spawn_member(move || {
             let mut got = Vec::new();
             let mut out = Vec::new();
             while let Some(m) = shards_ipc::recv(&theirs).unwrap() {

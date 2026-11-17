@@ -138,7 +138,7 @@ impl<D: Disk> Daemon<D> {
     pub(super) fn serve_slots<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>, requests: Requests) {
         let (tell, heard) = mpsc::channel();
         *lock(&self.slot_events) = Some(tell.clone());
-        let spawned = std::thread::Builder::new()
+        let spawned = crate::daemon::DaemonThread::new()
             .name("slots".into())
             .spawn_scoped(threads, move || self.make_slots(threads, requests, &tell, &heard));
         if let Err(e) = spawned {
@@ -377,7 +377,7 @@ impl<D: Disk> Daemon<D> {
         // Among the daemon's live slots from here: its serving's end, or a thread never
         // started, lets go of it.
         let living = Living::new(self, n);
-        let served = std::thread::Builder::new()
+        let served = crate::daemon::DaemonThread::new()
             .name("slot".into())
             .spawn_scoped(threads, move || self.serve_slot(threads, slot, &tell, &living));
         if let Err(e) = served {
@@ -591,24 +591,23 @@ impl<D: Disk> Daemon<D> {
                 let _ = ours.shutdown(std::net::Shutdown::Write);
             }
             if sent.is_ok() {
-                let onward =
-                    std::thread::Builder::new()
-                        .name("slot-say".into())
-                        .spawn_scoped(inner, move || {
-                            loop {
-                                #[cfg(unix)]
-                                let said = slots::read_frame(say);
-                                #[cfg(windows)]
-                                let said = slots::read_frame_until(say, said_all);
-                                let Ok(Some(f)) = said else {
-                                    break;
-                                };
-                                if shards_ipc::send(ours, f.kind, &f.payload, &[]).is_err() {
-                                    break;
-                                }
+                let onward = crate::daemon::DaemonThread::new()
+                    .name("slot-say".into())
+                    .spawn_scoped(inner, move || {
+                        loop {
+                            #[cfg(unix)]
+                            let said = slots::read_frame(say);
+                            #[cfg(windows)]
+                            let said = slots::read_frame_until(say, said_all);
+                            let Ok(Some(f)) = said else {
+                                break;
+                            };
+                            if shards_ipc::send(ours, f.kind, &f.payload, &[]).is_err() {
+                                break;
                             }
-                            shards_ipc::end(ours);
-                        });
+                        }
+                        shards_ipc::end(ours);
+                    });
                 if onward.is_err() {
                     shards_ipc::end(ours);
                 }

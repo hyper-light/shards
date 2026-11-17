@@ -642,7 +642,7 @@ impl<D: Disk> Daemon<D> {
     /// Starts the thread that holds the groups shards keeps to their budgets ([`Groups`]),
     /// as long as the daemon runs: it exits from within, its threads unwaited for.
     pub(super) fn start_groups<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>) {
-        if let Err(e) = std::thread::Builder::new()
+        if let Err(e) = crate::daemon::DaemonThread::new()
             .name("groups".into())
             .spawn_scoped(threads, move || self.hold_groups(threads))
         {
@@ -977,7 +977,7 @@ impl<D: Disk> Daemon<D> {
             );
         }
         let member = m.clone();
-        let spawned = std::thread::Builder::new()
+        let spawned = crate::daemon::DaemonThread::new()
             .name("group-word".into())
             .spawn_scoped(threads, move || self.speak(&member, ask));
         if let Err(e) = spawned {

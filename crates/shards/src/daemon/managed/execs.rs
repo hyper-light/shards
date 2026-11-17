@@ -76,7 +76,7 @@ pub(crate) fn host(starts: &mpsc::Receiver<Start>, hosting: &Hosting<'_>) {
     std::thread::scope(|scope| {
         while let Ok(start) = starts.recv() {
             let (number, replies) = (start.exec, start.replies.try_clone());
-            let spawned = std::thread::Builder::new()
+            let spawned = crate::daemon::DaemonThread::new()
                 .name("agent-exec".into())
                 .spawn_scoped(scope, move || {
                     let logged = matches!(start.ask.kind, exec::Kind::Log(_));
@@ -584,15 +584,15 @@ fn serve(start: Start, hosting: &Hosting<'_>) {
     std::thread::scope(|s| {
         let ended = &ended;
         // Its helpers before it starts, so that nothing it does goes unserved.
-        let steer_thread = std::thread::Builder::new()
+        let steer_thread = crate::daemon::DaemonThread::new()
             .name("exec-steer".into())
             .spawn_scoped(s, move || steer_on(steer, steering, steered, ended));
-        let out_pump = std::thread::Builder::new()
+        let out_pump = crate::daemon::DaemonThread::new()
             .name("exec-stdout".into())
             .spawn_scoped(s, || pump(&stdout.0, out_pipe, &mut out_buffer));
         let err_pump = match (err_pipe, stderr.as_ref(), err_buffer.as_mut()) {
             (Some(pipe), Some((producer, _)), Some(buffer)) => Some(
-                std::thread::Builder::new()
+                crate::daemon::DaemonThread::new()
                     .name("exec-stderr".into())
                     .spawn_scoped(s, move || pump(producer, pipe, buffer)),
             ),
@@ -600,7 +600,7 @@ fn serve(start: Start, hosting: &Hosting<'_>) {
         };
         let feeder = match (in_pipe, stdin.as_ref()) {
             (Some(pipe), Some((relay, control))) => Some(
-                std::thread::Builder::new()
+                crate::daemon::DaemonThread::new()
                     .name("exec-stdin".into())
                     .spawn_scoped(s, move || feed(relay, control, pipe)),
             ),

@@ -724,7 +724,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 // reads only at its end.
                 let gone = to.clone();
                 let conn = reply.0;
-                let watch = std::thread::Builder::new()
+                let watch = crate::daemon::DaemonThread::new()
                     .name("events-asker".into())
                     .spawn_scoped(scope, move || {
                         let mut byte = [0u8; 1];

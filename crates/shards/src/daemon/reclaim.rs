@@ -72,7 +72,7 @@ impl<D: Disk> Daemon<D> {
             "watching the host's memory pressure: {}",
             pressure.describe()
         ));
-        if let Err(e) = std::thread::Builder::new()
+        if let Err(e) = crate::daemon::DaemonThread::new()
             .name("pressure".into())
             .spawn_scoped(threads, move || self.watch_pressure(threads, pressure))
         {
@@ -194,23 +194,22 @@ impl<D: Disk> Daemon<D> {
             }
             asked = true;
             let gone = vm.clone();
-            let spawned =
-                std::thread::Builder::new()
-                    .name("give-back".into())
-                    .spawn_scoped(threads, move || {
-                        let before = super::budget::resident_file(pid);
-                        let asked = Instant::now();
-                        let gave = self.give_back_of(&id, pid);
-                        self.given_back(&vm);
-                        if let Some(gave) = gave {
-                            *lock(&self.watching.acted) = Some(asked.elapsed());
-                            self.budgets.gave_back(pid, before, gave.freed);
-                            self.budgets.gave_at_pressure(pid, gave);
-                            self.gave(gave);
-                        }
-                        // What it gave back its budget may let it have again (D188).
-                        self.tell_room(threads, pid);
-                    });
+            let spawned = crate::daemon::DaemonThread::new()
+                .name("give-back".into())
+                .spawn_scoped(threads, move || {
+                    let before = super::budget::resident_file(pid);
+                    let asked = Instant::now();
+                    let gave = self.give_back_of(&id, pid);
+                    self.given_back(&vm);
+                    if let Some(gave) = gave {
+                        *lock(&self.watching.acted) = Some(asked.elapsed());
+                        self.budgets.gave_back(pid, before, gave.freed);
+                        self.budgets.gave_at_pressure(pid, gave);
+                        self.gave(gave);
+                    }
+                    // What it gave back its budget may let it have again (D188).
+                    self.tell_room(threads, pid);
+                });
             if let Err(e) = spawned {
                 self.given_back(&gone);
                 log(format!(
