@@ -19,13 +19,13 @@ for the seven targets of `resources/supported-targets.txt`, attaches each binary
 - **musl's `shards` is static**: no `INTERP` program header and no `NEEDED` entry
   (`readelf`).
 - The release itself is made with `gh release create --generate-notes`, titled with the
-  tag. The notes file replaces that afterwards (step 5).
-- **A dry run** (`gh workflow run release.yml -f dry_run=true --ref main`) does all a tag
-  push does but publish: its guard checks that `v` and the version, the tag a release of the
-  commit would carry, is no tag on origin yet; the seven binaries build `--locked` as a tag's
-  do; and `SHA256SUMS` is made as the release makes it. The binaries and `SHA256SUMS` stay
-  the run's artifacts, and the release job, the only one that can write to the repository,
-  never starts.
+  tag. The notes file replaces that afterwards (step 6).
+- **A dry run** (`gh workflow run release.yml -f dry_run=true --ref <branch>`, step 5) does
+  all a tag push does but publish: its guard checks that `v` and the version, the tag a
+  release of the commit would carry, is no tag on origin yet; the seven binaries build
+  `--locked` as a tag's do; and `SHA256SUMS` is made as the release makes it. The binaries
+  and `SHA256SUMS` stay the run's artifacts, and the release job, the only one that can
+  write to the repository, never starts.
 
 ## Steps
 
@@ -54,7 +54,26 @@ such as `$REL:refs/heads/main`, or `$M:path`) is mangled by zsh's `:` modifiers:
    only arm64 macOS is tested locally; strip colours and `grep -a` the job logs for
    failures). A later push to `main` cancels a run still waiting, so the commit tagged is
    one whose own run finished green.
-5. **Tag and release**, on that commit:
+5. **Dry-run `release.yml` on that commit.** A build that fails after the tag is pushed
+   leaves a tag without a release; the dry run finds it first. Dispatch it on the release
+   branch once its head is final, the commit `main` fast-forwards to in step 3, before that
+   push or beside step 4's run (`--ref main` builds the same commit while it is `main`'s
+   head):
+
+   ```sh
+   gh workflow run release.yml --repo hyper-light/shards -f dry_run=true --ref <branch>
+   gh run list --repo hyper-light/shards --workflow release.yml --event workflow_dispatch \
+     --branch <branch> --limit 1 --json databaseId,headSha,status
+   gh run watch <id> --repo hyper-light/shards --exit-status
+   ```
+
+   It has passed when its `headSha` is the commit, `The tag is the version` says
+   `<commit> would be released as v<version>`, the seven builds and `SHA256SUMS (dry run)`
+   have succeeded, `GitHub Release` was skipped, and its `SHA256SUMS` artifact
+   (`gh run download <id> --repo hyper-light/shards -n SHA256SUMS`) names the seven
+   binaries. A dry run proves nothing of a later head: dispatch again whenever the branch
+   moves.
+6. **Tag and release**, on that commit:
 
    ```sh
    gits tag -s v<version> -m "shards <version>" "$REL"
@@ -73,7 +92,7 @@ such as `$REL:refs/heads/main`, or `$M:path`) is mangled by zsh's `:` modifiers:
    Check the release lists all seven binaries (`shards-darwin-arm64`, `shards-linux-amd64`,
    `shards-linux-arm64`, `shards-linux-amd64-musl`, `shards-linux-arm64-musl`,
    `shards-windows-amd64.exe`, `shards-windows-arm64.exe`) and `SHA256SUMS`.
-6. **Tell T4**, kiln's agent that runs its harnesses in shards microVMs through the CLI and
+7. **Tell T4**, kiln's agent that runs its harnesses in shards microVMs through the CLI and
    the Engine API (kiln agent `01a15e86c8eb7397a5555a65dce1fc51`, named Isolation), with
    kiln's `agents_send` (or `kiln agents send --queue ID TEXT`): the tag, the commit, the CI
    run that passed, and what in the release changes what T4 uses. If T4 is paused, the
