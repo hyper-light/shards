@@ -32,8 +32,10 @@ dump() {
     echo "home: $home" >> "$at/command.txt"
     ps -eLo pid,tid,ppid,pgid,etimes,stat,wchan:32,comm,args > "$at/ps.txt"
     [ -n "$home" ] || return
-    # The home's daemon, whose working directory is its home, and every process under it.
-    for d in $(pgrep -f "shards daemon"); do
+    # The home's daemon, whose working directory is its home, and every process under it: a
+    # daemon's own command line alone (`shards daemon`, its starter's `--detached`, its own
+    # `--ready N [--listen ADDR]`), not `shards daemon stop`, a client that works in the home too.
+    for d in $(pgrep -f "shards daemon( --|$)"); do
         [ "$(readlink "/proc/$d/cwd" 2>/dev/null)" = "$home" ] && daemon=$d
     done
     # The home, as the daemon's working directory: the same directory from here.
@@ -75,9 +77,13 @@ dump() {
 seen=" "
 while true; do
     for cli in $(pgrep -f "/target/[^ ]*/e2e/shards-[0-9a-f]+/shards |/target/e2e/shards-[0-9a-f]+/shards |/shards-tests/[0-9]+/[^ /]+/shards "); do
-        # A command gone since pgrep found it has no cmdline to read: said nowhere.
+        # A command gone since pgrep found it has no cmdline to read: said nowhere. The daemon
+        # and its helpers live past 40 s as they should; a daemon's own command line is all of
+        # `shards daemon` this passes over, as `shards daemon stop` is a client: one that never
+        # ended went undumped (CI 43990298220, x86_64 gnu, containers.rs
+        # `a_stopping_daemon_starts_no_pending_run`, to the step's limit).
         case "$({ tr '\0' ' ' < "/proc/$cli/cmdline"; } 2>/dev/null)" in
-            "" | *"shards daemon"* | *"shards spawner"* | *"shards share"*) continue ;;
+            "" | *"shards daemon " | *"shards daemon --"* | *"shards spawner"* | *"shards share"*) continue ;;
         esac
         age=$(ps -o etimes= -p "$cli" 2>/dev/null | tr -d ' ')
         [ -n "$age" ] && [ "$age" -ge 40 ] || continue
