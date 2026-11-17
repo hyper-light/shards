@@ -381,13 +381,15 @@ jobs:
   # shards against Firecracker on one KVM host: the same kernel, initrd and command line,
   # interleaved (crates/shards/benches/firecracker.rs). Hosted arm64 runners have no /dev/kvm.
   # Its limit, as M560 makes a job's: its steps' own limits, Arrival's 5 and Guest memory's 1,
-  # and a third above the slowest its other steps took together in GitHub's records, 1420 s of
-  # 33, so 32 (D209 Part 11 amended). A job cut at its limit kept no log and ran no step after
-  # it, 12 times of 12.
+  # and a third above the slowest its other steps took together in GitHub's records, 1421 s
+  # (CI 44189693085, the six snapshot pairs in), with the 408 s at most its comparison now
+  # waits to read restores' and fleets' memory (396 restores and 12 fleets, each a working
+  # set's window, RECORD_FOR's 1 s, D36): 2439 s, so 41 (D209 Part 11 amended). A job cut at
+  # its limit kept no log and ran no step after it, 12 times of 12.
   firecracker:
     name: firecracker comparison (x86_64)
     runs-on: ubuntu-24.04
-    timeout-minutes: 38
+    timeout-minutes: 47
     steps:
       - uses: actions/checkout@v7.0.1
       - name: Install pinned Rust

@@ -1291,6 +1291,11 @@ struct Pool {
     /// refill that failed otherwise leaves them waiting for the next (`Daemon::claim`). No
     /// more than the runs that wait: one that leaves unfailed takes one with it.
     refused: VecDeque<String>,
+    /// Its refills that came ready, and those that ended unready for no fault of its
+    /// template's, counted: what a claim's judged wait reads of its pool (`Daemon::claim`;
+    /// D215, D26).
+    readied: u64,
+    ended_unready: u64,
     /// Its runs' arrivals and its refills' times, which say how many VMs it keeps; its
     /// last claim orders eviction, least recent first.
     demand: shards_api::demand::Demand,
@@ -8999,7 +9004,11 @@ impl<D: Disk> Daemon<D> {
     /// burst waits for no refill (audit A13, A14). Waited for while a VM of its pool starts,
     /// whose watcher, D215's judge of its start (`ready`), wakes it as that VM is ready or
     /// given up; refused at once where none is starting and none can be planned, as then
-    /// none comes for it.
+    /// none comes for it. The wait is judged as its own (D215, by the record of starts, the
+    /// kind it waits on: ROOT's ruling of 2026-11-17): its pool's progress is a refill come
+    /// ready (`Pool::readied`), and a pool none of whose refills comes ready over a whole W*
+    /// of starts, for no fault of its template's (refills its host refuses, D261), refuses
+    /// the run.
     fn claim<'s, 'e>(
         &'s self,
         threads: &'s Threads<'s, 'e>,
@@ -9009,6 +9018,15 @@ impl<D: Disk> Daemon<D> {
     ) -> Result<Ready, Claim> {
         let began = Instant::now();
         let mut state = lock(&self.state);
+        let mut judge = shards_api::Judge::begin(&self.answers.ready);
+        // Its pool's counts at the look before: what the next shows its progress by.
+        let counts = |state: &State| {
+            state
+                .pools
+                .get(key)
+                .map(|p| (p.readied, p.ended_unready, p.starting > 0))
+        };
+        let (mut readied, mut ended) = counts(&state).map_or((0, 0), |(r, e, _)| (r, e));
         let mut waiting = false;
         let leave = |state: &mut State, waiting: bool| {
             if waiting && let Some(pool) = state.pools.get_mut(key) {
@@ -9081,7 +9099,44 @@ impl<D: Disk> Daemon<D> {
                     began.elapsed()
                 )));
             }
-            state = timed(None, || self.changed.wait(state)).unwrap_or_else(PoisonError::into_inner);
+            // Woken as its pool changes, or at its judge's next look where it is judged; a pool
+            // that has kept no refill ready since the look before is still.
+            state = match judge.due() {
+                None => timed(None, || self.changed.wait(state)).unwrap_or_else(PoisonError::into_inner),
+                Some(due) => {
+                    let wait = due.saturating_duration_since(Instant::now());
+                    timed(Some(wait), || self.changed.wait_timeout(state, wait))
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .0
+                }
+            };
+            // A look, once due: progressed where a refill came ready since the look before;
+            // live (`Held`) where one still starts, its own start's judge following it, and none
+            // has ended unready since; still where its refills keep ending unready, or none
+            // starts. A look before its due judges nothing, so takes nothing.
+            if judge.due().is_none_or(|due| Instant::now() < due) {
+                continue;
+            }
+            let (now_readied, now_ended, starting) = counts(&state).unwrap_or((readied, ended, false));
+            let found = if now_readied != readied {
+                shards_api::Found::Progressed
+            } else if starting && now_ended == ended {
+                shards_api::Found::Held
+            } else {
+                shards_api::Found::Still
+            };
+            (readied, ended) = (now_readied, now_ended);
+            if let Err(stall) = judge.found(found) {
+                leave(&mut state, waiting);
+                return Err(Claim::Failed(format!(
+                    "no warm VM of {} was ready in {:?}: none of its refills came ready for {:?}, past \
+                     the slowest start seen ({:?}), for no fault of its template's",
+                    key.dir.display(),
+                    began.elapsed(),
+                    stall.over(),
+                    stall.slowest()
+                )));
+            }
         }
     }
 
@@ -9635,6 +9690,7 @@ impl<D: Disk> Daemon<D> {
                 let came = ready.is_ok();
                 match ready {
                     Ok(()) => {
+                        pool.readied += 1;
                         let took = began.elapsed();
                         pool.demand.refilled(took);
                         // Said, as the daemon alone times its refills: the window a reader
@@ -9675,6 +9731,9 @@ impl<D: Disk> Daemon<D> {
                     // for it (`Pool::refused`). Any other end counts against nothing, and the
                     // runs that wait plan the next refill.
                     Err((e, fault)) => {
+                        if fault != Fault::Template {
+                            pool.ended_unready += 1;
+                        }
                         match fault {
                             Fault::Template => {
                                 pool.broken = true;
@@ -17607,6 +17666,71 @@ mod tests {
             });
             let why = claimed.unwrap_err();
             assert!(why.contains("ran nothing for"), "{why}");
+            let state = lock(&t.daemon.state);
+            assert!(
+                state
+                    .pools
+                    .get(&own(&dir))
+                    .is_none_or(|p| !p.broken && p.waiting == 0)
+            );
+        });
+    }
+
+    /// A run waiting on a pool whose refills keep ending unready for no fault of its template's
+    /// (each ending NOT_RUN, as one its host refuses to enter ends) is refused by its own
+    /// judged wait (D215, by the record of starts: ROOT's ruling of 2026-11-17) once no refill
+    /// has come ready over a whole W* of starts: the run fails, its template whole. Red where
+    /// its wait had no judge of its own, the refills' alone (it waited on its pool for ever,
+    /// here until the test served it).
+    #[cfg(unix)]
+    #[test]
+    fn a_run_waiting_on_a_pool_that_keeps_refusing_refills_is_refused_by_its_own_judge() {
+        let t = Test::new("refusing-pool");
+        t.run(|t| {
+            let dir = t.home.join("template");
+            template(&dir);
+            let rootfs = dir.with_extension("erofs");
+            let stamp = shards_image::store::rootfs_stamp(&rootfs);
+            // Its starts' W* taught: the window the run's own wait is judged over.
+            let slowest = Duration::from_millis(100);
+            t.daemon.answers.ready.teach(slowest, Duration::from_millis(1));
+            // A refill starting for it from the first, so that it plans none of its own.
+            pool_of(&mut lock(&t.daemon.state), &own(&dir), &rootfs, stamp.as_deref()).starting = 1;
+            let (test, threads) = (t.t, t.threads);
+            let began = Instant::now();
+            let claimed = std::thread::scope(|s| {
+                let claiming = party::spawn_in(s, || {
+                    match test.daemon.claim(threads, &own(&dir), &rootfs, stamp.as_deref()) {
+                        Ok(ready) => Ok(ready.vm.id()),
+                        Err(Claim::Broken) => Err("found broken".to_string()),
+                        Err(Claim::Failed(why)) => Err(why),
+                    }
+                });
+                // Refills ending unready, one after another, the next counted as starting before
+                // the last ends. A judge refuses a party still throughout within
+                // `LOOKS_TO_REFUSE` due looks, unheld; twice that past its first is waited out
+                // for its looks that a busy host runs late, before an unrefused run is served.
+                let bound = slowest * (shards_api::LOOKS_TO_REFUSE + 1) * 2;
+                while !claiming.is_finished() && began.elapsed() < bound {
+                    lock(&test.daemon.state)
+                        .pools
+                        .get_mut(&own(&dir))
+                        .unwrap()
+                        .starting += 1;
+                    refill_played(t, &dir, Played::Ended(crate::spec::NOT_RUN));
+                }
+                if !claiming.is_finished() {
+                    lock(&test.daemon.state)
+                        .pools
+                        .get_mut(&own(&dir))
+                        .unwrap()
+                        .starting += 1;
+                    refill_played(t, &dir, Played::Ready);
+                }
+                claiming.join().unwrap()
+            });
+            let why = claimed.unwrap_err();
+            assert!(why.contains("none of its refills came ready"), "{why}");
             let state = lock(&t.daemon.state);
             assert!(
                 state

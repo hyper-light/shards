@@ -222,6 +222,21 @@ pub const WORKING_SETS: bool = cfg!(hv);
 /// after (vm::mapped), and whose pages later restores touch, where the saving run's they
 /// barely do (PM M33).
 pub const RESTORES_RECORD: bool = cfg!(any(hv = "kvm", hv = "whp"));
+/// How long a VM records its working set after its command starts, at most, unless the
+/// command answers first: a command still running then has long passed its start. The
+/// whole way from the request to the start is recorded, however long a host takes over
+/// it (a nested KVM host took 28 ms, PM M33). Its working set's window (D25), which the
+/// Firecracker comparison's restore and density rows read both VMMs' memory at (D36).
+/// - HVF: 50 ms. Recording slows the guest about sixfold (a pooled `true` took 9.9 ms
+///   against 1.5, PM M30), so this is some 8 ms of the command's own time, past the 5 ms
+///   a run should take.
+/// - KVM: 1 s. Recording costs nothing, and a nested host took 125 ms to run `true` (PM
+///   M33).
+pub const RECORD_FOR: std::time::Duration = if RESTORES_RECORD {
+    std::time::Duration::from_secs(1)
+} else {
+    std::time::Duration::from_millis(50)
+};
 
 #[cfg(any(hv, test))]
 mod barrier;

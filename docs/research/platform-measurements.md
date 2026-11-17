@@ -26343,6 +26343,21 @@ the counts are a process's, not a thread's. n is one run of each child.
   95%, computed from it (benches/firecracker.rs `snapshot_pairs`): 6, at 96.9%. The boot's
   rows, each sample a fresh boot, keep the bootstrap. The CI time the pairs add is unmeasured
   until a run shows it.
+- **Six pairs in CI, and read after the same guest time** (CI 44189693085 at 0782de3cf, job
+  134418024122, an Azure Intel Xeon Platinum 8573C; docs/research/measurements/vm-text
+  `ci-44189693085.txt`). The six pairs ran in its Compare's 1193 s. The Envelope failed
+  `firecracker_restore/rss_anon` +0.0254 MiB [+0.0078, +0.0586] and
+  `firecracker_density/fleet_private` +0.0254 MiB [+0.0078, +0.0547], all six pairs worse
+  (+2 to +15 pages), every other row better or tied. Pair by pair (`within.py`): shards-vm's
+  own anonymous pages 37 in every pair to Firecracker's process's 112 to 129; its guest's
+  private copies 223 to 231 to Firecracker's guest's 125 to 145; its first beat 8.2 ms to
+  11.7. shards' copies are made ahead, from a working set recorded over its guest's first
+  second (D25); Firecracker's are what its guest wrote by its first beat, when both were
+  read: a window's writes against a beat's. ROOT's ruling (R08/R14, 2026-11-17): the
+  copy-ahead stays, D25's trade for the first beat; the restores' and fleets' memory rows
+  are read once each guest has run past its first beat for that window
+  (`shards_vmm::vm::RECORD_FOR`, 1 s on KVM), both VMMs alike, `to_beat` and KVM's counters
+  still at the first beat (D36). Their verdicts under it are owed to the next CI run.
 
 ### M617. The boot's anonymous memory against Firecracker's, on Intel and AMD (vm-text 44031672087, 44076339609 and 44138427198; CI 44138098584 and 44125576545)
 

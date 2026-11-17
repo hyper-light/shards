@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use shards_vmm::vm::{
-    self, AfterSnapshot, Config, Console, Disk, ExitReason, Handle, RestoreConfig, Running, SnapshotPolicy,
-    VsockHost,
+    self, AfterSnapshot, Config, Console, Disk, ExitReason, Handle, RECORD_FOR, RestoreConfig, Running,
+    SnapshotPolicy, VsockHost,
 };
 
 use crate::spec::Options;
@@ -2601,21 +2601,6 @@ fn serve_workload(
         }
     }
 }
-
-/// How long a VM records its working set after its command starts, at most, unless the
-/// command answers first: a command still running then has long passed its start. The
-/// whole way from the request to the start is recorded, however long a host takes over
-/// it (a nested KVM host took 28 ms, PM M33).
-/// - HVF: 50 ms. Recording slows the guest about sixfold (a pooled `true` took 9.9 ms
-///   against 1.5, PM M30), so this is some 8 ms of the command's own time, past the 5 ms
-///   a run should take.
-/// - KVM: 1 s. Recording costs nothing, and a nested host took 125 ms to run `true` (PM
-///   M33).
-const RECORD_FOR: std::time::Duration = if shards_vmm::vm::RESTORES_RECORD {
-    std::time::Duration::from_secs(1)
-} else {
-    std::time::Duration::from_millis(50)
-};
 
 /// Saves the working set `after` from now, if the VM still records it then.
 fn end_recording_in(handle: &Handle, after: std::time::Duration) {

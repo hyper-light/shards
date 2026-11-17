@@ -1202,7 +1202,12 @@ is `crates/shards/src/run.rs` and `crates/shards/src/guest.rs`.
     `written_pages`. Copying ahead only those would hold the rest uncopied until its guest
     writes them, each then copied on its first write, as Firecracker's are; the cost to
     `to_beat` and a command's first second is unmeasured too. Not taken for 0.8.0 (ROOT,
-    2026-11-17).
+    2026-11-17). Decided (ROOT's ruling, R08/R14, 2026-11-17): the copy-ahead stays, the
+    trade it is (CI 44189693085, an Azure Intel Xeon Platinum 8573C: copies 223 to 231 pages
+    to Firecracker's 125 to 145, shards-vm's own 37 to 112 to 129, the first beat 8.2 ms to
+    11.7), and the comparison reads both VMMs' memory after the same guest time, the end of
+    this recording's window (`RECORD_FOR`, now `shards_vmm::vm`'s, which the VM process and
+    the bench share): D36.
 - **Where it applies.** Builds that can snapshot (HVF on arm64, KVM on x86_64,
   `vm::SNAPSHOTS`, and so `vm::WORKING_SETS`); elsewhere every run boots. `--kernel`
   and `--init`, or `SHARDS_KERNEL` and `SHARDS_INIT`, name files by path, so those runs
@@ -1388,19 +1393,28 @@ for the exit status.
     start's judge gives up on (D215, `ready`: it ran nothing past the slowest start seen) fails a
     run left waiting with no refill starting for it, in the judge's words (`Pool::refused`,
     typed `NotReady::Refused`); one for each such refill, no more than the runs that wait. A run
-    has no judge of its own over its pool's refills: one whose refills keep failing for no fault
-    of its template's and of no judge's (its host refusing every entry, a VMM's error on every
-    start) waits for the next; its client is not refused on a judge either (cli: no judged
-    wait), an open gap the next amendment owes a D215 kind of its own.
+    waits on a judge of its own (ROOT's ruling of 2026-11-17, D215 by the record of starts,
+    `Answers::ready`, the kind it waits on): at each look due, its pool progressed where a
+    refill came ready since the look before (`Pool::readied`); it is live (`Found::Held`)
+    where a refill still starts, its own start's judge following it, and none has ended
+    unready since; it is still where its refills keep ending unready for no fault of its
+    template's (`Pool::ended_unready`: its host refusing every entry, a VMM's error on every
+    start) or none starts. Still for a whole W* of starts, its wait is refused, the run told
+    that none of its pool's refills came ready, its template whole. A kind not yet taught
+    judges nothing, its wait following its refills alone, as D215's cold waits do.
   - Held by daemon.rs `refills_no_fault_of_their_templates_keep_it_and_the_next_serves_the_run_waiting`
     (three refills ended NOT_RUN leave the template whole, and the run waiting is served by the
     next), `a_refill_failed_for_its_template_breaks_it` (one ended TEMPLATE_FAILED_STATUS breaks
     it, its claim then Broken) and `a_refill_its_judge_gave_up_on_fails_the_run_left_waiting`
-    (a refill silent past W* fails the run waiting, "ran nothing for", the template whole):
-    stand-in processes and links, no VM. Their reds are mutations of `watch`'s `Fault` (every
-    end the template's; none; the judge's as any other), kept in the lane's record. Owed
-    (ROOT): those tests and the pool tests, clippy on every target, and the next Intel CI run's
-    Arrival, its kept daemon log saying each refill's end and fault.
+    (a refill silent past W* fails the run waiting, "ran nothing for", the template whole), and
+    `a_run_waiting_on_a_pool_that_keeps_refusing_refills_is_refused_by_its_own_judge` (refills
+    ending NOT_RUN one after another, a W* of 100 ms taught: the run refused, "none of its
+    refills came ready", the template whole): stand-in processes and links, no VM. Their reds
+    are mutations of `watch`'s `Fault` (every end the template's; none; the judge's as any
+    other) and of `claim`'s own judge (its refusal ignored), kept in the lane's record
+    (lanes/redgreen/own-38b-*.patch). Owed (ROOT): those tests and the pool tests, clippy on
+    every target, and the next EC2 CI run's Arrival, its kept daemon log saying each refill's
+    end and fault.
   - **VMs start outside the pools' lock** (review 7.8). What a pool needs is planned under
     it and counted as starting at once, so that no other claim or refill starts it again,
     then started without it: a start spawns the VM and its network process. A claim that
@@ -3546,6 +3560,24 @@ one CLI.
         memory, huge pages' rounding and pages touched. Until it has, the row is allowed up
         to 654 KiB, the largest median gap measured, lapsing on 2026-12-01: one CI cycle on
         the reading and ROOT's runs of it (docs/benchmarks-envelope.toml).
+      - *Restores and fleets read after the same guest time* (ROOT's ruling, R08/R14,
+        2026-11-17; PM M616). CI 44189693085 (0782de3cf, an Azure Intel Xeon Platinum 8573C)
+        failed its Envelope on `firecracker_restore/rss_anon` and
+        `firecracker_density/fleet_private`, +0.0254 MiB each, all six pairs worse (+2 to +15
+        pages), and on nothing else: shards-vm's own anonymous pages 37 in every pair to
+        Firecracker's process's 112 to 129, its guest's private copies 223 to 231 to
+        Firecracker's guest's 125 to 145, and its first beat 8.2 ms to 11.7. Those rows read
+        each VMM's memory as its guest first beat: shards' copies, made ahead from a working set
+        recorded over its guest's first second (D25), against what Firecracker's guest had
+        written by its first beat alone, a window's writes against a beat's. The copy-ahead is
+        D25's trade, kept: its pages buy the first beat. So the restores' memory rows
+        (`rss_anon`, `rss_file`, `pss`, `pss_file`) and the fleets' are read once each guest has
+        run past its first beat for the window shards records a working set over
+        (`shards_vmm::vm::RECORD_FOR`, D25's own rule: 1 s on KVM), both VMMs' guests beating
+        until then, the pages the kvm table counts with them; `to_beat` and KVM's counters stay
+        at the first beat, so the trade shows both ways. The wait adds a window to each of the
+        396 restores and 12 fleets a run takes (at most 408 s on KVM), which the job's limit
+        takes (D209 Part 11: 47 minutes).
 - A daemon's build is its binary's identity, which includes what it carries; one given
   another VM binary (`SHARDS_VM_BINARY`, for VMM work and tests) is another build.
 - **Tests:** `helpers::tests` (written whole once, found after, a cut copy replaced);
@@ -14185,6 +14217,12 @@ comes to made no progress for 399 ms, past the slowest answer of its kind seen o
     not taken, or naming no refused VM, it stays in `rate_R_failed`; each is said with why. A
     refusal its client's words do not name (the third way) stays shards' failure, as in the
     tests. The drain's judge is unchanged: a request its host refused has ended.
+  - *The job's limit after D36's common point* (2026-11-17). The comparison now waits a working
+    set's window (`RECORD_FOR`, 1 s on KVM) before it reads each restore's and fleet's memory
+    (D36): at most 408 s more a run, 396 restores (6 pairs, 3 warm-ups and 30 runs of each
+    VMM) and 12 fleets. By M560's rule again: the other steps' slowest, 1421 s (CI 44189693085,
+    the six pairs in), with those 408 s, a third above, 2439 s, so 41 minutes; with Arrival's 5
+    and Guest memory's 1, 47. Re-derived from the first run that measures it.
   - *What it leaves.* Whether rate 40 on EC2's ends within Arrival's 5 minutes, and what
     fails its requests there, is open (R09: the next EC2 run's per-request words, daemon log
     and kernel's log). `daemon stop` after a cut is unmeasured, bounded by the job's limit alone.
