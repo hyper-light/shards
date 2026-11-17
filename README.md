@@ -249,14 +249,14 @@ reproducibly by CI ([resources/kernel](resources/kernel/README.md)):
 ```sh
 arch=$(uname -m | sed s/arm64/aarch64/)
 file=$([ $arch = x86_64 ] && echo vmlinux || echo Image)-6.18.48-$arch
-curl -fLo vmlinux https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-17c3ba205400/$file
+curl -fLo vmlinux https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-836568f8ad2c/$file
 shasum -a 256 vmlinux
 ```
 
 | Architecture | SHA-256 |
 |---|---|
-| aarch64 (arm64) | `88fe0db804983c20158cd2fecdd5c6f90655ad5f33fa3f0cd0b22bf8c841391e` |
-| x86_64 | `85682e108bca1e3fd0d90ee649a939e344f507af703aacca1b266511f1052c08` |
+| aarch64 (arm64) | `c9dd57ba93276d9fc3842a6014b05111dec4ff42cfc0b23ea18b73438743e755` |
+| x86_64 | `7a36f8858f3db357728540139c8b37ea70eb5d3274f0c8aaf10b2c9cc5ba9e46` |
 
 Build `shards-init`, a tiny PID 1 that reports Linux's boot time and powers off:
 
