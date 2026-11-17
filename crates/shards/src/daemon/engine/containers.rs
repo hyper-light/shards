@@ -567,7 +567,7 @@ impl<D: Disk> Daemon<D> {
             lock(&self.engine.terminals).insert(id.to_string(), held);
         }
         let ended = id.to_string();
-        let spawned = std::thread::Builder::new()
+        let spawned = crate::daemon::DaemonThread::new()
             .name("engine-output".into())
             .spawn_scoped(threads, move || {
                 std::thread::scope(|s| {
@@ -577,12 +577,13 @@ impl<D: Disk> Daemon<D> {
                     // on, and its log has it.
                     for (stream, from, name) in [(1, out, "engine-stdout"), (2, err, "engine-stderr")] {
                         let copying = copying.clone();
-                        let _ = std::thread::Builder::new()
-                            .name(name.into())
-                            .spawn_scoped(s, move || {
-                                outputs.copy(stream, from, true);
-                                drop(copying);
-                            });
+                        let _ =
+                            crate::daemon::DaemonThread::new()
+                                .name(name.into())
+                                .spawn_scoped(s, move || {
+                                    outputs.copy(stream, from, true);
+                                    drop(copying);
+                                });
                     }
                     drop(copying);
                     // Its end, which the VM says once the command has ended.
@@ -958,7 +959,7 @@ impl<D: Disk> Daemon<D> {
             // Its streams until it goes: then the VM's attach ends as their pipes close.
             for (stream, from, name) in [(1, out, "engine-stdout"), (2, err, "engine-stderr")] {
                 let copying = copying.clone();
-                let _ = std::thread::Builder::new()
+                let _ = crate::daemon::DaemonThread::new()
                     .name(name.into())
                     .spawn_scoped(s, move || {
                         outputs.copy(stream, from, false);
@@ -967,7 +968,7 @@ impl<D: Disk> Daemon<D> {
             }
             drop(copying);
             if request.stdin {
-                let _ = std::thread::Builder::new()
+                let _ = crate::daemon::DaemonThread::new()
                     .name("engine-stdin".into())
                     .spawn_scoped(s, move || {
                         if input(conn, &mut stdin_by, tty.then_some(keys)) {

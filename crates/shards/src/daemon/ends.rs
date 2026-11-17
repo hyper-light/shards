@@ -308,7 +308,7 @@ mod tests {
         let ends = Ends::kept_in(&home);
         let (send, completed) = std::sync::mpsc::channel();
         std::thread::scope(|scope| {
-            scope.spawn(|| {
+            crate::daemon::party::spawn_in(scope, || {
                 send.send(ends.heard(End::Helper, Duration::from_secs(8)))
                     .unwrap()
             });

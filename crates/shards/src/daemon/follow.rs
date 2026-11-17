@@ -247,7 +247,7 @@ impl<D: Disk> Daemon<D> {
     pub(super) fn start_followers<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>) {
         let f = &self.followers;
         if !f.started.swap(true, Ordering::SeqCst)
-            && let Err(e) = std::thread::Builder::new()
+            && let Err(e) = crate::daemon::DaemonThread::new()
                 .name("followers".into())
                 .spawn_scoped(threads, move || self.follow_all(threads))
         {
@@ -426,7 +426,7 @@ impl<D: Disk> Daemon<D> {
             Err(e) if e.raw_os_error() == Some(libc::ESRCH) => self.process_ended(threads, token),
             Err(e) => {
                 let pid = child.id();
-                let waiting = std::thread::Builder::new()
+                let waiting = crate::daemon::DaemonThread::new()
                     .name("process end".into())
                     .spawn_scoped(threads, move || {
                         let _ = child.ended();
@@ -697,7 +697,7 @@ impl<D: Disk> Daemon<D> {
         if c.started.swap(true, Ordering::SeqCst) {
             return;
         }
-        if let Err(e) = std::thread::Builder::new()
+        if let Err(e) = crate::daemon::DaemonThread::new()
             .name("completer".into())
             .spawn_scoped(threads, move || self.complete_all())
         {

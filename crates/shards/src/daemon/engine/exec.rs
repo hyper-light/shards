@@ -230,7 +230,7 @@ impl<D: Disk> Daemon<D> {
                 return Done::Answer(refused(&said, 500));
             }
             // Started: its end, which the VM says after, is kept as it comes.
-            let followed = std::thread::Builder::new()
+            let followed = crate::daemon::DaemonThread::new()
                 .name("engine-exec".into())
                 .spawn_scoped(threads, move || {
                     let mut code = None;
@@ -269,7 +269,7 @@ impl<D: Disk> Daemon<D> {
             let copied =
                 [(1, out, "engine-stdout"), (2, err, "engine-stderr")].map(|(stream, from, name)| {
                     let copying = copying.clone();
-                    std::thread::Builder::new()
+                    crate::daemon::DaemonThread::new()
                         .name(name.into())
                         .spawn_scoped(s, move || {
                             outputs.copy(stream, from, true);
@@ -279,7 +279,7 @@ impl<D: Disk> Daemon<D> {
             drop(copying);
             if reads {
                 let keys = &keys;
-                let _ = std::thread::Builder::new()
+                let _ = crate::daemon::DaemonThread::new()
                     .name("engine-stdin".into())
                     .spawn_scoped(s, move || {
                         if input(conn, &mut stdin_by, tty.then_some(keys.as_slice())) {

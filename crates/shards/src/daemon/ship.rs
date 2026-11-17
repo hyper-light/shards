@@ -1044,7 +1044,7 @@ impl<D: Disk> Daemon<D> {
         }
         let owned = id.to_string();
         let to = crate::logging::destination(&run);
-        let spawned = std::thread::Builder::new()
+        let spawned = crate::daemon::DaemonThread::new()
             .name("shipper".into())
             .spawn_scoped(threads, move || {
                 loop {
@@ -1854,7 +1854,7 @@ mod tests {
         let refusals = std::sync::Mutex::new(Vec::new());
         let (run, refused) = (&*dir, &refusals);
         std::thread::scope(|s| {
-            let shipper = s.spawn(move || {
+            let shipper = crate::daemon::party::spawn_in(s, move || {
                 until_done("c", run, TO, &Wait(&stopped), || {
                     refused.lock().unwrap().push(std::time::SystemTime::now());
                     Err(io::ErrorKind::ConnectionRefused.into())

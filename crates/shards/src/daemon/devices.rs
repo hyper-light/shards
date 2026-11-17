@@ -1491,7 +1491,7 @@ mod tests {
         let (go, until_go) = mpsc::channel::<()>();
         let (b_done, larger_done) = mpsc::channel();
         std::thread::scope(|s| {
-            let smaller = s.spawn(|| {
+            let smaller = crate::daemon::party::spawn_in(s, || {
                 CHECKED.with(|c| {
                     *c.borrow_mut() = Some(Box::new(move || {
                         paused.send(()).unwrap();
@@ -1501,7 +1501,7 @@ mod tests {
                 grow_disk(&steps, "vm", 128 * MIB, || Ok(disk_at(&file)), |_| Ok(()))
             });
             at_pause.recv().unwrap();
-            let larger = s.spawn(|| {
+            let larger = crate::daemon::party::spawn_in(s, || {
                 let grown = grow_disk(
                     &steps,
                     "vm",
@@ -1575,7 +1575,7 @@ mod tests {
         let held = steps.hold("a");
         drop(steps.hold("b"));
         std::thread::scope(|s| {
-            let next = s.spawn(|| drop(steps.hold("a")));
+            let next = crate::daemon::party::spawn_in(s, || drop(steps.hold("a")));
             while steps.waiting() == 0 {
                 std::thread::yield_now();
             }

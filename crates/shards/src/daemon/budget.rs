@@ -501,7 +501,7 @@ impl<D: Disk> Daemon<D> {
         if !Path::new(ROOT).join("cgroup.controllers").exists() {
             return;
         }
-        match std::thread::Builder::new()
+        match crate::daemon::DaemonThread::new()
             .name("budgets".into())
             .spawn_scoped(threads, move || self.watch_budgets(threads))
         {
@@ -764,7 +764,7 @@ impl<D: Disk> Daemon<D> {
             }
             h.telling = true;
         }
-        let spawned = std::thread::Builder::new()
+        let spawned = crate::daemon::DaemonThread::new()
             .name("room".into())
             .spawn_scoped(threads, move || {
                 loop {

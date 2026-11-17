@@ -397,7 +397,7 @@ pub(super) fn carry(start: Start, hosting: &execs::Hosting<'_>) {
         let (gone, hang) = (&gone, &hang);
         // Its lane let go is seen while it waits for its connection and once it carries one:
         // an MCP connection takes no steering, each steer let go.
-        let steering = std::thread::Builder::new()
+        let steering = crate::daemon::DaemonThread::new()
             .name("mcp-steer".into())
             .spawn_scoped(s, move || {
                 while steer.recv().is_ok() {
@@ -438,7 +438,7 @@ pub(super) fn carry(start: Start, hosting: &execs::Hosting<'_>) {
             return refuse(Unstarted::Failed, "its connection's writes");
         };
         let (relay, input) = (&relay, &input);
-        let feeder = std::thread::Builder::new()
+        let feeder = crate::daemon::DaemonThread::new()
             .name("mcp-to".into())
             .spawn_scoped(s, move || feed(relay, input, &writes));
         if let Err(e) = feeder {

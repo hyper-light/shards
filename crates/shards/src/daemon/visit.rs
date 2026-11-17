@@ -266,7 +266,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
             });
         }
         // What the VM says to its client, which nobody reads, read to its end.
-        let drained = std::thread::Builder::new()
+        let drained = crate::daemon::DaemonThread::new()
             .name("visit-client".into())
             .spawn_scoped(threads, move || {
                 let mut sink = [0u8; 4096];

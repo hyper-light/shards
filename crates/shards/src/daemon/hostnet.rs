@@ -511,7 +511,7 @@ mod tests {
                 bound.number.to_be_bytes().to_vec()
             )
         );
-        let answered = std::thread::spawn(move || {
+        let answered = crate::daemon::party::spawn_member(move || {
             std::thread::sleep(Duration::from_millis(50));
             drop(fd);
             // Answered once nothing listens there: a network process forks nothing, but this

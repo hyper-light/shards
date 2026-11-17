@@ -362,7 +362,7 @@ impl<D: Disk> Daemon<D> {
     pub(super) fn start_packer<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>) {
         let p = &self.packing;
         if !p.started.swap(true, Ordering::SeqCst)
-            && let Err(e) = std::thread::Builder::new()
+            && let Err(e) = crate::daemon::DaemonThread::new()
                 .name("packer".into())
                 .spawn_scoped(threads, move || self.pack_all())
         {

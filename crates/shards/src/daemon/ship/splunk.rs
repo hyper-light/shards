@@ -502,7 +502,7 @@ mod tests {
         };
         let mut most = 0;
         std::thread::scope(|scope| {
-            scope.spawn(|| serve(&listener, &answer, &seen));
+            crate::daemon::party::spawn_in(scope, || serve(&listener, &answer, &seen));
             let _quit = Quit(port);
             let (_stop, stopped) = UnixStream::pair().unwrap();
             let wait = Wait(&stopped);
@@ -561,7 +561,7 @@ mod tests {
             }
         };
         std::thread::scope(|scope| {
-            scope.spawn(|| serve(&listener, &answer, &seen));
+            crate::daemon::party::spawn_in(scope, || serve(&listener, &answer, &seen));
             let _quit = Quit(port);
             let (_stop, stopped) = UnixStream::pair().unwrap();
             let wait = Wait(&stopped);
@@ -626,7 +626,7 @@ mod tests {
             }
         };
         std::thread::scope(|scope| {
-            scope.spawn(|| serve(&listener, &answer, &seen));
+            crate::daemon::party::spawn_in(scope, || serve(&listener, &answer, &seen));
             let _quit = Quit(port);
             let (_stop, stopped) = UnixStream::pair().unwrap();
             let wait = Wait(&stopped);

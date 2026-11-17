@@ -117,7 +117,7 @@ impl Fixture {
             }),
         });
         let (sent, returned) = mpsc::sync_channel(1);
-        let driver = std::thread::Builder::new()
+        let driver = crate::daemon::DaemonThread::new()
             .name("terminal-order-endpoint".into())
             .spawn(move || {
                 let result = endpoint.run();
@@ -224,7 +224,7 @@ fn owner_stop_locked(case: &str, finish_first: Option<Terminal>, expected: Life)
     let metadata = lock(&metadata_file);
     let output = Arc::clone(&fixture.output);
     let (sent, done) = mpsc::sync_channel(1);
-    let worker = std::thread::Builder::new()
+    let worker = crate::daemon::DaemonThread::new()
         .name("terminal-order-stop".into())
         .spawn(move || {
             output.abort();
@@ -273,7 +273,7 @@ fn native_completion_wins_then_owner_stops_while_metadata_locked() {
     let output = Arc::clone(&fixture.output);
     let (sent, resolved) = mpsc::sync_channel(1);
     let (finished, done) = mpsc::sync_channel(1);
-    let worker = std::thread::Builder::new()
+    let worker = crate::daemon::DaemonThread::new()
         .name("terminal-order-publication".into())
         .spawn(move || {
             // This deliberately splits existing methods, rather than claiming

@@ -394,7 +394,7 @@ impl<D: Disk> Daemon<D> {
             return Err(format!("its start: {e}"));
         }
         // What the daemon answers this client is read and let go, to its end.
-        let drained = std::thread::Builder::new()
+        let drained = crate::daemon::DaemonThread::new()
             .name("restart".into())
             .spawn_scoped(
                 threads,

@@ -152,7 +152,7 @@ impl<D: Disk> Daemon<D> {
             // Its errors passed on as they come, beside the wait for its end: an exec held
             // up writing more of them than a pipe holds would never end. Once the asker can
             // be told no more, the rest are read and dropped.
-            let drain = std::thread::Builder::new()
+            let drain = crate::daemon::DaemonThread::new()
                 .name("metrics-errors".into())
                 .spawn_scoped(scope, move || {
                     if io::copy(&mut errors, &mut Diagnostics(reply)).is_err() {

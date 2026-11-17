@@ -74,7 +74,7 @@ impl<D: Disk> Daemon<D> {
         }
         r.queued.notify_one();
         if !r.started.swap(true, Ordering::SeqCst)
-            && let Err(e) = std::thread::Builder::new()
+            && let Err(e) = crate::daemon::DaemonThread::new()
                 .name("refiller".into())
                 .spawn_scoped(threads, move || self.refill_all(threads))
         {
