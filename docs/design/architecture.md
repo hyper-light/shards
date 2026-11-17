@@ -226,8 +226,22 @@ the crypto self-tests first, since every clone would replay the rest (PM M21).
     while the guest says something new or carries the stream, and cold they follow liveness,
     as on CI until a job has kept that size's records (D261, *CI's judge learns across
     runs*: every job that is not cancelled keeps them, one out of time too). A slow host that makes progress
-    passes; its time is its host's. Whether the restores' 255-vCPU storm ends within a 4-CPU
-    runner's 58 minutes, now that no other runs beside it, is unmeasured: owed.
+    passes; its time is its host's.
+  - The restores' storm restores three times below the most and once at it (2026-11-17, kiln
+    goal a8b1ce42, lane own-36-tag; snapshot.rs `restores`). With no other storm beside it,
+    its 255-vCPU storm did not end within the 58 minutes of CI's x86_64 musl runner (AMD, 4
+    CPUs; run 44007524337, job 133788369055, at 0c3213356): its original ran 74.6 s, its first
+    restore 1,782 s from its start to the next's, whole (its guest's checks all passed), and
+    its second was 5 min 39 s in, its stream whole and its slowest 4 MiB round 7.1 s, when the
+    step ran out; in run 43990298220 (job 133729067459) the first restore was 25 min in when
+    it ran out. Not a wait that never ends: a slow one, three of which the step cannot hold.
+    Three restores of a size are trials of a loss that comes in one restore of several
+    (00519521d1: 180 restores in 20 runs), which every size below the most still takes; what
+    the most alone shows, each vCPU's state read back at the machine's bounds, every restore
+    shows or none does (D13's "sequence of 255 (limit 254)" refused every one), and one shows
+    it. Where its guest's 1,782 s go (its clock check, every worker's turn after the snapshot,
+    the workers' last rounds, at 64 vCPUs a CPU) is unmeasured, and so is whether the step's
+    58 minutes now hold the storm and what runs after it: owed.
   - The "Broken pipe" of that run (`255 vCPUs: round 8, 236.2 s to 273.6 s in, sending:
     Broken pipe (os error 32)`, 23:30:45) was the restores' storm's, not the resumed one's.
     The round's costs name VM 203206, whose round 1 had named `storm255-13/v.sock`, the
@@ -242,8 +256,8 @@ the crypto self-tests first, since every clone would replay the rest (PM M21).
     0`, `resume 5 vCPUs`).
   - Owed (ROOT): snapshot.rs's storms on KVM x86-64, an AMD host held to 4 CPUs (`taskset -c
     0-3 cargo test --locked --profile test-release -p shards --test snapshot -- storm::
-    --nocapture`, timing each size), on HVF and on WHP; and the next ci.yml run's x86_64
-    Tests steps, whether the storms end within their limit.
+    --nocapture`, timing each size and the 255-vCPU restore's guest steps), on HVF and on WHP;
+    and the next ci.yml run's x86_64 Tests steps, whether the storms end within their limit.
 
 ### Platforms (D13)
 
