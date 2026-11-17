@@ -227,16 +227,17 @@ struct End {
 }
 
 /// Whether a failed request's microVM's entry was refused by its host, as D261's gate takes a
-/// refusal for its host's, as the tests read a run's (`common::vm_host_refused`): the refusal
-/// that `refusals`, its daemon's log's, tell of the VM its client's words, `said`, name as
-/// ended, its witness its host model's records and their burst width. Said either way: a
+/// refusal for its host's, as the tests read a run's (`common::run_host_refused`): the refusal
+/// its client's words, `said`, carry, or that `refusals`, its daemon's log's, tell of the VM
+/// those words name as ended or that its daemon logged unable to serve in them
+/// (`common::run_refusal`), its witness its host model's records and their burst width. Said either way: a
 /// refusal the gate takes, with its witness, is counted apart from shards' failures; one it
 /// does not take, and a failure that names no refused VM, stay shards', said with the client's
 /// words.
 #[cfg(unix)]
 fn by_the_host(rate: f64, refusals: &str, said: &str) -> bool {
     use std::io::Write as _;
-    let host = match common::host_refusal(&common::vm_refusal(refusals, said)) {
+    let host = match common::host_refusal(&common::run_refusal(said, refusals)) {
         Some((refusal, Ok(witness))) => {
             let _ = writeln!(
                 std::io::stderr(),
