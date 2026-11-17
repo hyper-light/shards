@@ -6568,6 +6568,23 @@ impl Vm {
 
     /// [`Vm::spawn`], with `env` added to shards' environment.
     pub fn spawn_env<S: AsRef<std::ffi::OsStr>>(args: &[S], env: &[(&str, &str)]) -> Vm {
+        Vm::spawned(args, env, None)
+    }
+
+    /// [`Vm::spawn`], each line it prints also said on stderr as it comes, after `tag` and its
+    /// time from the spawn: what CI's log keeps of a boot whatever ends its test, a step's
+    /// limit among them, which says nothing of what the test saw (D261: WHP's 255-vCPU boot,
+    /// 3170 s with nothing said).
+    pub fn spawn_timed<S: AsRef<std::ffi::OsStr>>(args: &[S], tag: &'static str) -> Vm {
+        Vm::spawned(args, &[], Some(tag))
+    }
+
+    fn spawned<S: AsRef<std::ffi::OsStr>>(
+        args: &[S],
+        env: &[(&str, &str)],
+        timed: Option<&'static str>,
+    ) -> Vm {
+        let start = Instant::now();
         let mut child = command()
             .envs(env.iter().copied())
             .args(args)
@@ -6583,6 +6600,9 @@ impl Vm {
             let (tx, log) = (tx.clone(), log.clone());
             std::thread::spawn(move || {
                 for line in BufReader::new(stream).lines().map_while(Result::ok) {
+                    if let Some(tag) = timed {
+                        let _ = writeln!(io::stderr(), "{tag} {:?}: {line}", start.elapsed());
+                    }
                     if let Ok(mut log) = log.lock() {
                         log.push(line.clone());
                     }
