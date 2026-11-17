@@ -20,6 +20,12 @@ for the seven targets of `resources/supported-targets.txt`, attaches each binary
   (`readelf`).
 - The release itself is made with `gh release create --generate-notes`, titled with the
   tag. The notes file replaces that afterwards (step 5).
+- **A dry run** (`gh workflow run release.yml -f dry_run=true --ref main`) does all a tag
+  push does but publish: its guard checks that `v` and the version, the tag a release of the
+  commit would carry, is no tag on origin yet; the seven binaries build `--locked` as a tag's
+  do; and `SHA256SUMS` is made as the release makes it. The binaries and `SHA256SUMS` stay
+  the run's artifacts, and the release job, the only one that can write to the repository,
+  never starts.
 
 ## Steps
 
