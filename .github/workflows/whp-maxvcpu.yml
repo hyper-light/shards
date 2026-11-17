@@ -29,6 +29,14 @@ name: WHP max vCPUs
 # failed; or cut at the bound), every guest line as it came (`D261 WHP boot`), the first vCPU
 # its guest named stuck where it named one, and the host's CPU, logical processors and
 # hypervisor; summary.tsv a line, in one artifact per job.
+#
+# Since ROOT's ruling of 2026-11-17 each arm boots as the product boots (D261, PM M379): the
+# guest's init is shards-init, and where the host's Hyper-V is nested in another's partition,
+# as these runners' is, its kernel is told `maxcpus=1 shards_online=1` (vm::late_cpus_cmdline):
+# its boot CPU alone comes up at boot and its init brings the rest online. The arm waits for
+# its guest to power off, then checks each CPU came up. Its first dispatch (ROOT's, of this
+# workflow as d4ccc4939 landed it), before the ruling, booted every CPU at boot, a boot the
+# product never makes here: it is this experiment's control.
 on:
   workflow_dispatch:
 
@@ -120,7 +128,7 @@ jobs:
           took=$(sed -nE 's/.*; (.*) from its start$/\1/p' <<<"$said")
           lines=$(grep -a -c 'D261 WHP boot' "$log" || true)
           last=$(grep -a 'D261 WHP boot' "$log" | tail -1 | cut -c1-200 | tr '\t' ' ')
-          stuck=$(grep -a -oE 'CPU ?#?[0-9]+ failed to report alive state|do_boot_cpu failed\([^)]*\) to wakeup CPU#?[0-9]+' "$log" | head -1 | grep -oE '[0-9]+$' || true)
+          stuck=$(grep -a -oE 'CPU ?#?[0-9]+ failed to report alive state|do_boot_cpu failed\([^)]*\) to wakeup CPU#?[0-9]+|shards-init: CPU [0-9]+ not brought online' "$log" | head -1 | grep -oE '[0-9]+' | tail -1 || true)
           cpu=$(grep -a -m1 '^cpu: ' "$RECORDS/host.txt" | cut -c6- | tr '\t' ' ')
           logical=$(grep -a -m1 'logical processors: ' "$RECORDS/host.txt" | sed -E 's/.*logical processors: //')
           printf 'runner\tcpu\tlogical\tarm\tvcpus\talso\tpatch\toutcome\tfirst_stuck_vcpu\tguest_lines\tlast_guest_line\ttime\n' > "$RECORDS/summary.tsv"

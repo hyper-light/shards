@@ -37801,6 +37801,48 @@ post-mortem read of the printk ring through VMCOREINFO, not a debug port.
     VMCOREINFO (printk.rs `infos`). In the test process that faults in a 1 GiB guest's
     untouched pages (shared memory on Linux, committed memory on Windows). The pace bounds its
     CPU; its resident memory is unmeasured.
+- **The test boots as the product boots** (2026-11-17, ROOT's ruling, goal fb3528f9: "A test
+  of the host's maximum vCPU count must boot the way the product boots, or it isn't testing
+  the product"). Option 2 of owed item 3 above, beside option 1's judge, which stays.
+  - **Why its guest never ended on nested WHP** (PM M379). On a Windows host whose Hyper-V is
+    nested in another's partition, as CI's runners' is in Azure's, each text patch a boot's
+    initcalls make (static calls and keys) waits for every CPU online to sync, and each vCPU
+    waited on is one with no host CPU: eight 4-vCPU guests booting at once on windows-2022's 4
+    CPUs spent 75.7% of their kernels' ticks waiting so. So the product boots a guest there
+    `maxcpus=1 shards_online=1` (`vm::late_cpus_cmdline`): its kernel brings up its boot CPU
+    alone, and shards-init the rest before anything runs. `boots_the_hosts_maximum_vcpu_count`
+    booted its 240 vCPUs all at boot, through every initcall level on the runner's 4 CPUs: a
+    boot the product never makes there.
+  - **Its boot** (boot.rs `brings_up_the_most`). shards-init is PID 1 (`common::guest_init`),
+    and the kernel is told `late_cpus_cmdline(max)`'s words after `console=hvc0 panic=-1
+    loglevel=7`, as vm_run.rs `boot_into` and build/builder.rs tell it. Elsewhere the words
+    are none and every CPU comes up at boot, as the product's do. With no workload, init says
+    `shards-init: pid 1 running` once its CPUs are online, and powers off.
+    - Its wait is for the kernel's `reboot: Power down` (kernel/reboot.c `kernel_power_off`,
+      its consoles flushed before the machine goes, `pr_flush`): a console prints the kernel's
+      records in order, so every CPU's line is on it by then, and init drained its own first
+      (`tcdrain`, init `power_off`).
+    - Then: "smp: Brought up 1 node, N CPUs", N the count up to NR_CPUS, or 1 where the CPUs
+      come up late; init's line; and where late, each of the rest brought online as the kernel
+      says of each (x86-64's `smpboot: Booting Node …`, arch/x86/kernel/smpboot.c
+      `announce_cpu` once its system runs; arm64's `Booted secondary processor`), none that
+      init could not ("not brought online"). The CPUs past NR_CPUS are said rejected, as
+      before.
+    - Its waits' kinds are keyed by the late words too, apart from every earlier boot's.
+  - **The storms** (snapshot.rs `storm_args`) tell their kernel the same words, and the test
+    guest brings its CPUs online at its start where told `shards_online=1` (testguest
+    `setup`, its `online_cpus`), failing its test where one will not come online.
+  - **The experiment.** D261's arm (`a_d261_arm_boots_the_vcpus_its_experiment_asks`) boots
+    through `brings_up_the_most`, so whp-maxvcpu.yml's next dispatch runs each arm the
+    product's way; its `D261 A/B arm` line names the late words. Its first dispatch, every CPU
+    at boot, is the control. The record step now names the first CPU init could not bring
+    online.
+  - **Costs.** On every other host the test now boots through init to its power-off, where it
+    stopped at "smp: Brought up": the rest of the boot with every CPU online. Unmeasured; the
+    judge bounds it by the guest's progress alone (D215).
+  - **Owed to ROOT (R14).** whp-maxvcpu.yml at this revision on windows-2025 and windows-2022;
+    boot.rs `boots_the_hosts_maximum_vcpu_count` and snapshot.rs' storms on KVM (AMD and
+    Intel) and HVF; ci.yml's x86_64 Windows jobs.
 - **CI's judge learns across runs** (2026-11-17, kiln goal b2124227, lane ci-judge-cache).
   ROOT's answer to the question above: CI keeps the judge's records. Until now every CI job
   began with none, so each kind was cold and followed its party's liveness alone: no wait on
