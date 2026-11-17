@@ -31,6 +31,12 @@ pub fn to(file: std::fs::File) {
     }
 }
 
+/// Whether what is logged goes to [`to`]'s file, not stderr: a warm VM's, whose stderr is its
+/// client's while it serves one and the null device after, its log its daemon's throughout.
+pub fn redirected() -> bool {
+    SINK.lock().unwrap_or_else(PoisonError::into_inner).is_some()
+}
+
 /// Reads `SHARDS_LOG` once; later calls are no-ops.
 pub fn init() {
     START.get_or_init(Instant::now);

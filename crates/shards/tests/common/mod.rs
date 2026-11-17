@@ -310,23 +310,70 @@ pub fn host_refusal(said: &str) -> Option<(shards_vmm::vm::limits::Said, HostVer
     Some((refused, verdict))
 }
 
-/// [`host_refused`] of what a daemon's `log` says of the VM a run's error, `said`, names as
-/// ended (`VM N ended`): its refusal, not another VM's the same log holds.
-pub fn vm_host_refused(log: &str, said: &str) -> bool {
-    host_refused(&vm_refusal(log, said))
+/// Whether a run that failed, its error `said`, was ended by its VM's host's refusal to enter
+/// it that D261's gate takes for the host's: said SKIP with its evidence ([`host_refused`]), as
+/// boot.rs's tests say theirs. Its VM's refusal is read from its error, or from `home`'s
+/// daemon's log once that log tells its VM's end ([`run_refusal`]), waited for as `home`'s
+/// daemon progresses ([`Patience`]). Anything else, a failure with no refusal of its VM found,
+/// a 125 among them, stays its test's failure (ROOT's ruling of 2026-11-17: the daemon's tests
+/// take boot.rs's gated SKIP).
+pub fn run_host_refused(said: &str, home: &Path) -> bool {
+    let log = || std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default();
+    if shards_vmm::vm::limits::Said::find(said).is_none() {
+        let vms = run_vms(said, &log());
+        if !vms.is_empty() {
+            // A VM that ends refused logs its refusal before its end ([`run_refusal`]).
+            let mut patience = Patience::of(home);
+            while !vms.iter().all(|vm| log().contains(&format!("VM {vm} ended"))) && patience.holds() {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            patience.done();
+        }
+    }
+    host_refused(&run_refusal(said, &log()))
 }
 
-/// The lines of a daemon's `log` that tell of a refused entry of the VM a run's error, `said`,
-/// names as ended (`VM N ended`), not another VM's the same log holds ([`vm_host_refused`]).
-pub fn vm_refusal(log: &str, said: &str) -> String {
+/// The lines that tell of a refused entry of the VM of a run that failed, its error `said`:
+/// those its error carries itself, a refusal before or as its command ran reaching its client;
+/// else those its daemon's `log` holds of the VMs it served on ([`run_vms`]), by their pids,
+/// not another VM's the same log holds: a refusal after its run's end reaches its daemon's log
+/// alone (vm_run.rs, a warm VM's own log). None where neither tells of one.
+pub fn run_refusal(said: &str, log: &str) -> String {
+    if shards_vmm::vm::limits::Said::find(said).is_some() {
+        return said.to_string();
+    }
+    let vms = run_vms(said, log);
     let of_vm: Vec<&str> = log
         .lines()
         .filter(|line| {
             shards_vmm::vm::limits::Said::find(line)
-                .is_some_and(|refused| said.contains(&format!("VM {} ended", refused.refusal.machine)))
+                .is_some_and(|refused| vms.contains(&refused.refusal.machine))
         })
         .collect();
     of_vm.join("\n")
+}
+
+/// The VMs a run that failed, its error `said`, was served on, by their pids: one its error
+/// names as ended (`VM N ended`, before it was ready), and one its daemon's `log` says could not
+/// serve a run in the words its error carries (`container ID: its VM N could not serve its run:
+/// WHY`, as its client heard WHY).
+fn run_vms(said: &str, log: &str) -> Vec<u32> {
+    let named = said.split("VM ").skip(1).filter_map(|rest| {
+        let (pid, after) = rest.split_once(' ')?;
+        after
+            .starts_with("ended")
+            .then(|| pid.parse::<u32>().ok())
+            .flatten()
+    });
+    let unserved = log.lines().filter_map(|line| {
+        let (_, rest) = line.split_once(": its VM ")?;
+        let (pid, why) = rest.split_once(" could not serve its run: ")?;
+        let why = why.trim();
+        (!why.is_empty() && said.contains(why))
+            .then(|| pid.parse::<u32>().ok())
+            .flatten()
+    });
+    named.chain(unserved).collect()
 }
 
 /// Whether the daemon here keeps the snapshots it keeps, its templates, warm pools and saves

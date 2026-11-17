@@ -6783,8 +6783,10 @@ impl<D: Disk> Daemon<D> {
                 kind::DONE => self.run_ended(id, inbox, Some(&m.payload)),
                 // Why its VM could not serve it, before its `DONE`: its client heard it as it
                 // exited, and the log keeps it for a run that had none.
+                // Its VM named, by whose pid its log tells its refusal where one ended it (D261).
                 kind::UNSERVED => log(format!(
-                    "container {id}: its VM could not serve its run: {}",
+                    "container {id}: its VM {} could not serve its run: {}",
+                    inbox.pid,
                     String::from_utf8_lossy(&m.payload)
                 )),
                 // Its network process has closed its published ports: the daemon's copies

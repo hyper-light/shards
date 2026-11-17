@@ -489,7 +489,13 @@ fn parallel_runs_keep_their_own_stdio() {
         child.stdout.take().unwrap().read_to_string(&mut out).unwrap();
         let mut err = String::new();
         child.stderr.take().unwrap().read_to_string(&mut err).unwrap();
-        assert_eq!(wait(&mut child, &home), Some(0), "run {i}: {err}");
+        let status = wait(&mut child, &home);
+        // A run its VM's host refused to enter, as D261's gate takes it for the host's, skips
+        // the test, said so (CI 44189693085, x86_64 musl: run 4's vCPU 2, 0x7).
+        if status != Some(0) && common::run_host_refused(&err, &home) {
+            return;
+        }
+        assert_eq!(status, Some(0), "run {i}: {err}");
         let whos: Vec<&str> = out.lines().filter(|l| l.starts_with("env WHO=")).collect();
         assert_eq!(
             whos,
@@ -3020,12 +3026,7 @@ fn pools_keep_what_their_runs_need_while_they_come() {
     // host's, which skips the test.
     let run = |env: &[(&str, &OsStr)]| -> bool {
         let run = run_shards_env(&["run"], &args, env);
-        if run.status != Some(0)
-            && common::vm_host_refused(
-                &std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default(),
-                &run.stderr,
-            )
-        {
+        if run.status != Some(0) && common::run_host_refused(&run.stderr, &home) {
             return true;
         }
         assert_eq!(run.status, Some(0), "{}", run.stderr);

@@ -2563,8 +2563,17 @@ fn serve_workload(
         match &reason {
             ExitReason::Error(e) => report(e),
             // The host's hypervisor refused to enter a vCPU (D261): said as the host's, with
-            // what its host model's records hold of its count.
-            ExitReason::Refused(refused) => report(refused),
+            // what its host model's records hold of its count. A warm VM's own log is its
+            // daemon's (review 8.10), where its stderr, its client's as it served, is let go of
+            // by its run's end: said there too, by its VM process, so that the run it could not
+            // serve is told by its refusal (CI 44189693085, x86_64 musl: a pool's run ended 125,
+            // its VM's refusal said nowhere).
+            ExitReason::Refused(refused) => {
+                report(refused);
+                if shards_vmm::log::redirected() {
+                    shards_vmm::warn!("{refused}");
+                }
+            }
             _ => {}
         }
         // A warm VM whose guest reset or powered off before it took a run (its kernel

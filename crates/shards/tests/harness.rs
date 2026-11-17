@@ -2377,6 +2377,44 @@ fn an_unreaped_daemon_is_gone() {
     assert!(ended, "an exited daemon held its wait: {}", patience.account());
 }
 
+/// A failed run's VM's refusal is read from its error, or from its daemon's log by its VM's
+/// pid (`common::run_refusal`, what `common::run_host_refused` gates as boot.rs's tests do):
+/// where its client heard only that its guest stopped, the VM its daemon logged as unable to
+/// serve the run in those words, and that VM's refusal, not another VM's the log holds. CI
+/// 44189693085, x86_64 musl, daemon.rs `pools_keep_what_their_runs_need_while_they_come`: a
+/// run ended 125, "the guest stopped before the command ended", read by "VM N ended" alone and
+/// found no refusal. A stand-in log, as the daemon and a warm VM's own log now write it.
+#[test]
+fn a_failed_runs_vm_refusal_is_read_by_its_vms_pid() {
+    let refusal = |pid: u32, when: &str| {
+        format!(
+            "vCPU 2: VM entry failed (hardware reason 0x7): the host's hypervisor (KVM under \
+             KVMKVMKVM) refused to enter it ({when}, at 1794957533.463374 s, VM process {pid})"
+        )
+    };
+    let unserved = "the guest stopped before the command ended: failed to fill whole buffer";
+    let said = format!("shards: {unserved}\n");
+    let log = format!(
+        "shards daemon 7: container a1: its VM 206432 could not serve its run: {unserved}\n\
+         [999 120us WARN] {}\n\
+         [206432 949622us WARN] {}\n\
+         shards daemon 7: VM 206432 ended with Ok(1)\n",
+        refusal(999, "after its guest ran"),
+        refusal(206432, "after its guest ran"),
+    );
+    let read = common::run_refusal(&said, &log);
+    assert!(
+        read.contains("VM process 206432") && !read.contains("VM process 999"),
+        "{read}"
+    );
+    // One its error carries itself: that.
+    let own = format!("shards: {}\n", refusal(206432, "before its guest ran"));
+    assert_eq!(common::run_refusal(&own, ""), own);
+    // A 125 whose VM's refusal its daemon's log holds none of: none, its failure its test's.
+    let other = log.replace("its VM 206432", "its VM 31337");
+    assert_eq!(common::run_refusal(&said, &other), "");
+}
+
 /// A stream no process writes any more is taken whole however late its reader thread runs
 /// (`common::taken_whole`), and one a process still holds is taken as it came, its end not
 /// waited for. CI 44164945050, x86_64 musl: `shards --version` ended with status 0 in 40 ms
