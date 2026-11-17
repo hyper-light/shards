@@ -121,8 +121,6 @@ const USAGE: &str = "usage: shards run daemon [--detached] [--listen ADDR:PORT]
     volume of a microVM (default: as long as the host's memory; 0, none): its large files
     read and written from the host's page cache, never copied into the guest's.";
 
-/// A template whose warm VMs fail this many times in a row is removed and saved again.
-const MAX_FAILURES: u32 = 3;
 const DEFAULT_POOL: usize = 2;
 
 /// The PCI slots each run's microVM has for devices plugged into it (D214): four, or what
@@ -1275,10 +1273,21 @@ struct Pool {
     emulator: Option<Option<PathBuf>>,
     ready: VecDeque<Ready>,
     starting: usize,
-    /// Warm VMs in a row that never became ready.
-    failures: u32,
+    /// Whether its template is broken, for its next claim to remove and boot instead (D26,
+    /// ROOT's ruling of 2026-11-17): a VM of it ended for its template's sake, as its status
+    /// said (`shards_ipc::TEMPLATE_FAILED_STATUS`: its files did not read, or its guest reset
+    /// or powered off before it took a run), or its root filesystem was replaced since it was
+    /// keyed. Nothing else breaks it: a VM its host refused to enter (D261), its VMM failed or
+    /// its start's judge gave up on is no fault of its template's, and the next refill is
+    /// planned for the runs that wait.
+    broken: bool,
     /// Runs waiting for a VM of it.
     waiting: usize,
+    /// Why refills its start's judge gave up on (D215) failed, each while more runs waited
+    /// than refills were starting: each fails one run that waits, in its words, where a
+    /// refill that failed otherwise leaves them waiting for the next (`Daemon::claim`). No
+    /// more than the runs that wait: one that leaves unfailed takes one with it.
+    refused: VecDeque<String>,
     /// Its runs' arrivals and its refills' times, which say how many VMs it keeps; its
     /// last claim orders eviction, least recent first.
     demand: shards_api::demand::Demand,
@@ -1761,7 +1770,7 @@ impl Drop for Deadline {
 
 /// Why a template's pool gave no warm VM.
 enum Claim {
-    /// Its warm VMs keep failing: the template does not restore.
+    /// Its template is broken (`Pool::broken`): it is removed, and its run boots instead.
     Broken,
     Failed(String),
 }
@@ -9001,11 +9010,12 @@ impl<D: Disk> Daemon<D> {
         let leave = |state: &mut State, waiting: bool| {
             if waiting && let Some(pool) = state.pools.get_mut(key) {
                 pool.waiting = pool.waiting.saturating_sub(1);
+                pool.refused.truncate(pool.waiting);
             }
         };
         loop {
             let pool = pool_of(&mut state, key, rootfs, stamp);
-            if pool.failures >= MAX_FAILURES {
+            if pool.broken {
                 state.pools.remove(key);
                 return Err(Claim::Broken);
             }
@@ -9016,6 +9026,13 @@ impl<D: Disk> Daemon<D> {
             if let Some(ready) = pool.ready.pop_front() {
                 leave(&mut state, waiting);
                 return Ok(ready);
+            }
+            // A refill its start's judge gave up on fails a run that waited with no refill
+            // starting for it, in its judge's words (D215); one its host refused, or that failed
+            // otherwise for no fault of its template's, leaves it waiting for the next (D26).
+            if waiting && let Some(why) = pool.refused.pop_front() {
+                leave(&mut state, waiting);
+                return Err(Claim::Failed(why));
             }
             // A stopping daemon starts no run: no use waiting for a VM to start one.
             if self.stopping.load(Ordering::SeqCst) {
@@ -9045,7 +9062,7 @@ impl<D: Disk> Daemon<D> {
                 continue;
             }
             // Found broken as it planned (its root filesystem replaced): said at once.
-            if state.pools.get(key).is_some_and(|p| p.failures >= MAX_FAILURES) {
+            if state.pools.get(key).is_some_and(|p| p.broken) {
                 continue;
             }
             // A claim waits while a VM of its pool is starting: that VM's watcher says when it
@@ -9590,11 +9607,22 @@ impl<D: Disk> Daemon<D> {
         // no fault of its template's (PM M166).
         let unstarted = matches!(&granted, Err(e) if !e.started);
         let ready = granted
-            .map_err(|e| e.why)
+            .map_err(|e| NotReady::Failed(e.why))
             .and_then(|()| ready(&socket, pid, &self.answers.ready));
         // Said with what its process says, which may take a second: before the daemon's
-        // state is held.
-        let ready = ready.map_err(|e| with_its_process(&child, e));
+        // state is held. Its template's fault only where its status says so (D26).
+        let ready = ready.map_err(|not| {
+            let judged = matches!(not, NotReady::Refused(_));
+            let (why, status) = with_its_process(&child, not.to_string());
+            let fault = if !unstarted && status == Some(i32::from(shards_ipc::TEMPLATE_FAILED_STATUS)) {
+                Fault::Template
+            } else if judged {
+                Fault::Judged
+            } else {
+                Fault::Other
+            };
+            (why, fault)
+        });
         match &dest {
             For::Pool(key) => {
                 let mut state = lock(&self.state);
@@ -9604,7 +9632,6 @@ impl<D: Disk> Daemon<D> {
                 let came = ready.is_ok();
                 match ready {
                     Ok(()) => {
-                        pool.failures = 0;
                         let took = began.elapsed();
                         pool.demand.refilled(took);
                         // Said, as the daemon alone times its refills: the window a reader
@@ -9640,10 +9667,21 @@ impl<D: Disk> Daemon<D> {
                         self.vm_readied(pid, &live);
                         self.rebalance(threads, &state, key);
                     }
-                    Err(e) => {
-                        log(e);
-                        if !unstarted {
-                            pool.failures += 1;
+                    // Broken where it failed for its template's sake (`Pool::broken`). Given up on
+                    // by its start's judge, it fails a run left waiting with no refill starting
+                    // for it (`Pool::refused`). Any other end counts against nothing, and the
+                    // runs that wait plan the next refill.
+                    Err((e, fault)) => {
+                        match fault {
+                            Fault::Template => {
+                                pool.broken = true;
+                                log(format!("{e}: its template's, so {} is broken", key.dir.display()));
+                            }
+                            Fault::Judged if pool.waiting > pool.starting + pool.refused.len() => {
+                                log(format!("{e}: a run waiting on its pool fails with it"));
+                                pool.refused.push_back(e);
+                            }
+                            Fault::Judged | Fault::Other => log(format!("{e}: no fault of its template's")),
                         }
                         let _ = child.kill(shards_ipc::signal::SIGKILL);
                     }
@@ -9670,7 +9708,7 @@ impl<D: Disk> Daemon<D> {
                         pooled: None,
                     }))));
                 }
-                Err(e) => {
+                Err((e, _)) => {
                     let _ = child.kill(shards_ipc::signal::SIGKILL);
                     let _ = tx.send(Started::Ended(Box::new(Err(e))));
                 }
@@ -9687,18 +9725,21 @@ impl<D: Disk> Daemon<D> {
 /// `why` a VM was not ready, said with what its process says: the status it ended with,
 /// waited for up to a second, since its link closes as its error returns, before it has
 /// said why or ended (PM M351); or that it still ran. Its process is not reaped: its pid
-/// stays its own until its follower reaps it.
-fn with_its_process(child: &shards_ipc::Child, why: String) -> String {
+/// stays its own until its follower reaps it. With the status, where it was read.
+fn with_its_process(child: &shards_ipc::Child, why: String) -> (String, Option<i32>) {
     let deadline = Instant::now() + Duration::from_secs(1);
     loop {
         if child.has_ended() {
             return match child.ended_status() {
-                Ok(status) => format!("{why}; its process ended with status {status} ({status:#x})"),
-                Err(e) => format!("{why}; its process ended, its status unread: {e}"),
+                Ok(status) => (
+                    format!("{why}; its process ended with status {status} ({status:#x})"),
+                    Some(status),
+                ),
+                Err(e) => (format!("{why}; its process ended, its status unread: {e}"), None),
             };
         }
         if Instant::now() >= deadline {
-            return format!("{why}; its process still ran a second after");
+            return (format!("{why}; its process still ran a second after"), None);
         }
         slept(Duration::from_millis(10));
     }
@@ -10416,7 +10457,7 @@ fn readable_within(socket: &UnixStream, wait: Option<Duration>) -> bool {
 /// start looked at each millisecond. The log says once, as a start first outlasts W*, how far
 /// into it it is. It was `READY_STALL`'s 10 s looks and `READY_TIMEOUT`'s 60 s, picked, judged
 /// by PM M357's idle microVM (ROOT's (3), 2026-11-13).
-fn ready(socket: &UnixStream, pid: u32, record: &shards_api::Record) -> Result<(), String> {
+fn ready(socket: &UnixStream, pid: u32, record: &shards_api::Record) -> Result<(), NotReady> {
     let began = Instant::now();
     // Its time so far, to the microsecond, as the log says it.
     let into = || Duration::from_micros(u64::try_from(began.elapsed().as_micros()).unwrap_or(u64::MAX));
@@ -10444,15 +10485,15 @@ fn ready(socket: &UnixStream, pid: u32, record: &shards_api::Record) -> Result<(
             continue;
         };
         followed.look().map_err(|why| match why {
-            shards_api::Unfollowed::Stalled(stall) => format!(
+            shards_api::Unfollowed::Stalled(stall) => NotReady::Refused(format!(
                 "VM {pid} was not ready: it ran nothing for {:?}, past the slowest start seen ({:?}), {:?} after it began",
                 stall.over(),
                 stall.slowest(),
                 into()
-            ),
-            shards_api::Unfollowed::Process { failure, .. } => {
-                format!("VM {pid} was not ready: its process could not be read: {failure}")
-            }
+            )),
+            shards_api::Unfollowed::Process { failure, .. } => NotReady::Failed(format!(
+                "VM {pid} was not ready: its process could not be read: {failure}"
+            )),
         })?;
         if let (false, shards_api::Seen::Learned { slowest, .. }) = (said, record.seen()) {
             said = true;
@@ -10469,10 +10510,45 @@ fn ready(socket: &UnixStream, pid: u32, record: &shards_api::Record) -> Result<(
             }
             Ok(())
         }
-        Ok(Some(m)) => Err(format!("VM {pid} said message kind {} instead of READY", m.kind)),
-        Ok(None) => Err(format!("VM {pid} ended before it was ready")),
-        Err(e) => Err(format!("VM {pid} was not ready: {e}")),
+        Ok(Some(m)) => Err(NotReady::Failed(format!(
+            "VM {pid} said message kind {} instead of READY",
+            m.kind
+        ))),
+        Ok(None) => Err(NotReady::Failed(format!("VM {pid} ended before it was ready"))),
+        Err(e) => Err(NotReady::Failed(format!("VM {pid} was not ready: {e}"))),
     }
+}
+
+/// Why a starting VM was not ready ([`ready`]).
+#[derive(Debug, PartialEq, Eq)]
+enum NotReady {
+    /// Its start's judge gave up on it (D215): it ran nothing past the slowest start seen.
+    Refused(String),
+    /// It ended, said something else, or could not be read.
+    Failed(String),
+}
+
+impl std::fmt::Display for NotReady {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Refused(why) | Self::Failed(why) => f.write_str(why),
+        }
+    }
+}
+
+/// Whose a pool's VM's failure to come ready was ([`Daemon::watch`]; D26, ROOT's ruling of
+/// 2026-11-17).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Fault {
+    /// Its template's: it ended with `shards_ipc::TEMPLATE_FAILED_STATUS`. Its template is
+    /// broken (`Pool::broken`).
+    Template,
+    /// Its start's judge's, which gave up on it (D215, [`NotReady::Refused`]): a run left
+    /// waiting with no refill starting for it fails with its words (`Pool::refused`).
+    Judged,
+    /// No one's it counts: its host's refusal to enter it (D261), its VMM's error, its
+    /// launch, its end otherwise. The runs that wait plan the next refill.
+    Other,
 }
 
 #[cfg(test)]
@@ -10910,7 +10986,8 @@ mod tests {
         let began = Instant::now();
         let refused = ready(&ours, asleep.id(), &record).unwrap_err();
         assert!(began.elapsed() >= slowest, "{:?}", began.elapsed());
-        assert!(refused.contains("ran nothing for"), "{refused}");
+        assert!(matches!(refused, NotReady::Refused(_)), "{refused}");
+        assert!(refused.to_string().contains("ran nothing for"), "{refused}");
         let _ = asleep.kill(shards_ipc::signal::SIGKILL);
         let _ = asleep.wait();
     }
@@ -16239,8 +16316,8 @@ mod tests {
                 state
                     .pools
                     .get(&own(&dir))
-                    .map(|p| (p.failures, p.waiting, p.starting)),
-                Some((0, 0, 0))
+                    .map(|p| (p.broken, p.waiting, p.starting)),
+                Some((false, 0, 0))
             );
             // What its VMs' working sets may take was read before any started, once:
             // nothing, of a state that is no snapshot.
@@ -17356,7 +17433,184 @@ mod tests {
                     .is_none(),
                 "a VM planned against the new file"
             );
-            assert_eq!(lock(&t.daemon.state).pools[&own(&dir)].failures, MAX_FAILURES);
+            assert!(lock(&t.daemon.state).pools[&own(&dir)].broken);
+        });
+    }
+
+    /// How a refill the test plays goes ([`refill_played`]).
+    #[cfg(unix)]
+    #[derive(Clone, Copy)]
+    enum Played {
+        /// Its link says READY, its process asleep.
+        Ready,
+        /// Its link says nothing, its process asleep: its start's judge gives up on it.
+        Silent,
+        /// Its link closes before READY, its process ending with this status.
+        Ended(u8),
+    }
+
+    /// A refill of the pool of the template in `dir`, played to its end by its watcher
+    /// (`watch`) as `played` says, counted as starting by its caller as a plan counts it: a
+    /// stand-in VM process. Returns its pid.
+    #[cfg(unix)]
+    fn refill_played(t: &In<'_, '_, Real>, dir: &Path, played: Played) -> u32 {
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        let child = match played {
+            Played::Ready => {
+                shards_ipc::send(&theirs, kind::READY, &[], &[]).unwrap();
+                sleeper(600)
+            }
+            Played::Silent => sleeper(600),
+            Played::Ended(status) => shards_ipc::spawn(
+                Path::new("/bin/sh"),
+                &[OsStr::new("-c"), OsStr::new(&format!("exit {status}"))],
+                &[],
+                false,
+            )
+            .unwrap(),
+        };
+        // Its link's other end: closed at once where it ends before READY, else held until its
+        // watcher has its end.
+        let held = (!matches!(played, Played::Ended(_))).then_some(theirs);
+        let child = Arc::new(child);
+        lock(&t.vms).push(child.clone());
+        let pid = child.id();
+        t.t.daemon.watch(
+            t.threads,
+            child,
+            ours,
+            None,
+            None,
+            For::Pool(own(dir)),
+            None,
+            None,
+        );
+        drop(held);
+        pid
+    }
+
+    /// D26 against D261 (ROOT's ruling of 2026-11-17): refills whose VMs ended for no fault of
+    /// their template's (their status not `shards_ipc::TEMPLATE_FAILED_STATUS`; NOT_RUN here,
+    /// as a warm VM its host refused to enter ends) count against nothing. Three in a row
+    /// leave the template whole, and a run waiting on its pool is served by the refill after
+    /// them. Red where they counted (`MAX_FAILURES`' three in a row broke the template, and
+    /// the run waiting found it broken).
+    #[cfg(unix)]
+    #[test]
+    fn refills_no_fault_of_their_templates_keep_it_and_the_next_serves_the_run_waiting() {
+        let t = Test::new("host-refused");
+        t.run(|t| {
+            let dir = t.home.join("template");
+            template(&dir);
+            let rootfs = dir.with_extension("erofs");
+            let stamp = shards_image::store::rootfs_stamp(&rootfs);
+            // Three refills, and the one the run waits for, counted as starting as planned.
+            pool_of(&mut lock(&t.daemon.state), &own(&dir), &rootfs, stamp.as_deref()).starting = 4;
+            for _ in 0..3 {
+                refill_played(t, &dir, Played::Ended(crate::spec::NOT_RUN));
+            }
+            assert!(
+                !lock(&t.daemon.state).pools[&own(&dir)].broken,
+                "broken by refills no fault of its"
+            );
+            let (test, threads) = (t.t, t.threads);
+            let (served, pid) = std::thread::scope(|s| {
+                let claiming = party::spawn_in(s, || {
+                    match test.daemon.claim(threads, &own(&dir), &rootfs, stamp.as_deref()) {
+                        Ok(ready) => Ok(ready.vm.id()),
+                        Err(Claim::Broken) => Err("found broken".to_string()),
+                        Err(Claim::Failed(why)) => Err(why),
+                    }
+                });
+                // Its claim waits for the refill to come, or has returned.
+                while !claiming.is_finished()
+                    && lock(&test.daemon.state)
+                        .pools
+                        .get(&own(&dir))
+                        .is_none_or(|p| p.waiting == 0)
+                {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                let pid = refill_played(t, &dir, Played::Ready);
+                (claiming.join().unwrap(), pid)
+            });
+            assert_eq!(served, Ok(pid));
+        });
+    }
+
+    /// A refill whose VM ended for its template's sake (its status
+    /// `shards_ipc::TEMPLATE_FAILED_STATUS`: the template's files did not read, or its guest
+    /// reset or powered off before it took a run) breaks the template at once (D26, ROOT's
+    /// ruling of 2026-11-17): the pool's next claim finds it broken, to boot instead. Red
+    /// where such an end counted nothing.
+    #[cfg(unix)]
+    #[test]
+    fn a_refill_failed_for_its_template_breaks_it() {
+        let t = Test::new("template-failed");
+        t.run(|t| {
+            let dir = t.home.join("template");
+            template(&dir);
+            let rootfs = dir.with_extension("erofs");
+            let stamp = shards_image::store::rootfs_stamp(&rootfs);
+            pool_of(&mut lock(&t.daemon.state), &own(&dir), &rootfs, stamp.as_deref()).starting = 1;
+            refill_played(t, &dir, Played::Ended(shards_ipc::TEMPLATE_FAILED_STATUS));
+            assert!(lock(&t.daemon.state).pools[&own(&dir)].broken);
+            assert!(matches!(
+                t.t.daemon.claim(t.threads, &own(&dir), &rootfs, stamp.as_deref()),
+                Err(Claim::Broken)
+            ));
+        });
+    }
+
+    /// A run waiting on a pool fails only where its refill's start's judge gives up on it (D215,
+    /// ROOT's ruling of 2026-11-17): a refill that runs nothing past the slowest start seen
+    /// fails the run left waiting with no refill starting for it, in its judge's words, and
+    /// leaves its template whole. Red where a refill's end of any kind left the run waiting (it
+    /// then planned its own, which a test's daemon cannot start).
+    #[cfg(unix)]
+    #[test]
+    fn a_refill_its_judge_gave_up_on_fails_the_run_left_waiting() {
+        let t = Test::new("judged-refill");
+        t.run(|t| {
+            let dir = t.home.join("template");
+            template(&dir);
+            let rootfs = dir.with_extension("erofs");
+            let stamp = shards_image::store::rootfs_stamp(&rootfs);
+            // Its starts' W* taught: one that runs nothing past it is given up on.
+            t.daemon
+                .answers
+                .ready
+                .teach(Duration::from_millis(200), Duration::from_millis(1));
+            pool_of(&mut lock(&t.daemon.state), &own(&dir), &rootfs, stamp.as_deref()).starting = 1;
+            let (test, threads) = (t.t, t.threads);
+            let claimed = std::thread::scope(|s| {
+                let claiming = party::spawn_in(s, || {
+                    match test.daemon.claim(threads, &own(&dir), &rootfs, stamp.as_deref()) {
+                        Ok(ready) => Ok(ready.vm.id()),
+                        Err(Claim::Broken) => Err("found broken".to_string()),
+                        Err(Claim::Failed(why)) => Err(why),
+                    }
+                });
+                while !claiming.is_finished()
+                    && lock(&test.daemon.state)
+                        .pools
+                        .get(&own(&dir))
+                        .is_none_or(|p| p.waiting == 0)
+                {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                refill_played(t, &dir, Played::Silent);
+                claiming.join().unwrap()
+            });
+            let why = claimed.unwrap_err();
+            assert!(why.contains("ran nothing for"), "{why}");
+            let state = lock(&t.daemon.state);
+            assert!(
+                state
+                    .pools
+                    .get(&own(&dir))
+                    .is_none_or(|p| !p.broken && p.waiting == 0)
+            );
         });
     }
 

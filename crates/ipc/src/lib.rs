@@ -860,6 +860,15 @@ pub const SAVE_DELTA: u8 = 2;
 /// plus SIGTSTP's number on Linux (20): not ended, but stopped where it is, to be resumed.
 pub const SAVED_STATUS: u8 = 148;
 
+/// The status of a warm VM that took no run and ended for its template's sake (D26, ROOT's
+/// ruling of 2026-11-17): its template's files did not read, or its guest reset or powered
+/// off before it asked for its command. Its daemon counts this end alone against the
+/// template; a VM that ended any other way before its run (its host refusing to enter it,
+/// D261; its VMM's error; its stop) failed for no fault of its template's. sysexits(3)'s
+/// EX_DATAERR, "the input data was incorrect in some way": a template is a restore's input.
+/// Read only of a VM that took no run, which has no command whose status it could be.
+pub const TEMPLATE_FAILED_STATUS: u8 = 65;
+
 /// An `ATTACH_RUN` flag: the client's stdin goes to the command's.
 pub const ATTACH_STDIN: u8 = 1;
 

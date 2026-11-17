@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Condvar, Mutex, PoisonError};
 use std::time::Instant;
 
-use super::{Daemon, For, MAX_FAILURES, PoolKey, State, Threads, lock, log, resolved};
+use super::{Daemon, For, PoolKey, State, Threads, lock, log, resolved};
 use crate::containers::Disk;
 
 /// Warm VMs of one pool to start, counted as starting already
@@ -126,7 +126,7 @@ impl<D: Disk> Daemon<D> {
         }
         let (for_runs, more) = {
             let pool = state.pools.entry(key.clone()).or_default();
-            if pool.failures >= MAX_FAILURES {
+            if pool.broken {
                 return None;
             }
             // A pool forgotten (age_pools) before its refill comes is made again here,
@@ -155,7 +155,7 @@ impl<D: Disk> Daemon<D> {
                     "{}: its root filesystem was replaced; no warm VM restores it",
                     dir.display()
                 ));
-                pool.failures = MAX_FAILURES;
+                pool.broken = true;
                 return None;
             }
             let now = Instant::now();

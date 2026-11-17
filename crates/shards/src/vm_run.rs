@@ -2189,6 +2189,10 @@ fn serve_workload(
         static TIMING: workload::Timing = workload::Timing::new();
         let to_guest = &TO_GUEST;
         let warm = matches!(command, Command::Warm(..));
+        // A warm VM restored from a template for its daemon's pool, not a run's save resumed:
+        // where it ends for its template's sake before it takes a run, its status says so
+        // (`shards_ipc::TEMPLATE_FAILED_STATUS`, D26).
+        let refill = matches!(command, Command::Warm(_, false));
         // The run a warm VM took (`warm::receive`, as it says TAKEN): its end goes to its owner
         // once (`warm::Taken::end`), and what its machine used in all once it is down (D260's
         // final use) on a handle of the link of its own, from this thread, beside the
@@ -2209,6 +2213,11 @@ fn serve_workload(
         }
         let (handle, running) = match start(vsock) {
             Ok(started) => started,
+            // Its template's files did not read: the template's fault ([`SNAPSHOT_UNREAD`]).
+            Err(e) if refill && SNAPSHOT_UNREAD.get().is_some() => {
+                report(e);
+                return ExitCode::from(shards_ipc::TEMPLATE_FAILED_STATUS);
+            }
             Err(e) => return failed(e),
         };
         let (tx, rx) = std::sync::mpsc::channel();
@@ -2558,6 +2567,14 @@ fn serve_workload(
             ExitReason::Refused(refused) => report(refused),
             _ => {}
         }
+        // A warm VM whose guest reset or powered off before it took a run (its kernel
+        // panicking, which `panic=-1` resets; its init ending) failed for its template's
+        // guest, so for its template, said by its status (D26). Its host's refusal to enter
+        // it (D261), its VMM's error and its stop are no fault of its template's.
+        if refill && TAKEN.get().is_none() && matches!(reason, ExitReason::Reset | ExitReason::PowerOff) {
+            report("its guest ended before it took a run");
+            return ExitCode::from(shards_ipc::TEMPLATE_FAILED_STATUS);
+        }
         // The guest waits for its status to be read before it powers off, so the relay
         // has finished unless the guest never ran the command.
         // A warm VM's link to its daemon, where it kept its layer, closes as this returns:
@@ -2906,7 +2923,7 @@ fn restore_reported(
             // as an AppContainer may not at one it was not handed (PM M345).
             #[cfg(windows)]
             refuse_unasked(&shards_vmm::snapshot::backing_named(&cfg.dir)?)?;
-            let pinned = shards_vmm::snapshot::read(&cfg.dir)?;
+            let pinned = read_snapshot(&cfg.dir)?;
             refuse_unasked(&shards_vmm::snapshot::backing_of(&pinned))?;
             pinned
         }
@@ -2920,7 +2937,7 @@ fn restore_reported(
             let named = shards_vmm::snapshot::backing_named(&cfg.dir)?;
             add(&mut paths, &named);
             confine(&paths)?;
-            let pinned = shards_vmm::snapshot::read(&cfg.dir)?;
+            let pinned = read_snapshot(&cfg.dir)?;
             if shards_vmm::snapshot::backing_of(&pinned) != named {
                 return Err(format!(
                     "{}: its snapshot was saved again as it was read",
@@ -2931,7 +2948,7 @@ fn restore_reported(
         }
         #[cfg(not(windows))]
         None => {
-            let pinned = shards_vmm::snapshot::read(&cfg.dir)?;
+            let pinned = read_snapshot(&cfg.dir)?;
             add(&mut paths, &shards_vmm::snapshot::backing_of(&pinned));
             confine(&paths)?;
             pinned
@@ -2960,6 +2977,19 @@ fn restore_reported(
             )
         }
     }
+}
+
+/// Whether this process's restore found its snapshot's files unreadable
+/// ([`read_snapshot`]): their fault, its template's where a warm VM restores one, which such
+/// a VM's status tells its daemon ([`serve_workload`], D26), not its host's.
+static SNAPSHOT_UNREAD: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+
+/// The snapshot in `dir`, read and pinned (`shards_vmm::snapshot::read`), a failure kept
+/// ([`SNAPSHOT_UNREAD`]).
+fn read_snapshot(dir: &Path) -> Result<shards_vmm::snapshot::Pinned, String> {
+    shards_vmm::snapshot::read(dir).inspect_err(|_| {
+        let _ = SNAPSHOT_UNREAD.set(());
+    })
 }
 
 /// `path` made whole against the working directory, and normalized as

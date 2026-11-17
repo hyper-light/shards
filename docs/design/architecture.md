@@ -1344,8 +1344,63 @@ for the exit status.
     starting the next VM on the request's path cost 200–600 µs [PM M26]: on the refiller's
     thread, which takes every pool asked for meanwhile, each once. A run with no template
     boots a VM that saves one on the way, and a run with its own kernel and init boots
-    every time. A template whose warm VMs fail three times in a row is removed and saved
-    again.
+    every time. A template is removed and saved again once a VM of it fails for its
+    template's sake, and for nothing else (below).
+  - **What breaks a template: its own fault alone** (ROOT's ruling of 2026-11-17, D26 against
+    D261; goal 1453357d). It was three warm VMs failing in a row (`MAX_FAILURES`, a count no
+    record derived: R03). EC2's Intel runners (Xeon 6975P-C, nested KVM) refuse entries in
+    bursts (D261), and three refills refused in a row broke a good template: its next claim
+    deleted it and booted, every run still waiting on its pool was told at once that "none is
+    starting for it" (no refill can be planned without a template), and the runs after it
+    booted cold. Read from the code (daemon.rs `claim`, `watch`; refill.rs `plan_refill`); the
+    shape of CI's Intel Arrival runs, 362 and 108 of 386 requests failed at 40 a second
+    (`docs/research/measurements/arrival-drain/`), the next Intel run's kept daemon log to
+    confirm (R09). Now a VM that took no run tells its daemon by its status whether it ended
+    for its template's sake (`shards_ipc::TEMPLATE_FAILED_STATUS`, vm_run.rs `serve_workload`),
+    and only these classes are its template's, each from the code:
+    - its template's files did not read: `shards_vmm::snapshot::read` refused its pointer, its
+      generation's state or its memory (vm_run.rs `restore_reported`, `read_snapshot`);
+    - its guest reset before it took a run, as its kernel's panic does under `panic=-1`
+      (`ExitReason::Reset`);
+    - its guest powered off before it took a run, its init having ended
+      (`ExitReason::PowerOff`).
+    One such end breaks its template (`Pool::broken`), for its next claim to remove and boot
+    instead: what a template's files or its guest do, every restore of it does again, so one
+    is the whole of the evidence, and no count stands in for a cause. A pool whose root
+    filesystem was replaced since its template was keyed is broken as before.
+    Not its template's, counted against nothing: its host's hypervisor refusing to enter a
+    vCPU (`ExitReason::Refused`, D261), whether or not D261's gate takes the refusal for its
+    host's, as the gate tells its host's refusal from its VMM's and neither is its template's;
+    its VMM's error (`ExitReason::Error`); its stop (`ExitReason::Stopped`); a start that failed
+    short of its template's files (its hypervisor, memory, vCPUs, confinement); a launch its
+    host had not let run (macOS's grants, PM M166); its start's judge giving up on it (`ready`,
+    D215). Init's refusal of another build's contract (`workload::OtherInit`) comes after READY,
+    as a run is taken: it fails that run, 125 as `docker run` fails a command that never ran,
+    and touches no pool; the guest's configuration is its cause, which a cold boot repeats.
+    Open: a template's files that fail inside the VMM's restore past `snapshot::read` (its
+    writable layer's head or copy) are not told apart from its host's yet, and count against
+    nothing.
+  - **A run waiting on a pool fails only where a judge refuses it** (the same ruling). A refill
+    that fails for no fault of its template's leaves the runs that wait waiting: each wakes and
+    plans the next refill for the runs with none starting (`plan_refill`'s `for_runs`), and
+    "none is starting for it" is said only where no refill can be planned (its template gone or
+    broken, its root filesystem unrecorded or replaced) and none is starting. A refill that its
+    start's judge gives up on (D215, `ready`: it ran nothing past the slowest start seen) fails a
+    run left waiting with no refill starting for it, in the judge's words (`Pool::refused`,
+    typed `NotReady::Refused`); one for each such refill, no more than the runs that wait. A run
+    has no judge of its own over its pool's refills: one whose refills keep failing for no fault
+    of its template's and of no judge's (its host refusing every entry, a VMM's error on every
+    start) waits for the next; its client is not refused on a judge either (cli: no judged
+    wait), an open gap the next amendment owes a D215 kind of its own.
+  - Held by daemon.rs `refills_no_fault_of_their_templates_keep_it_and_the_next_serves_the_run_waiting`
+    (three refills ended NOT_RUN leave the template whole, and the run waiting is served by the
+    next), `a_refill_failed_for_its_template_breaks_it` (one ended TEMPLATE_FAILED_STATUS breaks
+    it, its claim then Broken) and `a_refill_its_judge_gave_up_on_fails_the_run_left_waiting`
+    (a refill silent past W* fails the run waiting, "ran nothing for", the template whole):
+    stand-in processes and links, no VM. Their reds are mutations of `watch`'s `Fault` (every
+    end the template's; none; the judge's as any other), kept in the lane's record. Owed
+    (ROOT): those tests and the pool tests, clippy on every target, and the next Intel CI run's
+    Arrival, its kept daemon log saying each refill's end and fault.
   - **VMs start outside the pools' lock** (review 7.8). What a pool needs is planned under
     it and counted as starting at once, so that no other claim or refill starts it again,
     then started without it: a start spawns the VM and its network process. A claim that
@@ -36316,9 +36371,10 @@ through it (Hex step 39), so every one of Hex's starts paid a boot.
   RFC 6298 refill window, within the keep-alive) is `shards_api::demand`, moved from the daemon,
   never copied. The daemon's pools keep theirs by it, and an orchestrator's will too.
 
-**Literals.** None of its own. The rule removes a template at one failed restore where the
-daemon's pools remove one at three (`MAX_FAILURES`): a run host makes one VM, and a wrong
-removal costs that run's boot alone.
+**Literals.** None of its own. The rule removes a template at one failed restore: a run host
+makes one VM, and a wrong removal costs that run's boot alone. The daemon's pools, which
+removed one at three failures of any kind (`MAX_FAILURES`, gone), now remove one at its first
+failure of its own and at no other (D26 amended, ROOT's ruling of 2026-11-17).
 
 **Tested** (unit, stand-ins, no VM):
 - `a_runs_microvm_is_shaped_alike_wherever_it_boots`, `a_boots_words_are_its_configs` and
