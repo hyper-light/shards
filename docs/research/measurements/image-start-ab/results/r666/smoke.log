@@ -1,0 +1,9 @@
+the job: nice 10, priority  31
+USER        PID   TT   %CPU STAT PRI     STIME     UTIME COMMAND
+adalundhe 87603   ??    0.3 S    31T   0:00.02   0:00.02 /Users/adalundhe/.pyenv/versions/3.14.2/bin/python3 -I docs/research/measurements/macos-sched/qos.py
+          87603        13.2 S    37T   0:00.00   0:00.19 
+          87603        15.9 S    37T   0:00.00   0:00.19 
+          87603        13.1 R    31T   0:00.00   0:00.13 
+          87603        30.1 S    20T   0:00.00   0:00.23 
+          87603        17.5 S     4T   0:00.00   0:00.13 
+
