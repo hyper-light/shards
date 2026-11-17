@@ -126,3 +126,27 @@ and 8,402 us in A, 8,270 and 8,323 in B.
 - *Since* (ROOT's ruling, R14; PM M616): the comparison takes six pairs of snapshots, each
   restore's and fleet's row judged by its pairs (D36), and `within.py` reads such a run pair
   by pair.
+
+## CI 44189693085 (0782de3cf, Azure's Intel Xeon Platinum 8573C): two six-pair rows worse
+
+`ci-44189693085.txt`: the Envelope's rows, `within.py`, `kvm-pairs.py` over its restores' kvm
+table, `restore-anon/written.py` and `boot-anon/attribute.py`, all over the run's bench-samples
+artifact (its final upload) and job log, each fetched once.
+- Failed: `firecracker_restore/rss_anon` +0.0254 MiB [+0.0078, +0.0586] and
+  `firecracker_density/fleet_private` +0.0254 MiB [+0.0078, +0.0547], six snapshot pairs each,
+  every pair worse (+2 to +15 pages, median +6.5). Every other row better or tied; the boot's
+  `rss_anon` tied (-0.094 MiB [-0.56, +0.46]), under no allowance; no `*_guest_*` row judged.
+- Taken apart (`within.py`): shards' own anonymous pages 37 in every pair (Firecracker's 112 to
+  129); its guest's private copies 223 to 231 (Firecracker's 125 to 145). The gap is the copies
+  alone, against an own share three times smaller; `to_beat` 8.2 ms against 11.7 ms.
+- Its restores (`kvm-pairs.py`): shards touched 783 to 799 pages and wrote 223 to 231, its first
+  beat 79 MMIO exits; Firecracker touched 2711 to 3011 and wrote 125 to 145, 161 to 168 port I/O
+  exits. `written.py`: of shards' 223 copied pages 88 are pages Firecracker's guest copied too,
+  135 are not, and 61 of Firecracker's 149 are shards' not. Which of shards' are its guest's
+  writes and which the working set it copies ahead (D25) is not told apart here: the kernel's
+  symbols (`written.py VMLINUX`) and the working set's own pages are owed.
+- Not a change since 95247a79c (whose Envelope passed on EC2's Xeon 6975P-C): no commit between
+  touches the VMM, the VM process, the guest or the bench but D261's refusal records
+  (76d8bd25a, 8120ea57e).
+- The boot: `attribute.py`, 30 pairs, gap -0.094 MiB = own -0.090, rounding +0.000, touched
+  -0.008, apart +0.000.

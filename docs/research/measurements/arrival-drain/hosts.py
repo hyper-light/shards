@@ -4,24 +4,28 @@ above their slowest (D209 Part 11 amended, CI 44164945050).
 
     hosts.py history.json   # history.py's records
 
-GitHub's records name no CPU; a job's log does, in its Host step (lscpu), and six logs read
-(LOGGED) name an Intel model and three AMD ones. The Image bench's step tells the two makers
-apart in every one of them, its time a property of the host: the runs are split where it falls
-between the slowest logged Intel run's and the quickest logged AMD run's. Prints each run, then
-Arrival's ends by host, Guest memory's (M117) times, and the job's time outside Arrival and
-M117, with the limits M560's rule gives them: a third above the slowest, in whole minutes."""
+GitHub's records name no CPU; a job's log does, in its Host step (lscpu: its model and the
+hypervisor it runs under), and the logs read (LOGGED) are of two clouds: EC2's Intel Xeon
+6975P-C under KVM, and Azure's hosts under Hyper-V ("Microsoft": AMD EPYCs, and an Intel
+Xeon Platinum 8573C, CI 44189693085). The Image bench's step tells the two apart in every one
+of them, its time a property of the host: the runs are split where it falls between the
+slowest logged EC2 run's and the quickest logged Azure run's. Prints each run, then
+Arrival's ends by host, Guest memory's (M117, with the limits M560's rule gives them: a third above the slowest, in whole minutes."""
 import json, math, sys
 from datetime import datetime
 
-# Job ids whose logs were read, and the CPU model each log names (lscpu's "Model name").
+# Job ids whose logs were read, the CPU model and the hypervisor vendor each log names (lscpu's
+# "Model name" and "Hypervisor vendor"): EC2's under KVM, Azure's under Hyper-V ("Microsoft").
 LOGGED = {
-    133778778156: "Intel Xeon 6975P-C",  # b18952ae6, CI 44005213738
-    134014115360: "Intel Xeon 6975P-C",  # 8fc54dcfb, CI 44076016255
-    133841315154: "AMD EPYC 7763",  # 8d6029e4d, CI 44020677971
-    134090721199: "AMD EPYC 9V45",  # a223a63bc, CI 44077430171
-    134191718017: "AMD EPYC 7763",  # 86f5c7b86, CI 44125576545
-    134234527940: "AMD EPYC 9V74",  # 8247e1448, CI 44138098584
+    133778778156: ("Intel Xeon 6975P-C", "KVM"),  # b18952ae6, CI 44005213738
+    134014115360: ("Intel Xeon 6975P-C", "KVM"),  # 8fc54dcfb, CI 44076016255
+    133841315154: ("AMD EPYC 7763", "Microsoft"),  # 8d6029e4d, CI 44020677971
+    134090721199: ("AMD EPYC 9V45", "Microsoft"),  # a223a63bc, CI 44077430171
+    134191718017: ("AMD EPYC 7763", "Microsoft"),  # 86f5c7b86, CI 44125576545
+    134234527940: ("AMD EPYC 9V74", "Microsoft"),  # 8247e1448, CI 44138098584
+    134418024122: ("Intel Xeon Platinum 8573C", "Microsoft"),  # 0782de3cf, CI 44189693085
 }
+CLOUDS = {"KVM": "EC2", "Microsoft": "Azure"}
 # The judged drain (deb971420, D209 Part 11) and the six snapshot pairs (4bef86c91, D36): runs
 # of commits committed from these times on have them, main's history being linear in them.
 JUDGED = "2026-11-17T06:09:11Z"
@@ -63,20 +67,21 @@ for r in json.load(open(sys.argv[1])):
         "m117": took("Guest memory (M117)") if ended("Guest memory (M117)") == "SUCCESS" else None,
     })
 
-intel = [r["image"] for r in runs if LOGGED.get(r["job"], "").startswith("Intel")]
-amd = [r["image"] for r in runs if LOGGED.get(r["job"], "").startswith("AMD")]
-split = (max(intel) + min(amd)) / 2
-host = lambda r: None if r["image"] is None else ("Intel" if r["image"] < split else "AMD")
-print(f"Image step, logged Intel {sorted(intel)} s, logged AMD {sorted(amd)} s: split at {split} s")
-print(f"unlogged runs nearest the split: Intel-side max {max(r['image'] for r in runs if host(r) == 'Intel')} s, "
-      f"AMD-side min {min(r['image'] for r in runs if host(r) == 'AMD')} s\n")
+cloud_of = lambda r: CLOUDS.get(LOGGED.get(r["job"], ("", ""))[1])
+ec2 = [r["image"] for r in runs if cloud_of(r) == "EC2"]
+azure = [r["image"] for r in runs if cloud_of(r) == "Azure"]
+split = (max(ec2) + min(azure)) / 2
+host = lambda r: None if r["image"] is None else ("EC2" if r["image"] < split else "Azure")
+print(f"Image step, logged EC2 {sorted(ec2)} s, logged Azure {sorted(azure)} s: split at {split} s")
+print(f"unlogged runs nearest the split: EC2-side max {max(r['image'] for r in runs if host(r) == 'EC2')} s, "
+      f"Azure-side min {min(r['image'] for r in runs if host(r) == 'Azure')} s\n")
 
 print("commit     job           span  image host   logged              before  arrival end      m117")
 for r in runs:
     if r["arrival_end"] is None:
         continue
     print(f"{r['commit'][:10]} {r['job']} {r['span']:5} {r['image'] or '-':>5} {host(r) or '-':6} "
-          f"{LOGGED.get(r['job'], '-'):19} {r['before_arrival'] or '-':>6} {r['arrival'] or '-':>7} "
+          f"{LOGGED.get(r['job'], ('-',))[0]:25} {r['before_arrival'] or '-':>6} {r['arrival'] or '-':>7} "
           f"{r['arrival_end']:8} {r['m117'] or '-'}")
 
 
@@ -88,7 +93,7 @@ def ends(rs):
 
 
 print()
-for name in ("Intel", "AMD"):
+for name in ("EC2", "Azure"):
     for era, keep in (("before the judged drain", lambda r: r["committed"] < JUDGED), ("with it", lambda r: r["committed"] >= JUDGED)):
         rs = [r for r in runs if host(r) == name and keep(r)]
         print(f"Arrival on {name} hosts, {era}: {ends(rs)}")
@@ -97,7 +102,7 @@ m117 = [r["m117"] for r in runs if r["m117"] is not None]
 m117_limit = math.ceil(max(m117) * 4 / 3 / 60)
 print(f"\nGuest memory (M117), passed: {dist(m117)} s; a third above its slowest, "
       f"{max(m117) * 4 / 3:.1f} s: {m117_limit} min")
-for name in ("Intel", "AMD"):
+for name in ("EC2", "Azure"):
     print(f"  on {name} hosts: {dist([r['m117'] for r in runs if r['m117'] is not None and host(r) == name])} s")
 
 # The job's other steps, in the runs whose Arrival and M117 both passed: its span less those two.
@@ -108,7 +113,7 @@ print(f"\nThe job outside Arrival and M117: {dist(others)} s; a third above its 
       f"{others_limit} = {ARRIVAL_LIMIT_S // 60 + m117_limit + others_limit} min")
 print("Before Arrival, the six pairs' runs: " + ", ".join(
     f"{r['commit'][:10]} {host(r)} {r['before_arrival']} s" for r in runs if r["committed"] >= PAIRS and r["before_arrival"]))
-for name in ("Intel", "AMD"):
+for name in ("EC2", "Azure"):
     rs = [r["before_arrival"] for r in runs if r["committed"] < PAIRS and r["arrival_end"] and r["before_arrival"] and host(r) == name
           and r["conclusion"] != "CANCELLED"]
     print(f"  without them, on {name} hosts (runs not cancelled): {dist(rs)} s")

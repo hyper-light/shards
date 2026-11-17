@@ -1,0 +1,66 @@
+# CI 44189693085, firecracker comparison (x86_64) job 134418024122, at 0782de3cf3: the Envelope's rows
+firecracker (0782de3, INTEL(R) XEON(R) PLATINUM 8573C, load 1.62 1.68 1.57)
+  overhead   shards 0.9 MiB, Firecracker 2.5 MiB: median difference -1.53125 [-1.53125, -1.52734], better
+  peak_rss   shards 55.2 MiB, Firecracker 56.9 MiB: median difference -1.53516 [-2.00977, -0.980469], better
+  pss        shards 55.2 MiB, Firecracker 56.8 MiB: median difference -1.53125 [-1.99609, -0.976562], better
+  pss_file   shards 0.8 MiB, Firecracker 2.2 MiB: median difference -1.4375 [-1.4375, -1.4375], better
+  rss_anon   shards 54.4 MiB, Firecracker 54.6 MiB: median difference -0.09375 [-0.558594, +0.460938], tied
+  rss_file   shards 0.8 MiB, Firecracker 2.2 MiB: median difference -1.44141 [-1.44141, -1.44141], better
+  to_ready   shards 141499.8 us, Firecracker 194013.8 us: median difference -52487.5 [-53705.1, -49216.7], better
+firecracker_density (0782de3, INTEL(R) XEON(R) PLATINUM 8573C, load 1.14 1.42 1.48)
+  fleet_host shards 0.6 MiB, Firecracker 1.0 MiB: median difference -0.449951 [-0.876221, -0.133301], 6 snapshots, better
+  fleet_private shards 1.0 MiB, Firecracker 1.0 MiB: median difference +0.0253906 [+0.0078125, +0.0546875], 6 snapshots, worse (outside the envelope)
+  fleet_pss  shards 1.2 MiB, Firecracker 1.9 MiB: median difference -0.653076 [-0.666016, -0.621582], 6 snapshots, better
+  fleet_pte  shards 0.2 MiB, Firecracker 0.2 MiB: median difference -0.00195312 [-0.0078125, +0.0078125], 6 snapshots, tied
+firecracker_restore (0782de3, INTEL(R) XEON(R) PLATINUM 8573C, load 1.14 1.42 1.48)
+  overhead   shards 1.0 MiB, Firecracker 2.8 MiB: median difference -1.78125 [-1.78125, -1.78125], 6 snapshots, better
+  peak_rss   shards 4.1 MiB, Firecracker 14.8 MiB: median difference -10.707 [-10.8906, -10.6602], 6 snapshots, better
+  pss        shards 4.1 MiB, Firecracker 14.8 MiB: median difference -10.7031 [-10.8867, -10.6562], 6 snapshots, better
+  pss_file   shards 3.1 MiB, Firecracker 13.8 MiB: median difference -10.7422 [-10.9102, -10.6641], 6 snapshots, better
+  rss_anon   shards 1.0 MiB, Firecracker 1.0 MiB: median difference +0.0253906 [+0.0078125, +0.0585938], 6 snapshots, worse (outside the envelope)
+  rss_file   shards 3.1 MiB, Firecracker 13.8 MiB: median difference -10.7461 [-10.9141, -10.668], 6 snapshots, better
+  to_beat    shards 8157.8 us, Firecracker 11655.1 us: median difference -3183.25 [-3812.85, -2714.28], 6 snapshots, better
+
+# within.py OUT (OUT holding bench-samples-0782de3cf3, the artifact as its last step uploaded it)
+run      vmm          host                      revision  copies  rss_anon       own [min..max]  fleet_private  fleet+
+bench-samples/0 shards       INTEL(R) XEON(R) PLATINUM 0782de3      223     260.0          37 [37..38]          261.0    +1.0
+bench-samples/1 shards       INTEL(R) XEON(R) PLATINUM 0782de3      226     263.0          37 [37..38]          264.0    +1.0
+bench-samples/2 shards       INTEL(R) XEON(R) PLATINUM 0782de3      230     267.0          37 [37..38]          268.0    +1.0
+bench-samples/3 shards       INTEL(R) XEON(R) PLATINUM 0782de3      228     265.0          37 [37..38]          266.0    +1.0
+bench-samples/4 shards       INTEL(R) XEON(R) PLATINUM 0782de3      225     262.0          37 [37..38]          263.0    +1.0
+bench-samples/5 shards       INTEL(R) XEON(R) PLATINUM 0782de3      231     268.0          37 [37..38]          269.0    +1.0
+bench-samples/0 firecracker  INTEL(R) XEON(R) PLATINUM 0782de3      127     253.0       126 [113..128]          254.0    +1.0
+bench-samples/1 firecracker  INTEL(R) XEON(R) PLATINUM 0782de3      145     257.0       112 [111..128]          258.5    +1.5
+bench-samples/2 firecracker  INTEL(R) XEON(R) PLATINUM 0782de3      125     252.0       127 [125..128]          254.0    +2.0
+bench-samples/3 firecracker  INTEL(R) XEON(R) PLATINUM 0782de3      143     255.0       113 [111..132]          256.0    +1.0
+bench-samples/4 firecracker  INTEL(R) XEON(R) PLATINUM 0782de3      135     260.0       125 [124..126]          261.0    +1.0
+bench-samples/5 firecracker  INTEL(R) XEON(R) PLATINUM 0782de3      133     262.0       129 [126..130]          264.0    +2.0
+
+# kvm-pairs.py bench-samples/firecracker_restore-kvm.tsv
+vmm          snap  n     to_beat_us  touched_pages  written_pages       pf_taken          exits     mmio_exits     halt_exits       io_exits
+firecracker     0 30        10945.8         2743.0          127.0          705.0          804.5            0.0           14.0          168.0
+shards          0 30         7982.6          783.0          223.0          849.0          918.0           79.0           15.0            0.0
+shards-logged    0 30         8048.7          783.0          223.0          849.0          918.0           79.0           15.0            0.0
+firecracker     1 30        12074.6         3011.0          145.0          722.0          847.0            0.0           15.0          168.0
+shards          1 30         8098.8          792.0          226.0          864.0          900.0           79.0           14.0            0.0
+shards-logged    1 30         8686.9          792.0          226.0          864.0          900.0           79.0           14.0            0.0
+firecracker     2 30        11074.0         2711.0          125.0          708.0          810.0            0.0           14.0          168.0
+shards          2 30         9112.0          799.0          230.0          866.0          940.0           79.0           14.5            0.0
+shards-logged    2 30         8259.2          799.0          230.0          866.0          939.0           79.0           13.5            0.0
+firecracker     3 30        11500.5         2963.0          143.0          713.0          811.5            0.0           14.0          168.0
+shards          3 30         8150.5          788.0          228.0          843.0          914.0           79.0           15.0            0.0
+shards-logged    3 30         8686.0          788.0          228.0          843.0          913.5           79.0           15.0            0.0
+firecracker     4 30        11481.9         2715.0          135.0          720.0          839.0            0.0           14.0          168.0
+shards          4 30         8111.4          791.0          225.0          856.0          927.0           79.0           14.0            0.0
+shards-logged    4 30         7854.6          791.0          225.0          856.0          923.0           79.0           14.0            0.0
+firecracker     5 30        12399.5         2729.0          133.0          732.0          828.5            0.0           12.0          161.5
+shards          5 30         8185.3          799.0          231.0          867.0          913.5           79.0           15.0            0.0
+shards-logged    5 30         8199.2          799.0          231.0          867.0          912.0           79.0           14.0            0.0
+
+# restore-anon/written.py pages.tsv pages.tsv@firecracker
+pages.tsv: 223 pages written; pages.tsv@firecracker: 149
+only in A: 135
+
+# boot-anon/attribute.py bench-samples
+run                                  pairs     gap     own  rounding  touched   apart  unplaced  shards spans  fc spans
+bench-samples              30  -0.094  -0.090    +0.000   -0.008  +0.000     0.000            30        30

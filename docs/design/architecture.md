@@ -14145,16 +14145,17 @@ comes to made no progress for 399 ms, past the slowest answer of its kind seen o
   reached its 30 minutes, and GitHub ended the job 300 s later, keeping no log and no samples.
   Method and records: `docs/research/measurements/arrival-drain/` (`hosts.py`, `rates.py`).
   - *Not a change between 8247e1448 and 95247a79c: the host.* The Image step's time tells the
-    runners' hosts apart (the logged Intel Xeon 6975P-C's 45 s, the logged AMD EPYCs' 53 to
-    73 s, no run between 48 and 52 s): 95247a79c's ran on the Intel, as both of its run's x86_64
-    test jobs did, and 8247e1448's on an AMD EPYC 9V74. On the Intel, Arrival passed 5 times in
-    14 (95 to 185 s) and was cut 9 times, 8 at the job's limit before the judged drain and
-    95247a79c's at its own; on AMD it passed 28 of 31, all 7 since the judged drain. The two
-    Intel logs failed 108 and 362 of rate 40's 386 requests (the first at a p50 of 78 s, its
-    host's load 1103), the four AMD logs none (at most 34 s). What fails them there is unknown:
+    runners' hosts apart (EC2's, an Intel Xeon 6975P-C under KVM, 45 s logged; Azure's, Hyper-V's,
+    53 to 73 s logged, AMD EPYCs and an Intel Xeon Platinum 8573C; no run between 48 and 52 s):
+    95247a79c's ran on EC2's, as both of its run's x86_64 test jobs did, and 8247e1448's on an
+    Azure AMD EPYC 9V74. On EC2's, Arrival passed 5 times in 14 (95 to 185 s) and was cut 9
+    times, 8 at the job's limit before the judged drain and 95247a79c's at its own; on Azure's it
+    passed 28 of 31, all 7 since the judged drain. The two EC2 logs failed 108 and 362 of rate
+    40's 386 requests (the first at a p50 of 78 s, its host's load 1103), the four Azure logs
+    none (at most 34 s). What fails them there is unknown:
     the bench sends their output to /dev/null, and its daemon's log goes with its home.
   - *Guest memory ran beside a cut Arrival's microVMs.* A cut bench's daemon is a session of
-    its own (daemon.rs `detach`), which no step's end stops; on the Intel, Guest memory took
+    its own (daemon.rs `detach`), which no step's end stops; on EC2's, Guest memory took
     27 to 29 s in the 5 runs whose Arrival ended.
   - *Decided* (ci.yml): the samples kept before Arrival (`Raw samples, before Arrival`) and
     every bench's at the end in their place (`overwrite`); `Arrival's daemon, stopped`, always,
@@ -14162,10 +14163,11 @@ comes to made no progress for 399 ms, past the slowest answer of its kind seen o
     above its slowest pass, 35 s, so 47 s, in whole minutes: 1; the job's limit as M560 makes a
     job's, its steps' limits (5 and 1) and a third above the slowest its other steps took together
     (1420 s of 33 runs, so 1893 s, 32 minutes): 38, in place of the 30 above, whose sum left 47 s
-    and which the six snapshot pairs (4bef86c91, D36) outgrew on the Intel, 1188 s before
-    Arrival against 1085 s at most (one run; their cost on AMD unmeasured); KVM's failed entries'
-    VMCS kept (scripts/ci/kvm-host) and the kernel's log of OOM kills and failed VM entries said
-    in every run; the bench keeps its home where any request failed (benches/arrival.rs), so
+    and which the six snapshot pairs (4bef86c91, D36) outgrew on EC2's, 1188 s before
+    Arrival against 1085 s at most (one run; on Azure's, 1193 s of Compare, CI 44189693085);
+    KVM's failed entries' VMCS kept (scripts/ci/kvm-host) and the kernel's log of OOM kills and
+    failed VM entries said in every run; the bench keeps its home where any request failed
+    (benches/arrival.rs), so
     that step says its daemon's log for a pass whose requests failed as well as for a cut.
     Arrival keeps 5 minutes: its slowest of 33 passes is still 185 s.
   - *A request its host refused is the host's, by D261's gate* (ROOT's brief, from code). A run
@@ -14183,8 +14185,8 @@ comes to made no progress for 399 ms, past the slowest answer of its kind seen o
     not taken, or naming no refused VM, it stays in `rate_R_failed`; each is said with why. A
     refusal its client's words do not name (the third way) stays shards' failure, as in the
     tests. The drain's judge is unchanged: a request its host refused has ended.
-  - *What it leaves.* Whether rate 40 on the Intel ends within Arrival's 5 minutes, and what
-    fails its requests there, is open (R09: the next Intel run's per-request words, daemon log
+  - *What it leaves.* Whether rate 40 on EC2's ends within Arrival's 5 minutes, and what
+    fails its requests there, is open (R09: the next EC2 run's per-request words, daemon log
     and kernel's log). `daemon stop` after a cut is unmeasured, bounded by the job's limit alone.
   - *Owed (ROOT):* main's next CI run's firecracker job: the artifact `bench-samples-<sha>` there
     before Arrival; where Arrival is cut, `Arrival's daemon, stopped` saying the daemon's log
