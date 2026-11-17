@@ -35310,7 +35310,7 @@ queues charged** (2026-11-16, ROOT's decisions 1 and 2; lane charge-2).
     changed)
   - `scripts/lint` (the seven targets).
 
-### D253. An orchestrator's run restores its image's template and takes a warm VM from its pool, as the daemon's runs do (built: templates and pools; their real-VM tests passing on HVF and KVM x86-64, PM M605; on WHP and KVM arm64, a daemon run and restore on each OS, and the 2026-11-16 writable-layer amendment's runs owed)
+### D253. An orchestrator's run restores its image's template and takes a warm VM from its pool, as the daemon's runs do (built: templates and pools; their real-VM tests passing on HVF and KVM x86-64, PM M605; the 2026-11-16 writable-layer amendment kept on its A/B on HVF, PM M593; on WHP and KVM arm64, a daemon run and restore on each OS, and that amendment's mutation, real-VM tests and A/B on KVM owed)
 
 **Why.** An orchestrator's run (D231) booted its microVM cold every time, where a daemon's run
 restores its image's template (D25) and takes a warm VM from its pool (D26). Hex boots its node
@@ -35688,18 +35688,44 @@ share process's start, its binaries' check, its network's decision.
   thread, in US us` as it ends; its launch says `its writable layer made|cloned|none, taken
   from its thread` (without the suffix where it made its own) after `its network decided`,
   the gap between those two its wait.
-- *Tested* (unit; written, not run): `a_layer_made_beside_a_runs_making_is_its_launchs_own`
-  (a boot's and a save's layer made on its thread as a launch makes one: ext4, in `layers`,
-  the length of a launch's own of that size, gone with its handle; a restore of a template
-  holding no snapshot none; each taken once; none where none was begun) and
-  `a_layer_made_for_another_way_is_no_launchs` (a boot's is no save's, nor its own way's once
-  let go of; red with the way's check removed).
-- *Owed* (ROOT): those tests and their mutation; `api_image.rs` on HVF, KVM x86_64 and WHP,
-  every start kind; and the A/B, the revision before this against this, on a quiet Studio
-  through `launchd-run.sh` (`docs/research/measurements/image-start-ab/ab.py`, PM M593).
+- *Tested* (unit, Unix; passing in CI run 43968984258 at fe83503c2 on `aarch64-apple-darwin`
+  and on Linux arm64 and x86-64, glibc and musl):
+  `a_layer_made_beside_a_runs_making_is_its_launchs_own` (a boot's and a save's layer made on
+  its thread as a launch makes one: ext4, in `layers`, the length of a launch's own of that
+  size, gone with its handle; a restore of a template holding no snapshot none; each taken
+  once; none where none was begun) and `a_layer_made_for_another_way_is_no_launchs` (a boot's
+  is no save's, nor its own way's once let go of; red with the way's check removed).
+- *Owed* (ROOT): those tests' mutation; `api_image.rs` on HVF, KVM x86_64 and WHP, every start
+  kind (on HVF the A/B below made 100 measured starts of each of the four kinds with it, each
+  held to its kind); the A/B's intervals and p99 (below); and the A/B on KVM.
 - *What would refuse it:* an A/B in which Booted's or Saved's boot span does not fall by the
   launch's former wait, or Restored's or Warm's rises (the thread's file system work beside a
   restore's own).
+- *Kept* (2026-11-17), on its A/B: ROOT's run r644 on a Mac Studio (M4 Max, macOS 26.2) through
+  `launchd-run.sh`, dcac51807 against 26c1ea5df by turns, 100 starts of each kind an arm and 10
+  timed passes (PM M593 has the numbers; the cut's code is unchanged since). It does what it is
+  for on every start. Before it, a launch waited for its layer 1.570 ms at p50 on a Booted start
+  (Saved 1.441, Restored 0.290, a warm host 0.274). With it, no launch waited more than 0.011 ms
+  in any of its 40 timed starts, its thread's making (1.612 ms at p50 on a Booted start, 2.579
+  at most) over by then. Neither refusal is shown, each rank read for what its n can show (Le
+  Boudec 2010, Theorem 2.1; PM M612's `interval`):
+  - Booted's and Saved's boot, whose layers are made alike, fell at p50 by 1.864 and 1.308 ms,
+    against former waits of 1.570 and 1.441, and at p90 by 0.812 and 0.670.
+  - Restored's fell at every rank: 0.113 ms at p50, 2.699 at its max. Warm's rose 0.006 ms at p50
+    and 0.017 at its max, but a warm run's boot has no layer on it in either build (its host took
+    its layer before `WARMED`). Each kind's stop, which neither build changed, moved 0.003 to
+    0.021 ms at p50 between them.
+  - A p99 has no distribution-free 95% interval under 368 samples, and a max has none at any n.
+    So r644's p99 and max rows weigh for neither keeping nor refusing. A span neither build
+    changed moved further there than any boot did: Saved's stop, 3.585 ms at p99 and 3.708 at
+    its max, against 3.373 at most.
+
+  Two questions stay open. Whether the falls at p50 and p90 are the whole former wait, or some of
+  the thread's work comes back beside the start's own at p90, is for those ranks' intervals: the
+  40th to 61st and the 84th to 96th of 100 samples, owed from r644's samples. The p99 is for a
+  rerun of at least 368 starts of each kind. A refusal shown by either refuses the cut. The start
+  path's 5 ms target is not this cut's to move: a warm run's first output came at 5.158 ms at p50
+  before it and 5.210 after, and a warm run's way has no layer on it in either build.
 
 ### D254. kiln's MCP rides the agent-control link: a stdio bridge in the harness's member, one lane of the link per connection, no network grant (decided; its asks built at the endpoint and the controller, the member's listener and bridge and its VM's hand-off built; the runs' asking and the run hosts' pairing built, the daemon's and an orchestrator's; its orchestrator's real-VM test passing on HVF and KVM x86-64, PM M605; the endpoint's report naming the bridges it serves, `mcp:N` among a controller's lanes, built, `shards-control/2`; kiln's side and every other real-VM run owed)
 
