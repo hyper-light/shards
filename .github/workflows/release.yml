@@ -4,13 +4,24 @@
 # `-musl` for static Linux, `.exe` on Windows. Nothing is archived, and nothing ships beside
 # it: the VM and network processes, shards-init and the in-VM server are carried inside.
 #
-# Pushing a tag `v<version>` releases; workflow_dispatch builds the matrix alone.
+# Pushing a tag `v<version>` releases; workflow_dispatch builds the matrix alone. With
+# `dry_run` (`gh workflow run release.yml -f dry_run=true --ref main`), a dispatch does all a
+# tag push does but publish: the guard checks that `v` and crates/shards' version, the tag a
+# release of the commit would carry, is no tag yet; the seven binaries build as a tag's do,
+# `--locked`; and SHA256SUMS is made as the release makes it. The binaries and SHA256SUMS stay
+# the run's artifacts. Only the release job can write to the repository, and a dry run never
+# starts it.
 name: Release
 
 on:
   push:
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: All a tag push does but publish; the binaries and SHA256SUMS stay the run's artifacts
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -27,11 +38,25 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
       - run: python3 scripts/check-development-policy
-      - if: startsWith(github.ref, 'refs/tags/')
+      - if: startsWith(github.ref, 'refs/tags/') && !inputs.dry_run
         run: |
           version=$(grep -m1 '^version' crates/shards/Cargo.toml | cut -d'"' -f2)
           test "v$version" = "$GITHUB_REF_NAME" \
             || { echo "tag $GITHUB_REF_NAME is not crates/shards' version v$version"; exit 1; }
+      # A dry run has no tag: the one its commit would be released under is `v` and the
+      # version, and pushing that tag releases only if it is new.
+      - if: inputs.dry_run
+        run: |
+          version=$(grep -m1 '^version' crates/shards/Cargo.toml | cut -d'"' -f2)
+          test -n "$version" || { echo "crates/shards/Cargo.toml names no version"; exit 1; }
+          found=0
+          git ls-remote --exit-code --tags origin "refs/tags/v$version" > /dev/null || found=$?
+          # git-ls-remote(1): --exit-code exits 2 when origin has no such ref.
+          case $found in
+            2) echo "$GITHUB_SHA would be released as v$version" ;;
+            0) echo "v$version is a tag already: a release needs crates/shards' version raised"; exit 1 ;;
+            *) exit "$found" ;;
+          esac
 
   build:
     name: ${{ matrix.asset }}
@@ -124,9 +149,29 @@ jobs:
           path: ${{ matrix.asset }}
           if-no-files-found: error
 
+  # A dry run's SHA256SUMS, made as the release job makes the release's, under the
+  # workflow's read-only token.
+  sums:
+    name: SHA256SUMS (dry run)
+    if: inputs.dry_run
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Checksums
+        run: cd artifacts && sha256sum shards-* > SHA256SUMS
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: SHA256SUMS
+          path: artifacts/SHA256SUMS
+          if-no-files-found: error
+
   release:
     name: GitHub Release
-    if: startsWith(github.ref, 'refs/tags/')
+    if: startsWith(github.ref, 'refs/tags/') && !inputs.dry_run
     needs: build
     runs-on: ubuntu-24.04
     permissions:

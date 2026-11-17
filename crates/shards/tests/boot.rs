@@ -301,16 +301,83 @@ fn two_vcpus_boot_to_their_end_in_this_process() {
 /// its CPUs are up, then stopped. hvc0 says so only as it registers and replays the log
 /// (device_initcall, D261), so the boot is watched that far: on a CI runner's nested WHP of
 /// 4 CPUs a 255-vCPU guest did not get there in 53 minutes (D261), where the rest of a boot
-/// of 64 vCPUs past their bring-up had taken 40 s and more.
+/// of 64 vCPUs past their bring-up had taken 40 s and more. On Windows each line the boot
+/// prints is said as it comes, with its time.
+///
+/// On an Intel host's KVM, D261's A/B: the boot as it is, then, never beside it, one whose
+/// kernel brings its APs up one at a time (`cpuhp.parallel=0`), each arm's outcome said as it
+/// ends, so that one CI run says whether VMX's error 7 on its nested Intel runners comes of
+/// parallel bring-up's burst. The test fails as the boot as it is fails, else as the other.
 #[test]
 fn boots_the_hosts_maximum_vcpu_count() {
     if cannot_run_vms() {
         return;
     }
     let max = shards_vmm::vm::max_vcpus().unwrap();
+    if !kvm_on_intel() {
+        brings_up_the_most(max, "");
+        return;
+    }
+    let arms = [
+        bring_up_arm(max, "parallel", ""),
+        bring_up_arm(max, "one at a time", " cpuhp.parallel=0"),
+    ];
+    for arm in arms {
+        if let Err(failed) = arm {
+            std::panic::resume_unwind(failed);
+        }
+    }
+}
+
+/// Whether this host's KVM runs on Intel's CPUs, as Linux names its first processor's vendor
+/// (`/proc/cpuinfo`'s `vendor_id`, which `scripts/ci/kvm-host` logs): only VMX fails an entry
+/// with a VM-instruction error, which CI's 255-vCPU boots met (D261).
+fn kvm_on_intel() -> bool {
+    cfg!(all(target_os = "linux", target_arch = "x86_64"))
+        && std::fs::read_to_string("/proc/cpuinfo").is_ok_and(|info| {
+            info.lines()
+                .find_map(|l| l.split_once(':').filter(|(key, _)| key.trim() == "vendor_id"))
+                .is_some_and(|(_, vendor)| vendor.trim() == "GenuineIntel")
+        })
+}
+
+/// One arm of D261's A/B, [`brings_up_the_most`] told `also`: its outcome said on stderr as
+/// it ends, in a line of its own that CI's log keeps whether the test passes or not (`D261
+/// A/B arm`): brought up, the failed VM entry its VM process reported, or another failure,
+/// which its panic said above it; and its time from its start. What failed it is kept for its
+/// test to end with.
+fn bring_up_arm(max: u32, arm: &str, also: &str) -> std::thread::Result<()> {
+    use std::io::Write as _;
+    let start = std::time::Instant::now();
+    let ran = std::panic::catch_unwind(|| brings_up_the_most(max, also));
+    let failed = ran.as_ref().err().map(|failed| {
+        let said = failed
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| failed.downcast_ref::<&str>().copied())
+            .unwrap_or_default();
+        said.lines()
+            .find(|l| l.contains("VM entry failed"))
+            .map_or("failed otherwise, as its panic above says", str::trim)
+            .to_string()
+    });
+    let _ = writeln!(
+        std::io::stderr(),
+        "D261 A/B arm {arm} (console=hvc0 panic=-1{also}): {}; {:?} from its start",
+        failed.as_deref().unwrap_or("brought up"),
+        start.elapsed()
+    );
+    ran
+}
+
+/// [`boots_the_hosts_maximum_vcpu_count`]'s boot of `max` vCPUs, its kernel told `also` past
+/// `console=hvc0 panic=-1`, which keys its wait apart beside its call site (`Vm::sized`), so
+/// that one arm's answers judge no other's.
+fn brings_up_the_most(max: u32, also: &str) {
     let k = kernel();
     let cpus = max.to_string();
-    let mut vm = common::Vm::spawn(&[
+    let cmdline = format!("console=hvc0 panic=-1{also}");
+    let args: [&std::ffi::OsStr; 9] = [
         "run".as_ref(),
         "--kernel".as_ref(),
         k.as_os_str(),
@@ -319,8 +386,14 @@ fn boots_the_hosts_maximum_vcpu_count() {
         "--memory".as_ref(),
         "1024".as_ref(),
         "--cmdline".as_ref(),
-        "console=hvc0 panic=-1".as_ref(),
-    ]);
+        cmdline.as_ref(),
+    ];
+    let vm = if cfg!(windows) {
+        common::Vm::spawn_timed(&args, "D261 WHP boot")
+    } else {
+        common::Vm::spawn(&args)
+    };
+    let mut vm = vm.sized(also.to_string());
     let configured = kernel_nr_cpus();
     let up = max.min(configured);
     let plural = if up == 1 { "" } else { "s" };
