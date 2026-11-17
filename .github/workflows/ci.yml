@@ -122,18 +122,22 @@ jobs:
   # The platform matrix (docs/design/architecture.md D13) on native runners. Every target is
   # linted; the ones a runner can execute are tested. VM tests print SKIP where the host has
   # no backend yet or no hardware virtualization. Each limit is a third above the slowest
-  # measured (M245, M420): the tests' step has 56 minutes, x86_64 Linux's slowest 41.7, and
-  # the job 74, with a third above its other steps' slowest, 13.0. x86_64 Windows is tested
-  # on Windows Server 2022 as well as 2025, each with its hypervisor platform (WHP partitions
-  # run on both: PM's windows-2022 and windows-2025 entries), as a daemon's users run both:
-  # its tests' step has 122 minutes, windows-2025's slowest 90.9, and its job 144, with a
-  # third above its other steps' slowest, 16.1. arm64 Windows is built and tested on
-  # windows-11-arm, whose image has no hypervisor platform (PM M172), so its VM tests say
-  # SKIP: its tests' step has 35 minutes, the slowest of its first two runs 26.2, and its job
-  # 52, with a third above its other steps' slowest, 12.5 (M423).
+  # measured (M245, M420, M613): the tests' step has 56 minutes, x86_64 Linux's slowest 41.7,
+  # and the job 75, with a third above its other steps' slowest, macOS' 14.1. x86_64 Windows
+  # is tested on Windows Server 2022 as well as 2025, each with its hypervisor platform (WHP
+  # partitions run on both: PM's windows-2022 and windows-2025 entries), as a daemon's users
+  # run both: its tests' step has 122 minutes, windows-2025's slowest 90.9, and its jobs 145
+  # and 144, with a third above their other steps' slowest, 17.1 and 16.3. arm64 Windows is
+  # built and tested on windows-11-arm, whose image has no hypervisor platform (PM M172), so
+  # its VM tests say SKIP. Its build of the tests outgrew the tests' step, 20.3 to 21.1
+  # minutes on 2026-11-12 and 30.8 by 2026-11-17, leaving the tests 4.3 of its 35 (M613), so
+  # it builds them in a step of its own, as the musl job does (M560): 42 minutes, a third
+  # above that 30.8. Running them keeps the 35 (M423's, when its step built them too, its
+  # slowest 26.2): they ran 12.1 at most, and no run has run them through since. Its job has
+  # 102, those two and a third above its other steps' slowest, 18.3.
   native:
     name: ${{ matrix.name || matrix.target }}
-    timeout-minutes: ${{ matrix.job_minutes || 74 }}
+    timeout-minutes: ${{ matrix.job_minutes || 75 }}
     strategy:
       fail-fast: false
       matrix:
@@ -141,9 +145,9 @@ jobs:
           - { target: aarch64-apple-darwin, runner: macos-15, test: true }
           - { target: x86_64-unknown-linux-gnu, runner: ubuntu-24.04, test: true }
           - { target: aarch64-unknown-linux-gnu, runner: ubuntu-24.04-arm, test: true }
-          - { target: x86_64-pc-windows-msvc, runner: windows-2025, test: true, tests_minutes: 122, job_minutes: 144 }
+          - { target: x86_64-pc-windows-msvc, runner: windows-2025, test: true, tests_minutes: 122, job_minutes: 145 }
           - { target: x86_64-pc-windows-msvc, runner: windows-2022, test: true, tests_minutes: 122, job_minutes: 144, name: x86_64-pc-windows-msvc (windows-2022) }
-          - { target: aarch64-pc-windows-msvc, runner: windows-11-arm, test: true, tests_minutes: 35, job_minutes: 52 }
+          - { target: aarch64-pc-windows-msvc, runner: windows-11-arm, test: true, build_minutes: 42, tests_minutes: 35, job_minutes: 102 }
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v7.0.1
@@ -266,6 +270,14 @@ jobs:
           path: target/judge-records
           key: judge-records-${{ steps.image.outputs.image }}-${{ runner.arch }}-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: judge-records-${{ steps.image.outputs.image }}-${{ runner.arch }}-${{ matrix.target }}-
+      # Where the job's build of the tests has a limit of its own (`build_minutes`, above), they
+      # are built here; the tests' step then builds nothing, as no variable it sets reaches a
+      # build script.
+      - name: Build the tests
+        if: matrix.test && matrix.build_minutes
+        timeout-minutes: ${{ matrix.build_minutes }}
+        shell: bash
+        run: cargo test --locked --workspace --profile test-release --no-run --target ${{ matrix.target }}
       # Where the runner offers its backend's hypervisor, every VM test must run: one that
       # cannot fails rather than skips (tests/common, SHARDS_REQUIRE_VMS). Every test binary
       # runs, whatever fails before it: a failing one hides none after it.
