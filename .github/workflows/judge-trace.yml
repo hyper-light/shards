@@ -1,0 +1,88 @@
+name: judge trace
+
+# Evidence first (ROOT's ruling of 2026-11-17) for harness a_judged_calls_own_work_is_its_progress
+# on arm64 Windows (CI 44138098584): its idle call went unrefused because its party, the stand-in
+# resting in a stdin read, "ran" by its process's cycles (QueryProcessCycleTime) within every
+# window of its wait. This branch's own workflow runs the test with SHARDS_JUDGE_TRACE=1, whose
+# trace (shards-api's Windows watch, this branch alone) says every look of the party: for each
+# of its threads its state, wait reason, context switches, kernel and user time, its own cycles
+# (QueryThreadCycleTime) and its Win32 start address with the module holding it. Pushes to this
+# branch alone run it; main never carries it.
+on:
+  push:
+    branches: [p/judge-trace]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  TOOLCHAIN: 1.98.1 # keep in sync with rust-toolchain.toml
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  trace:
+    name: judge trace (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: windows-11-arm, target: aarch64-pc-windows-msvc }
+          - { runner: windows-2025, target: x86_64-pc-windows-msvc }
+    steps:
+      - uses: actions/checkout@v7.0.1
+      # As ci.yml's native jobs install it.
+      - name: Install pinned Rust
+        run: |
+          scripts/retry 5 30 rustup toolchain install "$TOOLCHAIN" --profile minimal \
+            --target ${{ matrix.target }} --target x86_64-unknown-linux-musl --target aarch64-unknown-linux-musl
+      - name: zig
+        run: scripts/install-zig
+      - name: NASM (Windows x64)
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        run: |
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 10 -o "$RUNNER_TEMP/nasm.zip" https://www.nasm.us/pub/nasm/releasebuilds/3.02/win64/nasm-3.02-win64.zip
+          echo "161d0bfaff53c2f9e9f3e69fd0672323ebabafd1268976a5cec11be92a19aee7  $RUNNER_TEMP/nasm.zip" | sha256sum -c
+          unzip -q "$RUNNER_TEMP/nasm.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/nasm-3.02" >> "$GITHUB_PATH"
+      - name: The host
+        run: |
+          mkdir -p trace
+          {
+            echo "runner ${{ matrix.runner }}, run ${{ github.run_id }}, revision $GITHUB_SHA, image $ImageOS-$ImageVersion"
+            powershell -NoProfile -Command \
+              '$p = Get-CimInstance Win32_Processor | Select-Object -First 1; $c = Get-CimInstance Win32_ComputerSystem; $o = Get-CimInstance Win32_OperatingSystem; "cpu: " + $p.Name; "logical processors: " + $c.NumberOfLogicalProcessors; "os: " + $o.Caption + " " + $o.Version'
+          } > trace/host.txt 2>&1
+          cat trace/host.txt
+      # No VM process or network process is carried: the test runs stand-ins of its own binary.
+      - name: Build the harness test
+        env:
+          SHARDS_HELPERS: skip
+        run: cargo test --locked --profile test-release -p shards --test harness --no-run --target ${{ matrix.target }}
+      - name: The test, three times, traced
+        env:
+          SHARDS_HELPERS: skip
+          SHARDS_JUDGE_TRACE: "1"
+        run: |
+          for i in 1 2 3; do
+            echo "=== run $i" >> trace/out.log
+            if cargo test --locked --profile test-release -p shards --test harness --target ${{ matrix.target }} -- \
+              --exact a_judged_calls_own_work_is_its_progress --nocapture >> trace/out.log 2>&1; then
+              echo "=== run $i passed" >> trace/out.log
+            else
+              echo "=== run $i failed" >> trace/out.log
+            fi
+          done
+          grep -a '^=== run' trace/out.log
+          echo "trace lines: $(grep -a -c 'shards judge:' trace/out.log || true)"
+      - uses: actions/upload-artifact@v7.0.1
+        if: always()
+        with:
+          name: judge-trace-${{ matrix.runner }}
+          path: trace/
+          if-no-files-found: error

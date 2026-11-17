@@ -498,12 +498,12 @@ impl Watch {
         let hold = std::mem::replace(&mut self.hold, self.followed.hold());
         self.stored = self.hold.io.grown_since(&hold.io);
         let ran = look.ran_since(&before);
-        // A diagnosis of what Windows shows of a VM process a look finds ran nothing since the
-        // look before, the look that may cut it (W2: one inside WHP's partition calls, cut as
-        // stalled on CI's windows-2022): said only of those, so a passing run says nothing.
+        // A diagnosis of what Windows shows of a followed process at every look, what ran
+        // since the look before among it (p/judge-trace alone, ROOT's evidence for a resting
+        // stand-in's cycles on arm64 Windows, CI 44138098584).
         #[cfg(windows)]
-        if !ran && std::env::var_os("SHARDS_JUDGE_TRACE").is_some() {
-            self.followed.trace(&look);
+        if std::env::var_os("SHARDS_JUDGE_TRACE").is_some() {
+            self.followed.trace(&look, ran);
         }
         let found = found(ran, look.ending, &hold, &self.hold);
         // Still of its own, unless its owner holds it on purpose (D267): a pause is its host's
@@ -1614,25 +1614,46 @@ mod os {
         /// switches, and kernel and user time in 100 ns units. What cannot be read is said so.
         /// Each line names its VM process, and all go in one write, so that a log that
         /// interleaves other tests' output keeps each line whole and its own.
-        pub(super) fn trace(&self, look: &Look) {
+        pub(super) fn trace(&self, look: &Look, ran: bool) {
             use std::io::Write as _;
             let mut said = format!(
-                "shards judge: VM process {}: cpu {:?}, cycles {}, ending {}",
+                "shards judge: process {}: ran {ran}, cpu {:?}, cycles {}, ending {}",
                 self.pid, look.cpu, look.cycles, look.ending
             );
+            let modules: Vec<(u32, Vec<(usize, usize, String)>)> = self
+                .members
+                .iter()
+                .filter(|m| !m.exited)
+                .map(|m| (m.pid, modules(m.pid)))
+                .collect();
             match records() {
                 None => said.push_str("; its threads unread"),
                 Some(records) => each_thread(&records, |pid, t| {
                     if self.members.iter().any(|m| m.pid == pid && !m.exited) {
+                        let tid = t.ClientId.UniqueThread as usize;
+                        let (cycles, start) = thread_detail(u32::try_from(tid).unwrap_or(u32::MAX));
+                        let module = start.and_then(|at| {
+                            modules
+                                .iter()
+                                .find(|(p, _)| *p == pid)
+                                .and_then(|(_, list)| {
+                                    list.iter().find(|(base, size, _)| {
+                                        at >= *base && at < base.saturating_add(*size)
+                                    })
+                                })
+                                .map(|(base, _, name)| format!("{name}+{:#x}", at - base))
+                        });
                         said.push_str(&format!(
-                            "\nshards judge: VM process {}: thread pid {pid} tid {} state {} reason {} switches {} kernel {} user {}",
+                            "\nshards judge: process {}: thread pid {pid} tid {tid} state {} reason {} switches {} kernel {} user {} cycles {} start {} {}",
                             self.pid,
-                            t.ClientId.UniqueThread as usize,
                             t.ThreadState,
                             t.WaitReason,
                             t.Reserved3,
                             t.Reserved1[0],
-                            t.Reserved1[1]
+                            t.Reserved1[1],
+                            cycles.map_or_else(|| "unread".to_string(), |c| c.to_string()),
+                            start.map_or_else(|| "unread".to_string(), |s| format!("{s:#x}")),
+                            module.unwrap_or_else(|| "-".to_string()),
                         ));
                     }
                 }),
@@ -2027,6 +2048,112 @@ mod os {
     /// Each thread the records in `words` hold: its process's id and its thread's record
     /// (state, wait reason, times, context switches). A record that would pass the records'
     /// end ends them.
+    /// A thread's own cycles and Win32 start address, for the trace (SHARDS_JUDGE_TRACE): what
+    /// QueryThreadCycleTime and NtQueryInformationThread's ThreadQuerySetWin32StartAddress say
+    /// of thread `tid`; none of either where it cannot be read.
+    fn thread_detail(tid: u32) -> (Option<u64>, Option<usize>) {
+        use windows_sys::Wdk::System::Threading::{
+            NtQueryInformationThread, ThreadQuerySetWin32StartAddress,
+        };
+        use windows_sys::Win32::System::Threading::{
+            OpenThread, THREAD_QUERY_INFORMATION, THREAD_QUERY_LIMITED_INFORMATION,
+        };
+        use windows_sys::Win32::System::WindowsProgramming::QueryThreadCycleTime;
+        // SAFETY: OpenThread of a thread ID with query rights; a null handle is its failure.
+        let raw = unsafe {
+            OpenThread(
+                THREAD_QUERY_INFORMATION | THREAD_QUERY_LIMITED_INFORMATION,
+                0,
+                tid,
+            )
+        };
+        if raw.is_null() {
+            return (None, None);
+        }
+        // SAFETY: a fresh handle nothing else owns.
+        let thread = unsafe { OwnedHandle::from_raw_handle(raw) };
+        let mut cycles = 0u64;
+        // SAFETY: the thread's open handle, and a u64 for the call to fill.
+        let read = unsafe { QueryThreadCycleTime(thread.as_raw_handle(), &raw mut cycles) };
+        let mut start = 0usize;
+        // SAFETY: the thread's open handle, and a usize for the address the call fills.
+        let status = unsafe {
+            NtQueryInformationThread(
+                thread.as_raw_handle(),
+                ThreadQuerySetWin32StartAddress,
+                (&raw mut start).cast(),
+                u32::try_from(size_of::<usize>()).unwrap_or(0),
+                std::ptr::null_mut(),
+            )
+        };
+        ((read != 0).then_some(cycles), (status >= 0).then_some(start))
+    }
+
+    /// The modules of process `pid`, each its base, size and name, for the trace: what
+    /// EnumProcessModulesEx, GetModuleInformation and GetModuleBaseNameW say of them; none
+    /// where they cannot be read.
+    fn modules(pid: u32) -> Vec<(usize, usize, String)> {
+        use windows_sys::Win32::Foundation::HMODULE;
+        use windows_sys::Win32::System::ProcessStatus::{
+            EnumProcessModulesEx, GetModuleBaseNameW, GetModuleInformation, LIST_MODULES_ALL, MODULEINFO,
+        };
+        use windows_sys::Win32::System::Threading::{PROCESS_QUERY_INFORMATION, PROCESS_VM_READ};
+        // SAFETY: OpenProcess of a pid with query and read rights; a null handle is its failure.
+        let raw = unsafe { OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, 0, pid) };
+        if raw.is_null() {
+            return Vec::new();
+        }
+        // SAFETY: a fresh handle nothing else owns.
+        let process = unsafe { OwnedHandle::from_raw_handle(raw) };
+        let mut handles: Vec<HMODULE> = vec![std::ptr::null_mut(); 1024];
+        let bytes = u32::try_from(handles.len().saturating_mul(size_of::<HMODULE>())).unwrap_or(u32::MAX);
+        let mut needed = 0u32;
+        // SAFETY: the process's open handle, `bytes` bytes of module handles for the call to
+        // fill, and a u32 for the bytes it needed.
+        let listed = unsafe {
+            EnumProcessModulesEx(
+                process.as_raw_handle(),
+                handles.as_mut_ptr(),
+                bytes,
+                &raw mut needed,
+                LIST_MODULES_ALL,
+            )
+        };
+        if listed == 0 {
+            return Vec::new();
+        }
+        handles.truncate((needed as usize / size_of::<HMODULE>()).min(handles.len()));
+        handles
+            .into_iter()
+            .filter_map(|module| {
+                let mut info = MODULEINFO::default();
+                // SAFETY: the process's open handle, one of its modules, and a MODULEINFO
+                // for the call to fill.
+                let got = unsafe {
+                    GetModuleInformation(
+                        process.as_raw_handle(),
+                        module,
+                        &raw mut info,
+                        u32::try_from(size_of::<MODULEINFO>()).unwrap_or(0),
+                    )
+                };
+                if got == 0 {
+                    return None;
+                }
+                let mut name = [0u16; 260];
+                // SAFETY: as above, and `name`'s 260 UTF-16 units for the call to fill.
+                let len =
+                    unsafe { GetModuleBaseNameW(process.as_raw_handle(), module, name.as_mut_ptr(), 260) }
+                        as usize;
+                Some((
+                    info.lpBaseOfDll as usize,
+                    info.SizeOfImage as usize,
+                    String::from_utf16_lossy(name.get(..len)?),
+                ))
+            })
+            .collect()
+    }
+
     fn each_thread(words: &[u64], mut thread: impl FnMut(u32, &SYSTEM_THREAD_INFORMATION)) {
         let Some(len) = words.len().checked_mul(size_of::<u64>()) else {
             return;
