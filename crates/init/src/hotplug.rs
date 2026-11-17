@@ -387,14 +387,30 @@ fn parse_u64(text: &str) -> io::Result<u64> {
 }
 
 /// The block device of the component's pmem region at `gpa`, on the function at PCI address
-/// `addr`, once libnvdimm has made it: virtio_pmem registers its region as it binds, and the
-/// region's namespace is bound by nd_pmem, each asynchronously (drivers/nvdimm/bus.c,
-/// `nd_device_register`), each told by its uevent.
+/// `addr`, once libnvdimm has made it and it opens: virtio_pmem registers its region as it
+/// binds, and the region's namespace is bound by nd_pmem, each asynchronously
+/// (drivers/nvdimm/bus.c, `nd_device_register`), each told by its uevent. The disk is listed
+/// as nd_pmem adds it, before it opens (block/genhd.c, `device_add_disk`: its sysfs entries,
+/// then `bdev_add`), so its buses' probing is waited for once it is listed, as pmem.rs waits
+/// for a boot's: opened between, it was refused ENXIO (CI 44138098584, x86_64 WHP, a swap).
 fn component_disk(addr: &str, gpa: u64) -> io::Result<String> {
     let events = rescan(addr)?;
-    events
+    let disk = events
         .arrival(|| pmem_disk_at(gpa))
-        .map_err(|e| io::Error::other(format!("waiting for the component's disk at {addr}: {e}")))
+        .map_err(|e| io::Error::other(format!("waiting for the component's disk at {addr}: {e}")))?;
+    await_probe();
+    Ok(disk)
+}
+
+/// Waits for each nd bus's probing to end, as ndctl waits for it (drivers/nvdimm/core.c,
+/// `wait_probe_show`: its asynchronous registrations, then each namespace's device lock,
+/// which nd_pmem's probe holds while it adds the disk).
+fn await_probe() {
+    for bus in crate::devices::sysfs_list("bus/nd/devices").unwrap_or_default() {
+        if bus.starts_with("ndbus") {
+            let _ = crate::devices::sysfs_read(&format!("bus/nd/devices/{bus}/wait_probe"));
+        }
+    }
 }
 
 /// The block device of the nd region whose resource starts at `gpa`: its namespace's.

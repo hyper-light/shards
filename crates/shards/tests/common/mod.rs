@@ -5008,6 +5008,9 @@ pub struct Wait {
     /// Whether it waits on a command of its thread's own ([`Wait::begin`]): its span is its
     /// thread's own work ([`OWN`]) as it ends.
     command: bool,
+    /// How far into it each due look came that found its party still, since one last found
+    /// it progressed, held or based: what its account says its judge saw.
+    still: Vec<Duration>,
 }
 
 /// Where a [`Wait`] is, by what its caller has found of its answer.
@@ -5117,6 +5120,7 @@ impl Wait {
             live: Live::new(),
             stage: Stage::Begun,
             command: false,
+            still: Vec::new(),
         }
     }
 
@@ -5167,6 +5171,7 @@ impl Wait {
             self.stage = Stage::Answered;
             self.judge = shards_api::Judge::begin(&self.kind.record);
             (self.progressed, self.held, self.vouched) = (None, None, false);
+            self.still.clear();
         }
     }
 
@@ -5283,9 +5288,15 @@ impl Wait {
             // begins vouched.
             let work = std::mem::replace(&mut self.vouched, true).then_some(self.work);
             judged = self.judge.found_over(found, shards_api::Span { work, ..span });
+            if found == Found::Still {
+                self.still.push(self.began.elapsed());
+            } else {
+                self.still.clear();
+            }
         } else if looked.found == Found::Based {
             // Its evidence begins at this look's end, due or not: a based look refuses nothing.
             judged = self.judge.found_over(Found::Based, span);
+            self.still.clear();
         }
         self.live.set(self.account(), self.party.home.as_deref());
         let left = self
@@ -5318,7 +5329,7 @@ impl Wait {
             format!("{} {}", self.kind.site, self.kind.line)
         };
         format!(
-            "{kind}: {} ({}), {:?} in: its last progress {} {:?} ago; {}; its record {record}{}; its members now: {}",
+            "{kind}: {} ({}), {:?} in: its last progress {} {:?} ago; {}; its record {record}{}{}; its members now: {}",
             self.asked,
             self.party.named(),
             self.began.elapsed(),
@@ -5331,6 +5342,15 @@ impl Wait {
             self.judge.stillness().map_or_else(String::new, |(still, held, window)| format!(
                 "; still {still:?} of its {window:?} window as its last look saw, {held:?} of its looks' lateness out"
             )),
+            if self.still.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    "; its due looks that found its party still since: {} of them, {:?} in",
+                    self.still.len(),
+                    self.still
+                )
+            },
             self.party.states(),
         )
     }
@@ -6676,7 +6696,7 @@ pub fn judged<T: Send>(
     call: impl FnOnce() -> T + Send,
 ) -> Result<T, String> {
     let wait = Wait::on(WaitKind::at(std::panic::Location::caller()), party, asked);
-    judging(wait, Stage::Awaited, asked, stop, call).0
+    judging(wait, Stage::Awaited, asked, stop, call, None).0
 }
 
 /// [`judged`], and its wait's account as it ended, before its answer taught its kind: what
@@ -6691,7 +6711,32 @@ pub fn judged_accounted<T: Send>(
     call: impl FnOnce() -> T + Send,
 ) -> (Result<T, String>, String) {
     let wait = Wait::on(WaitKind::at(std::panic::Location::caller()), party, asked);
-    judging(wait, Stage::Awaited, asked, stop, call)
+    judging(wait, Stage::Awaited, asked, stop, call, None)
+}
+
+/// [`judged_accounted`], its call told what its wait's account says of its judge's looks as
+/// it goes: on the channel its call takes, the due looks that found its party still since it
+/// last progressed, held or based, each as far into the wait as it came, each time they
+/// change, the channel closing as its wait ends, refused or not. What a test that bounds a
+/// wait on a still party by its judge's own looks reads, where a span of time would be cut
+/// short by a host that holds the looks late (harness.rs
+/// `a_judged_calls_own_work_is_its_progress`).
+#[track_caller]
+pub fn judged_watching<T: Send>(
+    party: Party,
+    asked: &str,
+    call: impl FnOnce(std::sync::mpsc::Receiver<Vec<Duration>>) -> T + Send,
+) -> (Result<T, String>, String) {
+    let wait = Wait::on(WaitKind::at(std::panic::Location::caller()), party, asked);
+    let (still, looks) = std::sync::mpsc::channel();
+    judging(
+        wait,
+        Stage::Awaited,
+        asked,
+        || {},
+        move || call(looks),
+        Some(still),
+    )
 }
 
 /// [`judged`], of a call whose caller knows its answer is there already (what a member that
@@ -6707,7 +6752,7 @@ pub fn judged_there<T: Send>(
     call: impl FnOnce() -> T + Send,
 ) -> Result<T, String> {
     let wait = Wait::on(WaitKind::at(std::panic::Location::caller()), party, asked);
-    judging(wait, Stage::Begun, asked, stop, call).0
+    judging(wait, Stage::Begun, asked, stop, call, None).0
 }
 
 /// Where a judged call's own thread is ([`judging`]).
@@ -6737,6 +6782,7 @@ fn judging<T: Send>(
     asked: &str,
     stop: impl FnOnce(),
     call: impl FnOnce() -> T + Send,
+    mut watch: Option<std::sync::mpsc::Sender<Vec<Duration>>>,
 ) -> (Result<T, String>, String) {
     let calling = std::sync::Mutex::new(Calling::Spawned);
     let thread = || calling.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -6748,6 +6794,7 @@ fn judging<T: Send>(
             *thread() = Calling::Called;
             let _ = tx.send(answer);
         });
+        let mut heard = 0;
         let refused = loop {
             match rx.recv_timeout(wait.next_look()) {
                 Ok(answer) => {
@@ -6783,7 +6830,16 @@ fn judging<T: Send>(
             if let Err(stall) = looked {
                 break wait.refused(&stall);
             }
+            // Its watcher hears each change in the due looks that found its party still.
+            if let Some(still) = &watch
+                && heard != wait.still.len()
+            {
+                heard = wait.still.len();
+                let _ = still.send(wait.still.clone());
+            }
         };
+        // Its watcher hears its wait end, refused, before its call is stopped.
+        drop(watch.take());
         stop();
         let _ = worker.join();
         (Err(refused), wait.account())

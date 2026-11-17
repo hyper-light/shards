@@ -26384,3 +26384,45 @@ the counts are a process's, not a thread's. n is one run of each child.
   and pages touched. Meanwhile docs/benchmarks-envelope.toml allows `firecracker/rss_anon`
   up to the largest median gap measured, 654 KiB (44138427198's a-1), until 2026-12-01: one
   CI cycle on the reading, then ROOT's runs of it.
+
+### M618. What a resting stand-in runs on Windows: its default thread pool's workers (harness `a_judged_calls_own_work_is_its_progress`; CI 44138098584, judge-trace 44151128928)
+
+- **Question.** CI's arm64 Windows runner left the harness's idle call unrefused (run
+  44138098584): "its last progress process 6712 ran 163.4709ms ago" at 1.000689 s in, W*
+  206 ms, "0 of 5 threads runnable". Its party, a stand-in resting in a read of its stdin,
+  ran by its process's cycles (QueryProcessCycleTime) while no thread of it was runnable at
+  any look. Which thread ran?
+- **Method.** p/judge-trace at e90f2e446c (never for main): with SHARDS_JUDGE_TRACE the
+  judge's Windows watch says every look of its party, and for each thread its state, wait
+  reason, switches, its own cycles (QueryThreadCycleTime) and its Win32 start address with
+  the module holding it. Its workflow ran the test three times on windows-11-arm (Cobalt
+  100, Windows 11 Enterprise 10.0.26200) and on windows-2025 (AMD EPYC 7763, Windows Server
+  2025 10.0.26100), run 44151128928.
+- **Found.** The stand-in has five threads on both: libtest's main thread (its image's
+  entry, waiting on its channel, wait reason 37, WrAlertByThreadId), the test's thread (its
+  image's thread start, in its stdin read, 0, Executive), and three of ntdll's
+  (ntdll.dll+0xb2110 on arm64, +0x845d0 on x64) waiting on a queue (15, WrQueue). On arm64
+  the test failed 3 of 3: in each, one of ntdll's three switched in once, ran 99,944 to
+  109,802 cycles and waited on its queue again, about 840 ms into the idle call, 154 to 167
+  ms before its end; every other thread's cycles stood still at all 35 to 37 looks. On x64 it
+  passed 3 of 3, no thread of the stand-in running at any of 45 to 51 looks.
+- **Whose.** The process's default thread pool's: "the loader takes advantage of the thread
+  pool to speed up loading DLLs into memory", and "Every process has a default thread pool
+  which is created upon demand, and is destroyed at process termination" (Raymond Chen,
+  "Why does my single-threaded program have multiple threads?", The Old New Thing,
+  2019-11-15); "A worker factory that manages the worker threads", and "the system controls
+  the lifetime of thread pool threads" (Microsoft Learn, Thread Pools). Other threads a
+  Windows process may carry that the test makes none of: a console control handler's ("the
+  system creates an additional thread in your process in order to handle and deliver console
+  control notifications", the same post), and a library's or the system's own ("a library
+  used by your program might create threads, and the system itself might create threads").
+  The console host is a process of its own (conhost), whose CPU no reading of the stand-in's
+  counts.
+- **Decided** (the test; ROOT's ruling, evidence first). The judge counts every cycle of a
+  party's process (D215): a pool's worker may run the process's own callbacks, and no
+  documented rule tells the system's turns of it apart. So the test sets its idle call no
+  span: it stays idle until its wait is refused, the refusal ending it (its `stop`), so the
+  system's one run of a worker postpones the refusal by a window and cannot prevent it. Not
+  explained by this trace, and unmeasured: why on arm64 the due looks before that run, about
+  two and three W* into the call, refused nothing, and at which look x64's refusals came; it
+  records no look's time or verdict.

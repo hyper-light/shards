@@ -663,7 +663,7 @@ mod compare {
                 pair,
             );
             for i in 0..WARMUP + runs {
-                let order = if i % 2 == 0 {
+                let order = if i.is_multiple_of(2) {
                     [Vmm::Shards, Vmm::Firecracker]
                 } else {
                     [Vmm::Firecracker, Vmm::Shards]
@@ -980,7 +980,7 @@ mod compare {
         pair: usize,
         fleets: &mut [Fleet; 2],
     ) {
-        let rounds = if pair % 2 == 0 {
+        let rounds = if pair.is_multiple_of(2) {
             [Vmm::Shards, Vmm::Firecracker]
         } else {
             [Vmm::Firecracker, Vmm::Shards]
@@ -1029,7 +1029,13 @@ mod compare {
     fn report_density(fleets: [Fleet; 2], fleet: usize, pairs: usize, cpus: &str, memory: &str) {
         let [shards, fc] = fleets;
         let rounds: Vec<&str> = (0..pairs)
-            .flat_map(|pair| if pair % 2 == 0 { ["S", "F"] } else { ["F", "S"] })
+            .flat_map(|pair| {
+                if pair.is_multiple_of(2) {
+                    ["S", "F"]
+                } else {
+                    ["F", "S"]
+                }
+            })
             .collect();
         support::report(
             "firecracker_density",
@@ -1921,7 +1927,8 @@ mod compare {
         let ours: Vec<(u64, u64, [u64; 3])> = guest_mappings(&spans, guest_bytes)
             .iter()
             .zip(&maps)
-            .filter_map(|(guest, map)| guest.then_some(*map))
+            .filter(|(guest, _)| **guest)
+            .map(|(_, map)| *map)
             .collect();
         if ours.is_empty() {
             return None;
@@ -1946,7 +1953,7 @@ mod compare {
             pagemap.read_exact_at(&mut entries, start / page * 8).ok()?;
             for (i, entry) in entries.as_chunks::<8>().0.iter().enumerate() {
                 let entry = u64::from_ne_bytes(*entry);
-                if entry & PRESENT == 0 || entry & EXCLUSIVE == 0 {
+                if (entry & PRESENT) == 0 || (entry & EXCLUSIVE) == 0 {
                     continue;
                 }
                 let span = usize::try_from((from + i as u64 * page) / huge).ok()?;

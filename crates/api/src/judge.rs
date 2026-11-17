@@ -180,6 +180,14 @@ pub struct Rated {
 /// one with its answer already printed).
 const SPREAD: u64 = 2;
 
+/// The due looks within which a wait whose party is still throughout is refused, its judge
+/// unheld: its first may find its party's baseline or its caller's own first run
+/// ([`Found::Based`], [`Found::Progressed`]), a look that ends a moment past its due time, and
+/// the stillness counted from that end ([`Judge::found_over`]) is less than a window at the
+/// next due look and a whole one at the one after. A derivation of the rule, not a tuning, as
+/// `SPREAD` is: what a test of a still party counts its due looks against.
+pub const LOOKS_TO_REFUSE: u32 = 3;
+
 /// [`Seen::Learned`]'s, together.
 #[derive(Debug, Clone, Copy)]
 struct Learned {

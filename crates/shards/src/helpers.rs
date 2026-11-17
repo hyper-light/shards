@@ -678,12 +678,12 @@ fn private_dir(path: &Path) -> Result<(), String> {
 }
 
 /// Where the AppContainer profiles of this user's microVMs are recorded as they live, so
-/// that one whose `shards` ended without deleting it is deleted by the next (D141).
+/// that one whose `shards` ended without deleting it is deleted by the next, from any home:
+/// beside the profiles, in the user's own LocalAppData (D141, `shards_ipc`'s
+/// `app_container_records`), not in this home's cache.
 #[cfg(windows)]
 pub fn containers() -> Result<PathBuf, String> {
-    let dir = cache()?.join("containers");
-    private_dir(&dir)?;
-    Ok(dir)
+    shards_ipc::app_container_records().map_err(|e| format!("the AppContainer records: {e}"))
 }
 
 /// What tells a VM process of `command` where its host model's vCPU records are kept
