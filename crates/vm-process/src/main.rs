@@ -38,6 +38,16 @@ fn main() -> ExitCode {
         let _ = writeln!(std::io::stderr(), "shards-vm: naming its main thread: {e}");
     }
     shards_vmm::log::init();
+    // Its own program held to the pages it runs, for its life (D36): a read fault of its code
+    // maps that page alone, where it mapped the whole 64 KiB around it and kept all but two
+    // of its code's blocks through a boot.
+    #[cfg(all(target_os = "linux", target_env = "musl", not(feature = "gpu")))]
+    let _own = {
+        // SAFETY: rust-lld links this program (crates/shards/build.rs names it the musl
+        // helpers' linker), refusing text relocations, so nothing writes a segment of it
+        // without PF_W.
+        unsafe { shards_vmm::platform::FaultAroundOff::over_this_program() }
+    };
     // Its log's clock on the wall's, first, for lining its lines up with its spawner's
     // (`SHARDS_TIMING`; api_image's `image_start_costs`).
     if std::env::var_os("SHARDS_TIMING").is_some()

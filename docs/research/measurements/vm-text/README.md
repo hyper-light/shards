@@ -33,8 +33,9 @@ shards-vm 8 pages under Firecracker. 1 (16 pages) leaves it 8 over.
 
 **The measurement that decides the cut** (ROOT's, R14). `run.sh OUT windows`, on CI's runner
 (`gh workflow run vm-text.yml --ref main -f run=windows`): the comparison with fault-around
-at the host's size, then at one page, where each VMM's text keeps only the pages its boot
-touches. Both VMMs, boot and restore, n = 30 a setting.
+at the host's size, then at one page, where each VMM's text was taken to keep only the pages
+its boot touches; it keeps the page cache's folios its boot touches (The order's A/B, below).
+Both VMMs, boot and restore, n = 30 a setting.
 - The boot's touched pages, laid out together, would take
   ceil(touched bytes / 64 KiB) windows of text. If that is at least 2 fewer than now, the
   cut is the boot path ordered first (LLD's `--symbol-ordering-file`, the functions on the
@@ -44,7 +45,7 @@ touches. Both VMMs, boot and restore, n = 30 a setting.
   bench weigh.
 
 **What it decided** (run 44031672087 at 2893961893, AMD EPYC 9V74, 2026-11-17; its `maps.txt`
-in `windows.txt`). With fault-around at one page shards-vm's boot touched 490 of its text's
+in `windows.txt`). With fault-around at one page shards-vm's boot kept 490 of its text's
 579 pages and 48 of its read-only segment's; Firecracker's 196 of 617 and 33. Laid out
 together the 490 take 31 windows, 32 as the text's start falls, where the boot keeps 2,240,512
 bytes now: the cut is the boot path ordered first.
@@ -54,16 +55,11 @@ bytes now: the cut is the boot path ordered first.
 | host's, 64 KiB | 2,240,512 / 2,371,584 | 196,608 / 319,488 | 2,002,944 / 2,527,232 | 262,144 / 446,464 |
 | one page | 2,007,040 / 2,371,584 | 196,608 / 319,488 | 802,816 / 2,527,232 | 135,168 / 446,464 |
 
-**The A/B** (ROOT's). `run.sh OUT order ROUNDS` (`gh workflow run vm-text.yml --ref main -f
-run='order 2'`): arm A as main builds it, its comparison with fault-around at one page, its
-boot's pages of shards-vm (the bench's `pages.tsv`, `pages_to`) made an order by `order.py`,
-and arm B main's tree again (a git worktree) with that order kept as
-`crates/vm-process/order/<arch>.txt`, which vm-process/build.rs links by (LLD's
-`--symbol-ordering-file`): B is the change that would land. Each arm is built in a target
-directory of its own, then the rounds of both alternate, n = 30 pairs a run. `run.sh OUT ab
-ROUNDS REF` compares main with any revision REF the same way (`-f run='ab 2 BRANCH'`). Each
-keeps each arm's sections (`readelf -lSdW`, `size -A`), each run's samples, stdout, stderr
-and envelope, and `maps.txt`.
+**The A/B** (ROOT's). `run.sh OUT ab ROUNDS REF` (`gh workflow run vm-text.yml --ref main -f
+run='ab 2 REF'`): arm A as the dispatched revision builds it, arm B as git revision REF does (a
+git worktree), each in a target directory of its own, then the rounds of both alternate,
+n = 30 pairs a run. Each keeps each arm's sections (`readelf -lSdW`, `size -A`), each run's
+samples, stdout, stderr and envelope, and `maps.txt`.
 
 **The first A/B measured nothing** (run 44076339609 at fc9f30ccc, AMD EPYC 9V74,
 2026-11-17; `ab-44076339609.txt`). Its arm B was to be linked by its order through
@@ -75,3 +71,31 @@ flags", "checked in order, with the first one being used", is `CARGO_ENCODED_RUS
 So B built as A: every section of its VM process the same size, and every boot of both
 arms 2,240,512 bytes of text resident. Its order, 2,923 symbols from A's 490 touched pages,
 was made; no arm linked by it. Arms are trees since.
+
+**The order's A/B** (run 44117236848 at 9581374, Intel Xeon 6975P-C, Linux 7.0.0-1014-aws,
+2026-11-17, 2 rounds an arm; `ab-44117236848.txt`). B, linked by an order of 2,963 symbols,
+read better than A and still worse than Firecracker: `rss_file` +0.03125 MiB (A +0.09375),
+`pss_file` +0.0351562 (+0.0976562), `overhead` -0.046875 (+0.0117188), each one value a pair,
+`to_ready` and `to_beat` alike. Its boot kept 532 of its text's 580 pages, A's 548,
+Firecracker 489 of 617.
+- *Why so little.* A's boot with fault-around at one page (`touched`) kept 507 of its text's
+  580 pages, in 8 runs, and 4 of its 7 gaps were 16 pages long, each from a 64 KiB boundary
+  of the file: page 77 (the text's first, file offset 0x4d000) plus 115, 227, 259 or 387, a
+  multiple of 16. Fault-around's windows lie on the mapping's addresses, a page off the
+  file's here (the text's p_vaddr 0x4e4e0 to its p_offset 0x4d4e0). These lie on the file's:
+  they are the page cache's large folios, each mapped whole by the fault that touches it
+  (Linux 7.2-rc4 mm/memory.c `finish_fault`: "Now we can set mappings for the whole large
+  folio"), whatever fault-around is set to. So `touched` counted folios, not pages; order.py,
+  taking every function on a touched folio, ordered nearly all of them; and B kept the 64 KiB
+  blocks its boot touched as A had.
+- *What it leaves unread.* Which 4 KiB pages a boot runs: every reading so far was of the
+  binary's page cache in 64 KiB folios, which fault-around and `finish_fault` each map whole.
+- *The cure* (D36). shards-vm holds its own program's never-written segments under a
+  userfaultfd from its start (`FaultAroundOff::over_this_program`), so that a fault there maps
+  one page: `finish_fault` maps one page of a range a userfaultfd holds, and
+  `should_fault_around` none around it (`uffd_disable_fault_around`). What its start mapped
+  before that is let go of (MADV_DONTNEED). No list: what it keeps is what it runs, on every
+  Linux host from 6.7, x86_64 and arm64 alike.
+- *Its A/B* (owed, ROOT's): `gh workflow run vm-text.yml --ref main -f run='ab 2 REV'`, REV the
+  main before the cure, whose arm B is A without it.
+

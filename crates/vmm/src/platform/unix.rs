@@ -1021,6 +1021,43 @@ impl FaultAroundOff {
         }
     }
 
+    /// Over this process's own program as it runs: each of its loadable segments that is
+    /// never written, its read-only data and its code ([`program_read_only`]), what its
+    /// start mapped of them let go of (madvise(2) MADV_DONTNEED, after which a private file
+    /// mapping refaults from its file). From here a fault maps the page it touches alone:
+    /// `should_fault_around` maps none around it, and `finish_fault`, which elsewhere maps a
+    /// page cache's large folio whole, maps one page of a range a userfaultfd holds
+    /// (mm/memory.c). So the program keeps resident the pages it runs, where a VM process's
+    /// boot kept whole 64 KiB blocks of its code, all but two of them (D36). None where the
+    /// host cannot hold it off, as [`over`](Self::over).
+    ///
+    /// # Safety
+    ///
+    /// No segment of the program without PF_W may have been written: a program linked
+    /// without text relocations, which LLD refuses unless told `-z notext`. The private
+    /// copy of a written page would be let go of with the rest.
+    pub unsafe fn over_this_program() -> Option<FaultAroundOff> {
+        let ranges = match program_read_only() {
+            Ok(ranges) => ranges,
+            Err(e) => {
+                crate::debug!("the host's fault-around stays on over this program: {e}");
+                return None;
+            }
+        };
+        let off = Self::over(&ranges)?;
+        for &(start, len) in &ranges {
+            // SAFETY: madvise(2) over this program's own segments, which nothing wrote (the
+            // caller's word): their pages refault from its file as they are touched.
+            if unsafe { libc::madvise(start.cast(), len, libc::MADV_DONTNEED) } != 0 {
+                crate::debug!(
+                    "what this program's start mapped stays mapped: madvise(2): {}",
+                    io::Error::last_os_error()
+                );
+            }
+        }
+        Some(off)
+    }
+
     fn try_over(ranges: &[(*mut u8, usize)]) -> io::Result<FaultAroundOff> {
         use std::os::fd::FromRawFd as _;
         // SAFETY: userfaultfd(2) takes its flags alone.
@@ -1056,6 +1093,54 @@ impl FaultAroundOff {
         }
         Ok(FaultAroundOff { _fd: fd })
     }
+}
+
+/// This process's program's loadable segments that are never written (PT_LOAD without
+/// PF_W), each page-aligned where it is loaded: the program's headers as the dynamic linker
+/// lists them (dl_iterate_phdr(3), whose first object is the program, a static one's from
+/// its auxiliary vector).
+#[cfg(target_os = "linux")]
+fn program_read_only() -> io::Result<Vec<(*mut u8, usize)>> {
+    unsafe extern "C" fn program(
+        info: *mut libc::dl_phdr_info,
+        _: libc::size_t,
+        data: *mut libc::c_void,
+    ) -> libc::c_int {
+        // SAFETY: the vector given below, alive through the walk; the linker's own entry.
+        let (spans, info) = unsafe { (&mut *data.cast::<Vec<(u64, u64)>>(), &*info) };
+        if !info.dlpi_phdr.is_null() {
+            // SAFETY: the program's headers, as many as the linker says.
+            let headers = unsafe { std::slice::from_raw_parts(info.dlpi_phdr, usize::from(info.dlpi_phnum)) };
+            for header in headers
+                .iter()
+                .filter(|h| h.p_type == libc::PT_LOAD && (h.p_flags & libc::PF_W) == 0)
+            {
+                let start = info.dlpi_addr.wrapping_add(header.p_vaddr);
+                spans.push((start, start.wrapping_add(header.p_memsz)));
+            }
+        }
+        // The program alone, the walk's first object.
+        1
+    }
+    let mut spans: Vec<(u64, u64)> = Vec::new();
+    // SAFETY: the callback above, given the vector it fills.
+    unsafe { libc::dl_iterate_phdr(Some(program), std::ptr::from_mut(&mut spans).cast()) };
+    let page = u64::try_from(page_size()?).map_err(|_| io::Error::other("a page past u64"))?;
+    spans
+        .into_iter()
+        .map(|(start, end)| {
+            let first = start - start % page;
+            let past = end
+                .checked_next_multiple_of(page)
+                .ok_or_else(|| io::Error::other("a segment past the address space"))?;
+            let len = past
+                .checked_sub(first)
+                .and_then(|len| usize::try_from(len).ok())
+                .ok_or_else(|| io::Error::other("a segment past the address space"))?;
+            let at = usize::try_from(first).map_err(|_| io::Error::other("a segment past usize"))?;
+            Ok((std::ptr::with_exposed_provenance_mut::<u8>(at), len))
+        })
+        .collect()
 }
 
 /// userfaultfd(2)'s interface as include/uapi/linux/userfaultfd.h has it, for

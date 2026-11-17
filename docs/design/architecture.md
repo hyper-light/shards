@@ -3364,6 +3364,42 @@ one CLI.
       unread: the log says no mapping's address, only its offset in 2 MiB. Its Arrival step
       reported each rate as it ended and passed in 84 s, and its judge's records were
       restored from the job's own key and kept again (D209 Part 11).
+    - *The order's A/B* (run 44117236848 at 9581374, Intel Xeon 6975P-C, Linux
+      7.0.0-1014-aws; docs/research/measurements/vm-text/ab-44117236848.txt). B, linked by an
+      order of 2,963 symbols, read `rss_file` +0.03125 MiB to A's +0.09375, `pss_file`
+      +0.0351562 to +0.0976562 and `overhead` -0.046875 to +0.0117188, each one value a pair,
+      `to_ready` and `to_beat` alike: its boot kept 532 of its text's 580 pages to A's 548.
+      Better, and still outside the envelope.
+    - *Why the order took so little.* The run with fault-around at one page (`touched`) read
+      folios, not pages. Its gaps began on 64 KiB boundaries of the file (page 77 plus 115,
+      227, 259 and 387), where fault-around's windows lie on the mapping's addresses, a page
+      off the file's here. The page cache held the binary in 64 KiB folios, and `finish_fault`
+      maps a large folio whole whatever fault-around is set to (Linux 7.2-rc4 mm/memory.c:
+      "Now we can set mappings for the whole large folio"). So the order held nearly every
+      function, and which 4 KiB pages a boot runs was never read.
+    - *The cure, with no list* (2026-11-17, goal 1453357d). The order is gone:
+      vm-process/build.rs links by none, and run.sh's `order` and order.py are removed. A kept
+      list of v0-mangled symbols changes with each version, feature and toolchain. It then
+      stops matching silently (`--no-warn-symbol-ordering`), or, refused when stale, fails
+      each build that renames a boot function, and a 4 KiB profile to make it from was never
+      read. Instead shards-vm holds its own program's segments without PF_W under a
+      userfaultfd from the start of `main` (`platform::FaultAroundOff::over_this_program`:
+      PM M312's write-protect-async hold, which any memory may have), having let go of what
+      its start mapped of them (MADV_DONTNEED). A fault there maps one page: `finish_fault`
+      maps one page of a range a userfaultfd holds (`userfaultfd_armed`), and
+      `should_fault_around` none around it (`uffd_disable_fault_around`). What shards-vm
+      keeps is then what it runs, whatever its layout, version or toolchain.
+      - *Where.* The musl VM process on Linux, x86_64 and arm64, from Linux 6.7. Before 6.7,
+        or where userfaultfd is refused, it keeps fault-around as before, said at debug. The
+        program's segments are its own headers' (dl_iterate_phdr(3), a static program's from
+        its auxiliary vector). Its seccomp filter already allows the userfaultfd, its ioctls
+        and madvise (confine.rs). Not the GPU's VM process, which glibc's link through the
+        host's C compiler leaves with no word on text relocations, a written copy of which the
+        let-go would undo. Not macOS's, which the Envelope does not read, and whose mapping
+        of a program's code is unread here. Not Windows'.
+      - *Its cost.* Each page of its code it touches first faults on its own, where one fault
+        mapped up to 16. How many faults that is, and their time, are unmeasured (R14): the
+        A/B's `to_ready` and `to_beat`.
 - A daemon's build is its binary's identity, which includes what it carries; one given
   another VM binary (`SHARDS_VM_BINARY`, for VMM work and tests) is another build.
 - **Tests:** `helpers::tests` (written whole once, found after, a cut copy replaced);

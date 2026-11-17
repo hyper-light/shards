@@ -7,17 +7,14 @@
 #     The Firecracker comparison as CI runs it (benches/firecracker.rs, --runs 30) with the
 #     host's fault-around at its own size, then at one page (Linux mm/memory.c
 #     `fault_around_bytes`, in debugfs; put back after): each VMM's file-backed resident
-#     bytes at boot and restore, split into the pages it touches and the cached pages a read
-#     fault maps around them.
+#     bytes at boot and restore without the cached pages a read fault maps around it. A
+#     page cache's large folio is still mapped whole by the fault that touches it
+#     (`finish_fault`), so at one page a binary's resident pages are the folios it touched,
+#     except where a userfaultfd holds its mappings, as one holds shards-vm's own (D36).
 #   run.sh OUT ab ROUNDS REF
 #     The comparison of shards as this checkout builds it (A) and as git revision REF builds
 #     it (B, fetched from origin), ROUNDS rounds, their order alternating (A B, then B A),
 #     each round's envelope.
-#   run.sh OUT order ROUNDS
-#     `ab` with B this checkout with the order of its boot kept for the VM process
-#     (crates/vm-process/order/<arch>.txt, which vm-process/build.rs links by, LLD's
-#     --symbol-ordering-file): A's comparison with fault-around at one page, its boot's pages
-#     of shards-vm (the bench's pages.tsv) made that order by order.py.
 #
 # Each arm is a tree of its own (B a git worktree), built in a target directory of its own.
 # An arm is never flags: the nested build of the VM process takes none from its parent's
@@ -29,7 +26,7 @@
 # arm's sections, and the summary of the binaries' mappings (maps.py).
 set -euo pipefail
 out=${1:?an output directory}
-mode=${2:?windows, ab or order}
+mode=${2:?windows or ab}
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(pwd)
 mkdir -p "$out"
@@ -103,21 +100,8 @@ ab)
   build b
   rounds "$rounds"
   ;;
-order)
-  rounds=${3:?rounds}
-  build a
-  fault_around "$(getconf PAGESIZE)"
-  compare touched a
-  restore
-  python3 -I "$here/order.py" "$(vm a)" "$out/touched/pages.tsv" >"$out/order.txt"
-  tree_b HEAD
-  mkdir -p "$out/tree-b/crates/vm-process/order"
-  cp "$out/order.txt" "$out/tree-b/crates/vm-process/order/$(uname -m).txt"
-  build b
-  rounds "$rounds"
-  ;;
 *)
-  echo "run.sh OUT windows | run.sh OUT ab ROUNDS REF | run.sh OUT order ROUNDS" >&2
+  echo "run.sh OUT windows | run.sh OUT ab ROUNDS REF" >&2
   exit 2
   ;;
 esac
