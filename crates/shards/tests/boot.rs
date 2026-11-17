@@ -316,78 +316,103 @@ fn two_vcpus_boot_to_their_end_in_this_process() {
 /// this host, and then says each line it said and when. On Windows each line is said as it
 /// comes, with its time.
 ///
-/// On an Intel host's KVM, D261's A/B: the boot as it is, then, never beside it, one whose
-/// kernel brings its APs up one at a time (`cpuhp.parallel=0`), each arm's outcome said as it
-/// ends, so that one CI run says whether VMX's error 7 on its nested Intel runners comes of
-/// parallel bring-up's burst. The test fails as the boot as it is fails, else as the other.
+/// Where the host refuses to enter it (D261, ROOT's ruling of 2026-11-17: EC2's nested KVM
+/// refused machines of 64 vCPUs or more on 4 CPUs, VMX's error 7), the refusal is the host's:
+/// typed (`ExitReason::Refused`), said so, and kept with this host model's counts
+/// ([`common::vcpu_limits`], beside the judge's records CI keeps); a count this host model has
+/// only refused is refused at once, said with that evidence. The test then proves the host's
+/// known-good count: its largest never refused, or, while none is known, the refused count
+/// halved until a boot comes up, each boot's outcome kept. A host that enters the most proves
+/// it whole.
 #[test]
 fn boots_the_hosts_maximum_vcpu_count() {
+    use shards_vmm::vm::limits::Outcome;
     if cannot_run_vms() {
         return;
     }
     let max = shards_vmm::vm::max_vcpus().unwrap();
-    if !kvm_on_intel() {
-        brings_up_the_most(max, "");
-        return;
-    }
-    let arms = [
-        bring_up_arm(max, "parallel", ""),
-        bring_up_arm(max, "one at a time", " cpuhp.parallel=0"),
-    ];
-    for arm in arms {
-        if let Err(failed) = arm {
-            std::panic::resume_unwind(failed);
+    let limits = common::vcpu_limits();
+    let refused = match limits.admit(max) {
+        Ok(()) => match brings_up_the_most(max, "") {
+            Ok(()) => {
+                limits.record(max, Outcome::Ran).unwrap();
+                return;
+            }
+            Err(refused) => {
+                limits
+                    .record(max, Outcome::Refused { vcpu: refused.vcpu })
+                    .unwrap();
+                refused.to_string()
+            }
+        },
+        Err(only) => only.to_string(),
+    };
+    // The host's, said so, and kept.
+    assert!(refused.contains("the host's hypervisor ("), "{refused}");
+    assert!(
+        limits.outcomes().get(&max).is_some_and(|o| o.refused > 0),
+        "{max} vCPUs refused, and not kept: {refused}"
+    );
+    // Its known-good count, or the refused count halved until a boot comes up.
+    let mut vcpus = limits.known_good().filter(|&good| good < max).unwrap_or(max / 2);
+    loop {
+        assert!(vcpus > 0, "the host refused every count it was asked: {refused}");
+        if limits.admit(vcpus).is_ok() {
+            match brings_up_the_most(vcpus, "") {
+                Ok(()) => {
+                    limits.record(vcpus, Outcome::Ran).unwrap();
+                    return;
+                }
+                Err(again) => limits
+                    .record(vcpus, Outcome::Refused { vcpu: again.vcpu })
+                    .unwrap(),
+            }
         }
+        vcpus /= 2;
     }
 }
 
-/// Whether this host's KVM runs on Intel's CPUs, as Linux names its first processor's vendor
-/// (`/proc/cpuinfo`'s `vendor_id`, which `scripts/ci/kvm-host` logs): only VMX fails an entry
-/// with a VM-instruction error, which CI's 255-vCPU boots met (D261).
-fn kvm_on_intel() -> bool {
-    cfg!(all(target_os = "linux", target_arch = "x86_64"))
-        && std::fs::read_to_string("/proc/cpuinfo").is_ok_and(|info| {
-            info.lines()
-                .find_map(|l| l.split_once(':').filter(|(key, _)| key.trim() == "vendor_id"))
-                .is_some_and(|(_, vendor)| vendor.trim() == "GenuineIntel")
-        })
-}
-
-/// One arm of D261's A/B, [`brings_up_the_most`] told `also`: its outcome said on stderr as
-/// it ends, in a line of its own that CI's log keeps whether the test passes or not (`D261
-/// A/B arm`): brought up, the failed VM entry its machine ended with, or another failure,
-/// which its panic said above it; and its time from its start. What failed it is kept for its
-/// test to end with.
+/// One arm of D261's experiments, [`brings_up_the_most`] told `also`: its outcome said on
+/// stderr as it ends, in a line of its own that CI's log keeps whether the test passes or not
+/// (`D261 A/B arm`): brought up, the host's refusal to enter a vCPU, or another failure, which
+/// its panic said above it; and its time from its start. What failed it is kept for its test
+/// to end with.
 fn bring_up_arm(max: u32, arm: &str, also: &str) -> std::thread::Result<()> {
     use std::io::Write as _;
     let start = std::time::Instant::now();
     let ran = std::panic::catch_unwind(|| brings_up_the_most(max, also));
-    let failed = ran.as_ref().err().map(|failed| {
-        let said = failed
+    let outcome = match &ran {
+        Ok(Ok(())) => "brought up".to_string(),
+        Ok(Err(refused)) => refused.to_string(),
+        Err(failed) => failed
             .downcast_ref::<String>()
             .map(String::as_str)
             .or_else(|| failed.downcast_ref::<&str>().copied())
-            .unwrap_or_default();
-        said.lines()
+            .unwrap_or_default()
+            .lines()
             .find(|l| l.contains("VM entry failed"))
             .map_or("failed otherwise, as its panic above says", str::trim)
-            .to_string()
-    });
+            .to_string(),
+    };
     let _ = writeln!(
         std::io::stderr(),
-        "D261 A/B arm {arm} ({BRINGS_UP}{also}): {}; {:?} from its start",
-        failed.as_deref().unwrap_or("brought up"),
+        "D261 A/B arm {arm} ({BRINGS_UP}{also}): {outcome}; {:?} from its start",
         start.elapsed()
     );
-    ran
+    match ran {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(refused)) => Err(Box::new(refused.to_string())),
+        Err(failed) => Err(failed),
+    }
 }
 
-/// One arm of D261's Intel experiment (.github/workflows/d261-intel.yml, which runs each arm
-/// alone, one after another, and keeps their records): [`boots_the_hosts_maximum_vcpu_count`]'s
-/// boot of `SHARDS_D261_VCPUS` vCPUs, its outcome said in its `D261 A/B arm` line, named
-/// `SHARDS_D261_ARM`. Ignored: the experiment alone runs it.
+/// One arm of D261's experiments (.github/workflows/d261-intel.yml on Intel's KVM,
+/// whp-maxvcpu.yml on WHP, each arm alone, their records kept):
+/// [`boots_the_hosts_maximum_vcpu_count`]'s boot of `SHARDS_D261_VCPUS` vCPUs, its kernel told
+/// `SHARDS_D261_ALSO` besides (`cpuhp.parallel=0`, a serial bring-up's arm), its outcome said
+/// in its `D261 A/B arm` line, named `SHARDS_D261_ARM`. Ignored: the experiments alone run it.
 #[test]
-#[ignore = "D261's Intel experiment (.github/workflows/d261-intel.yml) runs it"]
+#[ignore = "D261's experiments (.github/workflows/d261-intel.yml, whp-maxvcpu.yml) run it"]
 fn a_d261_arm_boots_the_vcpus_its_experiment_asks() {
     if cannot_run_vms() {
         return;
@@ -399,7 +424,12 @@ fn a_d261_arm_boots_the_vcpus_its_experiment_asks() {
         "{vcpus} vCPUs, where this host has 1 to {max}"
     );
     let arm = std::env::var("SHARDS_D261_ARM").unwrap_or_else(|_| format!("{vcpus} vCPUs"));
-    if let Err(failed) = bring_up_arm(vcpus, &arm, "") {
+    let also = std::env::var("SHARDS_D261_ALSO")
+        .ok()
+        .filter(|also| !also.trim().is_empty())
+        .map(|also| format!(" {}", also.trim()))
+        .unwrap_or_default();
+    if let Err(failed) = bring_up_arm(vcpus, &arm, &also) {
         std::panic::resume_unwind(failed);
     }
 }
@@ -412,10 +442,11 @@ fn a_d261_arm_boots_the_vcpus_its_experiment_asks() {
 const BRINGS_UP: &str = "console=hvc0 panic=-1 loglevel=7";
 
 /// [`boots_the_hosts_maximum_vcpu_count`]'s boot of `max` vCPUs in this process, its kernel
-/// told `also` past [`BRINGS_UP`], which keys its waits apart beside their call site, so that
-/// one arm's answers judge no other's.
-fn brings_up_the_most(max: u32, also: &str) {
-    use shards_vmm::vm::{self, Config, Console};
+/// told `also` past [`BRINGS_UP`]; `also` and its count key its waits apart beside their call
+/// site, so that one arm's or count's answers judge no other's. The host's refusal to enter
+/// one of its vCPUs is its end, typed (D261); any other failure panics.
+fn brings_up_the_most(max: u32, also: &str) -> Result<(), shards_vmm::vm::limits::EntryRefused> {
+    use shards_vmm::vm::{self, Config, Console, ExitReason};
     let _turn = machine_turn();
     let mut cfg = Config::new(kernel().to_path_buf(), None);
     cfg.vcpus = max;
@@ -427,12 +458,22 @@ fn brings_up_the_most(max: u32, also: &str) {
     cfg.said = usize::MAX;
     let (handle, running) = vm::start(&cfg).unwrap_or_else(|e| panic!("{e}"));
     let (tx, ended) = std::sync::mpsc::channel();
+    // Its end kept beside the one its wait takes, so that a refused entry is told typed.
+    let (kept, end) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let _ = tx.send(running.wait());
+        let reason = running.wait();
+        let _ = kept.send(reason.clone());
+        let _ = tx.send(reason);
     });
     let tag = cfg!(windows).then_some("D261 WHP boot");
-    let (said, lines) = common::machine_says(&handle, &ended, "smp: Brought up", also, max, tag)
-        .unwrap_or_else(|failed| panic!("{failed}"));
+    let key = format!("{also} {max} vCPUs");
+    let (said, lines) = match common::machine_says(&handle, &ended, "smp: Brought up", &key, max, tag) {
+        Ok(said) => said,
+        Err(failed) => match end.try_recv() {
+            Ok(ExitReason::Refused(refused)) => return Err(refused),
+            _ => panic!("{failed}"),
+        },
+    };
     let configured = kernel_nr_cpus();
     let up = max.min(configured);
     let plural = if up == 1 { "" } else { "s" };
@@ -449,6 +490,7 @@ fn brings_up_the_most(max: u32, also: &str) {
         };
         assert!(lines.text().contains(&refused), "{seen}");
     }
+    Ok(())
 }
 
 #[test]

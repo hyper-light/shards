@@ -860,12 +860,17 @@ impl Muxer {
 
     /// Takes the listener's pair once both its ways are open, a client's dial (D272): a
     /// pending handshake, as a socket's is ([`Muxer::take`]), its next pair made first; or,
-    /// where its way down's client went before its way up opened, the pair dropped and
-    /// replaced, so that a client that dies there stops no other. One a round: a client's
-    /// next waits on its way down (ERROR_PIPE_BUSY) until the next pair is made, here.
+    /// where its client went before it was whole (its way up never opened, or both opened and
+    /// let go before the pair's connects began, ERROR_NO_DATA), the pair replaced, so that a
+    /// client that dies there stops no other, and dropped only then. One a round: a client's
+    /// next waits on its way down (ERROR_PIPE_BUSY) until the next pair is made, here. A broken
+    /// pair dropped first left the name no instance, which ends every client's wait on it as
+    /// if no one listened (ERROR_FILE_NOT_FOUND as its last instance closes, WaitNamedPipeW),
+    /// and `shards_ipc::vsock_open` refuses it so: WHP's rate test, its dial waiting as the
+    /// pair its readiness dial had let go was found broken (CI 44031463755, 6 of 6).
     #[cfg(windows)]
     fn accept(&mut self) {
-        let taken = {
+        let (taken, broken) = {
             let Some((_, listener)) = &mut self.listener else {
                 return;
             };
@@ -876,13 +881,13 @@ impl Muxer {
                 Paired::Waiting => return,
                 Paired::Broken => {
                     debug!("vsock: a host client went before its pair was whole; the pair replaced");
-                    listener.pair = None;
-                    None
+                    (None, listener.pair.take())
                 }
-                Paired::Connected => listener.pair.take().map(Listening::into_pipes),
+                Paired::Connected => (listener.pair.take().map(Listening::into_pipes), None),
             }
         };
         self.next_pair();
+        drop(broken);
         match taken {
             Some(Ok(pipes)) => self.take(pipes),
             Some(Err(e)) => debug!("vsock: host connection: {e}"),
@@ -3073,5 +3078,42 @@ mod tests {
         turn_until(&mut m, &mut poller, "the next client", |m| {
             m.handshakes.len() == 1
         });
+    }
+
+    /// A client waiting for a free way down as a broken pair is replaced is let in, never
+    /// refused (D272): the broken pair goes once its replacement is there. Dropped first, it
+    /// left the name no instance, which ended the client's wait as if no one listened
+    /// (ERROR_FILE_NOT_FOUND), refused by `shards_ipc::vsock_open` (CI 44031463755, WHP's rate
+    /// test). Red with the pair dropped before `next_pair` makes the next.
+    #[cfg(windows)]
+    #[test]
+    fn a_client_waiting_as_a_broken_pair_is_replaced_is_let_in() {
+        let dir_guard = shards_testdir::TempDir::new("vsock-wait").unwrap();
+        let dir = dir_guard.join("v");
+        let mut m = Muxer::new(VsockHost::at(dir.clone()), 3).unwrap();
+        let mut poller = super::super::poll::Poller::new().unwrap();
+        m.attach_port(poller.port()).unwrap();
+        let names = shards_ipc::VsockNames::read(&dir).unwrap();
+        let half = std::fs::OpenOptions::new().read(true).open(&names.down).unwrap();
+        turn_until(&mut m, &mut poller, "its way down's watch", |m| {
+            m.listener
+                .as_mut()
+                .and_then(|(_, l)| l.pair.as_mut())
+                .is_some_and(|p| p.look() == Paired::Waiting && format!("{p:?}").contains("watch: UnderWay"))
+        });
+        // The next client, its way down busy with the half's (ERROR_PIPE_BUSY), so waiting:
+        // given a moment to begin its wait, the red's condition; the green holds either way.
+        let waiter = {
+            let dir = dir.clone();
+            std::thread::spawn(move || {
+                shards_ipc::vsock_open(&dir, Some(Instant::now() + Duration::from_secs(10)))
+            })
+        };
+        std::thread::sleep(Duration::from_millis(50));
+        drop(half);
+        turn_until(&mut m, &mut poller, "the waiting client let in", |m| {
+            m.handshakes.len() == 1
+        });
+        assert!(waiter.join().unwrap().is_ok());
     }
 }

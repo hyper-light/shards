@@ -198,6 +198,9 @@ pub enum Exit {
     Shutdown,
     /// The guest asked for a reset.
     Reset,
+    /// The host's hypervisor refused to enter the vCPU, its hardware's reason given (KVM's
+    /// KVM_EXIT_FAIL_ENTRY, VMX's VM-instruction error): the host's, never the guest's (D261).
+    Refused(u64),
 }
 
 #[cfg(test)]

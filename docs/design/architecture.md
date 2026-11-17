@@ -3303,7 +3303,8 @@ one CLI.
     same cut takes the boot's `overhead` (+2 and +3 pages, the file's 24 less shards' smaller
     anonymous memory) under too. The restore reads better on every axis but one: in
     b18952ae6 its `rss_anon` read +0.0253906 MiB, worse, and in 8d6029e4d better; that is
-    not row 11, and its cause is unread.
+    not row 11: it is 6 pages of guest RAM written by the first beat on Intel, every restore
+    alike, no allocation of shards-vm's or KVM's (`docs/research/measurements/restore-anon`).
     - *What decides the cut* (owed, the coordinator's, R14): the comparison with
       fault-around at the host's size and at one page, where each VMM's text keeps only the
       pages its boot touches (`run.sh OUT windows`; on CI's runner `gh workflow run
@@ -3316,6 +3317,53 @@ one CLI.
       (`run.sh OUT ab ROUNDS` with `B_RUSTFLAGS`; `gh workflow run vm-text.yml --ref main -f
       run='ab 2' -f b_rustflags='-C opt-level=s'`), its arms built apart and alternated, n =
       30 pairs a run. No memory is cut before it.
+    - *What it decided* (vm-text's run 44031672087 at 2893961893, AMD EPYC 9V74,
+      2026-11-17). With fault-around at one page, shards-vm's boot touched 490 of its text's
+      579 pages (2,007,040 bytes) and 48 of its read-only segment's; Firecracker's 196 of 617
+      (802,816 bytes) and 33. shards-vm's boot runs code on 85% of its text's pages,
+      Firecracker's on 32%: its boot path lies scattered, not wide. Laid out together the
+      490 take 31 windows, 32 as the text's start falls, where its boot keeps 2,240,512
+      bytes now: at least 2 fewer. So the cut is the boot path ordered first; size
+      (`opt-level=s`) is not taken. Ordered by whole touched pages, the boot would keep at
+      most 32 windows and the read-only segment's 196,608 bytes, 2,293,760 in all, under
+      Firecracker's 2,338,816. A second round, from the ordered binary's own touched pages,
+      drops the functions those pages held that the boot did not run.
+    - *Its A/B* (owed, the coordinator's): `gh workflow run vm-text.yml --ref main -f
+      run='order 2'`, run.sh's `order`: arm A's comparison with fault-around at one page,
+      its boot's pages of shards-vm (the bench's `pages.tsv`, `pages_to`) made an ordering
+      file (`order.py`: the functions on them, in their order), arm B linked by it (LLD
+      `--symbol-ordering-file`), then 2 rounds of both, alternated. If B keeps the envelope
+      and its time, its ordering file joins the VM process's link (vm-process/build.rs), and
+      how it follows the code as the code changes is decided then.
+    - *That A/B measured nothing* (run 44076339609 at fc9f30ccc, AMD EPYC 9V74; the
+      record's `ab-44076339609.txt`). Its arm B named its order in
+      `CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS`, which the nested build of the VM
+      process never read. Cargo sets `CARGO_ENCODED_RUSTFLAGS` for a build script, so
+      crates/shards/build.rs's nested cargo inherits it, and it is the first of Cargo's
+      "four mutually exclusive sources of extra flags", "checked in order, with the first
+      one being used" (Cargo's configuration reference, `build.rustflags`). So B built as A:
+      each section of its VM process the same size, and every boot of both arms 2,240,512
+      bytes of text resident. Its order, 2,923 symbols from A's 490 touched pages, linked
+      nothing. B won nothing, and nothing was cut.
+    - *The A/B again* (owed, the coordinator's): the same command, its arms now trees. B is
+      main's tree again, a git worktree, with A's order kept as
+      `crates/vm-process/order/<arch>.txt`. vm-process/build.rs links by an order kept so
+      for the target's architecture (LLD's `--symbol-ordering-file`, and
+      `--no-warn-symbol-ordering` for symbols a later build no longer has), under the same
+      terms as the packing: musl, rust-lld, not the GPU's VM process. None is kept, so
+      nothing links by one yet. B is the change that would land: its order file. `run.sh`'s
+      `ab ROUNDS REF` compares main with any revision so, never by flags.
+    - *CI's run 44077430171* (a223a63bc, AMD EPYC 9V45). The boot read as before:
+      `rss_file` +23 pages, `pss_file` +24 and `overhead` +1, each one value a pair. The
+      density read `fleet_private` +0.015625 MiB and `fleet_pte` +0.00390625 MiB, and the
+      restore `rss_anon` +0.0195312 MiB, each worse. `fleet_private` and `rss_anon` are the
+      restored guest's private copies, 230 pages to Firecracker's 157, outweighing
+      Firecracker's own larger anonymous memory on this host
+      (docs/research/measurements/restore-anon, whose `written.py` over the run's
+      `pages.tsv` names the pages; owed). `fleet_pte`, a page table's page more a VM, is
+      unread: the log says no mapping's address, only its offset in 2 MiB. Its Arrival step
+      reported each rate as it ended and passed in 84 s, and its judge's records were
+      restored from the job's own key and kept again (D209 Part 11).
 - A daemon's build is its binary's identity, which includes what it carries; one given
   another VM binary (`SHARDS_VM_BINARY`, for VMM work and tests) is another build.
 - **Tests:** `helpers::tests` (written whole once, found after, a cut copy replaced);
@@ -25893,6 +25941,17 @@ held to more than OPA's answers:
     panics on most such pairs ("illegal value": `big.Rat.SetString` refuses |exp5| > 10^6
     and |exp2| > 10^7, go1.26.1 `math/big/ratconv.go`; `big.Float.SetString`, exponents
     past int32). Shards answers exactly.
+  - A number whose exponent is past i64's, which `number::exact_parts` refuses (and OPA
+    panics on), was ordered by its text against the rest, which is no total order: on CI's
+    fuzzing (run 44077430171, rego-builtins' crash-1023800b6193) `sort` of such an array
+    panicked in Rust's sort ("user-provided comparison function does not correctly
+    implement a total order"), `66e<huge>` before 7 and after 10. It now comes after every
+    number `exact_parts` reads, and by text among its own (2026-11-17, kiln goal a8b1ce42,
+    lane own-36-tag; value.rs `numbers_past_every_exponent_order_totally_with_the_rest`).
+    OPA's own quirk stays as OPA has it: a number with a `.` loses its trailing `.` and `0`
+    there, so `10.0` equals both `1` and `10`, no total order either. Open: Rust's sorts,
+    and BTree sets and maps built from iterators, which sort, may panic on it where Go's
+    sort does not.
   - Addition and subtraction keep the smaller operand's bits within prec + 2 of the
     larger's top, the rest a sticky bit (and a borrow). The round bit is then at or above
     the cut, so the result rounds as Go's exact sum does (160,000 random sums and
@@ -37606,6 +37665,70 @@ post-mortem read of the printk ring through VMCOREINFO, not a debug port.
     | brought up | 0x7 | Arm 2 met what arm 1 did not: not the burst. Read whether other guests failed in that second. |
 
     An AMD runner says nothing: SVM never reports 7.
+  - **Amended 2026-11-17: the A/B's verdict, the experiment, and ROOT's ruling (R02).**
+    - The A/B (CI 44007524337, x86_64 gnu, Intel Xeon 6975P-C) read "0x7 | 0x7":
+      - Arm "parallel" was refused at vCPU 17, 1.73 s in; arm "one at a time" at vCPU 2,
+        19.27 s in. Serial bring-up is no remedy.
+      - 22 VMCS dumps came in three clusters, each while a 255-vCPU guest ran: dmesg
+        1835.9 s (arm 1, and a 7-vCPU guest beside it), 1855.2 s (arm 2), 3536.5 s (the
+        storm, 14 in 60 ms).
+      - All 22 had the same controls (PinBased 0xff, CPUBased 0xb5a06dfa, SecondaryExec
+        0x061013fa, Entry 0x53ff, Exit 0xbefff). Each followed an external-interrupt exit:
+        L1's timer 0xec (19) or a call-function IPI 0xfb (3).
+    - The experiment (`.github/workflows/d261-intel.yml`, run 44030858462, at c44866d727): 8
+      copies, 3 on Intel Xeon 6975P-C, each arm alone (summary.tsv per copy):
+
+      | vCPUs | outcome (3 Intel copies) |
+      |---|---|
+      | 8, 16, 32 | brought up 3/3, under 1 s |
+      | 64 | 0x7 3/3: vCPUs 13, 13, 3, at 44 s, 1172 s, 0.34 s |
+      | 128 | 0x7 2/3 (vCPUs 57 at 952 s, 75 at 28.9 s); 1 brought up in 339 s |
+      | 255 | 0x7 3/3: vCPUs 138, 29, 1 |
+      | 255, kvm_intel `enable_apicv=0` | 0x7 3/3: vCPUs 0, 1, 3, within 0.75 s |
+
+      - Its dumps refuse four distinct control sets: APICv on in x2APIC mode (SecondaryExec
+        0x061013fa) and in xAPIC mode (0x061013eb), and APICv off (0x061010eb, 0x061010fa;
+        PinBased 0x7f). No one control is the cause, and APICv is not.
+      - Refused vCPUs include 0, 1 and 3: the refusal is not of vCPUs past 32.
+      - The Intel copies ran on Amazon EC2: lscpu's hypervisor vendor KVM, `systemd-detect-virt:
+        amazon`. The 5 AMD copies (EPYC 9V74, 7763, 9V45) ran on Azure's Hyper-V (vendor
+        Microsoft), where 255 vCPUs are entered.
+    - Not a fault of shards'.
+      - CPUID gives each vCPU its APIC ID by its index (leaf 1 EBX[31:24], 0xB and 0x1F EDX) in
+        one flat topology. The MADT holds 8-bit IDs to 254.
+      - shards sets only the TSC and TSC-deadline MSRs, and no IA32_FEATURE_CONTROL.
+      - VMX's control fields are L1 KVM's own, chosen from what L0 offers. VM-instruction error
+        7 is L0's VMfailValid on L1's VMRESUME.
+      - What varies with the refusal is how many L2 vCPUs L1 switches among on its 4 vCPUs:
+        EC2's nested KVM refuses a machine of 64 or more.
+    - **Ruled.** The host's real vCPU limit is stated from its own machines, with no number
+      chosen anywhere (`vm::limits`).
+      - *Typed.* A refused entry ends its machine `ExitReason::Refused(EntryRefused)`, from
+        KVM's FAIL_ENTRY (`hv::Exit::Refused`). It is said as the host's, never a hang or a
+        crash: `vCPU N: VM entry failed (hardware reason 0x7): the host's hypervisor (KVM under
+        Amazon EC2) refused to enter it`.
+      - *Kept per host model.* A host model is its CPU's model (CPUID's brand string) and what
+        it runs under: on Linux its platform's vendor (`/sys/class/dmi/id/sys_vendor`), else
+        CPUID 0x40000000's signature. For each count it keeps how many ran, how many were
+        refused, and the vCPU the last refusal named (`Limits::record`).
+      - *Refused at once* (`Limits::admit`): a count refused on its host model and never run
+        there, and every larger count. Said as the host's with the evidence: "the host's
+        hypervisor (KVM under Amazon EC2) refused to enter vCPU N; on this host model, counts
+        ≥ M have only been refused".
+      - *Tried:* a count that has both run and been refused, and every other.
+      - *Ceiling:* the hypervisor's own most stays it.
+      - *Tests.* `boots_the_hosts_maximum_vcpu_count` proves the most on hosts that enter it.
+        Where the host refuses, it asserts the refusal is typed, said as the host's and kept,
+        then proves the host's known-good count: its largest never refused, or the refused
+        count halved until a boot comes up, each kept.
+      - The storms size their largest arm by that count (`common::vcpus_admitted`).
+      - CI keeps the counts beside the judge's records (`target/judge-records/<class>/vcpus`).
+      - The A/B is retired; its experiment's arm stays (`a_d261_arm_boots_the_vcpus_its_experiment_asks`).
+      - *Owed:* the product's runs keeping and asking the counts. vm_run.rs, the VM process of
+        `run --kernel` and of the daemon's runs, asks `admit` before `vm::start` and keeps each
+        outcome. Its directory is the user's cache (`helpers::cache`, made shared with the VM
+        process), which a confined VM process may not reach; that does not matter where entries
+        are never refused (HVF, WHP).
   - WHP's boot said as it comes. On Windows the test starts its VM process with
     `common::Vm::spawn_timed`: each line the process prints is also said on stderr as it
     comes, `D261 WHP boot <time from the spawn>: <line>`. CI's log keeps them whatever ends
@@ -39254,9 +39377,19 @@ finds nothing.
   ConnectNamedPipe overlapped (ERROR_PIPE_CONNECTED, a client in before the call, connected
   at once). With its way down open and its way up not, the way down is watched by a read of
   no bytes (PM M348), which ends as its client goes (or writes on the way it reads): the pair
-  is then `Broken`, dropped and replaced. Whole, it is a handshake's (`Muxer::take`), and the
-  next pair is made first (`platform::PairMaker`: the spawner's, through the hook S3 sets, or
-  this process's own, under the names it made the first with where none was granted).
+  is then `Broken`, replaced, and dropped only once its replacement is there. Whole, it is a
+  handshake's (`Muxer::take`), and the next pair is made first (`platform::PairMaker`: the
+  spawner's, through the hook S3 sets, or this process's own, under the names it made the
+  first with where none was granted). *Amended 2026-11-17 (CI 44031463755):* a pair is also
+  `Broken` where its client opened both ways and let go before the VM's device began its
+  connects (ERROR_NO_DATA): the spawner's first pair, which a readiness dial opens before the
+  device is up (boot.rs `listening`). Dropped before its replacement was made, the name had
+  no instance for that moment, and a client waiting on it (ERROR_PIPE_BUSY, WaitNamedPipeW)
+  was ended as if no one listened (ERROR_FILE_NOT_FOUND as the last instance closed: ReactOS's
+  npfs, strucsup.c `NpDeleteFcb`, run once a name has no instance, cancels its waiters
+  `STATUS_OBJECT_NAME_NOT_FOUND`; the client's os error 2) and refused:
+  WHP's managed-guest rate test, 6 of 6 on windows-2022 and -2025. While a VM listens, its
+  name always has an instance; a dial is refused only once it has ended.
 - *Dials* go through the dialer as before (S3's spawner); with none, the muxer opens the
   host port's pair itself, waiting for nothing (`shards_ipc::vsock_open` to now): a taken pair
   refuses at once, as a socket's full backlog does, rather than stall the device.
@@ -39742,6 +39875,19 @@ crates/shards `build/git.rs`):
 - **A resolver failure is now a registry's trouble too**: before, it failed a pull at once
   (D222's "a name that does not resolve"); now its first is ridden and a re-ask that fails so
   while the trouble follows liveness is the far end's end (`Trouble::gone`), as a refusal is.
+- **A connection's liveness is TCP's own keep-alive** (amended 2026-11-17, kiln's r707 on
+  HVF): "as long as its connection lives" had nothing to tell a dead connection by, since a
+  read on an idle socket sees no peer gone and no path cut. r707's build of a stand-in image
+  held in its git fetch from GitHub for 158 s and on, in a TLS read at 0.38 s of CPU, its
+  session's start with it and every later start behind it. Every connection the client makes
+  now has SO_KEEPALIVE (`keep_alive`, where it sets TCP_NODELAY): a dead one's read fails
+  (ETIMEDOUT), and the fetch asks again as for any cut (`ridden`). The probes' pace is the
+  system's own and set nowhere here (RFC 1122 §4.2.3.6: an interval that "MUST default to no
+  less than two hours"; Linux's tcp(7) 7200 s, 75 s, 9 probes; XNU's `net.inet.tcp.keepidle`,
+  `keepintvl`, `keepcnt`, 7200 s, 75 s, 8; Windows' `KeepAliveTime` and `KeepAliveInterval`,
+  2 hours and 1 s, 10 probes), so a dead connection ends in about two hours. A pace of the
+  path's own (its probes at its RTO, D222's `Pace`) needs per-OS options (TCP_KEEPIDLE,
+  TCP_KEEPALIVE, SIO_KEEPALIVE_VALS) and live data first: owed (R02).
 
 **Every value, and where it comes from:**
 
@@ -39751,6 +39897,7 @@ crates/shards `build/git.rs`):
 | a connect: its path's pace, doubled at each of its own timeouts, made again | `Client::dial` | RFC 6298 §2, §5.5 (D222's `Pace`) |
 | an answer: its first byte's gap alone; past it, silences | `read_head`, `HeadWait` | a stall is a gap with no progress (the person, 2026-11-13; D222) |
 | a non-lookup's body before its first bytes: its connection's liveness | `Paced::working` | its server's work with the request, as its answer's first byte (PM M607) |
+| a connection's liveness: TCP keep-alive at the system's pace | `keep_alive` | RFC 1122 §4.2.3.6; tcp(7); XNU's sysctls; Winsock's SO_KEEPALIVE |
 | a lookup cut: asked again at once, each kind once while none ends | `Client::send_now` | RFC 9110 §9.2.1 (a safe method); D222's run-out clause |
 | an answer, a silence, a handshake cut by its path's only where its caller asks again | `Client::asking_again`, `Paced`, `Client::handshake` | a cut fails a caller that does not; records break with chance 1/k (Glick 1978) |
 | a caller's bound: none by default | `Patience` | the caller's protocol (D168's AWS SDK figures stay theirs) |

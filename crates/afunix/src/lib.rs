@@ -165,17 +165,27 @@ impl Socket {
 const INFO: usize = std::mem::size_of::<WSAPROTOCOL_INFOW>();
 
 /// `path` as an AF_UNIX address: its UTF-8 bytes, NUL-terminated within the 108 bytes
-/// sun_path holds.
+/// sun_path holds (afunix.h's `UNIX_PATH_MAX`). One it can't be is refused saying which path
+/// and why: a bare InvalidInput's words, "invalid input parameter", name neither (kiln's r708).
 fn address(path: &Path) -> io::Result<SOCKADDR_UN> {
+    let refused =
+        |why: String| io::Error::new(io::ErrorKind::InvalidInput, format!("{}: {why}", path.display()));
     let text = path
         .to_str()
-        .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
+        .ok_or_else(|| refused("an AF_UNIX path is UTF-8, and this one is not".into()))?;
     let mut addr = SOCKADDR_UN {
         sun_family: AF_UNIX,
         sun_path: [0; 108],
     };
-    if text.len() >= addr.sun_path.len() || text.contains('\0') {
-        return Err(io::ErrorKind::InvalidInput.into());
+    if text.contains('\0') {
+        return Err(refused("an AF_UNIX path holds no NUL".into()));
+    }
+    if text.len() >= addr.sun_path.len() {
+        return Err(refused(format!(
+            "{} bytes, more than the {} an AF_UNIX path holds before its NUL",
+            text.len(),
+            addr.sun_path.len().saturating_sub(1)
+        )));
     }
     for (d, b) in addr.sun_path.iter_mut().zip(text.bytes()) {
         *d = b as i8;
@@ -309,9 +319,15 @@ impl UnixStream {
     pub fn connect_within(path: &Path, wait: Option<std::time::Duration>) -> io::Result<UnixStream> {
         let deadline = wait
             .map(|wait| {
-                std::time::Instant::now()
-                    .checked_add(wait)
-                    .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))
+                std::time::Instant::now().checked_add(wait).ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!(
+                            "{}: a connect's wait of {wait:?} ends past what this host's clock holds",
+                            path.display()
+                        ),
+                    )
+                })
             })
             .transpose()?;
         Self::connect_until(path, deadline)

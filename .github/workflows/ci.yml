@@ -34,6 +34,7 @@ on:
       - "!.github/workflows/migrate-e2e.yml"
       - "!.github/workflows/softvirt-traps.yml"
       - "!.github/workflows/d261-intel.yml"
+      - "!.github/workflows/whp-maxvcpu.yml"
   pull_request:
 
 permissions:

@@ -1,0 +1,136 @@
+name: WHP max vCPUs
+
+# D261's experiment on WHP (R09: evidence before a remedy). boot.rs'
+# boots_the_hosts_maximum_vcpu_count never ends on GitHub's x86_64 Windows runners (CI
+# 43990298220 and 44007524337, both images): its 240-vCPU guest says nothing for 2 hours, and
+# the Tests step is cut at 122 minutes with every test binary after boot.rs. The guest is
+# unreadable until subsys_initcall publishes its log (VMCOREINFO), after smp_init brought its
+# CPUs up, so where its boot stops is unknown. Suspected, not shown: parallel bring-up leaves
+# 239 APs spinning on the runner's 4 logical processors, and the partition offers the guest
+# no paravirtual spinlocks (its synthetic features lack AccessGuestIdleReg, which Linux's
+# hv_init_spinlocks requires, arch/x86/hyperv/hv_spinlock.c).
+#
+# The design. Each job boots the max-vCPU test's guest once
+# (boot.rs `a_d261_arm_boots_the_vcpus_its_experiment_asks`), each arm in a job of its own on
+# each image, so that no arm runs beside another (the stall is host-wide: CI's other VMs on
+# the host starved beside it):
+# - 240 vCPUs, the WHP partition's limit on these runners (CPUID 0x40000005, hv/whp
+#   `max_vcpus`), then halved and rounded up, 120, 60, 30, 15 and 8: where the boot stops
+#   ending is bracketed within a factor of two; 8 is past brings_up_every_vcpu's 7, which
+#   these runners boot.
+# - 240 with `cpuhp.parallel=0`: its APs brought up one at a time, so that at most one spins.
+# - 240 with AccessGuestIdleReg offered (docs/research/measurements/whp-maxvcpu/
+#   guest-idle.patch applied before the build): the guest's PV spinlocks, which its `hyperv`
+#   kernel (CONFIG_HYPERV) turns on where the partition offers that register.
+# Each arm is bounded by CI's own Tests limit on these runners (ci.yml `native`,
+# tests_minutes 122): a boot that ends past it never ends in CI.
+#
+# Each arm's record: its outcome (the test's `D261 A/B arm` line: brought up, or how it
+# failed; or cut at the bound), every guest line as it came (`D261 WHP boot`), the first vCPU
+# its guest named stuck where it named one, and the host's CPU, logical processors and
+# hypervisor; summary.tsv a line, in one artifact per job.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  TOOLCHAIN: 1.98.1 # keep in sync with rust-toolchain.toml
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  arm:
+    name: WHP max vCPUs (${{ matrix.runner }}, ${{ matrix.arm.name }})
+    runs-on: ${{ matrix.runner }}
+    # GitHub's most for a hosted job: the build, the arm's bound and its records.
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [windows-2025, windows-2022]
+        arm:
+          - { name: "240", vcpus: 240, also: "", patch: "" }
+          - { name: "120", vcpus: 120, also: "", patch: "" }
+          - { name: "60", vcpus: 60, also: "", patch: "" }
+          - { name: "30", vcpus: 30, also: "", patch: "" }
+          - { name: "15", vcpus: 15, also: "", patch: "" }
+          - { name: "8", vcpus: 8, also: "", patch: "" }
+          - { name: "240-serial", vcpus: 240, also: "cpuhp.parallel=0", patch: "" }
+          - { name: "240-pvspin", vcpus: 240, also: "", patch: "guest-idle" }
+    env:
+      RECORDS: ${{ github.workspace }}/whp-records
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: The host
+        run: |
+          mkdir -p "$RECORDS"
+          {
+            echo "runner ${{ matrix.runner }}, arm ${{ matrix.arm.name }}, run ${{ github.run_id }}, revision $GITHUB_SHA, image $ImageOS-$ImageVersion"
+            powershell -NoProfile -Command \
+              '$p = Get-CimInstance Win32_Processor | Select-Object -First 1; $c = Get-CimInstance Win32_ComputerSystem; $o = Get-CimInstance Win32_OperatingSystem; "cpu: " + $p.Name; "cores: " + $p.NumberOfCores + ", logical processors: " + $c.NumberOfLogicalProcessors; "hypervisor present: " + $c.HypervisorPresent + ", manufacturer: " + $c.Manufacturer + ", model: " + $c.Model; "os: " + $o.Caption + " " + $o.Version'
+            powershell -NoProfile -Command '(Get-WindowsOptionalFeature -Online -FeatureName HypervisorPlatform).State' || true
+          } > "$RECORDS/host.txt" 2>&1
+          cat "$RECORDS/host.txt"
+      - name: Install pinned Rust
+        run: |
+          scripts/retry 5 30 rustup toolchain install "$TOOLCHAIN" --profile minimal \
+            --target x86_64-pc-windows-msvc --target x86_64-unknown-linux-musl --target aarch64-unknown-linux-musl
+      - name: zig
+        run: scripts/install-zig
+      # As ci.yml's: AWS-LC's x64 assembly is built from source, so Windows x64 needs NASM.
+      - name: NASM
+        run: |
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 10 -o "$RUNNER_TEMP/nasm.zip" https://www.nasm.us/pub/nasm/releasebuilds/3.02/win64/nasm-3.02-win64.zip
+          echo "161d0bfaff53c2f9e9f3e69fd0672323ebabafd1268976a5cec11be92a19aee7  $RUNNER_TEMP/nasm.zip" | sha256sum -c
+          unzip -q "$RUNNER_TEMP/nasm.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/nasm-3.02" >> "$GITHUB_PATH"
+      - name: The arm's patch
+        if: matrix.arm.patch != ''
+        run: git apply "docs/research/measurements/whp-maxvcpu/${{ matrix.arm.patch }}.patch"
+      - name: Build the boot test
+        run: cargo test --locked --profile test-release -p shards --test boot --no-run --target x86_64-pc-windows-msvc
+      - name: The arm
+        id: arm
+        timeout-minutes: 122
+        continue-on-error: true
+        env:
+          SHARDS_REQUIRE_VMS: "1"
+          SHARDS_D261_VCPUS: ${{ matrix.arm.vcpus }}
+          SHARDS_D261_ARM: ${{ matrix.arm.name }}
+          SHARDS_D261_ALSO: ${{ matrix.arm.also }}
+        run: |
+          cargo test --locked --profile test-release -p shards --test boot --target x86_64-pc-windows-msvc -- \
+            --ignored --exact a_d261_arm_boots_the_vcpus_its_experiment_asks --nocapture > "$RECORDS/arm.log" 2>&1
+      - name: The arm's record
+        if: always()
+        run: |
+          log="$RECORDS/arm.log"
+          touch "$log"
+          said=$(grep -a -m1 'D261 A/B arm' "$log" || true)
+          case "$said" in
+            *": brought up;"*) outcome=pass ;;
+            "") if [ "${{ steps.arm.outcome }}" = success ]; then outcome="no outcome line"; else outcome="cut at its bound, or failed before its boot (arm.log)"; fi ;;
+            *) outcome="failed: $(sed -E 's/^.*\): (.*); [^;]* from its start$/\1/' <<<"$said")" ;;
+          esac
+          took=$(sed -nE 's/.*; (.*) from its start$/\1/p' <<<"$said")
+          lines=$(grep -a -c 'D261 WHP boot' "$log" || true)
+          last=$(grep -a 'D261 WHP boot' "$log" | tail -1 | cut -c1-200 | tr '\t' ' ')
+          stuck=$(grep -a -oE 'CPU ?#?[0-9]+ failed to report alive state|do_boot_cpu failed\([^)]*\) to wakeup CPU#?[0-9]+' "$log" | head -1 | grep -oE '[0-9]+$' || true)
+          cpu=$(grep -a -m1 '^cpu: ' "$RECORDS/host.txt" | cut -c6- | tr '\t' ' ')
+          logical=$(grep -a -m1 'logical processors: ' "$RECORDS/host.txt" | sed -E 's/.*logical processors: //')
+          printf 'runner\tcpu\tlogical\tarm\tvcpus\talso\tpatch\toutcome\tfirst_stuck_vcpu\tguest_lines\tlast_guest_line\ttime\n' > "$RECORDS/summary.tsv"
+          printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${{ matrix.runner }}" "$cpu" "$logical" \
+            "${{ matrix.arm.name }}" "${{ matrix.arm.vcpus }}" "${{ matrix.arm.also }}" "${{ matrix.arm.patch }}" \
+            "$outcome" "${stuck:--}" "$lines" "${last:--}" "${took:--}" >> "$RECORDS/summary.tsv"
+          cat "$RECORDS/summary.tsv" | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7.0.1
+        if: always()
+        with:
+          name: whp-maxvcpu-${{ matrix.runner }}-${{ matrix.arm.name }}
+          path: whp-records/
+          if-no-files-found: error

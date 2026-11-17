@@ -3673,6 +3673,11 @@ fn supervise(
             report(format!("guest requested a reset{said}"));
             ExitCode::from(3)
         }
+        // The host's hypervisor refused to enter a vCPU (D261): said as the host's.
+        ExitReason::Refused(refused) => {
+            report(refused);
+            ExitCode::FAILURE
+        }
         ExitReason::Error(e) => {
             report(e);
             // Its guest's last words, where no one read its console: why it stopped, as often as not.

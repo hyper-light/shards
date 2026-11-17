@@ -1053,6 +1053,13 @@ impl Client {
             None => e,
         })?;
         let _ = tcp.set_nodelay(true);
+        // A wait that lasts as long as its connection lives ends where it dies (`keep_alive`).
+        keep_alive(&tcp).map_err(|e| {
+            Error::of(
+                ErrorKind::Other,
+                format!("{}: its keep-alive: {e}", first.authority()),
+            )
+        })?;
         // The route it went by keys the path's record (crate::links).
         if let Ok(local) = tcp.local_addr() {
             self.paths.located(&path_of(url), local.ip());
@@ -1543,6 +1550,62 @@ fn readable(tcp: &TcpStream) -> io::Result<bool> {
         n if n >= 0 => Ok(p.revents & (POLLRDNORM | POLLHUP | POLLERR) != 0),
         _ => Err(io::Error::last_os_error()),
     }
+}
+
+/// Has TCP probe `tcp` while it idles (SO_KEEPALIVE), so that a wait that lasts as long as
+/// its connection lives (D276: a server's work before its answer's first byte, a silence on a
+/// path that has shown none) ends where the connection has died, a peer gone or a path cut,
+/// which no read sees otherwise (kiln's r707: a build's git fetch from GitHub held 158 s and
+/// on in a read, at no CPU): its read then fails, and the fetch asks again (D276's `ridden`).
+/// The probes' pace is the system's own, set nowhere here: RFC 1122 §4.2.3.6's interval, which
+/// "MUST default to no less than two hours"; Linux's tcp(7) `tcp_keepalive_time` (7200 s),
+/// `tcp_keepalive_intvl` (75 s) and `tcp_keepalive_probes` (9); XNU's `net.inet.tcp.keepidle`,
+/// `keepintvl` and `keepcnt` (7200 s, 75 s, 8); Windows' `KeepAliveTime` and
+/// `KeepAliveInterval` (2 hours and 1 s, ten probes: Winsock's SO_KEEPALIVE documentation).
+#[cfg(unix)]
+fn keep_alive(tcp: &TcpStream) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+    let on: libc::c_int = 1;
+    let len = libc::socklen_t::try_from(std::mem::size_of::<libc::c_int>()).map_err(io::Error::other)?;
+    // SAFETY: setsockopt(2) of a socket `tcp` holds open, from a c_int of ours, its length
+    // given in `len`.
+    let r = unsafe {
+        libc::setsockopt(
+            tcp.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_KEEPALIVE,
+            (&raw const on).cast(),
+            len,
+        )
+    };
+    if r != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// [`keep_alive`] on Windows: Winsock's SO_KEEPALIVE, a BOOL (a DWORD) of ours.
+#[cfg(windows)]
+fn keep_alive(tcp: &TcpStream) -> io::Result<()> {
+    use std::os::windows::io::AsRawSocket;
+    use windows_sys::Win32::Networking::WinSock::{SO_KEEPALIVE, SOCKET_ERROR, SOL_SOCKET, setsockopt};
+    let on: u32 = 1;
+    let len = i32::try_from(std::mem::size_of::<u32>()).map_err(io::Error::other)?;
+    // SAFETY: setsockopt on a socket `tcp` holds open, from a DWORD of ours, its length given
+    // in `len`.
+    let r = unsafe {
+        setsockopt(
+            tcp.as_raw_socket() as usize,
+            SOL_SOCKET,
+            SO_KEEPALIVE,
+            (&raw const on).cast(),
+            len,
+        )
+    };
+    if r == SOCKET_ERROR {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 /// Why an exchange failed: before any response byte (so a GET can be retried), or later.
