@@ -270,6 +270,7 @@ pub const RUN_VALUED: &[&str] = &[
     "--swap-window",
     "--user",
     "-u",
+    "--vcpu-records",
     "--vfio",
     "--vfio-iommu",
     "--vsock",

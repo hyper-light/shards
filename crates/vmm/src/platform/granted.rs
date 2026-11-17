@@ -67,6 +67,27 @@ pub fn grant_input(path: PathBuf, file: Option<(File, PathBuf)>, writable: bool)
     grant(path, real, file, writable);
 }
 
+/// `path` opened to be read and written, made with its directory where it is not there, and
+/// kept as it is where it is: what a spawner grants a VM to keep (shards `Access::Keep`), its
+/// host model's vCPU records (D261), and what a process that keeps them unconfined opens.
+pub fn open_made(path: &Path) -> io::Result<File> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)
+}
+
+/// Lets go of what was granted for `path`: from here on an open of it is the path's own,
+/// which a confined process is refused. A VM process's vCPU records, once kept (D261).
+pub fn forget_input(path: &Path) {
+    granted().retain(|g| !g.is(path));
+}
+
 fn grant(path: PathBuf, real: Option<PathBuf>, file: Option<File>, writable: bool) {
     let mut granted = granted();
     granted.retain(|g| !g.is(&path) && real.as_deref().is_none_or(|real| !g.is(real)));

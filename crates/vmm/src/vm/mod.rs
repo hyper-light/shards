@@ -57,6 +57,9 @@ pub enum StartError {
     CommandLine(crate::arch::x86_64::boot::BootError),
     Legacy(String),
     GpuProbe(shards_abi::gpu::GpuProbeError),
+    /// A count of vCPUs its host model has only refused to enter, refused before it starts
+    /// (D261, [`limits::Limits::admit`]): the host's, said with its evidence.
+    OnlyRefused(limits::OnlyRefused),
 }
 
 impl std::fmt::Display for StartError {
@@ -65,6 +68,7 @@ impl std::fmt::Display for StartError {
             Self::CommandLine(error) => std::fmt::Display::fmt(error, f),
             Self::Legacy(message) => f.write_str(message),
             Self::GpuProbe(why) => why.fmt(f),
+            Self::OnlyRefused(why) => std::fmt::Display::fmt(why, f),
         }
     }
 }
@@ -73,7 +77,7 @@ impl std::error::Error for StartError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::CommandLine(error) => std::error::Error::source(error),
-            Self::Legacy(_) => None,
+            Self::Legacy(_) | Self::OnlyRefused(_) => None,
             Self::GpuProbe(why) => std::error::Error::source(why),
         }
     }
@@ -1600,6 +1604,11 @@ pub struct Config {
     /// one it may have): every vCPU is told the lower of this host's and the baseline's.
     /// Empty for none: the host's own.
     pub cpu_baseline: crate::arch::cpu::Id,
+    /// Its host model's vCPU records (D261), read before it starts: a count that host model
+    /// has only refused is refused ([`StartError::OnlyRefused`]). Its outcome is kept there as
+    /// it comes, once: ran, as its guest's init announces itself, its CPUs online; or refused,
+    /// as the host refuses to enter a vCPU. They are let go of as it is kept. None keeps none.
+    pub vcpu_records: Option<limits::Limits>,
 }
 
 /// A device plugged into a running machine (D214): its place on bus 0 (`devfn`, device <<
@@ -2755,6 +2764,7 @@ impl Config {
             component_window_mib: 0,
             pci_slots_iommu: false,
             cpu_baseline: Vec::new(),
+            vcpu_records: None,
         }
     }
 }
@@ -2808,6 +2818,10 @@ pub struct RestoreConfig {
     /// Each component's image its snapshot holds (D270 slice 5), by its key, which the restore
     /// plugs back where the snapshot kept it before its devices' state is put back.
     pub components: Vec<(String, std::fs::File)>,
+    /// Its host model's vCPU records (D261), read before it resumes, and let go of: its count,
+    /// its snapshot's, is refused where that host model has only refused it. A restore keeps
+    /// no outcome: its template's boot kept its count's.
+    pub vcpu_records: Option<limits::Limits>,
 }
 
 #[derive(Debug, Clone)]

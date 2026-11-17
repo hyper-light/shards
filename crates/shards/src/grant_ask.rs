@@ -197,7 +197,11 @@ pub fn obtain(link: &std::os::unix::net::UnixStream, wanted: &[Wanted]) -> Resul
         match answer.kind {
             kind::GRANTED => match (*access, answer.fds.into_iter().next(), answer.payload.is_empty()) {
                 (
-                    Access::Read | Access::ReadIfThere | Access::ReadNewestIfThere | Access::Write,
+                    Access::Read
+                    | Access::ReadIfThere
+                    | Access::ReadNewestIfThere
+                    | Access::Write
+                    | Access::Keep,
                     Some(fd),
                     true,
                 ) => {
@@ -315,10 +319,11 @@ pub fn obtain(link: &crate::grant::Link, wanted: &[Wanted]) -> Result<(), String
         match (answer.kind, *access) {
             (
                 kind::GRANTED,
-                Access::Read | Access::ReadIfThere | Access::ReadNewestIfThere | Access::Write,
+                Access::Read | Access::ReadIfThere | Access::ReadNewestIfThere | Access::Write | Access::Keep,
             ) if !answer.payload.is_empty() => {
                 let handed = handed_file(&answer.payload).map_err(at)?;
-                shards_vmm::platform::grant_input(path.clone(), Some(handed), *access == Access::Write);
+                let writable = matches!(access, Access::Write | Access::Keep);
+                shards_vmm::platform::grant_input(path.clone(), Some(handed), writable);
             }
             (kind::GRANTED, Access::ReadIfThere | Access::ReadNewestIfThere) => {
                 shards_vmm::platform::grant_input(path.clone(), None, false)
@@ -580,6 +585,7 @@ fn code(access: Access) -> u8 {
         Access::Write => 2,
         Access::MakeDir => 3,
         Access::Listen => 4,
+        Access::Keep => 6,
     }
 }
 

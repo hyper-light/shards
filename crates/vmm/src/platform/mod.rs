@@ -131,8 +131,8 @@ pub use granted::input_file_id;
 #[cfg(unix)]
 pub use granted::listen_unix;
 pub use granted::{
-    Kept, Stager, dial_unix, grant_input, grant_listener, input_metadata, input_path, open_beneath_input,
-    open_input, open_newest_beneath_input, set_dialer, set_stager, stager,
+    Kept, Stager, dial_unix, forget_input, grant_input, grant_listener, input_metadata, input_path,
+    open_beneath_input, open_input, open_made, open_newest_beneath_input, set_dialer, set_stager, stager,
 };
 #[cfg(windows)]
 pub use granted::{PairMaker, listen_pipes, set_pair_maker};

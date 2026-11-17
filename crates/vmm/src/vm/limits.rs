@@ -4,15 +4,21 @@
 //! the entry of a machine of 64 vCPUs or more on 4 CPUs (VM-instruction error 7), where Azure's
 //! Hyper-V entered 255 (D261's experiment, run 44030858462). No count is chosen here: each
 //! count's outcomes are kept per host model, the CPU's model and the hypervisor it runs under,
-//! as its machines end ([`Limits::record`]). A count that has only been refused on its host
-//! model, and every larger one, is refused at once, said as the host's with that evidence
-//! ([`Limits::admit`]); a count that has run is tried, its refusal, if it comes, the host's
-//! ([`EntryRefused`]). The hypervisor's own most stays the ceiling.
+//! as its machines come to them ([`Limits::record`]). A count that has only been refused on its
+//! host model, and every larger one never run there, is refused at once, said as the host's
+//! with that evidence ([`Limits::admit`]); a count that has run is tried, its refusal, if it
+//! comes, the host's ([`EntryRefused`]). The hypervisor's own most stays the ceiling.
+//!
+//! A host model's records are one file, read and written through
+//! [`open_input`](crate::platform::open_input): in a VM process the one its spawner granted it
+//! (D30), as its disks are, which it may neither replace by a rename nor, in App Sandbox, be
+//! sure to cut short, so it is written over in place under its own lock; elsewhere the file at
+//! its path.
 
 use std::collections::BTreeMap;
 use std::fmt;
-use std::io::{self, Write as _};
-use std::path::PathBuf;
+use std::io::{self, Read as _, Seek as _, Write as _};
+use std::path::{Path, PathBuf};
 
 /// The hypervisor a machine here runs under, as a refusal names it.
 #[cfg(hv = "kvm")]
@@ -241,18 +247,21 @@ pub enum Outcome {
     Refused { vcpu: usize },
 }
 
-/// A host model's records: one file a model in `dir`, a line a count, `COUNT RAN REFUSED
-/// LAST`, LAST the vCPU the last refusal named or `-`.
+/// A host model's records: its file in the records' directory, a line a count, `COUNT RAN
+/// REFUSED LAST`, LAST the vCPU the last refusal named or `-`.
 #[derive(Debug, Clone)]
 pub struct Limits {
-    dir: PathBuf,
+    file: PathBuf,
     host: HostModel,
 }
 
 impl Limits {
     /// The records of host model `host` kept in `dir`.
     pub fn at(dir: PathBuf, host: HostModel) -> Limits {
-        Limits { dir, host }
+        Limits {
+            file: dir.join(host.key()),
+            host,
+        }
     }
 
     /// The host model they are of.
@@ -260,30 +269,43 @@ impl Limits {
         &self.host
     }
 
-    fn file(&self) -> PathBuf {
-        self.dir.join(self.host.key())
+    /// The file they are kept in: what a VM process is granted (D30).
+    pub fn file(&self) -> &Path {
+        &self.file
     }
 
     /// Each count's outcomes as kept: none where nothing is, a line that says nothing whole
-    /// left out.
+    /// left out. Read under the file's lock, shared, so that a write is read whole.
     pub fn outcomes(&self) -> BTreeMap<u32, Outcomes> {
-        parse(&std::fs::read_to_string(self.file()).unwrap_or_default())
+        let read = || -> io::Result<Vec<u8>> {
+            let mut file = crate::platform::open_input(&self.file, false)?;
+            file.lock_shared()?;
+            let mut bytes = Vec::new();
+            let read = file.read_to_end(&mut bytes);
+            let unlocked = file.unlock();
+            read?;
+            unlocked?;
+            Ok(bytes)
+        };
+        parse(&String::from_utf8_lossy(&read().unwrap_or_default()))
     }
 
-    /// Whether a machine of `vcpus` is tried: refused at once where a count no larger has only
-    /// been refused on this host model, never run there ([`OnlyRefused`]).
+    /// Whether a machine of `vcpus` is tried: refused at once where it has never run on this
+    /// host model and a count no larger has only been refused there ([`OnlyRefused`]). A count
+    /// that has run is tried, whatever else it and others came to.
     pub fn admit(&self, vcpus: u32) -> Result<(), OnlyRefused> {
-        match self
-            .outcomes()
-            .into_iter()
-            .find(|(_, o)| o.refused > 0 && o.ran == 0)
-        {
+        let all = self.outcomes();
+        if all.get(&vcpus).is_some_and(|o| o.ran > 0) {
+            return Ok(());
+        }
+        match all.into_iter().find(|(_, o)| o.refused > 0 && o.ran == 0) {
             Some((from, o)) if vcpus >= from => Err(OnlyRefused {
                 vcpus,
                 from,
                 refused: o.refused,
                 vcpu: o.last_refused_vcpu,
                 host: self.host.clone(),
+                file: self.file.clone(),
             }),
             _ => Ok(()),
         }
@@ -299,37 +321,80 @@ impl Limits {
             .map(|(count, _)| count)
     }
 
-    /// Keeps a machine of `vcpus` vCPUs' outcome: what another process kept since read in,
-    /// under a lock of the records' own, written whole and renamed into place.
+    /// Keeps a machine of `vcpus` vCPUs' outcome ([`keep`]).
     pub fn record(&self, vcpus: u32, outcome: Outcome) -> io::Result<()> {
-        std::fs::create_dir_all(&self.dir)?;
-        let lock = std::fs::OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .open(self.dir.join(format!(".{}.lock", self.host.key())))?;
-        lock.lock()?;
-        let mut all = self.outcomes();
-        let o = all.entry(vcpus).or_default();
-        match outcome {
-            Outcome::Ran => o.ran = o.ran.saturating_add(1),
-            Outcome::Refused { vcpu } => {
-                o.refused = o.refused.saturating_add(1);
-                o.last_refused_vcpu = Some(vcpu);
-            }
-        }
-        let written = self
-            .dir
-            .join(format!(".{}.{}.new", self.host.key(), std::process::id()));
-        let kept = std::fs::File::create(&written)
-            .and_then(|mut f| f.write_all(text(&all).as_bytes()))
-            .and_then(|()| std::fs::rename(&written, self.file()));
-        if kept.is_err() {
-            let _ = std::fs::remove_file(&written);
-        }
-        let unlocked = lock.unlock();
-        kept.and(unlocked)
+        keep(self.opened()?, vcpus, outcome)
     }
+
+    /// The records' file, to be read and written: the one granted where it was (a Linux VM
+    /// process's own, held), else the file at its path, made with its directory where it is not
+    /// there.
+    pub fn opened(&self) -> io::Result<std::fs::File> {
+        match crate::platform::open_input(&self.file, true) {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => crate::platform::open_made(&self.file),
+            opened => opened,
+        }
+    }
+
+    /// Holds the records' file open from now on, as granted (`platform::grant_input`): to be
+    /// read and written where `write`, made where it is not there; else to be read where it is.
+    /// A VM process on Linux, before Landlock confines it (D30), which then gives it no rule
+    /// for the file: it reaches its records through this alone, and not once it lets go of
+    /// them ([`let_go`](Self::let_go)).
+    #[cfg(target_os = "linux")]
+    pub fn hold(&self, write: bool) -> io::Result<()> {
+        let file = if write {
+            crate::platform::open_made(&self.file)?
+        } else {
+            match std::fs::File::open(&self.file) {
+                Ok(file) => file,
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                    crate::platform::grant_input(self.file.clone(), None);
+                    return Ok(());
+                }
+                Err(e) => return Err(e),
+            }
+        };
+        crate::platform::grant_input(self.file.clone(), Some(file.into()));
+        Ok(())
+    }
+
+    /// Lets go of the records' file this process was granted, or held (Linux): from here on it
+    /// reaches them only by their path, as a confined VM process may not.
+    pub fn let_go(&self) {
+        crate::platform::forget_input(&self.file);
+    }
+}
+
+/// Keeps a machine of `vcpus` vCPUs' `outcome` in `file`, its records' ([`Limits::opened`]):
+/// under its lock, what other processes kept since read in and its count's line made or
+/// changed, written over the file from its start, padded with empty lines where it is shorter
+/// than it was. Its holder may neither rename another file over it nor be sure to cut it short
+/// (App Sandbox), and a line it shortens leaves no line of its tail behind to be read.
+pub fn keep(mut file: std::fs::File, vcpus: u32, outcome: Outcome) -> io::Result<()> {
+    file.lock()?;
+    let kept = rewrite(&mut file, vcpus, outcome);
+    let unlocked = file.unlock();
+    kept.and(unlocked)
+}
+
+/// [`keep`]'s write, under its lock.
+fn rewrite(file: &mut std::fs::File, vcpus: u32, outcome: Outcome) -> io::Result<()> {
+    let mut was = Vec::new();
+    file.read_to_end(&mut was)?;
+    let mut all = parse(&String::from_utf8_lossy(&was));
+    let o = all.entry(vcpus).or_default();
+    match outcome {
+        Outcome::Ran => o.ran = o.ran.saturating_add(1),
+        Outcome::Refused { vcpu } => {
+            o.refused = o.refused.saturating_add(1);
+            o.last_refused_vcpu = Some(vcpu);
+        }
+    }
+    let mut now = text(&all);
+    now.extend(std::iter::repeat_n('\n', was.len().saturating_sub(now.len())));
+    file.seek(io::SeekFrom::Start(0))?;
+    file.write_all(now.as_bytes())
 }
 
 /// Records' text: a line a count, in order.
@@ -404,7 +469,8 @@ impl fmt::Display for EntryRefused {
 }
 
 /// A machine refused at once ([`Limits::admit`]): its count, and the least count its host
-/// model has only refused, how often, and the vCPU the last refusal named.
+/// model has only refused, how often, the vCPU the last refusal named, and the file that keeps
+/// them, which its user may remove where the host has changed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OnlyRefused {
     pub vcpus: u32,
@@ -412,6 +478,7 @@ pub struct OnlyRefused {
     pub refused: u64,
     pub vcpu: Option<usize>,
     pub host: HostModel,
+    pub file: PathBuf,
 }
 
 impl fmt::Display for OnlyRefused {
@@ -422,12 +489,14 @@ impl fmt::Display for OnlyRefused {
         write!(
             f,
             "{} vCPUs: the host's hypervisor ({}) refused to enter {which}; on this host model \
-             ({}), counts \u{2265} {} have only been refused ({} times), so it is not tried",
+             ({}), counts \u{2265} {} have only been refused ({} times), so it is not tried (kept in \
+             {})",
             self.vcpus,
             hypervisor_under(&self.host),
             self.host.cpu,
             self.from,
-            self.refused
+            self.refused,
+            self.file.display()
         )
     }
 }
@@ -445,8 +514,9 @@ mod tests {
     }
 
     /// D261's outcomes on EC2's Intel runners: what runs is tried, a count only refused, and
-    /// every larger one, refused at once with the evidence; a count that ran and was refused
-    /// is tried; and the known-good count is the largest never refused (run 44030858462).
+    /// every larger one never run, refused at once with the evidence and where it is kept; a
+    /// count that ran is tried, refused too or past one only refused; and the known-good count
+    /// is the largest never refused (run 44030858462).
     #[test]
     fn a_count_only_refused_and_every_larger_is_refused_at_once() {
         let dir = shards_testdir::TempDir::new("limits").unwrap();
@@ -472,12 +542,20 @@ mod tests {
             "64 vCPUs: the host's hypervisor (".to_string()
                 + &hypervisor_under(&ec2())
                 + ") refused to enter vCPU 13; on this host model (Intel(R) Xeon(R) 6975P-C), \
-                   counts \u{2265} 64 have only been refused (3 times), so it is not tried"
+                   counts \u{2265} 64 have only been refused (3 times), so it is not tried (kept in "
+                + &limits.file().display().to_string()
+                + ")"
         );
-        assert_eq!(
-            limits.admit(128).unwrap_err().from,
-            64,
-            "larger: refused at once too"
+        for larger in [96, 255] {
+            assert_eq!(
+                limits.admit(larger).unwrap_err().from,
+                64,
+                "{larger}: larger, never run: refused at once too"
+            );
+        }
+        assert!(
+            limits.admit(128).is_ok(),
+            "a count that ran is tried, past one only refused"
         );
         assert_eq!(limits.known_good(), Some(32));
         let outcomes = limits.outcomes();
@@ -509,6 +587,56 @@ mod tests {
             },
         );
         assert!(azure.outcomes().is_empty());
+    }
+
+    /// A record that shortens the records' text is written over them in place, the rest of the
+    /// file empty lines, none read as a count; one that lengthens them grows the file.
+    #[test]
+    fn a_shorter_record_is_written_in_place_and_its_tail_read_as_nothing() {
+        let dir = shards_testdir::TempDir::new("limits-short").unwrap();
+        let limits = Limits::at(dir.path().to_path_buf(), ec2());
+        limits.record(64, Outcome::Refused { vcpu: 1000 }).unwrap();
+        let long = std::fs::metadata(limits.file()).unwrap().len();
+        limits.record(64, Outcome::Refused { vcpu: 7 }).unwrap();
+        assert_eq!(std::fs::metadata(limits.file()).unwrap().len(), long);
+        let want = Outcomes {
+            ran: 0,
+            refused: 2,
+            last_refused_vcpu: Some(7),
+        };
+        assert_eq!(limits.outcomes().into_iter().collect::<Vec<_>>(), [(64, want)]);
+        limits.record(8, Outcome::Ran).unwrap();
+        assert!(std::fs::metadata(limits.file()).unwrap().len() > long);
+        assert_eq!(limits.outcomes().len(), 2);
+    }
+
+    /// A process granted its records (a VM process, D30) reads and keeps them through what it
+    /// was granted, not their path, until it lets go of them: here a file elsewhere stands for
+    /// the descriptor its spawner opened.
+    #[cfg(unix)]
+    #[test]
+    fn granted_records_are_kept_through_the_grant_until_let_go() {
+        let dir = shards_testdir::TempDir::new("limits-grant").unwrap();
+        let limits = Limits::at(dir.path().join("records"), ec2());
+        let stand_in = dir.path().join("granted");
+        std::fs::write(&stand_in, "16 1 0 -\n").unwrap();
+        let opened = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&stand_in)
+            .unwrap();
+        crate::platform::grant_input(limits.file().to_path_buf(), Some(opened.into()));
+        assert_eq!(limits.known_good(), Some(16), "read through the grant");
+        limits.record(32, Outcome::Ran).unwrap();
+        assert!(!limits.file().exists(), "nothing written at the path");
+        assert_eq!(
+            std::fs::read_to_string(&stand_in).unwrap(),
+            "16 1 0 -\n32 1 0 -\n"
+        );
+        limits.let_go();
+        assert!(limits.outcomes().is_empty(), "the path's own, none yet");
+        limits.record(8, Outcome::Ran).unwrap();
+        assert_eq!(std::fs::read_to_string(limits.file()).unwrap(), "8 1 0 -\n");
     }
 
     /// Records' text reads back as written, and a line that says nothing whole is left out.

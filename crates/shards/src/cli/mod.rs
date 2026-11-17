@@ -1573,12 +1573,14 @@ fn vm(args: &[OsString]) -> ExitCode {
         Ok(cwd) => cwd,
         Err(e) => return failed(&format!("the working directory: {e}")),
     };
-    let mut with: Vec<OsString> = Vec::with_capacity(args.len() + 4);
+    let mut with: Vec<OsString> = Vec::with_capacity(args.len() + 6);
     with.extend(args.first().cloned());
     with.push("--grants".into());
     with.push(fd.to_string().into());
     with.push("--cwd".into());
     with.push(cwd.into());
+    // Where its host model's vCPU records are kept (D261), which its broker grants it.
+    with.extend(crate::helpers::vcpu_records_words());
     with.extend(args.iter().skip(1).cloned());
     if let Err(e) = shares::inherit(shared)
         .and_then(|()| said_kept(said_to))
@@ -1639,10 +1641,14 @@ fn vm(args: &[OsString]) -> ExitCode {
     if let Err(why) = carried.keep_for_exec() {
         return carried_io_failure(why);
     }
-    match with {
-        Some(with) => instead(&with),
-        None => instead(args),
-    }
+    // Where its host model's vCPU records are kept (D261), which it holds open before Landlock
+    // confines it (D30).
+    let with = with.unwrap_or_else(|| args.to_vec());
+    let mut words: Vec<OsString> = Vec::with_capacity(with.len() + 2);
+    words.extend(with.first().cloned());
+    words.extend(crate::helpers::vcpu_records_words());
+    words.extend(with.iter().skip(1).cloned());
+    instead(&words)
 }
 
 /// `args` with `--grants FD` given, the VM's broker started on the socket's other end,
@@ -1951,7 +1957,9 @@ fn vm(args: &[OsString]) -> ExitCode {
         Ok(cwd) => cwd,
         Err(e) => return failed(&format!("the working directory: {e}")),
     };
-    let mut with: Vec<&std::ffi::OsStr> = Vec::with_capacity(args.len() + 4);
+    // Where its host model's vCPU records are kept (D261), which this process grants it.
+    let records = crate::helpers::vcpu_records_words();
+    let mut with: Vec<&std::ffi::OsStr> = Vec::with_capacity(args.len() + 6);
     with.extend(args.first().map(OsString::as_os_str));
     with.push("--cwd".as_ref());
     with.push(cwd.as_os_str());
@@ -1959,6 +1967,7 @@ fn vm(args: &[OsString]) -> ExitCode {
         with.push("--working-set".as_ref());
         with.push(WORKING_SET.as_ref());
     }
+    with.extend(records.iter().map(OsString::as_os_str));
     with.extend(args.iter().skip(1).map(OsString::as_os_str));
     let (asks_to, answers_from) = (OwnedHandle::from(asks_to), OwnedHandle::from(answers_from));
     let env = crate::netproc::child_env();

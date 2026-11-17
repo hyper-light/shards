@@ -37724,11 +37724,45 @@ post-mortem read of the printk ring through VMCOREINFO, not a debug port.
       - The storms size their largest arm by that count (`common::vcpus_admitted`).
       - CI keeps the counts beside the judge's records (`target/judge-records/<class>/vcpus`).
       - The A/B is retired; its experiment's arm stays (`a_d261_arm_boots_the_vcpus_its_experiment_asks`).
-      - *Owed:* the product's runs keeping and asking the counts. vm_run.rs, the VM process of
-        `run --kernel` and of the daemon's runs, asks `admit` before `vm::start` and keeps each
-        outcome. Its directory is the user's cache (`helpers::cache`, made shared with the VM
-        process), which a confined VM process may not reach; that does not matter where entries
-        are never refused (HVF, WHP).
+      - *The product's runs* (built 2026-11-17, ROOT's ruling: "the VM process consults the
+        records before it starts and records each outcome at its end", the user's cache shared
+        with it through D30's grants, never by widening its sandbox).
+        - *Where.* `<the user's cache>/vcpu-limits/<host model>` (`helpers::cache`). The
+          spawner names the directory (`--vcpu-records DIR`, `helpers::vcpu_records_words`):
+          launch.rs, for the daemon's runs and warm VMs, an orchestrator's runs and builders;
+          and the CLI's `run --kernel` and `restore DIR`. The VM is told it, never left to find
+          it: App Sandbox starts a VM process in its container (hence `--cwd`), and its
+          environment is filtered (`netproc::child_env`).
+        - *Granted, one file.* On macOS and Windows it is asked for with the VM's other files:
+          `Access::Keep` for a boot (opened read-write, made with its directory where it is
+          not, `platform::open_made`), `ReadIfThere` for a restore. On Linux the VM holds it
+          open before Landlock (`Limits::hold`), which gives it no rule for the file. Its
+          reads and writes go through `platform::open_input`, as its disks' do.
+        - *Consulted* before the machine is built (`vm::start`, `start_gpu_report`,
+          `restore_reported`). A count only refused there is refused, typed
+          (`StartError::OnlyRefused`), said as the host's with its evidence and the file that
+          keeps it, which its user may remove where the host has changed.
+        - *Kept once, as the outcome comes.* Ran: as the guest's init announces its contract
+          (`control::ABI`, `Control::on_announced`), which shards-init does once its CPUs are
+          online and before anything it runs. Refused: on the vCPU the host refused to enter,
+          as its machine ends. Not at the VM process's end: the daemon ends many by SIGKILL
+          (idle warm VMs, a budget's reclaim, a stop past its grace, daemon/budget.rs and
+          commands.rs), and kept only at their end, a count whose machines are killed would
+          never show it ran, so one flaky refusal would refuse it for good.
+        - *Let go of as kept.* The VM forgets its grant (`platform::forget_input`) before the
+          write, which a thread of its own makes on a descriptor of its own. Nothing its guest
+          runs past its init, a workload that took the process over included, can then write
+          what later machines are refused by (review 8.2's reasoning for the snapshot a VM
+          gives up). A restore reads, then lets go: its template's boot kept its count.
+        - *Written in place* under the file's own lock (flock; LockFileEx on Windows), padded
+          with empty lines where shorter. A VM process may not rename another file over it,
+          and App Sandbox may not let it cut the file short.
+        - *`admit` refined:* a count that has run is tried, even past one only refused ("A
+          count that has both run and been refused is attempted").
+        - *Tests* (written, not run; ROOT's): vmm `vm::limits` (in place, the grant used until
+          let go of, the refinement), `devices::control` (the announcement's hook runs once);
+          the E2E of every boot and restore on HVF, KVM and WHP, whose VMs now ask for their
+          records.
   - WHP's boot said as it comes. On Windows the test starts its VM process with
     `common::Vm::spawn_timed`: each line the process prints is also said on stderr as it
     comes, `D261 WHP boot <time from the spawn>: <line>`. CI's log keeps them whatever ends
