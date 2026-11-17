@@ -224,8 +224,8 @@ the crypto self-tests first, since every clone would replay the rest (PM M21).
   - No wall clock bounds a storm (D209). Each round's reads and each wait on its guest are
     D215's judged waits, each size its own kind: past the slowest of their kind they go on
     while the guest says something new or carries the stream, and cold they follow liveness,
-    as on CI until a passing job has kept that size's records (D261, *CI's judge learns
-    across runs*: a job that runs out of time keeps none). A slow host that makes progress
+    as on CI until a job has kept that size's records (D261, *CI's judge learns across
+    runs*: every job that is not cancelled keeps them, one out of time too). A slow host that makes progress
     passes; its time is its host's. Whether the restores' 255-vCPU storm ends within a 4-CPU
     runner's 58 minutes, now that no other runs beside it, is unmeasured: owed.
   - The "Broken pipe" of that run (`255 vCPUs: round 8, 236.2 s to 273.6 s in, sending:
@@ -37436,8 +37436,9 @@ post-mortem read of the printk ring through VMCOREINFO, not a debug port.
   CI could fail fast.
   - **What is kept.** `target/judge-records` alone, never the build: each kind's W*, R* and
     C*, as the tests' waits keep them (`WaitKind::keep`, D209's waits). Its source is the
-    passing jobs' own answers.
-  - **Its key** (`actions/cache@v6.1.0`, pinned by tag as ci.yml's other actions are):
+    answered waits of every job that was not cancelled.
+  - **Its key** (`actions/cache/restore@v6.1.0` before the tests, `actions/cache/save@v6.1.0`
+    after them, pinned by tag as ci.yml's other actions are):
     `judge-records-<ImageOS>-<ImageVersion>-<runner.arch>-<target>-<run id>-<run attempt>`,
     restored by its prefix through `<target>-`, the newest entry kept for it.
     - The runner's image, its OS and version (`$ImageOS-$ImageVersion`, which keys the GPU
@@ -37453,22 +37454,29 @@ post-mortem read of the printk ring through VMCOREINFO, not a debug port.
     - No format version: the judge has none. A kept record says what it holds (`served`,
       `rated`), and one the reader cannot read whole is read as none (`learn_kept`), its kind
       cold until its next answer rewrites it.
-  - **Kept only by a passing job.** The action restores at its step and keeps in its post
-    step, which runs only where the job succeeded (its action.yml: `post-if: success()`). A
-    job that failed, ran out of time or was cancelled keeps nothing.
+  - **Kept by every job that is not cancelled** (amended 2026-11-17, ROOT's ruling, goal
+    fb3528f9). The restore step restores, and a step of its own after the tests keeps
+    (`if: !cancelled()`). A job whose tests passed, failed or ran out of their step's time
+    keeps what it learned. A cancelled run keeps nothing.
+    - Why: first, at 758e9f224 only a passing job kept its records (the combined
+      `actions/cache`, whose post step has `post-if: success()`). CI 43968984258's x86_64
+      musl job failed run after run, so it never kept a record and began cold each time.
+      Its judged waits then learned their W* afresh in the job from the first answers of each
+      kind (3.6 to 9.6 ms), and refused the next slower answer.
     - Records only widen: a merge takes the larger W* and C* and the lesser R*
       (`Record::merge`). So what a job keeps stays in every later bound.
-    - The judge already learns from passes alone. A wait teaches its kind only at an answer
-      that came while it was awaited (`Wait::ended`), a command's only when served
-      (`Wait::unserved` teaches nothing), `guest_says` only once its text is found while its
-      machine runs, and the give-back wait (`Falling`) the time to the last fall it saw. A wait
-      that stalls, ends or is refused returns before any teaching.
+    - What a failed job keeps is evidence still: the judge learns from answered waits alone.
+      A wait teaches its kind only at an answer that came while it was awaited
+      (`Wait::ended`), a command's only when served (`Wait::unserved` teaches nothing),
+      `guest_says` only once its text is found while its machine runs, and the give-back
+      wait (`Falling`) the time to the last fall it saw. A wait that stalls, ends or is
+      refused returns before any teaching, so a failing test's refusal widens no bound.
   - **One writer.** A restore takes one entry, and GitHub's cache never merges two.
     - ci.yml is the records' one writer. Each of its keys is one job's, and its runs on one
       branch follow each other (its concurrency group: main's wait for the run under way, a
-      branch's newer push cancels the older). So each run restores the last passing run's
-      records and keeps them grown, and none shrinks, as the keep's lock keeps a host's from
-      shrinking (waits-11, PM M576).
+      branch's newer push cancels the older). So each run restores the last run's records
+      that were kept, and keeps them grown, and none shrinks, as the keep's lock keeps a host's
+      from shrinking (waits-11, PM M576).
     - A branch's runs restore their own entries, then main's; main never reads a branch's.
     - budget-e2e.yml's `e2e` and `windows-e2e` jobs and slates-fs.yml restore CI's records
       and keep none (`actions/cache/restore@v6.1.0`): their runs overlap CI's, and an entry of
@@ -37482,12 +37490,13 @@ post-mortem read of the printk ring through VMCOREINFO, not a debug port.
     suite's kinds. An entry's size is unmeasured: this Mac keeps no records now, and the post
     step's log says each entry's size. GitHub removes entries unused for 7 days, and the least
     recently used past the repository's cache limit.
-  - **Owed to ROOT.** Read main's next two passing runs: the first's post step says "Cache
-    saved with key: judge-records-…", the second's restore "Cache restored from key: …",
-    on every leg (the musl jobs' records are written in Alpine as the checkout's owner, whom
-    the action runs as). Then a stall of a learned kind is refused "past the slowest answer of
-    its kind seen on this host" before any step limit. The benefit is unmeasured until then,
-    and a nested WHP job keeps records only once one of its jobs passes whole.
+  - **Owed to ROOT.** Read main's next two completed runs: in the first, each leg's `The
+    judge's records, kept` step says "Cache saved with key: judge-records-…", whether its
+    tests passed or not. In the second, its restore step says "Cache restored from key: …".
+    That holds on every leg, including the musl jobs, whose records are written in Alpine as
+    the checkout's owner, whom the actions run as. Then a stall of a learned kind is refused
+    "past the slowest answer of its kind seen on this host" before any step limit. The
+    benefit is unmeasured until then.
 
 **Alternatives rejected.**
 - A write-only debug port (x86's 0xe9 debugcon): mainline x86 early_printk has no 0xe9

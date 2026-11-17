@@ -255,13 +255,13 @@ jobs:
       - name: Hang watcher's gdb (Linux x86_64)
         if: matrix.test && matrix.target == 'x86_64-unknown-linux-gnu'
         run: scripts/retry 5 30 sh -c 'sudo apt-get update && sudo apt-get install -y gdb'
-      # What the tests' judge learned from CI's passing runs on this image, architecture and
-      # target (D261): its records alone, the newest kept restored here. The action keeps them
-      # again as the job ends, only where the job passed (its post-if: success()), under this
-      # run's own key, as a key once kept is never written again.
+      # What the tests' judge learned from CI's runs on this image, architecture and target
+      # (D261): its records alone, the newest kept restored here, and kept again under this
+      # run's own key once the tests end (`The judge's records, kept`), as a key once kept is
+      # never written again.
       - name: The judge's records
         if: matrix.test
-        uses: actions/cache@v6.1.0
+        uses: actions/cache/restore@v6.1.0
         with:
           path: target/judge-records
           key: judge-records-${{ steps.image.outputs.image }}-${{ runner.arch }}-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -294,6 +294,16 @@ jobs:
           cargo test --locked --workspace --profile test-release --no-fail-fast --target ${{ matrix.target }} || status=$?
           if [ -n "${watcher:-}" ]; then kill "$watcher" 2>/dev/null || true; fi
           exit "$status"
+      # Kept wherever the tests ended, passed, failed or out of time, but not in a cancelled
+      # run (D261, ROOT's ruling of 2026-11-17): a record holds only waits that were answered,
+      # evidence whatever became of their job. Kept only by a passing job, the x86_64 musl
+      # job, which failed run after run, began cold every time (CI 43968984258).
+      - name: The judge's records, kept
+        if: ${{ !cancelled() && matrix.test }}
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: target/judge-records
+          key: judge-records-${{ steps.image.outputs.image }}-${{ runner.arch }}-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
       - name: What hung tests' processes were doing
         if: ${{ !cancelled() && matrix.test && matrix.target == 'x86_64-unknown-linux-gnu' }}
         shell: bash
@@ -443,12 +453,12 @@ jobs:
         if: matrix.part == 'test'
         id: image
         run: echo "image=$ImageOS-$ImageVersion" >> "$GITHUB_OUTPUT"
-      # The judge's records, kept as the glibc job's are (`native`, D261). The tests in Alpine
-      # keep them in this checkout's target/ as its owner (scripts/musl-ci), whom the action
-      # runs as too.
+      # The judge's records, restored and kept as the glibc job's are (`native`, D261). The
+      # tests in Alpine keep them in this checkout's target/ as its owner (scripts/musl-ci),
+      # whom the actions run as too.
       - name: The judge's records
         if: matrix.part == 'test'
-        uses: actions/cache@v6.1.0
+        uses: actions/cache/restore@v6.1.0
         with:
           path: target/judge-records
           key: judge-records-${{ steps.image.outputs.image }}-${{ runner.arch }}-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -457,6 +467,12 @@ jobs:
         if: matrix.part == 'test'
         timeout-minutes: 58
         run: scripts/ci/alpine
+      - name: The judge's records, kept
+        if: ${{ !cancelled() && matrix.part == 'test' }}
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: target/judge-records
+          key: judge-records-${{ steps.image.outputs.image }}-${{ runner.arch }}-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
       - name: What hung tests' processes were doing
         if: ${{ !cancelled() && matrix.part == 'test' && matrix.target == 'x86_64-unknown-linux-musl' }}
         shell: bash
