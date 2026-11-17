@@ -38150,10 +38150,13 @@ post-mortem read of the printk ring through VMCOREINFO, not a debug port.
     loglevel=7`, as vm_run.rs `boot_into` and build/builder.rs tell it. Elsewhere the words
     are none and every CPU comes up at boot, as the product's do. With no workload, init says
     `shards-init: pid 1 running` once its CPUs are online, and powers off.
-    - Its wait is for the kernel's `reboot: Power down` (kernel/reboot.c `kernel_power_off`,
-      its consoles flushed before the machine goes, `pr_flush`): a console prints the kernel's
-      records in order, so every CPU's line is on it by then, and init drained its own first
-      (`tcdrain`, init `power_off`).
+    - Its wait is for init's line, then for the machine to end as init powers it off; the
+      checks read its whole console once it has ended, so every line its kernel said before is
+      on it. *Corrected:* it first waited for the kernel's `reboot: Power down`, which never
+      reaches hvc0. `kernel_power_off` shuts devices down before it says that, and since Linux
+      6.15 that breaks and resets every virtio device (8bd2fa086a04, `virtio_dev_shutdown`;
+      virtio_console has no shutdown of its own). Every arm of WHP experiment 44127161851 (at
+      0c2eb048a) said init's line last and then failed its wait.
     - Then: "smp: Brought up 1 node, N CPUs", N the count up to NR_CPUS, or 1 where the CPUs
       come up late; init's line; and where late, each of the rest brought online as the kernel
       says of each (x86-64's `smpboot: Booting Node …`, arch/x86/kernel/smpboot.c

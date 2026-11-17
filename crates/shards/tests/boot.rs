@@ -335,8 +335,8 @@ fn boots_the_hosts_maximum_vcpu_count() {
     let limits = common::vcpu_limits();
     let refused = match limits.admit(max) {
         Ok(()) => match brings_up_the_most(max, "") {
-            Brought::Said(lines) => {
-                brought_every_cpu(max, &lines);
+            Brought::Said { text, seen } => {
+                brought_every_cpu(max, &text, &seen);
                 limits.record(max, Outcome::Ran).unwrap();
                 return;
             }
@@ -361,8 +361,8 @@ fn boots_the_hosts_maximum_vcpu_count() {
         assert!(vcpus > 0, "the host refused every count it was asked: {refused}");
         if limits.admit(vcpus).is_ok() {
             match brings_up_the_most(vcpus, "") {
-                Brought::Said(lines) => {
-                    brought_every_cpu(vcpus, &lines);
+                Brought::Said { text, seen } => {
+                    brought_every_cpu(vcpus, &text, &seen);
                     limits.record(vcpus, Outcome::Ran).unwrap();
                     return;
                 }
@@ -386,8 +386,8 @@ fn bring_up_arm(max: u32, arm: &str, also: &str) -> std::thread::Result<()> {
     // Its boot, each of its CPUs checked brought up where its guest said what it said; or the
     // host's refusal to enter one.
     let ran = std::panic::catch_unwind(|| match brings_up_the_most(max, also) {
-        Brought::Said(lines) => {
-            brought_every_cpu(max, &lines);
+        Brought::Said { text, seen } => {
+            brought_every_cpu(max, &text, &seen);
             None
         }
         Brought::Refused(refused) => Some(refused),
@@ -455,13 +455,13 @@ fn a_d261_arm_boots_the_vcpus_its_experiment_asks() {
 const BRINGS_UP: &str = "console=hvc0 panic=-1 loglevel=7";
 
 /// What shards-init says once its CPUs are online and its boot is done, then powering off, as
-/// a guest given no workload does (crates/init `main`).
+/// a guest given no workload does (crates/init `main`): the last line hvc0 carries. Its kernel
+/// says its power-off past it to no console: `kernel_power_off` shuts its devices down first,
+/// and since Linux 6.15 that breaks and resets every virtio device (8bd2fa086a04, drivers/virtio
+/// `virtio_dev_shutdown`), virtio_console having no shutdown of its own (WHP experiment
+/// 44127161851, at 0c2eb048a: every arm's guest said this line last, and never "reboot: Power
+/// down").
 const INIT_RUNS: &str = "shards-init: pid 1 running";
-
-/// What its kernel says as it powers off (kernel/reboot.c `kernel_power_off`), its consoles
-/// flushed before the machine goes (`pr_flush`): every line before it, each CPU's among them,
-/// is on its console by then, as a console prints the kernel's records in their order.
-const POWERS_OFF: &str = "reboot: Power down";
 
 /// What a kernel says of each CPU its init brings online once it runs: x86-64's smpboot, once
 /// its system runs (arch/x86/kernel/smpboot.c `announce_cpu`), and arm64's
@@ -473,11 +473,12 @@ fn brought_online() -> &'static str {
     }
 }
 
-/// What [`brings_up_the_most`]'s boot came to: what its guest said as it powered off, each line,
-/// which [`brought_every_cpu`] checks; or the host's refusal to enter one of its vCPUs (D261),
-/// boxed, as it carries what its host model's records hold beside it.
+/// What [`brings_up_the_most`]'s boot came to: what its guest said, its whole console once its
+/// machine had ended and each line as its wait first found it, with when, which
+/// [`brought_every_cpu`] checks; or the host's refusal to enter one of its vCPUs (D261), boxed,
+/// as it carries what its host model's records hold beside it.
 enum Brought {
-    Said(common::Lines),
+    Said { text: String, seen: String },
     Refused(Box<shards_vmm::vm::limits::EntryRefused>),
 }
 
@@ -488,11 +489,12 @@ enum Brought {
 /// kernel's text patches wait for vCPUs that have no host CPU, nested Hyper-V's WHP, its
 /// kernel brings up its boot CPU alone and its init the rest (PM M379): a boot of all of them
 /// at once there is one the product never makes, and tests nothing of it (D261, ROOT's ruling
-/// of 2026-11-17). Waited for until it powers off, its init having said it runs, its CPUs
-/// online: what it said, which its caller checks ([`brought_every_cpu`]). The late words,
-/// `also` and its count key its waits apart beside their call site, so that one arm's or
-/// count's answers judge no other's. The host's refusal to enter one of its vCPUs is its end,
-/// typed (D261); any other failure panics.
+/// of 2026-11-17). Waited for until its init says it runs, its CPUs online, and then until it
+/// powers itself off, so that every line its kernel said before is on its console as it is
+/// read: what it said, which its caller checks ([`brought_every_cpu`]). The late words, `also`
+/// and its count key its waits apart beside their call site, so that one arm's or count's
+/// answers judge no other's. The host's refusal to enter one of its vCPUs is its end, typed
+/// (D261); any other failure panics.
 fn brings_up_the_most(max: u32, also: &str) -> Brought {
     use shards_vmm::vm::{self, Config, Console, ExitReason};
     let _turn = machine_turn();
@@ -507,29 +509,63 @@ fn brings_up_the_most(max: u32, also: &str) -> Brought {
     cfg.said = usize::MAX;
     let (handle, running) = vm::start(&cfg).unwrap_or_else(|e| panic!("{e}"));
     let (tx, ended) = std::sync::mpsc::channel();
-    // Its end kept beside the one its wait takes, so that a refused entry is told typed.
-    let (kept, end) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let reason = running.wait();
-        let _ = kept.send(reason.clone());
-        let _ = tx.send(reason);
+        let _ = tx.send(running.wait());
     });
     let tag = cfg!(windows).then_some("D261 WHP boot");
     let key = format!("{late}{also} {max} vCPUs");
-    match common::machine_says(&handle, &ended, POWERS_OFF, &key, max, tag) {
-        Ok((_, lines)) => Brought::Said(lines),
-        Err(failed) => match end.try_recv() {
-            Ok(ExitReason::Refused(refused)) => Brought::Refused(Box::new(refused)),
-            _ => panic!("{failed}"),
+    let (saying, lines) =
+        common::guest_says(|| handle.console_said().lines, &ended, INIT_RUNS, &key, max, tag);
+    let end = match saying {
+        // Its init runs and powers off next: its own end, waited for as long as its machine
+        // shows it lives (D209).
+        common::Saying::Said { ended: None, .. } => {
+            common::machine_ended(&handle, &ended).unwrap_or_else(|refused| {
+                panic!(
+                    "its init ran, and its machine did not end: {refused}\n{}",
+                    lines.timed()
+                )
+            })
+        }
+        common::Saying::Said { ended: Some(end), .. } => end,
+        common::Saying::Ended(Some(ExitReason::Refused(refused))) => {
+            return Brought::Refused(Box::new(refused));
+        }
+        common::Saying::Ended(end) => panic!(
+            "no {INIT_RUNS:?} from its guest: its machine ended: {end:?}\n{}",
+            lines.timed()
+        ),
+        common::Saying::Refused(refused) => {
+            handle.stop();
+            let stopped = common::machine_ended(&handle, &ended)
+                .err()
+                .map_or_else(String::new, |e| {
+                    format!("\nstopped, its machine did not end: {e}")
+                });
+            panic!(
+                "no {INIT_RUNS:?} from its guest: {refused}{stopped}\n{}",
+                lines.timed()
+            )
+        }
+    };
+    match end {
+        ExitReason::PowerOff => Brought::Said {
+            text: String::from_utf8_lossy(&handle.console_said().lines).into_owned(),
+            seen: lines.timed(),
         },
+        ExitReason::Refused(refused) => Brought::Refused(Box::new(refused)),
+        other => panic!(
+            "its init ran, and its machine ended {other:?}, where its init powers it off:\n{}",
+            lines.timed()
+        ),
     }
 }
 
-/// Checks that [`brings_up_the_most`]'s guest of `max` vCPUs, which said `lines`, brought each of
-/// its CPUs up, at boot or by its init, its init having said it runs, and named those past what
-/// its kernel was built for as it refused them. A count other than the one asked for fails, with
-/// what the guest said.
-fn brought_every_cpu(max: u32, lines: &common::Lines) {
+/// Checks that [`brings_up_the_most`]'s guest of `max` vCPUs, whose whole console is `text`,
+/// brought each of its CPUs up, at boot or by its init, its init having said it runs, and named
+/// those past what its kernel was built for as it refused them. A count other than the one asked
+/// for fails, with what the guest said, each line after when its wait first found it (`seen`).
+fn brought_every_cpu(max: u32, text: &str, seen: &str) {
     let late = shards_vmm::vm::late_cpus_cmdline(max);
     let configured = kernel_nr_cpus();
     let up = max.min(configured);
@@ -537,7 +573,6 @@ fn brought_every_cpu(max: u32, lines: &common::Lines) {
     let at_boot = if late.is_empty() { up } else { 1 };
     let plural = if at_boot == 1 { "" } else { "s" };
     let brought = format!("smp: Brought up 1 node, {at_boot} CPU{plural}");
-    let (text, seen) = (lines.text(), lines.timed());
     // A count other than the one asked for fails at once, with what the guest said.
     assert!(text.contains(&brought), "{seen}");
     assert!(text.contains(INIT_RUNS), "{seen}");
