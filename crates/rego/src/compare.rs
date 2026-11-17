@@ -38,8 +38,40 @@ fn slice_compare(a: &[Term], b: &[Term]) -> Ordering {
 
 fn sorted(items: &[Term]) -> Vec<Term> {
     let mut v = items.to_vec();
-    v.sort_by(term_compare);
+    sort_by(&mut v, term_compare);
     v
+}
+
+/// Sorts `v` by `cmp`, stably, as Go's `sort.Stable` would: by OPA's orders, which are not
+/// total (`NumberCompare` trims a number's trailing `.` and `0`, so `10.0` equals both `1`
+/// and `10`, D98), where Rust's `slice::sort_by` may panic ("user-provided comparison
+/// function does not correctly implement a total order") and Go's sorts never do. A merge
+/// sort of owned halves, each merge taking its left's next unless its right's comes
+/// strictly before it: for a total order the order `slice::sort_by` gives, for any other
+/// some order, and never a panic (ROOT's ruling, 2026-11-17).
+pub fn sort_by<T>(v: &mut Vec<T>, mut cmp: impl FnMut(&T, &T) -> Ordering) {
+    fn merged<T>(mut v: Vec<T>, cmp: &mut impl FnMut(&T, &T) -> Ordering) -> Vec<T> {
+        if v.len() < 2 {
+            return v;
+        }
+        let right = v.split_off(v.len() / 2);
+        let left = merged(v, cmp);
+        let right = merged(right, cmp);
+        let mut out = Vec::with_capacity(left.len().saturating_add(right.len()));
+        let (mut l, mut r) = (left.into_iter().peekable(), right.into_iter().peekable());
+        loop {
+            let right_first = match (l.peek(), r.peek()) {
+                (Some(a), Some(b)) => cmp(b, a) == Ordering::Less,
+                (None, Some(_)) => true,
+                (_, None) => false,
+            };
+            match if right_first { r.next() } else { l.next() } {
+                Some(x) => out.push(x),
+                None => return out,
+            }
+        }
+    }
+    *v = merged(std::mem::take(v), &mut cmp);
 }
 
 /// Compare: a pair of members at a time (a term made of a value nests deeper than a
@@ -100,7 +132,7 @@ pub fn term_compare(a: &Term, b: &Term) -> Ordering {
                 if !Shared::ptr_eq(x, y) {
                     let by_key = |o: &[(Term, Term)]| {
                         let mut kv = o.to_vec();
-                        kv.sort_by(|p, q| term_compare(&p.0, &q.0));
+                        sort_by(&mut kv, |p, q| term_compare(&p.0, &q.0));
                         kv.into_iter().flat_map(|(k, v)| [k, v]).collect::<Vec<Term>>()
                     };
                     let (xs, ys) = (by_key(x), by_key(y));

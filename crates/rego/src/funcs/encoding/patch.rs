@@ -90,16 +90,13 @@ pub fn filter(o: &Value, f: &PathNode) -> Value {
                 .filter_map(|(i, v)| fo.get(&index_key(i)).map(|sub| filter(v, sub)))
                 .collect(),
         ),
-        Value::Set(s) => Value::set(
-            s.iter()
-                .filter_map(|t| fo.get(t).map(|sub| filter(t, sub)))
-                .collect(),
-        ),
-        Value::Object(m) => Value::object(
+        Value::Set(s) => Value::set(Value::set_of(
+            s.iter().filter_map(|t| fo.get(t).map(|sub| filter(t, sub))),
+        )),
+        Value::Object(m) => Value::object(Value::object_of(
             m.iter()
-                .filter_map(|(k, v)| fo.get(k).map(|sub| (k.clone(), filter(v, sub))))
-                .collect(),
-        ),
+                .filter_map(|(k, v)| fo.get(k).map(|sub| (k.clone(), filter(v, sub)))),
+        )),
         _ => o.clone(),
     }
 }
@@ -112,12 +109,11 @@ pub fn remove(a: &Value, b: Option<&PathNode>) -> Option<Value> {
         Some(PathNode::Obj(bo)) => bo,
     };
     Some(match a {
-        Value::Object(m) => Value::object(
+        Value::Object(m) => Value::object(Value::object_of(
             m.iter()
-                .filter_map(|(k, v)| remove(v, bo.get(k)).map(|d| (k.clone(), d)))
-                .collect(),
-        ),
-        Value::Set(s) => Value::set(s.iter().filter_map(|v| remove(v, bo.get(v))).collect()),
+                .filter_map(|(k, v)| remove(v, bo.get(k)).map(|d| (k.clone(), d))),
+        )),
+        Value::Set(s) => Value::set(Value::set_of(s.iter().filter_map(|v| remove(v, bo.get(v))))),
         Value::Array(arr) => Value::array(
             arr.iter()
                 .enumerate()

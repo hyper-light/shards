@@ -47,14 +47,14 @@ pub const OUTPUT: Params = Params {
 /// Object pairs in OPA's iteration order (sorted keys).
 pub fn sorted_pairs(o: &[(Term, Term)]) -> Vec<&(Term, Term)> {
     let mut v: Vec<&(Term, Term)> = o.iter().collect();
-    v.sort_by(|a, b| term_compare(&a.0, &b.0));
+    crate::compare::sort_by(&mut v, |a, b| term_compare(&a.0, &b.0));
     v
 }
 
 /// Set members in OPA's iteration order.
 pub fn sorted_items(s: &[Term]) -> Vec<&Term> {
     let mut v: Vec<&Term> = s.iter().collect();
-    v.sort_by(|a, b| term_compare(a, b));
+    crate::compare::sort_by(&mut v, |a, b| term_compare(a, b));
     v
 }
 

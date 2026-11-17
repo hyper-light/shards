@@ -115,6 +115,13 @@ fn setup() -> Result<(), String> {
             return Err(format!("mount {target:?}: {}", io::Error::last_os_error()));
         }
     }
+    // `shards_online=1`: its kernel brought up its boot CPU alone, as a product guest's is where
+    // every CPU online at boot makes its boot wait (vm::late_cpus_cmdline, PM M379), and the
+    // rest are brought online before anything runs, as shards-init brings them. A CPU that
+    // will not come online fails the test rather than leave it fewer CPUs than it was given.
+    if std::env::var_os("shards_online").is_some() {
+        online_cpus()?;
+    }
     Ok(())
 }
 

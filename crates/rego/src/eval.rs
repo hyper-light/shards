@@ -451,7 +451,7 @@ fn compr_index(
     if keys.is_empty() {
         return None;
     }
-    keys.sort_by(term_compare);
+    crate::compare::sort_by(&mut keys, term_compare);
     Some((term.clone(), keys))
 }
 
@@ -513,7 +513,7 @@ fn compr_nested_candidate(candidates: &VarSet, body: &Body) -> bool {
 }
 
 fn sort_tree(n: &mut TreeNode) {
-    n.children.sort_by(|a, b| term_compare(&a.0, &b.0));
+    crate::compare::sort_by(&mut n.children, |a, b| term_compare(&a.0, &b.0));
     for (_, c) in n.children.iter_mut() {
         sort_tree(c);
     }
@@ -701,7 +701,7 @@ pub fn to_value(t: &Term) -> Option<Value> {
             }
             Convert::Set(n) => {
                 let items = last(&mut out, n);
-                out.push(Value::set(items.into_iter().collect()));
+                out.push(Value::set(Value::set_of(items)));
             }
             Convert::Object(n) => {
                 let mut flat = last(&mut out, 2 * n).into_iter();
@@ -1649,7 +1649,7 @@ pub fn partial_query(
             .into_iter()
             .map(|(a, b)| eq_expr(a, b))
             .collect();
-        exprs.sort_by(expr_compare);
+        crate::compare::sort_by(&mut exprs, expr_compare);
         for e in exprs {
             copyprop::append(&mut body, e);
         }
@@ -1667,7 +1667,7 @@ pub fn partial_query(
         .map(|p| p.support.into_values().collect())
         .unwrap_or_default();
     for module in support.iter_mut() {
-        module.rules.sort_by(rule_compare);
+        crate::compare::sort_by(&mut module.rules, rule_compare);
     }
     res?;
     Ok(PartialResult { queries, support })
@@ -1929,7 +1929,7 @@ fn eval_not_partial_support(
         body_vars.extend(cvars::body_vars(q, Params::default()));
     }
     let mut args: Vec<Term> = unknowns.intersection(&body_vars).map(|v| var_term(v)).collect();
-    args.sort_by(term_compare);
+    crate::compare::sort_by(&mut args, term_compare);
     let head = Head {
         args: args.clone(),
         value: Some(Term::boolean(true, None)),
@@ -2301,7 +2301,7 @@ fn unify(m: &mut Machine<'_>, f: &Frame, a: &Term, b: &Term, b1: usize, b2: usiz
                 })
                 .collect();
             let mut keys = x.clone();
-            keys.sort_by(|p, q| term_compare(&p.0, &q.0));
+            crate::compare::sort_by(&mut keys, |p, q| term_compare(&p.0, &q.0));
             unify_objects(m, f, &keys, &y, b1, b2, 0, k)
         }
         (V::Set(_), _) => unify_values(m, f, &a, &b, b1, b2, k),
@@ -2485,7 +2485,7 @@ fn eval_term(
         }
         TermValue::Object(o) => {
             let mut keys: Vec<Term> = o.iter().map(|(kk, _)| kk.clone()).collect();
-            keys.sort_by(term_compare);
+            crate::compare::sort_by(&mut keys, term_compare);
             for key in keys {
                 let r1 = unify(m, f, &key, part, tb, b, &mut |m| {
                     let pk = m.plug(&key, tb);
@@ -2499,7 +2499,7 @@ fn eval_term(
         }
         TermValue::Set(s) => {
             let mut items = s.to_vec();
-            items.sort_by(term_compare);
+            crate::compare::sort_by(&mut items, term_compare);
             for elem in items {
                 let r1 = unify(m, f, &elem, part, tb, b, &mut |m| {
                     let pe = m.plug(&elem, tb);
@@ -2611,12 +2611,12 @@ fn eval_tree(
             TermValue::Array(a) => (0..a.len()).map(int_term).collect(),
             TermValue::Object(o) => {
                 let mut ks: Vec<Term> = o.iter().map(|(kk, _)| kk.clone()).collect();
-                ks.sort_by(term_compare);
+                crate::compare::sort_by(&mut ks, term_compare);
                 ks
             }
             TermValue::Set(s) => {
                 let mut ks = s.to_vec();
-                ks.sort_by(term_compare);
+                crate::compare::sort_by(&mut ks, term_compare);
                 ks
             }
             _ => Vec::new(),
@@ -4297,7 +4297,7 @@ fn eval_print(m: &mut Machine<'_>, _f: &Frame, ins: &[Term], loc: Option<Locatio
             TermValue::Set(s) if s.is_empty() => vec!["<undefined>".to_string()],
             TermValue::Set(s) => {
                 let mut items = s.clone();
-                items.sort_by(term_compare);
+                crate::compare::sort_by(&mut *items, term_compare);
                 items
                     .iter()
                     .map(|x| match &x.value {
