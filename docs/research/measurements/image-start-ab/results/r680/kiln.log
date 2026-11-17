@@ -1,0 +1,6 @@
+2026-11-17T03:05:10.718409Z  INFO an agent started a launchd job: it's followed as the agent's session=run-01a1e7740506711eb291ffb4f8207e58 label=com.hyperlight.shards.measure.17219
+2026-11-17T03:05:11.771358Z  INFO an agent's launchd job runs: its processes are the agent's session=run-01a1e7740506711eb291ffb4f8207e58 label=com.hyperlight.shards.measure.17219 pid=17231
+2026-11-17T03:20:51.918560Z  INFO an agent started a launchd job: it's followed as the agent's session=run-01a1e7740506711eb291ffb4f8207e58 label=com.hyperlight.shards.measure.54045
+2026-11-17T03:20:52.914646Z  INFO an agent's launchd job runs: its processes are the agent's session=run-01a1e7740506711eb291ffb4f8207e58 label=com.hyperlight.shards.measure.54045 pid=54058
+2026-11-17T03:32:40.873840Z  INFO an agent started a launchd job: it's followed as the agent's session=run-01a1e7740506711eb291ffb4f8207e58 label=com.hyperlight.shards.measure.1693
+2026-11-17T03:32:41.562520Z  INFO an agent's launchd job runs: its processes are the agent's session=run-01a1e7740506711eb291ffb4f8207e58 label=com.hyperlight.shards.measure.1693 pid=1705

@@ -35370,7 +35370,7 @@ queues charged** (2026-11-16, ROOT's decisions 1 and 2; lane charge-2).
     changed)
   - `scripts/lint` (the seven targets).
 
-### D253. An orchestrator's run restores its image's template and takes a warm VM from its pool, as the daemon's runs do (built: templates and pools; their real-VM tests passing on HVF and KVM x86-64, PM M605; the 2026-11-16 writable-layer amendment kept on its A/B on HVF, PM M593; on WHP and KVM arm64, a daemon run and restore on each OS, and that amendment's mutation, real-VM tests and A/B on KVM owed)
+### D253. An orchestrator's run restores its image's template and takes a warm VM from its pool, as the daemon's runs do (built: templates and pools; their real-VM tests passing on HVF and KVM x86-64, PM M605; the 2026-11-16 writable-layer amendment kept on its A/Bs on HVF at p50, p90 and p99, PM M593; on WHP and KVM arm64, a daemon run and restore on each OS, and that amendment's mutation, real-VM tests and A/B on KVM owed)
 
 **Why.** An orchestrator's run (D231) booted its microVM cold every time, where a daemon's run
 restores its image's template (D25) and takes a warm VM from its pool (D26). Hex boots its node
@@ -35756,8 +35756,8 @@ share process's start, its binaries' check, its network's decision.
   once; none where none was begun) and `a_layer_made_for_another_way_is_no_launchs` (a boot's
   is no save's, nor its own way's once let go of; red with the way's check removed).
 - *Owed* (ROOT): those tests' mutation; `api_image.rs` on HVF, KVM x86_64 and WHP, every start
-  kind (on HVF the A/B below made 100 measured starts of each of the four kinds with it, each
-  held to its kind); the A/B's p90 and p99 (below); and the A/B on KVM.
+  kind (on HVF the A/Bs below made 100, then 380, measured starts of each of the four kinds with
+  it, each held to its kind); and the A/B on KVM.
 - *What would refuse it:* an A/B in which Booted's or Saved's boot span does not fall by the
   launch's former wait, or Restored's or Warm's rises (the thread's file system work beside a
   restore's own).
@@ -35790,9 +35790,18 @@ share process's start, its binaries' check, its network's decision.
     1.441. So nothing of the thread's making that these intervals can show comes back on the
     start before its launch.
 
-  The p90 stays open: the boot's p90 interval is too wide at n=100 (Booted's runs from -3.315 to
-  1.940 ms), and the timed rows' p90 has none at n=10. So does the p99. Both are for a rerun of
-  38 rounds: n=380 for the spans, n=38 for the timed rows. A refusal shown there refuses the cut.
+  At p90 and p99 the cut is kept too, on ROOT's rerun r680 (PM M593): 38 rounds by turns, n=380
+  starts of each kind an arm, where a p99 has its interval, and n=38 timed passes, where a p90
+  has one.
+  - No interval shows either refusal at p50, p90 or p99, pooled or by rounds.
+  - Booted's and Saved's boot fall at p50, and Restored's at p50 and p90.
+  - No interval of the span from shaped to launching shows a fall short of A's wait. A fall is
+    shown at p50 and p90 on Booted and Saved, at p50 on Restored, and by rounds on every kind.
+  - Three readings sit near their edges, each set out in M593:
+    - Warm's boot at p50, whose low bound is -0.001 ms;
+    - Warm's at p99, where B's p99 falls on one of its 6 starts in 380 over 0.5 ms, against A's 3;
+    - Booted's and Saved's p99, which rest on the run's slowest round.
+
   The start path's 5 ms target is not this cut's to move: a warm run's first output came at
   5.158 ms at p50 before it and 5.210 after, and a warm run's way has no layer on it in either
   build.

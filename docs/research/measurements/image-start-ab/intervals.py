@@ -1,13 +1,14 @@
 """An image-start A/B's ranks with their intervals (PM M593): the logs ab.py keeps in OUT
 (ARM-ROUND.log) read again, with no start made.
 
-Per arm and kind, of the boot, the first output and the stop (`IMAGE-START-SAMPLE`): n; p50 and
-p90, each with its distribution-free 95% interval (p3-warm-start/warm.py's `bounded`, Le Boudec
-2010, Theorem 2.1; none where n is too few); p99 and max (nearest rank, as ab.py's); and the
-least and most of the rounds' own p50s, as the samples come ten processes at a time. From each
-process's timed phase pass, one start of each kind: the launch's wait for its writable layer and
-its thread's making, as ab.py reads them, and the span from `its microVM shaped` to `launching
-its VM`, which holds the wait and whatever the thread's work costs the rest of the start.
+Per arm and kind, of the boot, the first output and the stop (`IMAGE-START-SAMPLE`): n; p50, p90
+and p99, each with its distribution-free 95% interval (p3-warm-start/warm.py's `bounded`, Le
+Boudec 2010, Theorem 2.1; none where n is too few, a p99's under 368); max (nearest rank, as
+ab.py's); and the least and most of the rounds' own p50s, as the samples come N to a process.
+From each process's timed phase pass, one start of each kind: the launch's wait for its writable
+layer and its thread's making, as ab.py reads them, and the span from `its microVM shaped` to
+`launching its VM`, which holds the wait and whatever the thread's work costs the rest of the
+start.
 
 Then B against A, per kind, of the boot (D253's refusals of its cut (a)) and of the span from
 shaped to launching (where the wait was):
@@ -38,7 +39,7 @@ def load(name, *path):
 
 ab = load("image_start_ab", "ab.py")
 warm = load("p3_warm_start", "..", "p3-warm-start", "warm.py")
-RANKS = (50, 90)
+RANKS = (50, 90, 99)
 # D253's refusal for each kind's boot: a rise, or a fall short of the launch's former wait.
 REFUSAL = {"Booted": "short", "Saved": "short", "Restored": "rise", "Warm": "rise"}
 SHAPED, LAUNCHING = "its microVM shaped", "launching its VM"
@@ -83,14 +84,14 @@ def ms(us):
 
 
 def ranked(v):
-    """Sorted `v`'s n, p50 and p90 with their intervals, p99 and max, in ms."""
+    """Sorted `v`'s n, p50, p90 and p99 with their intervals, and max, in ms."""
     if not v:
         return "n 0"
     v, said = sorted(v), [f"n {len(v)}"]
     for p in RANKS:
         q, ci = warm.bounded(v, p)
         said.append(f"p{p} {ms(q)} " + (f"[{ms(ci[0])}, {ms(ci[1])}]" if ci else "[none]"))
-    return " ".join(said + [f"p99 {ms(ab.nearest(v, 99))}", f"max {ms(v[-1])}"])
+    return " ".join(said + [f"max {ms(v[-1])}"])
 
 
 def past(a, b, p):
