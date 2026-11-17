@@ -253,25 +253,35 @@ impl Member {
     }
 }
 
-/// What the groups' thread hears (D183, slice 3): runs begun, by VM process and microVM,
-/// and ended, by VM process; each give-back of a round that ended, or whose word its exec's
-/// judge refused; that a member's word moved on, which may make a round due; and its test's
-/// end, where a test ends it (a daemon exits from within, its threads unwaited for).
+/// What the groups' thread hears (D183, slice 3): runs begun and ended, and give-backs
+/// ended, in the order they came; that a member's word moved on, which may make a round
+/// due; and its test's end, where a test ends it (a daemon exits from within, its threads
+/// unwaited for).
 #[cfg(any(target_os = "macos", windows))]
 #[derive(Debug, Default)]
 struct Woke {
-    ran: Vec<Member>,
-    left: Vec<u32>,
-    gave: Vec<Answered>,
+    heard: Vec<Heard>,
     spoke: bool,
     ended: bool,
+}
+
+/// A run begun, by VM process and microVM; one ended, by VM process; or a give-back of a
+/// round that ended, or whose word its exec's judge refused. Heard in the order they came,
+/// so that a round is judged with the members its group had as its last answer came, none
+/// that joined after, however late the groups' thread looks (R04).
+#[cfg(any(target_os = "macos", windows))]
+#[derive(Debug)]
+enum Heard {
+    Ran(Member),
+    Left(u32),
+    Gave(Answered),
 }
 
 #[cfg(any(target_os = "macos", windows))]
 impl Woke {
     /// Whether it holds nothing to hear.
     fn quiet(&self) -> bool {
-        self.ran.is_empty() && self.left.is_empty() && self.gave.is_empty() && !self.spoke && !self.ended
+        self.heard.is_empty() && !self.spoke && !self.ended
     }
 }
 
@@ -474,6 +484,20 @@ pub(super) struct Groups {
     /// what their kernels count.
     #[cfg(test)]
     played: Mutex<HashMap<u32, u64>>,
+    /// What the groups' thread and its members' words heard and did, in order, each when:
+    /// a test's, for its failure to say ([`Groups::trace`]).
+    #[cfg(test)]
+    trace: Mutex<Vec<(Instant, String)>>,
+}
+
+#[cfg(any(target_os = "macos", windows))]
+impl Groups {
+    /// Keeps `line` in a test's trace ([`Groups::trace`]); nothing outside tests.
+    #[cfg_attr(not(test), allow(unused_variables))]
+    fn traced(&self, line: impl FnOnce() -> String) {
+        #[cfg(test)]
+        lock(&self.trace).push((Instant::now(), line()));
+    }
 }
 
 #[cfg(all(test, any(target_os = "macos", windows)))]
@@ -487,6 +511,30 @@ impl Groups {
     pub(super) fn end(&self) {
         lock(&self.woke).ended = true;
         self.wake.notify_all();
+    }
+
+    /// What the groups' thread and its members' words heard and did, a line each, each at
+    /// its time from the first.
+    pub(super) fn trace(&self) -> String {
+        let trace = lock(&self.trace);
+        let first = trace.first().map(|(at, _)| *at);
+        let lines: Vec<String> = trace
+            .iter()
+            .map(|(at, line)| {
+                let since = first.map_or(Duration::ZERO, |first| at.saturating_duration_since(first));
+                format!("+{since:?} {line}")
+            })
+            .collect();
+        lines.join("\n")
+    }
+
+    /// Holds the groups' thread in its next pass, as it reads its groups' CPU budgets, until
+    /// what this returns is dropped: what comes meanwhile it hears at once, as a thread its
+    /// host held from running would.
+    pub(super) fn hold_passes(
+        &self,
+    ) -> std::sync::MutexGuard<'_, HashMap<String, (std::fs::File, shards_vmm::vm::group::GroupCpu)>> {
+        lock(&self.cpus)
     }
 }
 
@@ -607,17 +655,17 @@ impl<D: Disk> Daemon<D> {
     /// Run `id`, of VM process `pid`, began: held to its group's budget, where it has one.
     pub(super) fn group_ran(&self, pid: u32, id: &str) {
         let start = shards_ipc::started(pid).ok();
-        lock(&self.groups.woke).ran.push(Member {
+        lock(&self.groups.woke).heard.push(Heard::Ran(Member {
             pid,
             start,
             id: id.to_string(),
-        });
+        }));
         self.groups.wake.notify_one();
     }
 
     /// VM process `pid`'s run ended: held to its group no more.
     pub(super) fn group_left(&self, pid: u32) {
-        lock(&self.groups.woke).left.push(pid);
+        lock(&self.groups.woke).heard.push(Heard::Left(pid));
         self.groups.wake.notify_one();
     }
 
@@ -656,23 +704,40 @@ impl<D: Disk> Daemon<D> {
             if woke.ended {
                 return;
             }
-            let moved = !woke.ran.is_empty() || !woke.left.is_empty();
-            for m in woke.ran {
-                if let Some(group) = self.parent_of(&m.id).filter(|p| !p.is_empty()) {
-                    members.entry(group).or_default().push(m);
+            let moved = woke
+                .heard
+                .iter()
+                .any(|heard| matches!(heard, Heard::Ran(_) | Heard::Left(_)));
+            for heard in woke.heard {
+                self.groups.traced(|| format!("heard {heard:?}"));
+                match heard {
+                    Heard::Ran(m) => {
+                        if let Some(group) = self.parent_of(&m.id).filter(|p| !p.is_empty()) {
+                            members.entry(group).or_default().push(m);
+                        }
+                        // A join finishes no round.
+                        continue;
+                    }
+                    Heard::Left(pid) => {
+                        for list in members.values_mut() {
+                            list.retain(|m| m.pid != pid);
+                        }
+                        for hold in holds.values_mut() {
+                            hold.left(pid);
+                        }
+                    }
+                    Heard::Gave(answered) => {
+                        for hold in holds.values_mut() {
+                            hold.answered(answered);
+                        }
+                    }
                 }
-            }
-            for pid in woke.left {
-                for list in members.values_mut() {
-                    list.retain(|m| m.pid != pid);
-                }
-                for hold in holds.values_mut() {
-                    hold.left(pid);
-                }
-            }
-            for answered in woke.gave {
-                for hold in holds.values_mut() {
-                    hold.answered(answered);
+                // A round this end or answer finished is judged now, with the members its
+                // group has as it came: one that joined after is no part of its verdict.
+                for (name, list) in &members {
+                    if let Some(hold) = holds.get_mut(name) {
+                        self.judge_round(name, list, hold);
+                    }
                 }
             }
             members.retain(|_, list| !list.is_empty());
@@ -797,6 +862,12 @@ impl<D: Disk> Daemon<D> {
                 of: members.iter().map(|m| (m.pid, Given::Asked)).collect(),
             });
         }
+        self.groups.traced(|| {
+            let told: Vec<u32> = members.iter().map(|m| m.pid).collect();
+            let round = hold.round.as_ref().map(|r| r.id);
+            let opened = if give.is_some() { ", opened" } else { "" };
+            format!("group {name}: {current} of {limit} bytes held, room {room} told {told:?}, round {round:?}{opened}")
+        });
         // Each told its room with what its VM process held as the room was read: one read.
         for m in members {
             hold.told.insert(m.pid);
@@ -834,9 +905,12 @@ impl<D: Disk> Daemon<D> {
         let Some(round) = hold.round.as_mut() else {
             return;
         };
+        let id = round.id;
         for (pid, given) in &mut round.of {
             if matches!(given, Given::Asked) && self.word_refusal(*pid).is_some() {
                 *given = Given::Nothing;
+                self.groups
+                    .traced(|| format!("group {name}: round {id}: {pid}'s word refused, standing"));
             }
         }
         if !round.done() {
@@ -844,6 +918,8 @@ impl<D: Disk> Daemon<D> {
         }
         let gave = round.gave();
         hold.round = None;
+        self.groups
+            .traced(|| format!("group {name}: round {id} judged, {gave:?} given back"));
         if gave.freed > 0 || gave.unplugging > 0 {
             log(format!(
                 "group {name}: its microVMs gave back {} MiB they held cold of their files, and asked to unplug {} MiB",
@@ -857,6 +933,8 @@ impl<D: Disk> Daemon<D> {
         };
         let held = self.footprints(members);
         let after = sum(&held);
+        self.groups
+            .traced(|| format!("group {name}: round {id}: {after} bytes held of a max of {max}"));
         if after <= max {
             return;
         }
@@ -864,6 +942,8 @@ impl<D: Disk> Daemon<D> {
             return;
         };
         let Some(m) = members.get(largest) else { return };
+        self.groups
+            .traced(|| format!("group {name}: round {id}: {}, its largest, stopped", m.id));
         let facts = format!(
             "its group {name} held {} MiB past its memory.max of {} MiB, {} MiB of it this microVM's, and gave nothing back",
             after.saturating_sub(max) >> 20,
@@ -920,6 +1000,7 @@ impl<D: Disk> Daemon<D> {
     /// (`Wait::WhileRuns`). Its own: nothing else waits on it.
     fn speak(&self, m: &Member, mut ask: Ask) {
         loop {
+            self.groups.traced(|| format!("{} told its room: {ask:?}", m.pid));
             self.tell_group_room(&m.id, m.pid, ask.room, ask.give);
             if let Some(round) = ask.give {
                 // Its room's exec has ended: a refusal of it is no verdict on the give-back
@@ -929,6 +1010,8 @@ impl<D: Disk> Daemon<D> {
                 self.give_after(&vm);
                 let refused = |cut: &super::health::Cut| self.refuse_word(m.pid, Some(round), cut);
                 let wait = super::health::Wait::GroupWord(m.pid, &self.answers.reclaim, &refused);
+                self.groups
+                    .traced(|| format!("{} asked to give back for round {round}", m.pid));
                 let gave = self.give_back_waiting(&m.id, wait);
                 self.given_back(&vm);
                 self.heard(Answered {
@@ -971,6 +1054,8 @@ impl<D: Disk> Daemon<D> {
     /// Published under the group's wake mutex, so a refusal between its check and wait
     /// cannot lose its wake.
     fn refuse_word(&self, pid: u32, round: Option<u64>, cut: &super::health::Cut) {
+        self.groups
+            .traced(|| format!("{pid}'s word refused by its judge, of round {round:?}"));
         if let Some(word) = lock(&self.groups.words).get_mut(&pid) {
             word.state = WordState::Refused(cut.clone());
         }
@@ -992,7 +1077,7 @@ impl<D: Disk> Daemon<D> {
 
     /// A member's give-back of a round ended: the groups' thread hears what it gave.
     fn heard(&self, answered: Answered) {
-        lock(&self.groups.woke).gave.push(answered);
+        lock(&self.groups.woke).heard.push(Heard::Gave(answered));
         self.groups.wake.notify_one();
     }
 
@@ -1138,9 +1223,11 @@ mod tests {
         );
         // What the groups' thread heard, taken in as its loop takes it.
         let hear = |hold: &mut Hold| {
-            let heard = std::mem::take(&mut lock(&t.daemon.groups.woke).gave);
-            for answered in heard {
-                hold.answered(answered);
+            let heard = std::mem::take(&mut lock(&t.daemon.groups.woke).heard);
+            for heard in heard {
+                if let Heard::Gave(answered) = heard {
+                    hold.answered(answered);
+                }
             }
         };
         let mut hold = Hold {

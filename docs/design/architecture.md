@@ -8638,6 +8638,24 @@ Decided by the user on 2026-10-14 ("so long as they apply appropriately to micro
     group within its max, so the round after, ended by the first's unanswered room, stops
     nothing. An answer or refusal wakes the existing groups condvar. No new bound, reader
     or cache.
+    A round is judged with the members its group had as its last answer came (flake-harden,
+    2026-11-16). The groups' thread kept joins, ends and answers in three lists, and took a
+    wake's joins in before its answers, so a round whose last answer came before a member
+    joined was judged with that member whenever the thread looked late, as a loaded host
+    holds it: in `a_refused_room_is_not_the_next_rounds_verdict`, round 1 (the first member
+    alone, its room refused) judged with the second's 500 MiB, past the max of 1000, and the
+    first OOM-killed. That test failed 1 of 24 at 6f5755ae1 under load (lane shards-green),
+    0 of 48 after, its output not kept: the cause read from the code, its reproduction
+    owed (R09). Now what the thread hears is one list in the order it came (`Heard`), and a
+    round an end or an answer finishes is judged as that is taken, before any join after it.
+    Guard: `a_round_is_judged_with_the_members_its_group_had_as_its_last_answer_came` holds
+    the thread in a pass (`Groups::hold_passes`) while the first's room is refused and the
+    second joins (red with joins taken first, where the held pass began before the refusal,
+    as it does unless the host delays it 20 ms). Both tests print, as they fail, what the
+    thread and its members' words heard and did, in order (`Groups::trace`, tests alone),
+    on the test process's stderr. Not changed: a refusal stands while its exec does, so a
+    round opened before a refused exec's kill is answered is judged by it (`judge_round`);
+    no test has shown that wrong.
     Past `memory.max` with nothing given back its largest is stopped. A group whose
     budget goes tells each member it told a room that it has none, its hold let go of.
     [Red/green and owed real-VM validation](../research/measurements/waits-fixes-v1/README.md).
@@ -9702,6 +9720,28 @@ lost to the next process. Every reader now opens the newest version (`ends::newe
 back by a new process's `Ends`), red on Windows with the plain read put back; Unix has
 no versions, so only Windows can show it red. The E2E reader
 (`a_kills_end_is_kept_as_this_hosts_in_its_home`) reads the newest version too.
+
+**A stop keeps its ends once** (flake-harden, 2026-11-16). A stop's one loop (`end_all`,
+which `stop`, `kill`, `rm -f` and `restart` end their targets from) kept each end it heard
+in the home as it heard it: `heard`'s reread under the record's lock and `write_in`, which
+syncs the file and then its directory, two F_FULLFSYNCs on macOS (PM M46: 8.5 ms at p50 on
+a quiet host; M313: 100 to 614 ms each on a loaded one). Each keep held up every end after
+it, and each end was timed only once the ends before it were taken, the keeps with them, so
+that on a loaded host an end of a burst was the slowest yet, and kept, in turn.
+`daemon::tests::stop_ends_every_container_at_once` (sixty, a 10 s grace) took 25.9 s in a
+loaded full run at 6f5755ae1 (lane shards-green), where three other runs passed: the cause
+read from the code, with no trace kept, and its loaded reproduction owed (R09). Now the loop
+learns each end in memory as it hears it (`Ends::learn`, the slices from then on), timed as
+its poll woke, and keeps the record once, after the last (`Ends::keep`): no end waits on a
+flush, nor counts one in its time. `keep` holds the memory's lock
+only to merge, not over the record's lock and flush, which every slice asked meanwhile (a
+stop's escalation, the followers' loop's helper slice) waited on. `heard`, the two together,
+stays for those that keep one end in a wait of their own (`netproc::reap`). Guard:
+`a_stop_answers_each_end_while_its_homes_record_is_held`, a kill of two with the record's
+lock held, both answered (red with a keep per end); the stop test's failure says when its
+SIGKILLs came, so the next red tells a late escalation from late ends. Unchanged and
+unreproduced: the followers' loop keeps a network process's end as it hears it
+(`follow.rs` `process_ended`), on the loop that takes every run's messages.
 
 **Found.** The audit of what was taken from Docker (docs/audit/2026-10-16_docker-framing.md):
 a microVM whose command outlived its SIGKILL had its VM killed 10 s later and its end given
