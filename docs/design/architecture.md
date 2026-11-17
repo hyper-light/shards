@@ -3106,6 +3106,63 @@ one CLI.
   are linked by rust-lld, as the init's are, so a host needs no toolchain of its own for
   them; the network code reads `resolv.conf` itself, and no helper uses the C library's
   resolver.
+- **The VM process's size, 2026-11-11 to 11-17.** CI's Firecracker comparison read the VM
+  process's file-backed memory (`rss_file`, `pss_file`) worse than Firecracker's from
+  78753d965 on, on every runner CPU (Envelope, row 11): its text mapped grew from
+  1,949,696 bytes (0342b85d9, 2026-11-11) to 2,371,584 (1793da7c2, 11-16), and what of it a
+  boot keeps resident from 1,687,552 to 2,240,512, where Firecracker v1.17.0 maps 2,527,232
+  and keeps 2,002,944 (19 CI runs' logs and samples, read by lane release-rows).
+  - *What grew.* No dependency: the VM process dropped `shards-net` in that time and took
+    none. Its own code did, each part a feature a VM runs: the engine ring (D230: vsock
+    `ring.rs`, `conn/ringed.rs`, `conn.rs`, `muxer.rs`, `poll.rs`; abi `ring.rs`); the
+    share server's change notices (D235, `notices.rs`), bounds (D281, `bound.rs`), volumes
+    (`fs/server.rs`) and learned DAX crossings (D189, `crossover.rs`); managed runs'
+    members, lanes and sockets relayed (abi `run/*`, `warm.rs`, `workload.rs`,
+    `vm_run.rs`); `confine.rs`'s Landlock pass over every thread; the virtio console and a
+    guest's last words in place of the serial port (`console.rs`, `printk.rs`, D12); rates,
+    holds and guest time (D255, D265, D267); XSAVE and CPUID baselines (D176); and the
+    GPU's selection and report (D232, D233). CI's steps line up with the engine ring,
+    `confine.rs` and `fs/server.rs`, the console and `printk.rs`, and the muxer and
+    `fs/bound.rs`. No daemon code was found compiled in through a shared module
+    (`vm_run.rs`, `warm.rs`, `workload.rs` and `confine.rs` compile into the VM process
+    alone, and of the shared crates' daemon parts read, shards-ipc's `spawn` and vmm's
+    `platform::progress`, none is on its paths), nor, module by module, any of another OS.
+  - *Relocations packed (RELR).* On Linux the VM process is a static PIE (PM M34, M281):
+    before `main` its start (musl's `_dlstart_c`, in rcrt1.o) reads every relative
+    relocation, 24 bytes each in `.rela.dyn`, file-backed pages that then stay resident in
+    every VM. It is now linked with LLD's `--pack-dyn-relocs=relr` (crates/vm-process/
+    build.rs): DT_RELR, an address and then bitmaps of the 63 words after it. On `shards`
+    the same packing took `.rela.dyn` from 613,680 bytes to 5,712 beside a `.relr.dyn` of
+    8,120, and left `.data.rel.ro`, which every start writes, as it was (PM M514, which
+    weighed a launch's time, the same either way, and left `shards` unpacked; a VM
+    process's table is memory each VM keeps). musl's static-PIE start applies DT_RELR:
+    Rust 1.98.0's and 1.98.1's self-contained `rcrt1.o` (x86_64 SHA-256 7998a49f…, aarch64
+    e65dadc8…, the same in both) keeps dynamic tags up to DT_RELR (36) and walks DT_RELR
+    for DT_RELRSZ bytes, an even word an address and an odd one a bitmap of the next 63
+    (`llvm-objdump -d rcrt1.o`, `_start_c`). Packed only where the VM process is musl's,
+    linked by rust-lld itself (.cargo/config.toml and crates/shards/build.rs name it), and
+    not the GPU's, which links its host's C library through its C compiler (D201). PIE, and
+    with it ASLR, stays: a static non-PIE binary carries no relocations but loads every VM
+    at one address. What it takes from a VM's `rss_file`: unmeasured.
+  - *No virtio-gpu device in the VM process without the GPU's renderer.* There
+    `gpu_layout` refuses every GPU before a renderer exists, but `gpu_device`, which makes
+    the device (vmm `devices::virtio::gpu`'s `Gpu`, `Served` and KVM's window), was still
+    compiled and called on the path after it; whether fat LTO proved that call dead was
+    never read. It is now the GPU build's alone, the other build's a refusal like its
+    renderer's, so that build carries none of the device. Nothing a VM does changes. What it
+    takes: unmeasured, nothing where LTO had dropped it already.
+  - *Owed (the coordinator's).* The VM process's sections and relocations before (main
+    before this change) and after, on x86_64 Linux: `cargo build --locked --release -p shards`,
+    then `llvm-readelf -S -W -d target/helpers/x86_64-unknown-linux-musl/release/shards-vm`
+    (`.text`, `.rodata`, `.rela.dyn`, `.relr.dyn`, DT_RELR) and `size -A` of the same; a
+    restore and a boot of it (`cargo bench --locked -p shards --bench firecracker -- --runs
+    30`); and the Envelope on ten runners (`gh workflow run envelope.yml --ref main`).
+    Not taken here, each unmeasured: the boot path's functions placed together, as a read
+    fault maps the cached pages of the 64 KiB around it (Linux's `fault_around_bytes`; a
+    symbol ordering from a profile of a boot); `opt-level = "s"` for the VM process's
+    colder crates (a speed A/B); LLD's `--icf` (which folds functions whose addresses a
+    program may compare); and the same packing for the network process, which each
+    networked VM runs too.
 - A daemon's build is its binary's identity, which includes what it carries; one given
   another VM binary (`SHARDS_VM_BINARY`, for VMM work and tests) is another build.
 - **Tests:** `helpers::tests` (written whole once, found after, a cut copy replaced);
