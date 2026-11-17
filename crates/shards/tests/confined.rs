@@ -242,6 +242,41 @@ fn the_vm_process_is_confined() {
     }
 }
 
+/// A VM boots where its spawner's LOCALAPPDATA is a stand-in, as kiln's vm-homes set it. Its
+/// VM process is given the user's own, beneath which Windows made its profile (PM M615): given
+/// the stand-in, its Temp, which Windows puts beneath the LOCALAPPDATA a confined child is
+/// given (PM M208), was not there, and its first socket pair was refused WSAENETDOWN (10050)
+/// before its guest ran (ROOT's r769).
+#[test]
+fn a_vm_boots_under_a_stand_in_local_app_data() {
+    if cannot_run_vms() {
+        return;
+    }
+    let stand_in = TempDir::new("stand-in");
+    let local = stand_in.join("AppData").join("Local");
+    std::fs::create_dir_all(&local).unwrap();
+    let k = kernel().to_str().unwrap();
+    let r = run_shards_env(
+        &["run"],
+        &[
+            "--kernel",
+            k,
+            "--memory",
+            "256",
+            "--cmdline",
+            "console=hvc0 panic=-1",
+        ],
+        &[("LOCALAPPDATA", local.as_os_str())],
+    );
+    assert!(
+        r.stdout
+            .contains("Kernel panic - not syncing: VFS: Unable to mount root fs"),
+        "{r}"
+    );
+    // Its guest reset at its panic, as boot.rs's does (EXIT_RESET).
+    assert_eq!(r.status, Some(3), "{r}");
+}
+
 /// The network process beside VM process `vm`, and their spawner, the daemon, which starts
 /// a run's two: shards-net, the spawner's child too.
 fn net_process(vm: u32) -> (u32, u32) {
