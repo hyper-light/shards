@@ -1236,12 +1236,12 @@ fn judged_end(party: &mut std::process::Child) -> Result<std::process::ExitStatu
 #[test]
 fn a_judged_calls_own_work_is_its_progress() {
     #[track_caller]
-    fn work(party: u32, ms: u64, sleep: bool, forget: bool) -> Result<(), String> {
+    fn work(party: u32, ms: u64, sleep: bool, forget: bool) -> (Result<(), String>, String) {
         if forget {
             let site = std::panic::Location::caller();
             let _ = std::fs::remove_file(common::WaitKind::kept_at(site, "", ""));
         }
-        common::judged(
+        common::judged_accounted(
             common::Party::client(party, None),
             "a call's own work",
             || {},
@@ -1280,16 +1280,18 @@ fn a_judged_calls_own_work_is_its_progress() {
     // "a call idle on its own thread not refused" while they worked).
     let party = idle.id();
     let call = |ms: u64, sleep: bool, forget: bool| work(party, ms, sleep, forget);
-    let quick = call(0, false, true);
-    let busy = call(200, false, false);
-    let idle_call = call(1000, true, false);
+    let (quick, _) = call(0, false, true);
+    let (busy, _) = call(200, false, false);
+    let (idle_call, idle_account) = call(1000, true, false);
     drop(idle.stdin.take());
     idle.wait().unwrap();
     assert!(quick.is_ok(), "{quick:?}");
     assert!(busy.is_ok(), "{busy:?}");
-    // Refused, and its account names what its member was doing.
+    // Refused, and its account names what its member was doing. Unrefused, its wait's
+    // account as it answered says what kept it: CI's arm64 Windows runner left it unrefused
+    // with its stand-in resting too, and kept no account (run 44077430171).
     let Err(said) = idle_call else {
-        panic!("a call idle on its own thread not refused");
+        panic!("a call idle on its own thread not refused; its wait as it answered: {idle_account}");
     };
     // Its member listed, none of its threads runnable: Linux says it sleeping (S), macOS live
     // (SRUN, which XNU keeps for every live process), both by its threads.
