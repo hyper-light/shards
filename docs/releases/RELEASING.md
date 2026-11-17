@@ -92,11 +92,6 @@ such as `$REL:refs/heads/main`, or `$M:path`) is mangled by zsh's `:` modifiers:
    Check the release lists all seven binaries (`shards-darwin-arm64`, `shards-linux-amd64`,
    `shards-linux-arm64`, `shards-linux-amd64-musl`, `shards-linux-arm64-musl`,
    `shards-windows-amd64.exe`, `shards-windows-arm64.exe`) and `SHA256SUMS`.
-7. **Tell T4**, kiln's agent that runs its harnesses in shards microVMs through the CLI and
-   the Engine API (kiln agent `01a15e86c8eb7397a5555a65dce1fc51`, named Isolation), with
-   kiln's `agents_send` (or `kiln agents send --queue ID TEXT`): the tag, the commit, the CI
-   run that passed, and what in the release changes what T4 uses. If T4 is paused, the
-   message waits in its queue.
 
 Kernel releases (`kernel-*` tags, `kernel.yml`) are separate: a release names the kernel
 its `crates/shards/src/kernel.rs` pins.
