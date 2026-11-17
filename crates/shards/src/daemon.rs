@@ -10688,14 +10688,22 @@ mod tests {
 
     /// A starting VM is waited for while its process goes on with its start, its READY
     /// teaching the daemon's record of starts (D215's judge): a stand-in that runs a CPU and
-    /// says READY 1.5 s on is taken, and the record has learned it; past a learned W*, one
-    /// that runs nothing is given up on a whole W* on, said so. Before, `READY_STALL`'s 10 s
-    /// looks and `READY_TIMEOUT`'s 60 s, picked, learned nothing (ROOT's (3), 2026-11-13).
+    /// says READY 1.5 s into its wait is taken, and the record has learned it; past a learned
+    /// W*, one that runs nothing is given up on a whole W* on, said so. Before, `READY_STALL`'s
+    /// 10 s looks and `READY_TIMEOUT`'s 60 s, picked, learned nothing (ROOT's (3), 2026-11-13).
+    ///
+    /// Its 1.5 s begins once the wait has taken its clock: the record taught the least it keeps
+    /// (1 ns, its W* then any READY's), the wait is judged from its start, and its poll's
+    /// deadline, registered in this test's party (`Waiting`), says its follow has begun. Begun
+    /// as the stand-in was made, the 1.5 s began before the wait's clock, which learned a W*
+    /// short of it on a busy runner (CI 44164945050, aarch64 musl: 1.498141436 s).
     #[cfg(unix)]
     #[test]
     fn a_starting_vm_is_waited_for_while_it_goes_on_with_its_start() {
         let late = Duration::from_millis(1500);
+        let mine = party::of_test();
         let record = shards_api::Record::new();
+        record.teach_unrated(Duration::from_nanos(1));
         let busy = shards_ipc::spawn(
             Path::new("/bin/sh"),
             &[OsStr::new("-c"), OsStr::new("while :; do :; done")],
@@ -10704,13 +10712,21 @@ mod tests {
         )
         .unwrap();
         let (ours, theirs) = UnixStream::pair().unwrap();
-        std::thread::scope(|s| {
-            party::spawn_in(s, || {
+        let waited = std::thread::scope(|s| {
+            let waiting = party::spawn_in(s, || ready(&ours, busy.id(), &record));
+            // Its wait's own deadline, still to come: its follow begun, its clock taken.
+            while !waiting.is_finished()
+                && latest_deadline_of(mine).is_none_or(|until| until <= Instant::now())
+            {
+                std::thread::yield_now();
+            }
+            if !waiting.is_finished() {
                 std::thread::sleep(late);
                 shards_ipc::send(&theirs, kind::READY, &[], &[]).unwrap();
-            });
-            ready(&ours, busy.id(), &record).unwrap();
+            }
+            waiting.join().unwrap()
         });
+        assert_eq!(waited, Ok(()));
         let _ = busy.kill(shards_ipc::signal::SIGKILL);
         let _ = busy.wait();
         assert!(
