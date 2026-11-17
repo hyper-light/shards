@@ -363,6 +363,27 @@ impl Value {
         Value::Set(Rc::new(s))
     }
 
+    /// A set of `items`, each inserted in turn, the first of equal ones kept, as OPA's
+    /// `NewSet` adds them: never collected, as a `BTreeSet`'s `collect` sorts its items with
+    /// `slice::sort`, which may panic on OPA's order, no total order (D98).
+    pub fn set_of(items: impl IntoIterator<Item = Value>) -> BTreeSet<Value> {
+        let mut s = BTreeSet::new();
+        for item in items {
+            s.insert(item);
+        }
+        s
+    }
+
+    /// An object of `pairs`, each inserted in turn, a key's first kept with its last value,
+    /// as OPA's object inserts them: never collected ([`Value::set_of`]).
+    pub fn object_of(pairs: impl IntoIterator<Item = (Value, Value)>) -> BTreeMap<Value, Value> {
+        let mut m = BTreeMap::new();
+        for (k, v) in pairs {
+            m.insert(k, v);
+        }
+        m
+    }
+
     pub fn empty_object() -> Value {
         Value::object(BTreeMap::new())
     }
@@ -947,6 +968,70 @@ mod tests {
         let read = |n: &super::Number| exact(n.text()).is_some();
         let unread = sorted.iter().position(|n| !read(n)).unwrap();
         assert!(sorted[..unread].iter().all(read) && !sorted[unread..].iter().any(read));
+    }
+
+    /// `compare::sort_by`, by a total order, sorts as `slice::sort_by` does: stably, equal
+    /// members kept in the order they came.
+    #[test]
+    fn the_sort_that_cannot_panic_is_the_stable_sort_for_a_total_order() {
+        let pairs: Vec<(u8, usize)> = (0..1000)
+            .map(|i| (u8::try_from(i * 31 % 7).unwrap(), i))
+            .collect();
+        let mut ours = pairs.clone();
+        crate::compare::sort_by(&mut ours, |a, b| a.0.cmp(&b.0));
+        let mut theirs = pairs;
+        theirs.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(ours, theirs);
+        let mut none: Vec<u8> = Vec::new();
+        crate::compare::sort_by(&mut none, Ord::cmp);
+        assert!(none.is_empty());
+    }
+
+    /// OPA's trailing-zero rule makes its order no total order: `10.0` equals `1` (its
+    /// trailing `.` and `0` trimmed) and `10` (by value), and `1` comes before `10` (D98). A
+    /// large `sort` of such numbers, and a set and an object of them, answer whatever order
+    /// their comparisons meet them in, as Go's do: none panics, as Rust's `slice::sort`, and
+    /// a `BTreeSet` collected (which sorts so), may on such an order (ROOT's ruling,
+    /// 2026-11-17). The sort keeps every number it was given.
+    #[test]
+    fn a_large_sort_and_a_set_of_the_trailing_zero_rules_numbers_answer() {
+        assert_eq!(number_compare("10.0", "1"), Equal);
+        assert_eq!(number_compare("10.0", "10"), Equal);
+        assert_eq!(number_compare("1", "10"), Less);
+        let texts = [
+            "10.0", "1", "10", "100.00", "2", "20.0", "20", "1.0", "200.000", "3",
+        ];
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let numbers: Vec<super::Value> = (0..4096)
+            .map(|_| {
+                state ^= state >> 12;
+                state ^= state << 25;
+                state ^= state >> 27;
+                let at = state.wrapping_mul(0x2545_F491_4F6C_DD1D) % texts.len() as u64;
+                super::Value::Number(super::Number(texts[at as usize].into()))
+            })
+            .collect();
+        let sort = crate::funcs::lookup("sort").unwrap();
+        let out = sort(
+            &mut crate::funcs::Context::default(),
+            &[super::Value::array(numbers.clone())],
+        )
+        .unwrap();
+        let Some(super::Value::Array(sorted)) = &out else {
+            panic!("sort gave no array: {out:?}");
+        };
+        let count = |vs: &[super::Value], t: &str| {
+            vs.iter()
+                .filter(|v| matches!(v, super::Value::Number(n) if n.text() == t))
+                .count()
+        };
+        for t in texts {
+            assert_eq!(count(sorted, t), count(&numbers, t), "{t}");
+        }
+        let set = super::Value::set_of(numbers.iter().cloned());
+        assert!(!set.is_empty() && set.len() <= texts.len(), "{set:?}");
+        let object = super::Value::object_of(numbers.into_iter().map(|n| (n, super::Value::Null)));
+        assert!(!object.is_empty() && object.len() <= texts.len(), "{object:?}");
     }
 
     #[test]

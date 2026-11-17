@@ -207,7 +207,7 @@ fn sort(_: &mut Context, args: &[Value]) -> Out {
     match a {
         Value::Array(items) => {
             let mut v = items.to_vec();
-            v.sort();
+            crate::compare::sort_by(&mut v, Value::cmp);
             ok(Value::array(v))
         }
         Value::Set(items) => ok(Value::array(items.iter().cloned().collect())),
@@ -295,12 +295,12 @@ fn array_reverse(_: &mut Context, args: &[Value]) -> Out {
 /// size) that the other holds.
 fn intersect(s: &BTreeSet<Value>, o: &BTreeSet<Value>) -> BTreeSet<Value> {
     let (small, other) = if o.len() < s.len() { (o, s) } else { (s, o) };
-    small.iter().filter(|x| other.contains(*x)).cloned().collect()
+    Value::set_of(small.iter().filter(|x| other.contains(*x)).cloned())
 }
 
 /// ast.Set's Diff.
 fn diff(s: &BTreeSet<Value>, o: &BTreeSet<Value>) -> BTreeSet<Value> {
-    s.iter().filter(|x| !o.contains(*x)).cloned().collect()
+    Value::set_of(s.iter().filter(|x| !o.contains(*x)).cloned())
 }
 
 fn and(_: &mut Context, args: &[Value]) -> Out {

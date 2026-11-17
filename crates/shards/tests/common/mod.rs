@@ -6632,6 +6632,21 @@ pub fn judged<T: Send>(
     call: impl FnOnce() -> T + Send,
 ) -> Result<T, String> {
     let wait = Wait::on(WaitKind::at(std::panic::Location::caller()), party, asked);
+    judging(wait, Stage::Awaited, asked, stop, call).0
+}
+
+/// [`judged`], and its wait's account as it ended, before its answer taught its kind: what
+/// a test that expects a refusal says where none came (harness.rs
+/// `a_judged_calls_own_work_is_its_progress`, unrefused on CI's arm64 Windows runner with no
+/// account kept, run 44077430171).
+#[track_caller]
+pub fn judged_accounted<T: Send>(
+    party: Party,
+    asked: &str,
+    stop: impl FnOnce(),
+    call: impl FnOnce() -> T + Send,
+) -> (Result<T, String>, String) {
+    let wait = Wait::on(WaitKind::at(std::panic::Location::caller()), party, asked);
     judging(wait, Stage::Awaited, asked, stop, call)
 }
 
@@ -6648,7 +6663,7 @@ pub fn judged_there<T: Send>(
     call: impl FnOnce() -> T + Send,
 ) -> Result<T, String> {
     let wait = Wait::on(WaitKind::at(std::panic::Location::caller()), party, asked);
-    judging(wait, Stage::Begun, asked, stop, call)
+    judging(wait, Stage::Begun, asked, stop, call).0
 }
 
 /// Where a judged call's own thread is ([`judging`]).
@@ -6678,7 +6693,7 @@ fn judging<T: Send>(
     asked: &str,
     stop: impl FnOnce(),
     call: impl FnOnce() -> T + Send,
-) -> Result<T, String> {
+) -> (Result<T, String>, String) {
     let calling = std::sync::Mutex::new(Calling::Spawned);
     let thread = || calling.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     std::thread::scope(|scope| {
@@ -6692,13 +6707,14 @@ fn judging<T: Send>(
         let refused = loop {
             match rx.recv_timeout(wait.next_look()) {
                 Ok(answer) => {
+                    let account = wait.account();
                     wait.answered();
-                    return Ok(answer);
+                    return (Ok(answer), account);
                 }
                 // Ended without sending: it panicked, and says why.
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => match worker.join() {
                     Err(panic) => std::panic::resume_unwind(panic),
-                    Ok(()) => return Err(format!("{asked}: ended with no answer")),
+                    Ok(()) => return (Err(format!("{asked}: ended with no answer")), wait.account()),
                 },
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
             }
@@ -6726,7 +6742,7 @@ fn judging<T: Send>(
         };
         stop();
         let _ = worker.join();
-        Err(refused)
+        (Err(refused), wait.account())
     })
 }
 

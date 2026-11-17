@@ -518,7 +518,7 @@ impl Compiler {
                         refs.push(rr);
                     }
                 }
-                refs.sort_by(|a, b| {
+                crate::compare::sort_by(&mut refs, |a, b| {
                     crate::compare::term_compare(
                         &Term::reference(a.clone(), None),
                         &Term::reference(b.clone(), None),

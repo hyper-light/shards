@@ -76,7 +76,7 @@ impl Node {
 
     fn sorted_keys(&self) -> Vec<Term> {
         let mut keys: Vec<Term> = self.children.iter().map(|(k, _)| k.clone()).collect();
-        keys.sort_by(term_compare);
+        crate::compare::sort_by(&mut keys, term_compare);
         keys
     }
 
@@ -901,7 +901,7 @@ fn one_of_type(tpe: &Type) -> Vec<Term> {
             uniq.push(t);
         }
     }
-    uniq.sort_by(term_compare);
+    crate::compare::sort_by(&mut uniq, term_compare);
     uniq
 }
 

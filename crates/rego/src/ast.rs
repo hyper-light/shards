@@ -798,7 +798,7 @@ impl std::fmt::Display for Term {
                     out.push_str("{}");
                 } else {
                     let mut sorted: Vec<&(Term, Term)> = o.iter().collect();
-                    sorted.sort_by(|a, b| crate::compare::term_compare(&a.0, &b.0));
+                    crate::compare::sort_by(&mut sorted, |a, b| crate::compare::term_compare(&a.0, &b.0));
                     out.push('{');
                     for (i, (k, v)) in sorted.iter().enumerate() {
                         if i > 0 {
@@ -814,7 +814,7 @@ impl std::fmt::Display for Term {
                     out.push_str("set()");
                 } else {
                     let mut sorted: Vec<&Term> = s.iter().collect();
-                    sorted.sort_by(|a, b| crate::compare::term_compare(a, b));
+                    crate::compare::sort_by(&mut sorted, |a, b| crate::compare::term_compare(a, b));
                     out.push('{');
                     for (i, t) in sorted.iter().enumerate() {
                         if i > 0 {
