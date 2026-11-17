@@ -38216,6 +38216,62 @@ post-mortem read of the printk ring through VMCOREINFO, not a debug port.
   - **Owed to ROOT (R14).** whp-maxvcpu.yml at this revision on windows-2025 and windows-2022;
     boot.rs `boots_the_hosts_maximum_vcpu_count` and snapshot.rs' storms on KVM (AMD and
     Intel) and HVF; ci.yml's x86_64 Windows jobs.
+- **WHP on a nested Hyper-V: a microVM has at most the host's logical processors** (ROOT's
+  ruling of 2026-11-17, R02, option 1, "scoped to what was measured").
+  - **The experiment** (whp-maxvcpu.yml, run 44127161851 at 0c2eb048a: the product's boot, its
+    kernel told `maxcpus=1 shards_online=1`, shards-init bringing the rest online one at a
+    time; runners of 4 logical processors, nested in Azure):
+
+    | vCPUs | runner | host CPU | init said it runs at (guest uptime) |
+    |---|---|---|---|
+    | 8 | windows-2025 | AMD EPYC 9V74 | 0.88 s |
+    | 8 | windows-2022 | AMD EPYC 9V74 | 1.28 s |
+    | 15 | windows-2025 | AMD EPYC 9V74 | 26.3 s |
+    | 30 | windows-2025 | Intel Xeon Platinum 8573C | 2500 s (21,266 guest lines) |
+
+    - No CPU failed to come online in these four (the record's stuck-vCPU column empty). They
+      failed only their wait for the kernel's power-off line, cured by f455a80c97 (*The test
+      boots as the product boots*, above).
+    - Every arm from 60 vCPUs up on both images (60, 120, 240, 240 `cpuhp.parallel=0`, 240
+      with the guest idle register), and 15 and 30 on windows-2022, were still running past
+      1.5 hours, against their 122-minute bound.
+    - So bringing CPUs online took about 0.1 s for 3 (M379), 1 s for 7, 26 s for 14 and
+      41 minutes for 29: far faster growth than the count. M379's mechanism fits: each
+      cross-CPU call (`smp_call_function_many_cond`, text patches' syncs, grace periods as the
+      scheduler's domains are rebuilt for each CPU) waits for every online vCPU to run, and
+      past 4 most of them have no host CPU. A halted vCPU costs no host thread meanwhile:
+      WHP's emulated local APIC holds it in the hypervisor (hv/whp: no HLT exit).
+  - **The rule.** Where WHP's x86_64 host is itself a Hyper-V nested within another Hyper-V's
+    partition, `vm::max_vcpus()` is the fewer of the partition's most and the host's logical
+    processors (`limits::most_vcpus`). A machine asking more is refused at its start, typed
+    (`StartError::Vcpus(VcpusRefused::PastProcessors)`), said with the count asked, the
+    processors, the nesting and this evidence. The default count (every host CPU) is within
+    it, as is `--cpus N` up to the processors. The max-vCPU test and the storms size to it
+    (`vm::max_vcpus`). Elsewhere the refusals' words stand.
+  - **The signal, documented.** Microsoft's Hypervisor Top Level Functional Specification,
+    "Feature and Interface Discovery" (Microsoft Learn):
+    - a hypervisor present: CPUID leaf 1, ECX bit 31;
+    - a highest leaf, leaf 0x40000000's EAX, of at least 0x40000004;
+    - the interface "Hv#1", leaf 0x40000001's EAX (0x31237648), the leaf it says compatibility
+      decisions should rest on, the vendor's name being "for reporting and diagnostic
+      purposes" only;
+    - leaf 0x40000004's EAX bit 12, "Indicates that the hypervisor is nested within a Hyper-V
+      partition" (`vm::nested_hyperv`, which until now read the vendor's name).
+    - The processors: `GetActiveProcessorCount(ALL_PROCESSOR_GROUPS)` (Microsoft Learn,
+      "Returns the number of active processors in a processor group or in the system").
+    - CI's runners' leaves set bit 12 (0x41d3c, 0x941d3c); jupiter's (0x940d1c) do not (M379).
+  - **Not in scope.** Bare-metal WHP: the data is nested only. ROOT measures overcommit on
+    jupiter (32 logical processors) and rules on extending the cap from that. WHP on arm64:
+    unmeasured, and its nesting (HvRegisterFeaturesInfo bit 4) is read by a hypercall, which
+    no root-partition process makes. KVM and HVF: no change.
+  - **Tests** (written, not run; ROOT's): vmm
+    `limits::tests::a_nested_hyperv_host_runs_no_more_vcpus_than_its_logical_processors` (red
+    under the rule it replaces, the partition's most alone, which admitted 5 to 240 on the
+    runners' description); `vm::tests::guests_are_brought_up_late_on_a_nested_hyperv_alone`
+    (the documented signal; an interface other than "Hv#1" is not one).
+  - **Owed.** The 30-vCPU arm's lines and the 60+ arms' outcomes, read from their artifacts
+    when they come. ci.yml's x86_64 Windows jobs (`boots_the_hosts_maximum_vcpu_count` at 4
+    vCPUs, the storms sized so). The 8 lint targets.
 - **CI's judge learns across runs** (2026-11-17, kiln goal b2124227, lane ci-judge-cache).
   ROOT's answer to the question above: CI keeps the judge's records. Until now every CI job
   began with none, so each kind was cold and followed its party's liveness alone: no wait on
