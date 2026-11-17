@@ -254,10 +254,37 @@ pub fn cannot_snapshot() -> bool {
 /// where the machines a test boots in its own process keep theirs. The burst width is waited
 /// out from the refusal's moment first, so that a witness kept just after it is read.
 pub fn host_refused(said: &str) -> bool {
-    use shards_vmm::vm::limits;
-    let Some(refused) = limits::Said::find(said) else {
+    let Some((refused, verdict)) = host_refusal(said) else {
         return false;
     };
+    match verdict {
+        Ok(witness) => {
+            let _ = writeln!(
+                std::io::stderr(),
+                "SKIP: {}: the host's, by D261's gate: {witness}",
+                refused.line
+            );
+            true
+        }
+        Err(not) => {
+            let _ = writeln!(
+                std::io::stderr(),
+                "a refused entry D261's gate does not take for its host's ({not}): {}",
+                refused.line
+            );
+            false
+        }
+    }
+}
+
+/// D261's gate's verdict on a refused entry: its witness, or why it is not its host's.
+pub type HostVerdict = Result<shards_vmm::vm::limits::Witness, shards_vmm::vm::limits::NotTheHosts>;
+
+/// The refused entry `said` tells of and D261's gate's verdict on it, as [`host_refused`] reads
+/// them, saying nothing: none where `said` tells of none.
+pub fn host_refusal(said: &str) -> Option<(shards_vmm::vm::limits::Said, HostVerdict)> {
+    use shards_vmm::vm::limits;
+    let refused = limits::Said::find(said)?;
     let records: Vec<limits::Limits> = refused
         .file
         .clone()
@@ -279,29 +306,19 @@ pub fn host_refused(said: &str) -> bool {
         .saturating_sub(limits::now_us());
     std::thread::sleep(Duration::from_micros(wait));
     let kept: Vec<limits::Refusal> = records.iter().flat_map(limits::Limits::refusals).collect();
-    match limits::the_hosts(&refused, &kept, width()) {
-        Ok(witness) => {
-            let _ = writeln!(
-                std::io::stderr(),
-                "SKIP: {}: the host's, by D261's gate: {witness}",
-                refused.line
-            );
-            true
-        }
-        Err(not) => {
-            let _ = writeln!(
-                std::io::stderr(),
-                "a refused entry D261's gate does not take for its host's ({not}): {}",
-                refused.line
-            );
-            false
-        }
-    }
+    let verdict = limits::the_hosts(&refused, &kept, width());
+    Some((refused, verdict))
 }
 
 /// [`host_refused`] of what a daemon's `log` says of the VM a run's error, `said`, names as
 /// ended (`VM N ended`): its refusal, not another VM's the same log holds.
 pub fn vm_host_refused(log: &str, said: &str) -> bool {
+    host_refused(&vm_refusal(log, said))
+}
+
+/// The lines of a daemon's `log` that tell of a refused entry of the VM a run's error, `said`,
+/// names as ended (`VM N ended`), not another VM's the same log holds ([`vm_host_refused`]).
+pub fn vm_refusal(log: &str, said: &str) -> String {
     let of_vm: Vec<&str> = log
         .lines()
         .filter(|line| {
@@ -309,7 +326,7 @@ pub fn vm_host_refused(log: &str, said: &str) -> bool {
                 .is_some_and(|refused| said.contains(&format!("VM {} ended", refused.refusal.machine)))
         })
         .collect();
-    host_refused(&of_vm.join("\n"))
+    of_vm.join("\n")
 }
 
 /// Whether the daemon here keeps the snapshots it keeps, its templates, warm pools and saves

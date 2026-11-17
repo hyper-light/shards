@@ -14113,9 +14113,24 @@ comes to made no progress for 399 ms, past the slowest answer of its kind seen o
     in every run; the bench keeps its home where any request failed (benches/arrival.rs), so
     that step says its daemon's log for a pass whose requests failed as well as for a cut.
     Arrival keeps 5 minutes: its slowest of 33 passes is still 185 s.
+  - *A request its host refused is the host's, by D261's gate* (ROOT's brief, from code). A run
+    whose microVM's entry its host refuses fails its client unless another VM stands in: one
+    pooled before the run asked gives way to the next (daemon.rs `start_run`, `gives_way`); one
+    started for it, refused before READY, fails the run, "VM P ended before it was ready"
+    (`ready`); one refused once it had the run ends it, its client told only that its microVM
+    stopped (`VM P ended before its command started` in the daemon's log alone). The bench took
+    every client's non-zero exit for shards' failure. Now each request's words are kept (a file
+    each: a run hands its client's stdio to its microVM, whose copy a pipe would wait on), and
+    each failed request is read as the tests read a run (`common::host_refusal`, from
+    `host_refused`; `vm_refusal`, from `vm_host_refused`): the refusal its daemon's log holds of
+    the VM its words name as ended, through `limits::the_hosts`, its witness from its host model's
+    records and their learned burst width. Taken, it is counted in `rate_R_refused_by_host`;
+    not taken, or naming no refused VM, it stays in `rate_R_failed`; each is said with why. A
+    refusal its client's words do not name (the third way) stays shards' failure, as in the
+    tests. The drain's judge is unchanged: a request its host refused has ended.
   - *What it leaves.* Whether rate 40 on the Intel ends within Arrival's 5 minutes, and what
-    fails its requests there, is open (R09: the next Intel run's daemon log, if cut, and its
-    kernel's log). `daemon stop` after a cut is unmeasured, bounded by the job's limit alone.
+    fails its requests there, is open (R09: the next Intel run's per-request words, daemon log
+    and kernel's log). `daemon stop` after a cut is unmeasured, bounded by the job's limit alone.
   - *Owed (ROOT):* main's next CI run's firecracker job: the artifact `bench-samples-<sha>` there
     before Arrival; where Arrival is cut, `Arrival's daemon, stopped` saying the daemon's log
     and Guest memory within its minute; the job ending inside its 38 minutes with its log kept.
