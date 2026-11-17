@@ -2178,11 +2178,39 @@ fn a_hang_up_ends_a_command_whose_daemon_never_answered() {
 /// next send and read is told of it (on Linux's loopback, its first flight's second datagram's
 /// send). Its caller gives up once its [`Patience`] is out, so that a refusal never told fails it
 /// rather than hangs it (ROOT's KVM run at 237f3ebe7 ended it after 22 minutes).
+///
+/// On Unix its port is held for the whole test, so that no other process takes it, by a
+/// socket that takes nothing from the client: connected to a peer of the test's own, it
+/// matches only that peer's datagrams, so the client's find no socket and its host answers
+/// each with ICMP port-unreachable (Linux net/ipv4/udp.c: `compute_score` scores a connected
+/// socket -1 for another source, `__udp4_lib_rcv` answers no socket with ICMP_PORT_UNREACH;
+/// XNU bsd/netinet/udp_usrreq.c `udp_input`: `in_pcblookup_hash`'s wildcard pass takes no
+/// connected PCB, and no PCB is answered by `icmp_error(.., ICMP_UNREACH_PORT, ..)`, its
+/// blackhole sysctl sparing loopback). Let go of first, as it was, another process could take
+/// the port before the client asked (the race that failed Hex's image_grants_real on a busy
+/// Mac). Windows documents a connected datagram socket's discarding of others' datagrams, not
+/// an answer to them (Winsock `connect`), so there the port is let go of first, as before.
 #[test]
 fn a_closed_port_refuses_its_client_at_once() {
-    let closed = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
-    let address = closed.local_addr().unwrap();
-    drop(closed);
+    #[cfg(unix)]
+    let (address, _held) = {
+        let peer = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let held = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        held.connect(peer.local_addr().unwrap()).unwrap();
+        (held.local_addr().unwrap(), (held, peer))
+    };
+    #[cfg(unix)]
+    assert!(
+        std::net::UdpSocket::bind(address).is_err(),
+        "its port not held: another socket took it"
+    );
+    #[cfg(windows)]
+    let address = {
+        let closed = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let address = closed.local_addr().unwrap();
+        drop(closed);
+        address
+    };
     let remote = Remote {
         address,
         daemon: Identity::generate().unwrap().fingerprint(),
