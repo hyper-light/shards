@@ -26179,3 +26179,66 @@ the counts are a process's, not a thread's. n is one run of each child.
   native jobs' default job limit 75 (56 and a third above macOS' 14.1); windows-2025's job 145
   (122 and a third above 17.1). limits.py derives them again as runs gather: running the tests
   on windows-11-arm, once runs run them through, sets their own limit.
+
+### M614. Windows' AF_UNIX past `sun_path`: a relative name, afunix.h's parent-path controls and an abstract address, on four Windows hosts (D141, D142; kiln's r735)
+
+- **Question.** kiln's r735 (2026-11-17) ended every VM process started under a long
+  `LOCALAPPDATA` as it made its first socket pair: in its AppContainer its temporary directory
+  is `<LOCALAPPDATA>\Packages\<container>\AC\Temp` (D143's note on a child's environment), and
+  a pair's address there was 134 bytes, past the 107 an AF_UNIX address holds before its NUL
+  (afunix.h's `UNIX_PATH_MAX`, 108). What does Windows' AF_UNIX take for a socket whose path
+  is past that? The candidates:
+  - a relative name, resolved against the process's current directory;
+  - afunix.h's parent-path controls (Windows SDK 10.0.26100, `shared/afunix.h`, lines 29-30:
+    `SIO_AF_UNIX_SETBINDPARENTPATH`, "Set the parent path for bind calls", and
+    `SIO_AF_UNIX_SETCONNPARENTPATH`, "Set the parent path for connect calls"; line 31: "NOTE:
+    setting the parent path is not thread safe"), defined under no version guard, only
+    `_AFUNIX_`'s include guard (lines 15-16), and documented by Microsoft no further;
+  - an abstract address, which Microsoft's announcement of AF_UNIX ("AF_UNIX comes to
+    Windows", the WSL team, 2017-12-19) says Windows "can also accept", and whose connect M340
+    found refused.
+
+  microsoft/WSL#9455 (2023-01-07) reported both parent-path controls refused WSAEOPNOTSUPP on
+  afunix.sys 10.0.22621.1, the driver's strings showing no trace of them, nor Insider build
+  25267's; it was closed unanswered for want of activity (2024-02-01).
+- **Method.** `docs/research/measurements/afunix-long-paths` (ba502bc96), `cargo run
+  --release`. A directory is made under the user's temporary one, a 26-letter component added
+  until it is past 120 bytes (139 on jupiter, 140 on the runners). Each case then binds a
+  listener, listens, connects a client, accepts, and reads the accepted end's peer pid
+  (`SIO_AF_UNIX_GETPEERPID`), each socket made as `shards_afunix` makes them (WSASocketW,
+  WSA_FLAG_OVERLAPPED and WSA_FLAG_NO_HANDLE_INHERIT):
+  - *absolute*: the full path as the address;
+  - *relative*: the current directory set to the long one, the bare name as the address;
+    *relative-elsewhere*: bound so, then connected from another current directory;
+  - *parent-utf8* and *parent-utf16*: each control set on its socket, the listener's before
+    its bind and the client's before its connect, the directory as UTF-8 or as UTF-16LE,
+    each with its NUL; the address the file name alone;
+  - *abstract*: a NUL, then a name.
+
+  Hosts, 2026-11-17: jupiter (AMD Ryzen AI Max+ 395; Windows 11 x86_64, 10.0.26200.9974;
+  ROOT's kiln run r756, Shards e1091aa793), and `windows-afunix.yml` (8247e14487), run
+  44138098838, on CI's windows-2022 (image 20261112.366.7: Windows Server 2022, 10.0.20348
+  build 5870, x86_64), windows-2025 (windows-2025-vs2026 20261103.298.1: Windows Server 2025,
+  10.0.26100 build 33674, x86_64) and windows-11-arm (windows-11-vs2026-arm64 20261112.217.1:
+  Windows 11 Enterprise, 10.0.26200 build 9974, `aarch64-pc-windows-msvc`).
+- **Found**, alike on all four hosts:
+  - *absolute*: the address 146 bytes on jupiter, 147 on the runners: past `sun_path`, not
+    asked.
+  - *relative*: bound, listened, connected and accepted, the socket's file in the long
+    directory. *relative-elsewhere*: the connect refused 10061 (WSAECONNREFUSED): a relative
+    name is resolved against each process's own current directory.
+  - *parent-utf8*: both controls taken; bound, listened, connected and accepted; the socket's
+    file in the long directory; the peer's pid read, this process's own, as both ends are its.
+  - *parent-utf16*: the control taken, then the bind refused 10050 (WSAENETDOWN), no file made.
+  - *abstract*: bound and listened, the connect refused 10022 (WSAEINVAL), as M340 found.
+- **Decided** (D141, D142). Every AF_UNIX socket shards binds or connects by path on Windows
+  is told its directory by these controls, as UTF-8, its address the file name alone
+  (`shards_afunix`'s `Place`): one mechanism in every process, set on a socket just made,
+  before its bind or connect, while no other thread has it. Not a relative name, which would
+  need each process's current directory fixed at its sockets' directory, state of the whole
+  process; not an abstract address, refused its connect. The data overturns WSL#9455 for the
+  builds measured. Windows' floor for shards is the oldest build measured, Windows Server
+  2022's 20348, kept up to date. Unmeasured: earlier updates of these builds (WSL#9455's
+  22621.1 refused the controls), Windows 11 22621 and 22631 as updated now, Windows 10
+  (below the 20348 that ProcessSocketNotifications, which D142's network process waits on,
+  is documented from), and a directory past MAX_PATH's 260 characters.

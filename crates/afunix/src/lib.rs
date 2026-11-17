@@ -1,12 +1,12 @@
-//! AF_UNIX stream sockets on Windows (afunix.sys, Windows 10 1803 and later), for what
-//! shards carries over Unix sockets on its other hosts: a VM's vsock streams, its network
-//! process's controls and its builder's sockets. std has Unix sockets on Unix alone; these
-//! are the subset shards uses, made as std makes them there: not inherited by children
-//! unless handed to one, and blocking until set otherwise; overlapped, as std's sockets are
-//! made, so that one thread's send never waits for another's read of the same connection
-//! (PM M207). Measured: PM M199 (9-12 GB/s, 3.4-3.7 times loopback TCP's; half-close;
-//! scatter-gather; WSAPoll and WSAEventSelect), M203 (shared with a confined process) and
-//! M207. Nothing on other hosts.
+//! AF_UNIX stream sockets on Windows (afunix.sys; Windows Server 2022, build 20348, and later,
+//! kept up to date: `Place`, PM M614), for what shards carries over Unix sockets on its other
+//! hosts: a VM's vsock streams, its network process's controls and its builder's sockets. std
+//! has Unix sockets on Unix alone; these are the subset shards uses, made as std makes them
+//! there: not inherited by children unless handed to one, and blocking until set otherwise;
+//! overlapped, as std's sockets are made, so that one thread's send never waits for another's
+//! read of the same connection (PM M207). Measured: PM M199 (9-12 GB/s, 3.4-3.7 times loopback
+//! TCP's; half-close; scatter-gather; WSAPoll and WSAEventSelect), M203 (shared with a confined
+//! process), M207 and M614. Nothing on other hosts.
 
 #![cfg(windows)]
 
@@ -19,10 +19,11 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use windows_sys::Win32::Foundation::{HANDLE, HANDLE_FLAG_INHERIT, SetHandleInformation};
 use windows_sys::Win32::Networking::WinSock::{
     AF_UNIX, FIONBIO, FROM_PROTOCOL_INFO, INVALID_SOCKET, POLLRDNORM, POLLWRNORM, SD_BOTH, SD_RECEIVE,
-    SD_SEND, SO_ERROR, SO_RCVBUF, SO_SNDBUF, SOCK_STREAM, SOCKADDR_UN, SOCKET, SOL_SOCKET, SOMAXCONN,
-    WSA_FLAG_NO_HANDLE_INHERIT, WSA_FLAG_OVERLAPPED, WSABUF, WSADATA, WSADuplicateSocketW, WSAEWOULDBLOCK,
-    WSAGetLastError, WSAPOLLFD, WSAPROTOCOL_INFOW, WSAPoll, WSARecv, WSASend, WSASocketW, WSAStartup, accept,
-    bind, closesocket, connect, getpeername, getsockopt, ioctlsocket, listen, recv, send, shutdown,
+    SD_SEND, SIO_AF_UNIX_SETBINDPARENTPATH, SIO_AF_UNIX_SETCONNPARENTPATH, SO_ERROR, SO_RCVBUF, SO_SNDBUF,
+    SOCK_STREAM, SOCKADDR_UN, SOCKET, SOL_SOCKET, SOMAXCONN, WSA_FLAG_NO_HANDLE_INHERIT, WSA_FLAG_OVERLAPPED,
+    WSABUF, WSADATA, WSADuplicateSocketW, WSAEWOULDBLOCK, WSAGetLastError, WSAIoctl, WSAPOLLFD,
+    WSAPROTOCOL_INFOW, WSAPoll, WSARecv, WSASend, WSASocketW, WSAStartup, accept, bind, closesocket, connect,
+    getpeername, getsockopt, ioctlsocket, listen, recv, send, shutdown,
 };
 
 /// A buffer size Winsock reported, `what` naming it: zero or less is an error, not a size.
@@ -164,33 +165,119 @@ impl Socket {
 /// WSAPROTOCOL_INFOW's size, which a shared socket's info is.
 const INFO: usize = std::mem::size_of::<WSAPROTOCOL_INFOW>();
 
-/// `path` as an AF_UNIX address: its UTF-8 bytes, NUL-terminated within the 108 bytes
-/// sun_path holds (afunix.h's `UNIX_PATH_MAX`). One it can't be is refused saying which path
-/// and why: a bare InvalidInput's words, "invalid input parameter", name neither (kiln's r708).
-fn address(path: &Path) -> io::Result<SOCKADDR_UN> {
+/// Where a socket at a path is, as afunix.sys is told it: the path's directory, set on the
+/// socket by the control afunix.h names for its bind or for its connect, and its file name
+/// alone as its address. So a path is bounded by its file name, not by the 108 bytes sun_path
+/// holds with its NUL (afunix.h's `UNIX_PATH_MAX`): a VM process makes its pairs in its
+/// AppContainer's Temp, beneath the local app-data folder its spawner gives it, 134 bytes in
+/// kiln's r735 (D141). Every bind and connect here, in every process, is placed so: Windows
+/// Server 2022 (20348.5870), Server 2025 (26100.33674) and Windows 11 (26200.9974, x86_64 and
+/// arm64) bind, connect and accept there (PM M614).
+struct Place<'a> {
+    path: &'a Path,
+    /// The directory, absolute, as UTF-8 with its NUL: Microsoft's announcement of AF_UNIX
+    /// has a path "a Win32 UTF-8 file system path", and as UTF-16 the control is taken and
+    /// the bind refused, WSAENETDOWN (PM M614).
+    parent: Vec<u8>,
+    /// The file name, NUL-terminated within sun_path.
+    name: SOCKADDR_UN,
+}
+
+/// `path`'s [`Place`]. One that can't be is refused saying which path and why: a bare
+/// InvalidInput's words, "invalid input parameter", name neither (kiln's r708).
+fn place(path: &Path) -> io::Result<Place<'_>> {
     let refused =
         |why: String| io::Error::new(io::ErrorKind::InvalidInput, format!("{}: {why}", path.display()));
-    let text = path
-        .to_str()
-        .ok_or_else(|| refused("an AF_UNIX path is UTF-8, and this one is not".into()))?;
+    if path.as_os_str().as_encoded_bytes().contains(&0) {
+        return Err(refused("an AF_UNIX path holds no NUL".into()));
+    }
+    // A relative path is taken from this process's current directory, as Windows resolves
+    // one (GetFullPathNameW) and as afunix.sys resolved a relative address (PM M614).
+    let full = std::path::absolute(path).map_err(|e| refused(format!("no absolute path: {e}")))?;
+    let (Some(dir), Some(name)) = (full.parent(), full.file_name()) else {
+        return Err(refused(
+            "an AF_UNIX path names a file in a directory, and this one does not".into(),
+        ));
+    };
+    let (Some(dir), Some(name)) = (dir.to_str(), name.to_str()) else {
+        return Err(refused("an AF_UNIX path is UTF-8, and this one is not".into()));
+    };
     let mut addr = SOCKADDR_UN {
         sun_family: AF_UNIX,
         sun_path: [0; 108],
     };
-    if text.contains('\0') {
-        return Err(refused("an AF_UNIX path holds no NUL".into()));
-    }
-    if text.len() >= addr.sun_path.len() {
+    if name.len() >= addr.sun_path.len() {
         return Err(refused(format!(
-            "{} bytes, more than the {} an AF_UNIX path holds before its NUL",
-            text.len(),
+            "its file name is {} bytes, more than the {} an AF_UNIX address holds before its NUL",
+            name.len(),
             addr.sun_path.len().saturating_sub(1)
         )));
     }
-    for (d, b) in addr.sun_path.iter_mut().zip(text.bytes()) {
+    for (d, b) in addr.sun_path.iter_mut().zip(name.bytes()) {
         *d = b as i8;
     }
-    Ok(addr)
+    Ok(Place {
+        path,
+        parent: dir.bytes().chain([0]).collect(),
+        name: addr,
+    })
+}
+
+impl Place<'_> {
+    /// A new socket to bind here, its directory set (`SIO_AF_UNIX_SETBINDPARENTPATH`).
+    fn to_bind(&self) -> io::Result<Socket> {
+        self.socket(SIO_AF_UNIX_SETBINDPARENTPATH, "SIO_AF_UNIX_SETBINDPARENTPATH")
+    }
+
+    /// A new socket to connect here, its directory set (`SIO_AF_UNIX_SETCONNPARENTPATH`).
+    fn to_connect(&self) -> io::Result<Socket> {
+        self.socket(SIO_AF_UNIX_SETCONNPARENTPATH, "SIO_AF_UNIX_SETCONNPARENTPATH")
+    }
+
+    /// A new socket, the directory set on it by `control`, which `what` names.
+    fn socket(&self, control: u32, what: &str) -> io::Result<Socket> {
+        let len = u32::try_from(self.parent.len()).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "{}: its directory's path is longer than a Winsock control's input holds",
+                    self.path.display()
+                ),
+            )
+        })?;
+        let s = Socket::new()?;
+        let mut returned = 0u32;
+        // SAFETY: an input buffer and its own length, its NUL included; no output, and a u32
+        // for the count of bytes returned; synchronous, as no OVERLAPPED is given; on the
+        // socket just made. Ordering: afunix.h says "setting the parent path is not thread
+        // safe" (SDK 10.0.26100, line 31), so each socket's is set here, before its bind or
+        // connect, while no other thread has the socket: none can until this call returns it.
+        let r = unsafe {
+            WSAIoctl(
+                s.0,
+                control,
+                self.parent.as_ptr().cast(),
+                len,
+                std::ptr::null_mut(),
+                0,
+                &raw mut returned,
+                std::ptr::null_mut(),
+                None,
+            )
+        };
+        if r != 0 {
+            let e = last();
+            return Err(io::Error::new(
+                e.kind(),
+                format!(
+                    "{}: Windows took no directory for its AF_UNIX socket ({what}, which Windows \
+                     Server 2022 and Windows 11 take, kept up to date): {e}",
+                    self.path.display()
+                ),
+            ));
+        }
+        Ok(s)
+    }
 }
 
 const ADDRESS_LEN: i32 = std::mem::size_of::<SOCKADDR_UN>() as i32;
@@ -295,10 +382,10 @@ impl UnixStream {
 
     /// Connects to the listener at `path`.
     pub fn connect(path: impl AsRef<Path>) -> io::Result<UnixStream> {
-        let addr = address(path.as_ref())?;
-        let s = Socket::new()?;
+        let place = place(path.as_ref())?;
+        let s = place.to_connect()?;
         // SAFETY: an address of its own length.
-        if unsafe { connect(s.0, (&raw const addr).cast(), ADDRESS_LEN) } != 0 {
+        if unsafe { connect(s.0, (&raw const place.name).cast(), ADDRESS_LEN) } != 0 {
             return Err(last());
         }
         Ok(UnixStream::wrap(s))
@@ -353,14 +440,14 @@ impl UnixStream {
         if deadline.is_some_and(|at| std::time::Instant::now() >= at) {
             return Err(io::ErrorKind::TimedOut.into());
         }
-        let addr = address(path)?;
-        let s = Socket::new()?;
+        let place = place(path)?;
+        let s = place.to_connect()?;
         s.set_nonblocking(true)?;
         if deadline.is_some_and(|at| std::time::Instant::now() >= at) {
             return Err(io::ErrorKind::TimedOut.into());
         }
         // SAFETY: an address of its own length.
-        if unsafe { connect(s.0, (&raw const addr).cast(), ADDRESS_LEN) } != 0 {
+        if unsafe { connect(s.0, (&raw const place.name).cast(), ADDRESS_LEN) } != 0 {
             let e = last();
             if e.raw_os_error() != Some(WSAEWOULDBLOCK) {
                 return Err(e);
@@ -413,7 +500,8 @@ impl UnixStream {
 
     /// A connected pair: Windows has no socketpair(), so a listener at a fresh path in the
     /// temporary directory, a connect and an accept, the path removed (some 0.6 ms, PM
-    /// M199).
+    /// M199). Its directory may be as long as Windows' paths are, as every path here may
+    /// (`Place`): an AppContainer's is the container's own Temp (D141).
     pub fn pair() -> io::Result<(UnixStream, UnixStream)> {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         // The user's own temporary directory (an AppContainer's, in one), for a file that
@@ -733,10 +821,10 @@ impl UnixListener {
     /// A socket bound at `path`, which must not exist, and not listening yet: a client is
     /// refused until it does ([`Self::listen`]).
     pub fn bound(path: impl AsRef<Path>) -> io::Result<UnixListener> {
-        let addr = address(path.as_ref())?;
-        let s = Socket::new()?;
+        let place = place(path.as_ref())?;
+        let s = place.to_bind()?;
         // SAFETY: an address of its own length.
-        if unsafe { bind(s.0, (&raw const addr).cast(), ADDRESS_LEN) } != 0 {
+        if unsafe { bind(s.0, (&raw const place.name).cast(), ADDRESS_LEN) } != 0 {
             return Err(last());
         }
         Ok(UnixListener(s))
@@ -1033,5 +1121,43 @@ mod tests {
         a.set_nonblocking(true).unwrap();
         let e = (&a).read(&mut [0u8; 1]).unwrap_err();
         assert_eq!(e.kind(), io::ErrorKind::WouldBlock);
+    }
+
+    /// A socket in a directory past the 107 bytes an AF_UNIX address holds before its NUL
+    /// binds there, takes a connect that waits and one that doesn't, and carries bytes each
+    /// way, as a VM process's pairs must in its AppContainer's Temp beneath a long local
+    /// app-data folder (kiln's r735, D141). Each was refused before, its address past
+    /// sun_path; a socket given no directory binds in the process's current one instead,
+    /// which the check of the socket's file finds (PM M614).
+    #[test]
+    fn a_socket_in_a_directory_past_sun_path_binds_and_connects() {
+        let root = shards_testdir::TempDir::new("afunix-long").unwrap();
+        let mut dir = root.path().to_path_buf();
+        while dir.as_os_str().len() <= 120 {
+            dir.push("abcdefghijklmnopqrstuvwxyz");
+        }
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("l.sock");
+        println!("{} bytes: {}", path.as_os_str().len(), path.display());
+        let listener = UnixListener::bind(&path).unwrap();
+        assert!(
+            std::fs::symlink_metadata(&path).is_ok(),
+            "the socket's file is in its directory"
+        );
+        let client = UnixStream::connect(&path).unwrap();
+        let (accepted, ()) = listener.accept().unwrap();
+        (&client).write_all(b"long").unwrap();
+        let mut buf = [0u8; 4];
+        (&accepted).read_exact(&mut buf).unwrap();
+        assert_eq!(&buf, b"long");
+        let nowait = UnixStream::connect_nonblocking(&path).unwrap();
+        let (other, ()) = listener.accept().unwrap();
+        (&other).write_all(b"back").unwrap();
+        (&nowait).read_exact(&mut buf).unwrap();
+        assert_eq!(&buf, b"back");
+        let named = dir.join("n".repeat(108));
+        let e = UnixListener::bind(&named).unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::InvalidInput, "{e}");
+        assert!(e.to_string().contains("its file name is 108 bytes"), "{e}");
     }
 }

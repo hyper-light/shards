@@ -92,9 +92,11 @@ are inside it; it writes them to your cache directory the first time it needs th
 - **macOS**: 15 or later, on Apple silicon.
 - **Linux**: x86_64 or arm64, with access to `/dev/kvm` (usually the `kvm` group). Add
   `--target x86_64-unknown-linux-musl` (or `aarch64-unknown-linux-musl`) for a static binary.
-- **Windows**: x86_64 or arm64, with the Windows Hypervisor Platform turned on. arm64
-  Windows needs Windows 11 24H2 (build 26100.3915) or later, and is new: its full test
-  suite has not passed yet.
+- **Windows**: x86_64 or arm64, Windows 11 or Windows Server 2022 and later, kept up to
+  date, with the Windows Hypervisor Platform turned on. Tested on Windows Server 2022 (build
+  20348.5870), Windows Server 2025 (26100.33674) and Windows 11 (26200.9974); Windows 10 is
+  not supported. arm64 Windows needs Windows 11 24H2 (build 26100.3915) or later, and is
+  new: its full test suite has not passed yet.
 
 ## Quickstart
 

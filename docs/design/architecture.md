@@ -20433,6 +20433,16 @@ on Windows as on Linux and macOS.
   ports close as it ends on its VM's release, an AF_UNIX socket too, before its end is
   told. A peer's link on a network (D46) is an AF_UNIX pair, an end shared with each
   network process. A builder publishes none, and drops both.
+- **Its sockets past `sun_path`** (2026-11-17; PM M614). Its doorbell's socket pair
+  (`shards_netring::socket_doorbell`), its control and a peer's link are AF_UNIX, made by
+  `shards_afunix`, and every socket bound or connected by path is told its directory by
+  afunix.h's parent-path controls, as D141's amendment says: the directory as UTF-8, the
+  address its file name alone, so that no directory's length refuses one, an AppContainer's
+  Temp beneath a long `LOCALAPPDATA` among them. ProcessSocketNotifications, which it waits
+  on, is documented from "Windows 10 Build 20348" (Microsoft's sdk-api,
+  `nf-winsock2-processsocketnotifications.md`, 8f2547f96c), the build of the controls' oldest
+  host measured, Windows Server 2022's 20348.5870: shards' Windows floor (D141). What the
+  control and the path's resolution add to a pair's 0.6 ms (M199) is unmeasured.
 
 ### D141. The Windows VM process confined
 
@@ -20526,6 +20536,61 @@ was built on [PM M200-M203]:
 - **The partition that reads WHP's vCPU limit is made as a VM's** (D140 fixed): offered the
   synthetic features without its APICs emulated, WHP refused it (HV_STATUS_INVALID_PARAMETER),
   and with it every VM (CI run 38222358454).
+- **Its sockets past `sun_path`** (2026-11-17; kiln's r735, PM M614). The VM process makes its
+  socket pairs as Windows lets one be made (no socketpair(): a listener at a fresh path in its
+  temporary directory, a connect and an accept, M199), and in its AppContainer that directory
+  is the container's own Temp, beneath the `LOCALAPPDATA` its spawner gives it (D143's note on
+  a child's environment): under kiln's long vm-home in r735 a pair's address was 134 bytes,
+  past the 107 an AF_UNIX address holds before its NUL (afunix.h's `UNIX_PATH_MAX`, 108), and
+  every VM ended as it made its first pair. Now every AF_UNIX socket shards binds or connects
+  by path on Windows, in every process of shards', is told its directory by afunix.h's
+  parent-path control before its bind (`SIO_AF_UNIX_SETBINDPARENTPATH`) or its connect
+  (`SIO_AF_UNIX_SETCONNPARENTPATH`), the directory absolute and as UTF-8 with its NUL, its
+  address the file name alone (`shards_afunix`'s `Place`). Only a file name past 107 bytes is
+  refused, naming its path; a pair's directory may be as long as Windows' paths are.
+  - *Sources.* Microsoft's "AF_UNIX comes to Windows" (the WSL team, 2017-12-19): AF_UNIX from
+    Insider build 17063, `sun_path` "a Win32 UTF-8 file system path", no socketpair; it names
+    no parent-path control. The Windows SDK 10.0.26100's `shared/afunix.h`
+    (Win11SDK_10.0.26100_headers.msi) defines the controls at lines 28-30
+    (`SIO_AF_UNIX_GETPEERPID`; `SIO_AF_UNIX_SETBINDPARENTPATH`, "Set the parent path for bind
+    calls"; `SIO_AF_UNIX_SETCONNPARENTPATH`, "Set the parent path for connect calls") under no
+    version guard, only `_AFUNIX_`'s include guard, and says at line 31: "setting the parent
+    path is not thread safe". So each socket's is set on it as it is made, before its bind or
+    connect, while no other thread has it. microsoft/WSL#9455 (2023-01-07; closed unanswered,
+    2024-02-01) reported both controls refused WSAEOPNOTSUPP on afunix.sys 10.0.22621.1, its
+    strings without a trace of them: the data below overturns that report for the builds
+    measured.
+  - *Data* (PM M614: `docs/research/measurements/afunix-long-paths`, a directory of 139 and
+    140 bytes). Alike on jupiter's Windows 11 x86_64 (10.0.26200.9974; kiln's r756) and on
+    CI's windows-2022 (Windows Server 2022, 10.0.20348.5870), windows-2025 (Server 2025,
+    10.0.26100.33674) and windows-11-arm (Windows 11 arm64, 10.0.26200.9974; run
+    44138098838): with the directory as UTF-8, both controls were taken, and a listener bound,
+    listened and accepted a client's connect, its file in the long directory, its peer's pid
+    read; as UTF-16, the control was taken and the bind refused (10050, WSAENETDOWN).
+  - *Measured and not taken.* A relative name binds and connects, but against each process's
+    current directory (from another directory, refused 10061, M614): it would need every
+    process's current directory fixed at its sockets' directory, the whole process's state. An
+    abstract address, which the announcement says Windows "can also accept", is refused its
+    connect (10022: M340, M614; microsoft/WSL#4240, open since 2019). Pairs of named pipes
+    (M340: p50 9.9 µs a pair, no path) would move every in-process pair to another transport,
+    where the controls keep AF_UNIX's.
+  - *The Windows floor is what was measured*: Windows Server 2022 (build 20348) and later,
+    kept up to date. 20348.5870, 26100.33674 and 26200.9974 take the controls, where WSL#9455's
+    22621.1 refused them, so an earlier update of a build may lack them; there a socket's bind
+    or connect fails, saying which control Windows refused. Windows 10 (build 19045 and
+    earlier) was below this floor already: ProcessSocketNotifications, which the network
+    process waits on (D142), is documented from "Windows 10 Build 20348" (Microsoft's sdk-api,
+    `nf-winsock2-processsocketnotifications.md`, 8f2547f96c). The README says so;
+    `shards_afunix` said "Windows 10 1803 and later" until now.
+  - *Tests.* `shards_afunix` `tests::a_socket_in_a_directory_past_sun_path_binds_and_connects`
+    (a temporary directory past 120 bytes). Unrun in its lane (no builds or tests there), and
+    owed on Windows: red at the revision before, where the bind is refused for an address past
+    107 bytes; green at this one; and its guard's mutation, the control not set, where the
+    socket binds in the test's current directory (M614's relative case) and the check for its
+    file in the long directory fails. With it, a WHP boot under a long `LOCALAPPDATA`
+    (`api_image`), as r735's: the probe ran outside any AppContainer, so the controls inside
+    one are first exercised there, and by every Windows VM test, each of whose pairs now goes
+    this way.
 
 Tested on real VMs (`the_vm_process_is_confined`): the VM process's token is an
 AppContainer's, it is in a Job, each mitigation is on, dynamic code forbidden once its guest
