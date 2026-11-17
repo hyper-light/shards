@@ -13034,6 +13034,19 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
         pass only waits again: longer than the gap after it.
       - *Then.* Its resident memory then is the idle the test measures from. A VM process gone
         as it gives back fails the test. Nothing teaches W* where no fall came.
+      - *A fall* (amended 2026-11-17, goal fb3528f9, under ROOT's ruling that the test's
+        baseline is taken after the give-back settles). A fall is a drop of at least one
+        reported block (`common::REPORTED`, 2 MiB) below the level the last fall left or the
+        most held since. The guest hands back whole blocks of its free lists
+        (`page_reporting_order`: 2 MiB with 4 KiB pages, more with larger ones).
+        - Before, any dip counted. A dip of the VM process's own memory, taken for the first
+          fall, ended a cold settle before the guest had reported.
+        - CI 43968984258's x86_64 musl job took its idle at 871706624 bytes after a 1 GiB free,
+          and its 512 MiB read then grew it 29 MiB: a baseline before the give-back settled.
+          Which dip ended that settle is unproven, as nothing kept its looks.
+        - So the settle now says when and at what level it ended, and its last fall, on
+          stderr, which a failing test prints. The harness test's 32 MiB regions are falls
+          still.
       - No 500 ms, 4 MiB or 128 MiB is left. tests/harness.rs
         `a_give_back_is_followed_while_its_memory_falls` holds it to a stand-in that unmaps
         four 32 MiB regions 200 ms of busy CPU apart, the first 400 ms in. Twice from one call

@@ -2656,6 +2656,15 @@ impl Patience {
     }
 }
 
+/// The least a guest gives back at once: one block of its free lists, which free page
+/// reporting hands the host whole (`page_reporting_order`, its pageblock: 2 MiB with 4 KiB
+/// pages, the least a page is, and more with larger pages; mm/page_reporting.c,
+/// virtio/balloon.rs, D151). A dip of less is no give-back's, and taken for its first fall it
+/// ends a cold settle before the guest has reported: CI 43968984258's x86_64 musl job took a
+/// microVM "idle" at 871706624 bytes after a 1 GiB free, and its 512 MiB read then grew it
+/// 29 MiB, a baseline taken before its give-back had settled.
+pub const REPORTED: u64 = 2 << 20;
+
 /// A give-back followed (ROOT's ruling, D209 Part 4): a VM process's own resident memory
 /// (`Usage::footprint`) while it falls. A give-back is progress while that falls, as the
 /// daemon's judge of an end counts it (daemon/ends.rs `goes_on`), so this is a judged
@@ -2669,10 +2678,13 @@ impl Patience {
 /// fall, which it waits on for as long as the process lives. Begun before what it gives
 /// back is freed, its first fall spans the free and its guest's whole wait before it
 /// reports (mm/page_reporting.c `PAGE_REPORTING_DELAY`, D151), which each later report
-/// only waits again.
+/// only waits again. A fall is one report's at least, [`REPORTED`] below the level its last
+/// fall left or its memory rose to since: less is its process's own memory moving.
 pub struct Falling {
     pid: u32,
     wait: Wait,
+    /// The level a fall is counted from: its memory at its last fall, or the most it has
+    /// held since.
     held: u64,
     /// Its last fall, and the last time a look found its host holding it since.
     fell: Option<Instant>,
@@ -2712,8 +2724,10 @@ impl Falling {
     pub fn settled(mut self) -> u64 {
         loop {
             let now = Falling::footprint(self.pid);
-            let fell = now < self.held;
-            self.held = now;
+            let fell = now.saturating_add(REPORTED) <= self.held;
+            if fell || now > self.held {
+                self.held = now;
+            }
             if fell {
                 (self.fell, self.quiet) = (Some(Instant::now()), Some(Instant::now()));
             }
@@ -2745,6 +2759,15 @@ impl Falling {
                     }
                     self.wait.kind.keep();
                 }
+                let _ = writeln!(
+                    io::stderr(),
+                    "VM process {}'s give-back settled at {now} bytes, {:?} in, its last fall {:?} in\n{}",
+                    self.pid,
+                    self.wait.began.elapsed(),
+                    self.fell
+                        .map(|fell| fell.saturating_duration_since(self.wait.began)),
+                    self.wait.account()
+                );
                 return now;
             }
             std::thread::sleep(self.wait.next_look());
