@@ -2456,11 +2456,15 @@ enum Patient {
 /// list offers [`OFFERED`](shards_ipc::slots::OFFERED) slots again, that many records unread
 /// in its FIFO (FIONREAD, as the daemon's own `Requests::waiting` counts them, none read), and
 /// the directory names no slot past them, a taken one's names removed. On Windows a slot is
-/// a pipe's instance, which no listing shows (slots/named.rs): unread there.
+/// a pipe's instance, which no listing shows (slots/named.rs): unread there. Then none of its
+/// daemon's threads runnable ([`daemon_at_rest`]): slots seen as offered are the work's last
+/// effect, not its end, which comes as the thread that made them sleeps (CI 44007524337,
+/// aarch64-apple-darwin, the same test: settled, its wait's first window found "its daemon
+/// 3186 ran", and none after, so it was refused a look late).
 #[track_caller]
 pub fn settled(home: &Path) {
     let mut patience = Patience::of(home);
-    while !slots_settled(home) {
+    while !(slots_settled(home) && daemon_at_rest(home)) {
         assert!(
             patience.holds(),
             "{}'s request slots never settled",
@@ -2509,6 +2513,17 @@ fn slots_settled(home: &Path) -> bool {
 #[cfg(not(unix))]
 fn slots_settled(_: &Path) -> bool {
     true
+}
+
+/// Whether none of `home`'s daemon's threads is runnable, running or waiting for a CPU, as
+/// the judge reads them (`shards_api::runnable_threads`): the work its last client left it
+/// done, its CPU counted to its threads as each slept (XNU adds a thread's run to its task's
+/// as it leaves its CPU). True with no daemon, and where threads are not read (Windows).
+fn daemon_at_rest(home: &Path) -> bool {
+    shards_ipc::Named::read(&home.join(shards_ipc::PID))
+        .filter(shards_ipc::Named::lives)
+        .and_then(|daemon| shards_api::runnable_threads(daemon.pid))
+        .is_none_or(|(runnable, _)| runnable == 0)
 }
 
 impl Patience {
@@ -2654,6 +2669,98 @@ impl Patience {
     pub fn window(&self) -> Option<Duration> {
         self.wait.judge.stillness().map(|(_, _, window)| window)
     }
+}
+
+/// What [`requests_end`]'s waits await, and key their kind by: the next end of the requests
+/// their party serves.
+pub const NEXT_END: &str = "a request's next end";
+
+/// Waits for `n` more ends of requests as `ended` brings them, judged by their own progress,
+/// their ends (D209 Part 11), as [`guest_says`] judges a guest by its lines: benches/arrival.rs'
+/// drain of each rate's requests once all of them have arrived.
+/// - Each end begins a wait for the next, judged as D215's judge judges ([`Wait`]), of one kind
+///   at its call site ([`NEXT_END`]), whichever rate it drains. Its party is the requests still
+///   outstanding by their clients (`clients`, less each end's own, `client_of`), what descends
+///   from them, and `home`'s daemon, whose CPU is its liveness alone ([`Cpu::Liveness`]): the
+///   daemon and its pools' warm microVMs run whether or not a request ends, and a drain judged
+///   by its party's CPU was never refused (CI 44007524337). Its daemon's words are progress
+///   still, among them its heartbeat of a microVM a client waits on that runs (daemon.rs
+///   `log_progress`).
+/// - Its W* is the slowest stretch this host has shown with requests outstanding and none
+///   ending: `stretches`, those its caller saw before it, taught first; what this host kept of
+///   its kind; and the slowest wait for a next end since. With none, its party's liveness alone.
+/// - Only a pass keeps what it was taught on this host: once all `n` came. A wait refused, or
+///   its party gone, keeps nothing, and an end that came only as it was refused teaches nothing.
+///
+/// The ends in the order they came; refused, those that came and what its wait said.
+#[track_caller]
+pub fn requests_end<E>(
+    ended: &std::sync::mpsc::Receiver<E>,
+    n: usize,
+    clients: &[u32],
+    client_of: impl Fn(&E) -> Option<u32>,
+    stretches: &[Duration],
+    home: &Path,
+) -> Result<Vec<E>, (Vec<E>, String)> {
+    let kind = WaitKind::awaiting(std::panic::Location::caller(), NEXT_END);
+    for &stretch in stretches {
+        kind.record().teach_unrated(stretch);
+    }
+    let party = |outstanding: &[u32]| {
+        let mut party = Party::with(Members::Clients(outstanding.to_vec()), Some(home));
+        party.read_cpu(Cpu::Liveness);
+        party
+    };
+    let mut outstanding = clients.to_vec();
+    let mut wait = Wait::on(kind, party(&outstanding), NEXT_END);
+    let (mut came, mut slowest) = (Vec::with_capacity(n), None::<Duration>);
+    while came.len() < n {
+        match ended.recv_timeout(wait.next_look()) {
+            Ok(end) => {
+                if wait.awaited() {
+                    let waited = wait.began.elapsed();
+                    slowest = Some(slowest.map_or(waited, |s| s.max(waited)));
+                }
+                if let Some(client) = client_of(&end) {
+                    outstanding.retain(|&c| c != client);
+                }
+                came.push(end);
+                wait = Wait::on(kind, party(&outstanding), NEXT_END);
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                let refused = match wait.look(false) {
+                    Err(stall) => wait.refused(&stall),
+                    Ok(()) if wait.gone() => format!(
+                        "its party is gone, its liveness ended\n--- its wait\n{}",
+                        wait.account()
+                    ),
+                    Ok(()) => continue,
+                };
+                // One look more, as a refused Patience's: the ends that came as it was refused.
+                came.extend(ended.try_iter());
+                return if came.len() < n {
+                    Err((came, refused))
+                } else {
+                    Ok(came)
+                };
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                let said = format!(
+                    "its ends' channel closed with {} of {n} come\n--- its wait\n{}",
+                    came.len(),
+                    wait.account()
+                );
+                return Err((came, said));
+            }
+        }
+    }
+    if let Some(waited) = slowest {
+        kind.record().teach_unrated(waited);
+    }
+    if slowest.is_some() || !stretches.is_empty() {
+        kind.keep();
+    }
+    Ok(came)
 }
 
 /// The least a guest gives back at once: one block of its free lists, which free page
@@ -7394,11 +7501,13 @@ impl Timed for PipeStream {
         PipeStream::set_read_timeout(self, timeout)
     }
 
-    /// What it holds, read without waiting: WouldBlock where nothing is, its end among them,
-    /// which the timed read after finds.
+    /// What it holds, read without waiting: its end where its writers have gone and it holds
+    /// nothing (`Pipe::peek`'s None), as a socket's is ([`recv_now`]); WouldBlock where nothing
+    /// is yet.
     fn read_now(&self, buf: &mut [u8]) -> io::Result<usize> {
         match self.reads.peek()? {
-            None | Some(0) => Err(io::ErrorKind::WouldBlock.into()),
+            None => Ok(0),
+            Some(0) => Err(io::ErrorKind::WouldBlock.into()),
             Some(there) => {
                 let len = buf.len().min(there);
                 match self.reads.read_by(&mut buf[..len], Some(Instant::now())) {
@@ -7536,8 +7645,13 @@ fn recv_now(fd: std::os::fd::RawFd, buf: &mut [u8]) -> io::Result<usize> {
 }
 
 /// [`Timed::read_now`] of socket `socket` on Windows, which has no `MSG_DONTWAIT`: as many
-/// bytes as are there (ioctlsocket `FIONREAD`), read by `read`, which cannot wait for them;
-/// WouldBlock where none are, its end among them, which the timed read after finds.
+/// bytes as are there (ioctlsocket `FIONREAD`), read by `read`, which cannot wait for them.
+/// Where none are, its end may be, which FIONREAD counts nothing of and WSAPoll sees (as
+/// afunix's reads see a peer's end): then `read`, which returns at once, its end or what came
+/// since, as Unix's recv(2) with `MSG_DONTWAIT` reads its end. An end there read as absent
+/// made its reader's wait one of a look, which taught its kind (CI's arm64 Windows runner,
+/// run 44007524337: harness.rs `an_answer_already_there_teaches_nothing`, W* 8.86 ms). Else
+/// WouldBlock.
 #[cfg(windows)]
 fn recv_now(
     socket: std::os::windows::io::BorrowedSocket<'_>,
@@ -7545,7 +7659,9 @@ fn recv_now(
     read: impl FnOnce(&mut [u8]) -> io::Result<usize>,
 ) -> io::Result<usize> {
     use std::os::windows::io::AsRawSocket as _;
-    use windows_sys::Win32::Networking::WinSock::{FIONREAD, SOCKET, ioctlsocket};
+    use windows_sys::Win32::Networking::WinSock::{
+        FIONREAD, POLLRDNORM, SOCKET, WSAPOLLFD, WSAPoll, ioctlsocket,
+    };
     let mut there: u32 = 0;
     // SAFETY: FIONREAD's count into a local, of a socket its caller holds open.
     if unsafe { ioctlsocket(socket.as_raw_socket() as SOCKET, FIONREAD, &raw mut there) } != 0 {
@@ -7553,7 +7669,17 @@ fn recv_now(
     }
     let there = usize::try_from(there).unwrap_or(usize::MAX);
     if there == 0 {
-        return Err(io::ErrorKind::WouldBlock.into());
+        let mut fd = WSAPOLLFD {
+            fd: socket.as_raw_socket() as SOCKET,
+            events: POLLRDNORM,
+            revents: 0,
+        };
+        // SAFETY: one entry, a socket its caller holds open, polled without waiting.
+        return match unsafe { WSAPoll(&raw mut fd, 1, 0) } {
+            n if n < 0 => Err(io::Error::last_os_error()),
+            0 => Err(io::ErrorKind::WouldBlock.into()),
+            _ => read(buf),
+        };
     }
     let len = buf.len().min(there);
     read(buf.get_mut(..len).unwrap_or_default())

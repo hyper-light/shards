@@ -61,11 +61,12 @@ fn a_daemons_whole_lines_are_its_words() {
 /// The stand-in a test's wait follows here: this test binary run again for this test alone,
 /// doing what `SHARDS_STAND_IN` says: `exit`, at once; `busy MS`, its CPU busy for MS
 /// milliseconds, then its end; `go MS`, the same once a byte (its go) or its end comes on
-/// its stdin; `refuse`, its end at once, status 1; `answer PORT MS`, connected to loopback's
+/// its stdin; `spins MS`, the same once it has said "spinning" on its stdout; `refuse`, its end at once, status 1; `answer PORT MS`, connected to loopback's
 /// PORT, busy for MS
 /// milliseconds, then its answer written there and its end; `fetch PORT`, a request
 /// written to loopback's PORT, its answer read to the connection's end; `idle`, nothing at all until
-/// its stdin closes; `pulse N MS`, N rounds of a moment's CPU then MS milliseconds of none,
+/// its stdin closes; `rests`, the same once it has said "resting" on its stdout, its start
+/// over; `pulse N MS`, N rounds of a moment's CPU then MS milliseconds of none,
 /// saying nothing, as a party that works between waits on a peer outside it; `falls MS`, a
 /// give-back ([`falls`]); `leaves MS`, a stand-in `pulse 1 MS` started on its stdout and
 /// stderr, "holder PID" said there, and its own end, the holder left holding them; `stages`
@@ -93,6 +94,11 @@ fn stand_in() {
     } else if let Some(ms) = asked.strip_prefix("go ").and_then(|ms| ms.parse().ok()) {
         let _ = std::io::stdin().read(&mut [0u8; 1]);
         busy(ms);
+    } else if let Some(ms) = asked.strip_prefix("spins ").and_then(|ms| ms.parse().ok()) {
+        let mut out = std::io::stdout();
+        out.write_all(b"spinning\n").unwrap();
+        out.flush().unwrap();
+        busy(ms);
     } else if asked == "refuse" {
         std::process::exit(1);
     } else if let Some((port, ms)) = answer {
@@ -115,6 +121,11 @@ fn stand_in() {
             std::thread::sleep(Duration::from_millis(ms));
         }
     } else if asked == "idle" {
+        let _ = std::io::stdin().read(&mut [0u8; 1]);
+    } else if asked == "rests" {
+        let mut out = std::io::stdout();
+        out.write_all(b"resting\n").unwrap();
+        out.flush().unwrap();
         let _ = std::io::stdin().read(&mut [0u8; 1]);
     } else if let Some(ms) = asked.strip_prefix("falls ").and_then(|ms| ms.parse().ok()) {
         falls(ms, busy);
@@ -1069,6 +1080,106 @@ fn a_guests_end_ends_its_wait_and_what_it_said_by_then_is_read() {
     );
 }
 
+/// What [`cold_ends`] gives back: the ends that came, each its client, or those and what its
+/// refusal said.
+type Drained = Result<Vec<u32>, (Vec<u32>, String)>;
+
+/// [`common::requests_end`] at its caller's call site, its kind made cold as [`cold_lines`]'
+/// are: waiting for the ends `ended` brings, each its own client's, of requests whose clients
+/// are `clients`, with `stretches` seen before it, in a home no daemon serves; and its kind,
+/// and where this host keeps its record.
+#[track_caller]
+fn cold_ends(
+    ended: &std::sync::mpsc::Receiver<u32>,
+    clients: &[u32],
+    stretches: &[Duration],
+) -> (Drained, &'static common::WaitKind, std::path::PathBuf) {
+    let site = std::panic::Location::caller();
+    let kept = common::WaitKind::kept_at(site, common::NEXT_END, "");
+    let _ = std::fs::remove_file(&kept);
+    let kind = common::WaitKind::awaiting(site, common::NEXT_END);
+    let home = TempDir::new("ends");
+    let came = common::requests_end(ended, clients.len(), clients, |&c| Some(c), stretches, &home);
+    (came, kind, kept)
+}
+
+/// A drain's wait for its requests' ends (`common::requests_end`: benches/arrival.rs, D209
+/// Part 11) goes on while they end, however slowly, each end's client leaving its party, and
+/// its pass teaches its kind the slowest wait for a next end and keeps it on this host. Do:
+/// cold, three idle clients, whose ends come 30, 120 and 30 ms apart. Expect: all three, in
+/// order; its kind taught a wait of the 120 ms gap's length (100 ms or more, its wakes'
+/// jitter apart), and kept.
+#[test]
+fn a_drains_ends_are_its_progress_and_its_pass_teaches_their_slowest_gap() {
+    let idle: Vec<common::Reaped> = (0..3)
+        .map(|_| {
+            common::Reaped(
+                stand_in_doing("idle")
+                    .stdin(std::process::Stdio::piped())
+                    .spawn()
+                    .unwrap(),
+            )
+        })
+        .collect();
+    let clients: Vec<u32> = idle.iter().map(|client| client.id()).collect();
+    let (end, ended) = std::sync::mpsc::channel();
+    let (came, kind, kept) = std::thread::scope(|s| {
+        s.spawn(|| {
+            for (&client, ms) in clients.iter().zip([30, 120, 30]) {
+                std::thread::sleep(Duration::from_millis(ms));
+                let _ = end.send(client);
+            }
+        });
+        cold_ends(&ended, &clients, &[])
+    });
+    drop(idle);
+    let came = came.unwrap_or_else(|(came, refused)| panic!("refused with {came:?}: {refused}"));
+    assert_eq!(came, clients);
+    let shards_api::Seen::Learned { slowest, .. } = kind.record().seen() else {
+        panic!("its pass taught its kind nothing");
+    };
+    assert!(slowest >= Duration::from_millis(100), "it taught {slowest:?}");
+    assert!(kept.exists(), "its pass kept nothing at {}", kept.display());
+}
+
+/// A drain whose requests stop ending is refused once none has ended for longer than the
+/// slowest stretch its kind has seen, however its party runs (`Cpu::Liveness`: a pool's warm
+/// microVMs and their daemon run for ever), and keeps nothing (D209 Part 11: benches/arrival.rs
+/// in CI 44007524337, its drain followed by its party's CPU to its job's 30-minute limit). Do:
+/// cold, a stretch of 50 ms its caller saw; three clients busy throughout, the ends of two
+/// coming 10 ms apart and then none, its channel open. Expect: refused within
+/// [`refusal_bound`] of 50 ms, those two ends what came; nothing kept.
+#[test]
+fn a_drain_whose_requests_stop_ending_is_refused_and_keeps_nothing() {
+    let busy: Vec<common::Reaped> = (0..3)
+        .map(|_| common::Reaped(stand_in_doing("busy 600000").spawn().unwrap()))
+        .collect();
+    let clients: Vec<u32> = busy.iter().map(|client| client.id()).collect();
+    let (end, ended) = std::sync::mpsc::channel();
+    let began = Instant::now();
+    let (came, _, kept) = std::thread::scope(|s| {
+        s.spawn(|| {
+            for &client in &clients[..2] {
+                std::thread::sleep(Duration::from_millis(10));
+                let _ = end.send(client);
+            }
+        });
+        cold_ends(&ended, &clients, &[Duration::from_millis(50)])
+    });
+    let took = began.elapsed();
+    drop(busy);
+    let Err((came, refused)) = came else {
+        panic!("a drain whose requests stopped ending was not refused");
+    };
+    assert_eq!(came, clients[..2], "{refused}");
+    assert!(
+        took < refusal_bound(Duration::from_millis(50)),
+        "refused {took:?} in: {refused}"
+    );
+    assert!(!kept.exists(), "its refusal kept {}", kept.display());
+    drop(end);
+}
+
 /// A call that blocks until its answer or its run's end (`common::judged`: shards-api's calls
 /// given no bound, `Duration::MAX`, in api_image.rs, member_exec.rs and nesting.rs, and their
 /// reads of a run's channels) goes on while what this test's process started works, as a
@@ -1116,7 +1227,8 @@ fn judged_end(party: &mut std::process::Child) -> Result<std::process::ExitStatu
 /// `common::booted`, whose shards-api client checks a spec on the call's thread; a refusal
 /// answered in 206 µs on HVF, and one of 28.6 ms on KVM, both at 0 ns of the started
 /// processes' CPU, taught their call site a W* that refused the next call 206 µs and 31 ms
-/// in as it worked). Do: a stand-in idle throughout, the party's one live process; from
+/// in as it worked). Do: a stand-in idle throughout, the party's one live process, its calls
+/// begun once it says it rests; from
 /// one call site, its kind's kept record removed, a call that answers at once, then one busy
 /// for 200 ms on its own thread, then one asleep there for 1 s, past the W* the busy one
 /// taught. Expect: the first two
@@ -1146,11 +1258,23 @@ fn a_judged_calls_own_work_is_its_progress() {
             },
         )
     }
-    let mut idle = stand_in_doing("idle")
+    let mut idle = stand_in_doing("rests")
         .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
         .spawn()
         .unwrap();
+    // Idle once it says so: before, its start is its threads running, or runnable on CPUs
+    // the tests beside it keep busy, which is its party's progress or its host's hold. Begun
+    // as it was spawned, a sleeper past the busy call's W* went unrefused on CI's arm64
+    // Windows runner (run 44007524337), no account kept. Its word comes among libtest's own
+    // lines ("test stand_in ... resting").
+    let mut out = std::io::BufReader::new(idle.stdout.take().unwrap());
+    let mut said = String::new();
+    while !said.contains("resting") {
+        said.clear();
+        let read = std::io::BufRead::read_line(&mut out, &mut said).unwrap();
+        assert_ne!(read, 0, "the stand-in ended without resting");
+    }
     // Its party the idle stand-in alone, not every process this binary started: the tests
     // beside it run their own (4 of 4 whole binaries on HVF, run with libtest's threads,
     // "a call idle on its own thread not refused" while they worked).
@@ -1475,6 +1599,71 @@ fn a_wait_is_refused_though_its_own_polls_outlast_w_star() {
 /// [`Patience::of`] at one call site: one kind for every wait made through it.
 fn outlasted(home: &std::path::Path) -> Patience {
     Patience::of(home)
+}
+
+/// A home's daemon has done the work its last client left it once its threads rest, not
+/// once its request slots read as offered again (`common::settled`): CI 44007524337,
+/// aarch64-apple-darwin, the test above, settled, found "its daemon ran" in its wait's first
+/// window and never after. Red so: settled returns while its daemon still runs. Do: a home
+/// whose slots read as offered (each list's records unread, and their names), its daemon a
+/// stand-in named as a daemon names itself; once it says it spins, settle the home. Expect:
+/// settled only once the stand-in has ended.
+#[cfg(unix)]
+#[test]
+fn a_daemon_is_settled_once_its_threads_rest() {
+    use shards_ipc::slots::{DIR, FREE, FREE_STREAMS, OFFERED, RECORD};
+    use std::os::unix::ffi::OsStrExt as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let home = TempDir::new("rest");
+    let dir = home.join(DIR);
+    std::fs::create_dir_all(&dir).unwrap();
+    // Each list a FIFO this test holds both ends of, its records unread in it.
+    let lists: Vec<(std::fs::File, std::fs::File)> = [FREE, FREE_STREAMS]
+        .iter()
+        .map(|list| {
+            let path = dir.join(list);
+            let named = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+            // SAFETY: mkfifo(2) of a NUL-terminated path this owns.
+            assert_eq!(unsafe { libc::mkfifo(named.as_ptr(), 0o600) }, 0, "{path:?}");
+            let open = |read: bool| {
+                std::fs::OpenOptions::new()
+                    .read(read)
+                    .write(!read)
+                    .custom_flags(libc::O_NONBLOCK)
+                    .open(&path)
+                    .unwrap()
+            };
+            let reader = open(true);
+            let mut writer = open(false);
+            writer.write_all(&[0u8; OFFERED * RECORD]).unwrap();
+            (reader, writer)
+        })
+        .collect();
+    for n in 0..2 * OFFERED {
+        std::fs::write(dir.join(format!("{n}.slot")), "").unwrap();
+    }
+    // Long past settled's first look, which comes at once.
+    let mut daemon = stand_in_doing("spins 300")
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let pid = daemon.id();
+    let named = format!("{pid} {}\n", shards_ipc::started(pid).unwrap());
+    std::fs::write(home.join(shards_ipc::PID), named).unwrap();
+    // Its word comes among libtest's own lines ("test stand_in ... spinning").
+    let mut out = std::io::BufReader::new(daemon.stdout.as_mut().unwrap());
+    let mut said = String::new();
+    while !said.contains("spinning") {
+        said.clear();
+        let read = std::io::BufRead::read_line(&mut out, &mut said).unwrap();
+        assert_ne!(read, 0, "the stand-in ended without spinning");
+    }
+    common::settled(&home);
+    let ended = daemon.try_wait().unwrap().is_some();
+    let _ = daemon.kill();
+    let _ = daemon.wait();
+    assert!(ended, "settled while its daemon still ran");
+    drop(lists);
 }
 
 /// A command's wait is keyed by its call site and its whole command line, what a run mints

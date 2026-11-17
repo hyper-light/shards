@@ -1731,7 +1731,8 @@ fn reach_each(addr: &str) -> i32 {
 /// One call of the Engine API at `DOCKER_HOST`, a `unix://` socket, its body JSON where
 /// one is given: `api STATUS-LINE`, then its body, chunks put together and a stream's
 /// frames (stdcopy) taken apart, stdout's bytes then stderr's ([`demuxed`]); `api error E`
-/// where it could not ask.
+/// where it could not ask. Its status: 0 for an answer of a code below 400, 22 for a refusal,
+/// 1 where it could not ask or no status line came.
 fn api(method: &str, path: &str, body: &str, upgrade: bool) -> i32 {
     use std::os::unix::net::UnixStream;
     let host = std::env::var("DOCKER_HOST").unwrap_or_default();
@@ -1796,10 +1797,29 @@ fn api(method: &str, path: &str, body: &str, upgrade: bool) -> i32 {
     if header("content-type").is_some_and(|v| v.contains("multiplexed-stream")) {
         rest = demuxed(&rest);
     }
-    let _ = writeln!(io::stdout(), "api {}", head.lines().next().unwrap_or_default());
+    let status = head.lines().next().unwrap_or_default();
+    let _ = writeln!(io::stdout(), "api {status}");
     let _ = io::stdout().write_all(&rest);
     let _ = io::stdout().flush();
-    0
+    api_status(status)
+}
+
+/// [`api`]'s status for an answer whose status line is `line`. A refused call ends as `curl
+/// --fail` ends one (curl(1) EXIT CODES 22: an HTTP code of 400 or more, RFC 9110 §15's client
+/// and server errors), so that its command is no served answer, which alone teaches the
+/// tests' judge its kind (tests/common `Wait::unserved`): engine.rs' expected 400 for a
+/// member's last network taught W* 23 ms to the same line's real disconnect, which it then
+/// refused as too slow (CI 44007524337, x86_64 gnu).
+fn api_status(line: &str) -> i32 {
+    match line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|code| code.parse::<u16>().ok())
+    {
+        Some(code) if code >= 400 => 22,
+        Some(_) => 0,
+        None => 1,
+    }
 }
 
 /// A multiplexed stream's bytes (stdcopy's frames), stdout's then stderr's: what a
@@ -7572,4 +7592,27 @@ fn count(n: u64) -> i32 {
         }
     }
     i32::from(out.flush().is_err())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::api_status;
+
+    /// An answer is served below 400 (an upgrade's 101, a start's 304 among them), refused
+    /// from 400 on with curl's 22, and no status line is no answer.
+    #[test]
+    fn a_refused_api_call_is_no_served_answer() {
+        for (line, status) in [
+            ("HTTP/1.1 101 UPGRADED", 0),
+            ("HTTP/1.1 200 OK", 0),
+            ("HTTP/1.1 304 Not Modified", 0),
+            ("HTTP/1.1 400 Bad Request", 22),
+            ("HTTP/1.1 404 Not Found", 22),
+            ("HTTP/1.1 501 Not Implemented", 22),
+            ("", 1),
+            ("garbled", 1),
+        ] {
+            assert_eq!(api_status(line), status, "{line:?}");
+        }
+    }
 }

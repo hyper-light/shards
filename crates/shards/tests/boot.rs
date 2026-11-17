@@ -382,6 +382,28 @@ fn bring_up_arm(max: u32, arm: &str, also: &str) -> std::thread::Result<()> {
     ran
 }
 
+/// One arm of D261's Intel experiment (.github/workflows/d261-intel.yml, which runs each arm
+/// alone, one after another, and keeps their records): [`boots_the_hosts_maximum_vcpu_count`]'s
+/// boot of `SHARDS_D261_VCPUS` vCPUs, its outcome said in its `D261 A/B arm` line, named
+/// `SHARDS_D261_ARM`. Ignored: the experiment alone runs it.
+#[test]
+#[ignore = "D261's Intel experiment (.github/workflows/d261-intel.yml) runs it"]
+fn a_d261_arm_boots_the_vcpus_its_experiment_asks() {
+    if cannot_run_vms() {
+        return;
+    }
+    let vcpus: u32 = std::env::var("SHARDS_D261_VCPUS").unwrap().parse().unwrap();
+    let max = shards_vmm::vm::max_vcpus().unwrap();
+    assert!(
+        (1..=max).contains(&vcpus),
+        "{vcpus} vCPUs, where this host has 1 to {max}"
+    );
+    let arm = std::env::var("SHARDS_D261_ARM").unwrap_or_else(|_| format!("{vcpus} vCPUs"));
+    if let Err(failed) = bring_up_arm(vcpus, &arm, "") {
+        std::panic::resume_unwind(failed);
+    }
+}
+
 /// [`brings_up_the_most`]'s command line. Its console at the kernel's own default level
 /// (`loglevel=7`: CONFIG_CONSOLE_LOGLEVEL_DEFAULT in the pinned kernels' base configs, which
 /// shards' leave), as `run --kernel` booted it with its console on stdout. Told no level, a

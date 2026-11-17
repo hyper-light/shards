@@ -4637,8 +4637,9 @@ fn diff_shows_what_a_microvm_changed() {
     );
     stop_run(&home, "changed");
     exit(&mut sleeper, &home);
-    // Stopped, its changes are still there to show (visit.rs).
-    let ended = shards(&["diff", "changed"]);
+    // Stopped, its changes are still there to show (visit.rs), read through a microVM booted
+    // for them: a wait kind of its own call site, as the stopped export's.
+    let ended = shards_in(&home, &["diff", "changed"]);
     assert_eq!(ended.status, Some(0), "{ended}");
 }
 
@@ -4853,8 +4854,11 @@ fn export_writes_a_microvms_files_as_a_tar_archive() {
     assert_eq!(tar.len() % 512, 0);
     stop_run(&home, "exported");
     exit(&mut sleeper, &home);
-    // Stopped, its files are still there to export (visit.rs).
-    let ended = shards(&["export", "-o", out.to_str().unwrap(), "exported"]);
+    // Stopped, its files are still there to export (visit.rs), read through a microVM booted
+    // for them: work the running export's answer never did, so a wait kind of its own call
+    // site (CI 44007524337, x86_64 gnu: the running export's W* of 24.6 ms refused this one
+    // as too slow, 52 ms of CPU in 58 ms).
+    let ended = shards_in(&home, &["export", "-o", out.to_str().unwrap(), "exported"]);
     assert_eq!(ended.status, Some(0), "{ended}");
     let again = std::fs::read(&out).unwrap();
     assert!(

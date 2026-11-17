@@ -300,7 +300,7 @@ impl Cancel {
 /// base provider's socket handle is a file handle. One way at a time: XNU shuts both at
 /// once or neither, and neither once the server has sent its FIN (ENOTCONN, PM M236), when
 /// a write waiting for room would wait on.
-fn end(tcp: &TcpStream) {
+pub(crate) fn end(tcp: &TcpStream) {
     let _ = tcp.shutdown(Shutdown::Write);
     let _ = tcp.shutdown(Shutdown::Read);
     #[cfg(windows)]

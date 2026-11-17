@@ -33,6 +33,7 @@ on:
       - "!.github/workflows/whp-passthrough.yml"
       - "!.github/workflows/migrate-e2e.yml"
       - "!.github/workflows/softvirt-traps.yml"
+      - "!.github/workflows/d261-intel.yml"
   pull_request:
 
 permissions:
@@ -369,6 +370,18 @@ jobs:
         run: |
           nproc && free -m && lscpu | grep -E 'Model name|Virtualization|Hypervisor'
           grep -H . /sys/kernel/mm/transparent_hugepage/{enabled,defrag,hpage_pmd_size}
+      - name: The runner's image
+        id: image
+        run: echo "image=$ImageOS-$ImageVersion" >> "$GITHUB_OUTPUT"
+      # What the benches' judge learned from this job's runs on this image (D261, D209 Part
+      # 11), restored and kept as the tests' records are, under a key of this job's own: the
+      # newest kept restored here, and kept again under this run's key once the benches end.
+      - name: The judge's records
+        uses: actions/cache/restore@v6.1.0
+        with:
+          path: target/judge-records
+          key: judge-records-${{ steps.image.outputs.image }}-${{ runner.arch }}-firecracker-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: judge-records-${{ steps.image.outputs.image }}-${{ runner.arch }}-firecracker-
       # Every sample, in the order taken, for the envelope and the artifact below.
       - name: Compare
         env:
@@ -398,12 +411,25 @@ jobs:
           SHARDS_BENCH_SAMPLES: ${{ github.workspace }}/target/bench-samples
         run: cargo bench --locked -p shards --bench image -- --runs 100 --templates 5
       # Requests arriving at rising rates, open loop, past what the host serves
-      # (benches/arrival.rs): latency from when each was due, failures, and throughput.
+      # (benches/arrival.rs): latency from when each was due, failures, and throughput. Its
+      # limit is a third above the slowest of its 18 passes in GitHub's records, 185 s, so
+      # 247 s, in whole minutes (D209 Part 11): a step cut at its own limit ends as a step, its
+      # log and the steps after it kept, where each of the eleven runs cut at the job's 30
+      # minutes in this step kept neither.
       - name: Arrival
         if: always()
+        timeout-minutes: 5
         env:
           SHARDS_BENCH_SAMPLES: ${{ github.workspace }}/target/bench-samples
         run: cargo bench --locked -p shards --bench arrival -- --rates 2,5,10,20,40 --secs 10
+      # Kept wherever the benches ended, passed, failed or out of time, but not in a cancelled
+      # run, as the tests' records are (D261).
+      - name: The judge's records, kept
+        if: ${{ !cancelled() }}
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: target/judge-records
+          key: judge-records-${{ steps.image.outputs.image }}-${{ runner.arch }}-firecracker-${{ github.run_id }}-${{ github.run_attempt }}
       # What the guest kernel keeps of a microVM's memory by its size, on x86_64 (PM M117,
       # measured on arm64): shards sizes a microVM so that -m fits beside it.
       - name: Guest memory (M117)

@@ -157,10 +157,13 @@ impl Drop for Server {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
         );
-        // One way at a time: on macOS SHUT_RDWR after the client's FIN shuts nothing (PM M236).
+        // Each ended as a cancel ends a client's ([`crate::http::end`]): a shutdown alone left
+        // the read its thread waits in waiting on Windows, so a server dropped under a client's
+        // kept connection waited 120 s for its host to end the half-closed connection, in each
+        // token test on CI's arm64 Windows runner (run 44007524337): 18 minutes, and one test
+        // whose token's 60 s ran out between its refusals.
         for (tcp, thread) in conns {
-            let _ = tcp.shutdown(Shutdown::Write);
-            let _ = tcp.shutdown(Shutdown::Read);
+            crate::http::end(&tcp);
             let _ = thread.join();
         }
     }
@@ -241,7 +244,7 @@ pub(crate) fn route(
                 }
                 let _closes = Closes(closer);
                 // Its reads wait as its client's connection lives: the client's end, or the
-                // server's drop, which shuts the connection down, ends each.
+                // server's drop, which ends the connection ([`crate::http::end`]), ends each.
                 // A plain server asked for TLS answers as Go's net/http answers a request
                 // it cannot read, as a registry does (server.go, publicErr).
                 let mut first = [0u8; 1];

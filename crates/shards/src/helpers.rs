@@ -116,8 +116,8 @@ fn ours(name: &str, bytes: &[u8], sha: &str) -> Result<PathBuf, String> {
 /// Each helper this process checked, by path, and which version of its file it found to
 /// hold this build's bytes: one a helper, so at most as many as this build carries. A
 /// version is the file's identity and times (`platform::file_identity`), which any write to
-/// it or any file renamed over it changes, so that its bytes are read again then and only
-/// then.
+/// it or any file renamed over it changes once its file system's clock has passed them
+/// ([`settled`]), so that its bytes are read again then and only then.
 static CHECKED: Mutex<Vec<(PathBuf, FileIdentity)>> = Mutex::new(Vec::new());
 
 /// `name` in `dir`, checked as a process is about to start it, and held open: its bytes'
@@ -153,11 +153,11 @@ fn checked(dir: &Path, name: &str, bytes: &[u8], sha: &str) -> Result<Program, S
 }
 
 /// The file at `path`, open, where it holds the bytes whose SHA-256 is `sha`: read whole
-/// unless [`CHECKED`] has its version, and kept there where they are and its version did not
-/// change as they were read. None where it is not there or holds others. On Windows it is
-/// opened sharing only reads, so that while it is held no other handle writes, renames or
-/// deletes it (CreateFileW's dwShareMode), which its start's own open, for reading and
-/// executing, shares.
+/// unless [`CHECKED`] has its version, and kept there where they are, its version did not
+/// change as they were read, and it is settled ([`settled`]). None where it is not there or
+/// holds others. On Windows it is opened sharing only reads, so that while it is held no
+/// other handle writes, renames or deletes it (CreateFileW's dwShareMode), which its start's
+/// own open, for reading and executing, shares.
 fn open_checked(path: &Path, sha: &str) -> io::Result<Option<fs::File>> {
     let mut options = fs::OpenOptions::new();
     options.read(true);
@@ -180,10 +180,41 @@ fn open_checked(path: &Path, sha: &str) -> io::Result<Option<fs::File>> {
     if digest(&file)? != sha || shards_vmm::platform::file_identity(&file)? != version {
         return Ok(None);
     }
+    let settled = settled(path, &version);
     let mut checked = lock_checked();
     checked.retain(|(p, _)| p != path);
-    checked.push((path.to_path_buf(), version));
+    if settled {
+        checked.push((path.to_path_buf(), version));
+    }
     Ok(Some(file))
+}
+
+/// Whether `version`, of the file at `path`, stands for its bytes from now on: whether its
+/// file system's clock, read as the times it gives a file made now beside it, has passed its
+/// last write and change. A write within one tick of that clock may be given the same times,
+/// and with its length kept is the same version: on CI's arm64 Windows runner a helper
+/// rewritten so a few calls after its first write read as unchanged, and its changed bytes
+/// were not read (run 44007524337). So a version is kept only once settled, as Git keeps an
+/// index entry whose times are its index's own (racy-git.txt) and Mercurial reads its file
+/// system's present from a file it makes (dirstate's `_getfsnow`). Not where no file can be
+/// made there: its bytes are read again at its next start.
+fn settled(path: &Path, version: &FileIdentity) -> bool {
+    let (Some(dir), Some(name)) = (path.parent(), path.file_name().and_then(|n| n.to_str())) else {
+        return false;
+    };
+    let probe = staging(dir, name);
+    let Ok(made) = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(&probe)
+    else {
+        return false;
+    };
+    let now = shards_vmm::platform::file_identity(&made);
+    drop(made);
+    let _ = fs::remove_file(&probe);
+    now.is_ok_and(|now| version.older_than(&now))
 }
 
 fn lock_checked() -> std::sync::MutexGuard<'static, Vec<(PathBuf, FileIdentity)>> {
@@ -277,23 +308,28 @@ pub fn vm_gpu() -> Result<PathBuf, String> {
     .map(|program| program.path)
 }
 
-/// Writes `bytes` to `name` in `dir` whole: to a staging file of this writer's own, synced
-/// and closed, then renamed over `name`, so that a process starting it finds the old file or
-/// the new, never a part, and no other writer's staging is touched.
-fn publish(dir: &Path, name: &str, bytes: &[u8]) -> Result<PathBuf, String> {
-    let path = dir.join(name);
+/// A name in `dir` for a file of this process's own beside `name`, made with `create_new`.
+/// As write_in's staging names: identity fields discriminate writers; create_new proves
+/// ownership. Even counter wrap or a collision never unlinks another file.
+fn staging(dir: &Path, name: &str) -> PathBuf {
     use std::sync::atomic::{AtomicU64, Ordering};
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos());
-    // As write_in's staging names: identity fields discriminate writers; create_new
-    // proves ownership. Even counter wrap or a collision never unlinks another file.
-    let temp = dir.join(format!(
+    dir.join(format!(
         ".{name}.{}.{nanos:x}.{:x}",
         std::process::id(),
         NEXT.fetch_add(1, Ordering::Relaxed)
-    ));
+    ))
+}
+
+/// Writes `bytes` to `name` in `dir` whole: to a staging file of this writer's own, synced
+/// and closed, then renamed over `name`, so that a process starting it finds the old file or
+/// the new, never a part, and no other writer's staging is touched.
+fn publish(dir: &Path, name: &str, bytes: &[u8]) -> Result<PathBuf, String> {
+    let path = dir.join(name);
+    let temp = staging(dir, name);
     let mut file = executable(&temp).map_err(|e| at(&temp, e))?;
     #[cfg(test)]
     pause_gpu(GpuStage::Created);
@@ -766,7 +802,10 @@ mod tests {
 
     /// A helper's bytes are read once for each version of its file: a start that finds the
     /// version it checked reads none of them, and one whose file was written since, its
-    /// length kept, reads them again and writes this build's back (runs-10).
+    /// length kept, reads them again and writes this build's back (runs-10). Its version is
+    /// kept once settled, its file system's clock past its write ([`settled`]): until then
+    /// each start reads its bytes, so that a write in that clock's tick, given its times, is
+    /// read (CI's arm64 Windows runner, run 44007524337, where its rewrite read as unchanged).
     #[test]
     fn a_helper_is_read_again_only_once_its_file_changed() {
         let dir = shards_testdir::TempDir::new("helper-version").unwrap();
@@ -775,7 +814,9 @@ mod tests {
         let first = checked(&dir, "helper", bytes, &sha(bytes)).unwrap();
         let version = shards_vmm::platform::file_identity(first.held.as_ref().unwrap()).unwrap();
         drop(first);
-        assert!(lock_checked().contains(&(path.clone(), version)));
+        while !lock_checked().contains(&(path.clone(), version)) {
+            assert!(open_checked(&path, &sha(bytes)).unwrap().is_some());
+        }
         // Its version known: started with no read of its bytes, which a digest that is not
         // its bytes' shows.
         assert!(open_checked(&path, "not its digest").unwrap().is_some());
@@ -875,6 +916,10 @@ mod tests {
         let want = sha(&bytes);
         let path = dir.join("helper");
         drop(checked(&dir, "helper", &bytes, &want).unwrap());
+        // Its version known once kept, settled ([`settled`]).
+        while !lock_checked().iter().any(|(p, _)| *p == path) {
+            assert!(open_checked(&path, &want).unwrap().is_some());
+        }
         let n = 200;
         let time = |f: &dyn Fn()| {
             let mut took: Vec<std::time::Duration> = (0..n)
