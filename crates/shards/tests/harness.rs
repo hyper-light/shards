@@ -1279,17 +1279,38 @@ fn a_judged_calls_own_work_is_its_progress() {
     // beside it run their own (4 of 4 whole binaries on HVF, run with libtest's threads,
     // "a call idle on its own thread not refused" while they worked).
     let party = idle.id();
+    // At rest, too, before its calls begin: no thread of its process runnable. A process's
+    // start may leave threads of its OS's beside its own (on Windows its loader's workers),
+    // which a host whose CPUs the tests beside it keep busy can hold runnable on no CPU after
+    // its own thread says it rests: its host's hold, which holds a wait on it unrefused. CI's
+    // arm64 Windows runner left the sleeper unrefused in runs 44007524337, 44076016255 and
+    // 44077430171, no account kept: its threads are said below should it be again.
+    let at_rest = || shards_api::runnable_threads(party).is_none_or(|(runnable, _)| runnable == 0);
+    common::judged(
+        common::Party::client(party, None),
+        "its stand-in at rest",
+        || {},
+        || {
+            while !at_rest() {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        },
+    )
+    .unwrap();
     let call = |ms: u64, sleep: bool, forget: bool| work(party, ms, sleep, forget);
     let quick = call(0, false, true);
     let busy = call(200, false, false);
     let idle_call = call(1000, true, false);
+    let threads = shards_api::runnable_threads(party);
     drop(idle.stdin.take());
     idle.wait().unwrap();
     assert!(quick.is_ok(), "{quick:?}");
     assert!(busy.is_ok(), "{busy:?}");
     // Refused, and its account names what its member was doing.
     let Err(said) = idle_call else {
-        panic!("a call idle on its own thread not refused");
+        panic!(
+            "a call idle on its own thread not refused; its stand-in's threads runnable, of all, as it ended: {threads:?}"
+        );
     };
     // Its member listed, none of its threads runnable: Linux says it sleeping (S), macOS live
     // (SRUN, which XNU keeps for every live process), both by its threads.

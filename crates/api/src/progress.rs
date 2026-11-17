@@ -407,9 +407,11 @@ pub struct Watch {
 pub(crate) type Threads = std::collections::BTreeMap<u64, (u64, bool)>;
 
 /// How many of process `pid`'s threads are runnable (running, or waiting for a CPU), of how
-/// many, as [`Watch::starved`] reads them: for a waiter's account of its party, so that a
-/// refusal names what its members were doing. None where they cannot be read (Windows reads
-/// none outside the system's whole listing).
+/// many, as [`Watch::starved`] reads them (on Windows, the system's whole listing, as a
+/// [`Followed`]'s hold reads it): for a waiter's account of its party, so that a refusal
+/// names what its members were doing, and for a test that begins once a process is at rest.
+/// None where they cannot be read. Before, Windows read none, and a member's account there
+/// said "unread" alone.
 pub fn runnable_threads(pid: u32) -> Option<(usize, usize)> {
     #[cfg(target_os = "linux")]
     let threads = os::threads(pid)?;
@@ -417,8 +419,7 @@ pub fn runnable_threads(pid: u32) -> Option<(usize, usize)> {
     let threads = os::threads_cpu(pid)?;
     #[cfg(windows)]
     {
-        let _ = pid;
-        None
+        os::runnable_threads(pid)
     }
     #[cfg(not(windows))]
     Some((
@@ -1832,6 +1833,23 @@ mod os {
     const STANDBY: u32 = 3;
     const WAITING: u32 = 5;
     const TRANSITION: u32 = 6;
+
+    /// How many of process `pid`'s threads want or have a CPU (ready, running, standby), of
+    /// how many, from the system's whole listing ([`records`]), as [`Followed::hold`] reads
+    /// its members' ([`super::runnable_threads`]); none where it could not be read or lists
+    /// no thread of `pid`.
+    pub(super) fn runnable_threads(pid: u32) -> Option<(usize, usize)> {
+        let records = records()?;
+        let (mut runnable, mut threads) = (0usize, 0usize);
+        each_thread(&records, |of, t| {
+            if of == pid {
+                threads = threads.saturating_add(1);
+                runnable =
+                    runnable.saturating_add(usize::from(matches!(t.ThreadState, READY | RUNNING | STANDBY)));
+            }
+        });
+        (threads > 0).then_some((runnable, threads))
+    }
 
     /// Whether a thread in `state`, waiting for `reason`, waits on its host's paging: its
     /// kernel stack brought back into memory (transition), a page brought in, or a free page or

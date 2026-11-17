@@ -29202,6 +29202,16 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
       (`Wait::read_through`, else `Record::teach_unrated`: W* alone). A kept record is
       `served W* [rated R*cpu R*wall C*]`. One without a whole rating, the older three
       numbers among them, is read as none: its kind cold until its next answer rewrites it.
+      *Amended 2026-11-17 (CI 44076016255, arm64 Windows):* an answer read through its end
+      whose work read none teaches W* alone too (`Record::teach`). It says nothing of the least
+      rate a working party answers at, and R* 0 ns holds no floor. Windows' process times
+      move in its clock's ticks (GetProcessTimes, 15.625 ms; "C* 15.625ms" in the runner's
+      accounts): one of harness.rs' three stand-ins busy 50 ms read as none on that busy
+      runner, its kind R* 0 ns over 70.6 ms, and the sleeper ticking 1 ms in 11 was served
+      22.9 s in. Held by judge.rs `an_answer_of_no_work_teaches_its_slowest_alone` (red with
+      such an answer rated). A wait's account and the tests' rest checks read a process's
+      runnable threads on Windows too (`shards_api::runnable_threads`, from the same system
+      listing a `Followed`'s hold reads); before, Windows read none ("unread").
     - *Where it applies* (ROOT's ruling, 2026-11-14). A caller passes `Span::work`, read
       through one rule (`Watch::vouched_by`: the look ran or rested, and its process was
       neither starved, stopped nor ending). The tests' `Wait` passes it everywhere. A wait on

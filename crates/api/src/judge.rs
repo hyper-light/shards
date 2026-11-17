@@ -202,10 +202,19 @@ impl Record {
     /// An answer came `wall` after its wait began, its party having done `work` meanwhile
     /// (its CPU time, read through its end): the slowest rises to it where it is slower, the
     /// least rate falls to its where its is less, the most work rises to its where it is
-    /// more. A wait no time long has no rate and teaches nothing.
+    /// more. A wait no time long has no rate and teaches nothing. One whose work read none
+    /// teaches its slowest alone, as one not read through its end does: an answer its party
+    /// ran nothing its counters show for says nothing of the least rate a working party
+    /// answers at, and R* 0 holds no floor. Windows' process times move in its clock's ticks
+    /// (15.625 ms): a stand-in busy 50 ms on a busy host read as none, R* 0 ns over 70.6 ms,
+    /// after which a party ticking 1 ms in 11 was served 22.9 s in (CI 44076016255, arm64
+    /// Windows, harness.rs' `a_command_asleep_but_ticking_is_refused_and_a_busy_one_goes_on`).
     pub fn teach(&self, wall: Duration, work: Duration) {
         if wall.is_zero() {
             return;
+        }
+        if work.is_zero() {
+            return self.teach_unrated(wall);
         }
         self.merge(Seen::Learned {
             slowest: wall,
@@ -681,6 +690,39 @@ mod tests {
             Seen::Learned {
                 slowest: ms(9),
                 rated
+            }
+        );
+    }
+
+    /// An answer whose work read none teaches its slowest alone, as an unrated one does: R*
+    /// and C* stay as answers that worked taught them, never R* 0 ns, a floor that refuses
+    /// nothing (CI 44076016255, arm64 Windows: a 50 ms stand-in read as none in Windows'
+    /// ticks). Red with such an answer rated, its R* 0 ns over its wall.
+    #[test]
+    fn an_answer_of_no_work_teaches_its_slowest_alone() {
+        let ms = Duration::from_millis;
+        let record = Record::new();
+        record.teach(ms(70), Duration::ZERO);
+        assert_eq!(
+            record.seen(),
+            Seen::Learned {
+                slowest: ms(70),
+                rated: None
+            }
+        );
+        record.teach(ms(3), ms(2));
+        record.teach(ms(80), Duration::ZERO);
+        assert_eq!(
+            record.seen(),
+            Seen::Learned {
+                slowest: ms(80),
+                rated: Some(Rated {
+                    least: Rate {
+                        cpu: ms(2),
+                        over: ms(3),
+                    },
+                    most: ms(2),
+                })
             }
         );
     }
