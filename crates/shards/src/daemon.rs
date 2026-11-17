@@ -16056,40 +16056,70 @@ mod tests {
         (run, theirs)
     }
 
+    /// Waits until run `id` is registered (`register`): its VM's TAKEN read, its handoff's
+    /// judge done with it, and the wait for its hold (`await_holding`) next on its thread.
+    #[cfg(unix)]
+    fn until_registered<D: Disk>(daemon: &Daemon<D>, id: &str) {
+        until("its run was not registered", || {
+            matches!(lock(&daemon.runs).get(id), Some(RunState::Tracked(_)))
+        });
+    }
+
     /// A visit's VM is waited for while it goes on with its start, judged by what the daemon
     /// has seen of holds (D215's judge): one whose process runs a CPU and says STARTED 1.5 s
-    /// after its RUN is taken, teaching the daemon the slowest hold; past it, a stopped
-    /// stand-in (a sleep) is refused once it has run nothing for a whole such window, said
-    /// so, with how long. It was refused at READY_TIMEOUT's minute, judged each
-    /// READY_STALL's 10 s, picked (ROOT's (3), R03).
+    /// after its run is registered, teaching the daemon the slowest hold; past it, one stopped
+    /// (SIGSTOP) as soon as its run is registered is refused once it has run nothing for a
+    /// whole such window, said so, with how long. It was refused at READY_TIMEOUT's minute,
+    /// judged each READY_STALL's 10 s, picked (ROOT's (3), R03).
+    ///
+    /// Both stand-ins run until their runs are registered. The handoff before is judged on the
+    /// stand-in's process too (`Answers::take`, which the first TAKEN teaches), while this
+    /// thread says its TAKEN: a sleep there was refused once this thread was slower than that
+    /// judge allows, killed, and the wait for its hold then followed it unreaped, its end
+    /// under way, its connection this test's, to the step's limit (CI 44138098584, x86_64
+    /// musl, 58 minutes). And the wait for a hold begins once its run is registered: a STARTED
+    /// there before it teaches nothing (D222's wait of nothing), and a still VM's wait on a
+    /// cold record ends only with its connection.
     #[cfg(unix)]
     #[test]
     fn a_visits_vm_is_waited_for_while_it_starts_and_refused_once_still_past_the_slowest_hold() {
         let late = Duration::from_millis(1500);
         let t = Test::new("holding");
         t.run(|t| {
-            let busy = shards_ipc::spawn(
-                Path::new("/bin/sh"),
-                &[OsStr::new("-c"), OsStr::new("while :; do :; done")],
-                &[],
-                false,
-            )
-            .unwrap();
+            let busy = || {
+                Arc::new(
+                    shards_ipc::spawn(
+                        Path::new("/bin/sh"),
+                        &[OsStr::new("-c"), OsStr::new("while :; do :; done")],
+                        &[],
+                        false,
+                    )
+                    .unwrap(),
+                )
+            };
             let id = t.create("slow");
-            let (run, vm) = holding(t, &id, Arc::new(busy));
+            let (run, vm) = holding(t, &id, busy());
             assert_eq!(heard(&vm).0, kind::RUN);
             say(&vm, kind::TAKEN, &[]);
+            until_registered(&t.t.daemon, &id);
             std::thread::sleep(late);
             say(&vm, kind::STARTED, &[]);
             assert_eq!(joined(run), Ok(()), "a slow hold with progress refused");
+            assert!(
+                matches!(t.t.daemon.answers.held.seen(), Seen::Learned { .. }),
+                "its hold taught nothing: its STARTED was there as the wait for it began (D222)"
+            );
             say(&vm, kind::DONE, &[0]);
             until_ended(&t.t.daemon, &id);
 
             let id = t.create("still");
+            let still = busy();
             let began = Instant::now();
-            let (run, vm) = holding(t, &id, Arc::new(sleeper(600)));
+            let (run, vm) = holding(t, &id, still.clone());
             assert_eq!(heard(&vm).0, kind::RUN);
             say(&vm, kind::TAKEN, &[]);
+            until_registered(&t.t.daemon, &id);
+            still.kill(shards_ipc::signal::SIGSTOP).unwrap();
             let refused = joined(run).unwrap_err();
             assert!(began.elapsed() >= late, "{:?}", began.elapsed());
             assert!(
