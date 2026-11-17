@@ -3706,7 +3706,12 @@ microVM as virtio-fs shares (virtio 1.3 §5.11; Linux fs/fuse/virtio_fs.c):
       its pin, never guessed from its former path. No retry/deadline/size is added.
       The focused fault test went red before the fix; actual Mac unit/clippy results and
       remaining guest/platform validation are in
-      [runs-fixes](../research/measurements/runs-fixes/README.md).
+      [runs-fixes](../research/measurements/runs-fixes/README.md). *Amended 2026-11-17
+      (CI 44076016255 and 44077430171, arm64 Windows, the test's first Windows runs):* on
+      Windows the record is WSL's words (`$LXUID`, `$LXGID`, `$LXMOD`), and one that is not
+      four bytes was read as absent, so a node whose `$LXUID` broke was its share's default
+      owner's, or root's beside a whole `$LXGID`. Such a word is now a malformed record,
+      refused (EIO); the test breaks the record in each host's own form (`break_owner`).
     - *Root's stays root's.* A root run's host files are root's, as before.
     - *Device nodes stay root's.* A host device node has no attributes here (V08) and
       stays root's. The guest kernel opens a device node itself, as its own device of
