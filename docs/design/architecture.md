@@ -224,8 +224,8 @@ the crypto self-tests first, since every clone would replay the rest (PM M21).
   - No wall clock bounds a storm (D209). Each round's reads and each wait on its guest are
     D215's judged waits, each size its own kind: past the slowest of their kind they go on
     while the guest says something new or carries the stream, and cold they follow liveness,
-    as on CI until a passing job has kept that size's records (D261, *CI's judge learns
-    across runs*: a job that runs out of time keeps none). A slow host that makes progress
+    as on CI until a job has kept that size's records (D261, *CI's judge learns across
+    runs*: every job that is not cancelled keeps them, one out of time too). A slow host that makes progress
     passes; its time is its host's. Whether the restores' 255-vCPU storm ends within a 4-CPU
     runner's 58 minutes, now that no other runs beside it, is unmeasured: owed.
   - The "Broken pipe" of that run (`255 vCPUs: round 8, 236.2 s to 273.6 s in, sending:
@@ -1349,6 +1349,13 @@ for the exit status.
         as TCP estimates a round trip's, and its window that estimate's retransmission
         timeout, SRTT + 4·RTTVAR (RFC 6298 §2; its 1 s initial RTO until the first
         refill is timed): runs closer together than that may wait for a refill.
+      - Its daemon says each refill it times, and the window it then keeps ("pool of DIR: a
+        refill ready in N us; runs within W us of each other are one burst", 2026-11-17,
+        goal fb3528f9), as only the daemon measures them. daemon.rs'
+        `pools_keep_what_their_runs_need_while_they_come` spaces its runs past the window
+        said, and starts its daemon again with a keep-alive as long as that window (R03). Its
+        fixed keep-alive of 15 s was under a loaded host's window: CI 43968984258's x86_64
+        musl job found runs 16 s apart still one burst.
       - A pool idle for SHARDS_POOL_KEEP seconds (600), none of its runs going and none
         claimed or ended within them, ends its ready VMs and keeps none until its next
         run, which is served all the same: a fixed keep-alive, as AWS and Azure keep a
@@ -35324,7 +35331,7 @@ queues charged** (2026-11-16, ROOT's decisions 1 and 2; lane charge-2).
     changed)
   - `scripts/lint` (the seven targets).
 
-### D253. An orchestrator's run restores its image's template and takes a warm VM from its pool, as the daemon's runs do (built: templates and pools; their real-VM tests passing on HVF and KVM x86-64, PM M605; on WHP and KVM arm64, a daemon run and restore on each OS, and the 2026-11-16 writable-layer amendment's runs owed)
+### D253. An orchestrator's run restores its image's template and takes a warm VM from its pool, as the daemon's runs do (built: templates and pools; their real-VM tests passing on HVF and KVM x86-64, PM M605; the 2026-11-16 writable-layer amendment kept on its A/B on HVF, PM M593; on WHP and KVM arm64, a daemon run and restore on each OS, and that amendment's mutation, real-VM tests and A/B on KVM owed)
 
 **Why.** An orchestrator's run (D231) booted its microVM cold every time, where a daemon's run
 restores its image's template (D25) and takes a warm VM from its pool (D26). Hex boots its node
@@ -35702,18 +35709,44 @@ share process's start, its binaries' check, its network's decision.
   thread, in US us` as it ends; its launch says `its writable layer made|cloned|none, taken
   from its thread` (without the suffix where it made its own) after `its network decided`,
   the gap between those two its wait.
-- *Tested* (unit; written, not run): `a_layer_made_beside_a_runs_making_is_its_launchs_own`
-  (a boot's and a save's layer made on its thread as a launch makes one: ext4, in `layers`,
-  the length of a launch's own of that size, gone with its handle; a restore of a template
-  holding no snapshot none; each taken once; none where none was begun) and
-  `a_layer_made_for_another_way_is_no_launchs` (a boot's is no save's, nor its own way's once
-  let go of; red with the way's check removed).
-- *Owed* (ROOT): those tests and their mutation; `api_image.rs` on HVF, KVM x86_64 and WHP,
-  every start kind; and the A/B, the revision before this against this, on a quiet Studio
-  through `launchd-run.sh` (`docs/research/measurements/image-start-ab/ab.py`, PM M593).
+- *Tested* (unit, Unix; passing in CI run 43968984258 at fe83503c2 on `aarch64-apple-darwin`
+  and on Linux arm64 and x86-64, glibc and musl):
+  `a_layer_made_beside_a_runs_making_is_its_launchs_own` (a boot's and a save's layer made on
+  its thread as a launch makes one: ext4, in `layers`, the length of a launch's own of that
+  size, gone with its handle; a restore of a template holding no snapshot none; each taken
+  once; none where none was begun) and `a_layer_made_for_another_way_is_no_launchs` (a boot's
+  is no save's, nor its own way's once let go of; red with the way's check removed).
+- *Owed* (ROOT): those tests' mutation; `api_image.rs` on HVF, KVM x86_64 and WHP, every start
+  kind (on HVF the A/B below made 100 measured starts of each of the four kinds with it, each
+  held to its kind); the A/B's intervals and p99 (below); and the A/B on KVM.
 - *What would refuse it:* an A/B in which Booted's or Saved's boot span does not fall by the
   launch's former wait, or Restored's or Warm's rises (the thread's file system work beside a
   restore's own).
+- *Kept* (2026-11-17), on its A/B: ROOT's run r644 on a Mac Studio (M4 Max, macOS 26.2) through
+  `launchd-run.sh`, dcac51807 against 26c1ea5df by turns, 100 starts of each kind an arm and 10
+  timed passes (PM M593 has the numbers; the cut's code is unchanged since). It does what it is
+  for on every start. Before it, a launch waited for its layer 1.570 ms at p50 on a Booted start
+  (Saved 1.441, Restored 0.290, a warm host 0.274). With it, no launch waited more than 0.011 ms
+  in any of its 40 timed starts, its thread's making (1.612 ms at p50 on a Booted start, 2.579
+  at most) over by then. Neither refusal is shown, each rank read for what its n can show (Le
+  Boudec 2010, Theorem 2.1; PM M612's `interval`):
+  - Booted's and Saved's boot, whose layers are made alike, fell at p50 by 1.864 and 1.308 ms,
+    against former waits of 1.570 and 1.441, and at p90 by 0.812 and 0.670.
+  - Restored's fell at every rank: 0.113 ms at p50, 2.699 at its max. Warm's rose 0.006 ms at p50
+    and 0.017 at its max, but a warm run's boot has no layer on it in either build (its host took
+    its layer before `WARMED`). Each kind's stop, which neither build changed, moved 0.003 to
+    0.021 ms at p50 between them.
+  - A p99 has no distribution-free 95% interval under 368 samples, and a max has none at any n.
+    So r644's p99 and max rows weigh for neither keeping nor refusing. A span neither build
+    changed moved further there than any boot did: Saved's stop, 3.585 ms at p99 and 3.708 at
+    its max, against 3.373 at most.
+
+  Two questions stay open. Whether the falls at p50 and p90 are the whole former wait, or some of
+  the thread's work comes back beside the start's own at p90, is for those ranks' intervals: the
+  40th to 61st and the 84th to 96th of 100 samples, owed from r644's samples. The p99 is for a
+  rerun of at least 368 starts of each kind. A refusal shown by either refuses the cut. The start
+  path's 5 ms target is not this cut's to move: a warm run's first output came at 5.158 ms at p50
+  before it and 5.210 after, and a warm run's way has no layer on it in either build.
 
 ### D254. kiln's MCP rides the agent-control link: a stdio bridge in the harness's member, one lane of the link per connection, no network grant (decided; its asks built at the endpoint and the controller, the member's listener and bridge and its VM's hand-off built; the runs' asking and the run hosts' pairing built, the daemon's and an orchestrator's; its orchestrator's real-VM test passing on HVF and KVM x86-64, PM M605; the endpoint's report naming the bridges it serves, `mcp:N` among a controller's lanes, built, `shards-control/2`; kiln's side and every other real-VM run owed)
 
@@ -37424,8 +37457,9 @@ post-mortem read of the printk ring through VMCOREINFO, not a debug port.
   CI could fail fast.
   - **What is kept.** `target/judge-records` alone, never the build: each kind's W*, R* and
     C*, as the tests' waits keep them (`WaitKind::keep`, D209's waits). Its source is the
-    passing jobs' own answers.
-  - **Its key** (`actions/cache@v6.1.0`, pinned by tag as ci.yml's other actions are):
+    answered waits of every job that was not cancelled.
+  - **Its key** (`actions/cache/restore@v6.1.0` before the tests, `actions/cache/save@v6.1.0`
+    after them, pinned by tag as ci.yml's other actions are):
     `judge-records-<ImageOS>-<ImageVersion>-<runner.arch>-<target>-<run id>-<run attempt>`,
     restored by its prefix through `<target>-`, the newest entry kept for it.
     - The runner's image, its OS and version (`$ImageOS-$ImageVersion`, which keys the GPU
@@ -37441,22 +37475,29 @@ post-mortem read of the printk ring through VMCOREINFO, not a debug port.
     - No format version: the judge has none. A kept record says what it holds (`served`,
       `rated`), and one the reader cannot read whole is read as none (`learn_kept`), its kind
       cold until its next answer rewrites it.
-  - **Kept only by a passing job.** The action restores at its step and keeps in its post
-    step, which runs only where the job succeeded (its action.yml: `post-if: success()`). A
-    job that failed, ran out of time or was cancelled keeps nothing.
+  - **Kept by every job that is not cancelled** (amended 2026-11-17, ROOT's ruling, goal
+    fb3528f9). The restore step restores, and a step of its own after the tests keeps
+    (`if: !cancelled()`). A job whose tests passed, failed or ran out of their step's time
+    keeps what it learned. A cancelled run keeps nothing.
+    - Why: first, at 758e9f224 only a passing job kept its records (the combined
+      `actions/cache`, whose post step has `post-if: success()`). CI 43968984258's x86_64
+      musl job failed run after run, so it never kept a record and began cold each time.
+      Its judged waits then learned their W* afresh in the job from the first answers of each
+      kind (3.6 to 9.6 ms), and refused the next slower answer.
     - Records only widen: a merge takes the larger W* and C* and the lesser R*
       (`Record::merge`). So what a job keeps stays in every later bound.
-    - The judge already learns from passes alone. A wait teaches its kind only at an answer
-      that came while it was awaited (`Wait::ended`), a command's only when served
-      (`Wait::unserved` teaches nothing), `guest_says` only once its text is found while its
-      machine runs, and the give-back wait (`Falling`) the time to the last fall it saw. A wait
-      that stalls, ends or is refused returns before any teaching.
+    - What a failed job keeps is evidence still: the judge learns from answered waits alone.
+      A wait teaches its kind only at an answer that came while it was awaited
+      (`Wait::ended`), a command's only when served (`Wait::unserved` teaches nothing),
+      `guest_says` only once its text is found while its machine runs, and the give-back
+      wait (`Falling`) the time to the last fall it saw. A wait that stalls, ends or is
+      refused returns before any teaching, so a failing test's refusal widens no bound.
   - **One writer.** A restore takes one entry, and GitHub's cache never merges two.
     - ci.yml is the records' one writer. Each of its keys is one job's, and its runs on one
       branch follow each other (its concurrency group: main's wait for the run under way, a
-      branch's newer push cancels the older). So each run restores the last passing run's
-      records and keeps them grown, and none shrinks, as the keep's lock keeps a host's from
-      shrinking (waits-11, PM M576).
+      branch's newer push cancels the older). So each run restores the last run's records
+      that were kept, and keeps them grown, and none shrinks, as the keep's lock keeps a host's
+      from shrinking (waits-11, PM M576).
     - A branch's runs restore their own entries, then main's; main never reads a branch's.
     - budget-e2e.yml's `e2e` and `windows-e2e` jobs and slates-fs.yml restore CI's records
       and keep none (`actions/cache/restore@v6.1.0`): their runs overlap CI's, and an entry of
@@ -37470,12 +37511,13 @@ post-mortem read of the printk ring through VMCOREINFO, not a debug port.
     suite's kinds. An entry's size is unmeasured: this Mac keeps no records now, and the post
     step's log says each entry's size. GitHub removes entries unused for 7 days, and the least
     recently used past the repository's cache limit.
-  - **Owed to ROOT.** Read main's next two passing runs: the first's post step says "Cache
-    saved with key: judge-records-…", the second's restore "Cache restored from key: …",
-    on every leg (the musl jobs' records are written in Alpine as the checkout's owner, whom
-    the action runs as). Then a stall of a learned kind is refused "past the slowest answer of
-    its kind seen on this host" before any step limit. The benefit is unmeasured until then,
-    and a nested WHP job keeps records only once one of its jobs passes whole.
+  - **Owed to ROOT.** Read main's next two completed runs: in the first, each leg's `The
+    judge's records, kept` step says "Cache saved with key: judge-records-…", whether its
+    tests passed or not. In the second, its restore step says "Cache restored from key: …".
+    That holds on every leg, including the musl jobs, whose records are written in Alpine as
+    the checkout's owner, whom the actions run as. Then a stall of a learned kind is refused
+    "past the slowest answer of its kind seen on this host" before any step limit. The
+    benefit is unmeasured until then.
 
 **Alternatives rejected.**
 - A write-only debug port (x86's 0xe9 debugcon): mainline x86 early_printk has no 0xe9

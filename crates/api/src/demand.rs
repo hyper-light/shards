@@ -110,8 +110,9 @@ impl Demand {
         self.last = Some(self.last.map_or(now, |last| last.max(now)));
     }
 
-    /// Runs this close together are one burst: a refill's retransmission timeout.
-    fn window(&self) -> Duration {
+    /// Runs this close together are one burst: a refill's retransmission timeout. The
+    /// daemon says it at each refill, for what reads its pools from outside.
+    pub fn window(&self) -> Duration {
         self.srtt.map_or(FIRST_WINDOW, |srtt| {
             srtt.saturating_add(self.rttvar.saturating_mul(4))
         })

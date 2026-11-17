@@ -2922,15 +2922,26 @@ fn pools_keep_what_their_runs_need_while_they_come() {
     }
     let (image, _) = served();
     let home = home_with("daemon-demand");
-    // The keep-alive outlasts the spacing of runs well apart below, which a loaded host
-    // stretches.
-    const KEEP: Duration = Duration::from_secs(15);
-    let keep = KEEP.as_secs().to_string();
-    let env: [(&str, &OsStr); 3] = [
-        ("SHARDS_HOME", home.as_os_str()),
-        ("SHARDS_POOL", "3".as_ref()),
-        ("SHARDS_POOL_KEEP", keep.as_ref()),
-    ];
+    // Its keep-alive is D26's own (SHARDS_POOL_KEEP unset) while runs come apart. Then, so
+    // that the pool is seen to empty past it, its daemon starts again with one as long as the
+    // window it said (below): no keep-alive of the test's own (R03). A fixed one of 15 s was
+    // under a loaded host's refill window (CI 43968984258, x86_64 musl: runs 16 s apart were
+    // still one burst).
+    let env: [(&str, &OsStr); 2] = [("SHARDS_HOME", home.as_os_str()), ("SHARDS_POOL", "3".as_ref())];
+    let log = home.join("daemon.log");
+    // The burst window its daemon said at each refill it timed, oldest first: SRTT +
+    // 4·RTTVAR of its refills from start to ready (RFC 6298, as shards_api::demand keeps
+    // it), which the daemon alone measures.
+    let windows = || -> Vec<Duration> {
+        let said = std::fs::read_to_string(&log).unwrap_or_default();
+        said.lines()
+            .filter_map(|line| {
+                let (_, rest) = line.split_once("; runs within ")?;
+                let (us, _) = rest.split_once(" us of each other are one burst")?;
+                us.parse().ok().map(Duration::from_micros)
+            })
+            .collect()
+    };
     let templates = home.join("templates");
     let templates_named = templates.to_string_lossy().into_owned();
     // Its VMs: the template's processes, but for the runs' own VMs the burst learns
@@ -2975,39 +2986,55 @@ fn pools_keep_what_their_runs_need_while_they_come() {
         );
     };
     let args = [image.as_str(), "exit", "0"];
-    let run = || {
-        let run = run_shards_env(&["run"], &args, &env);
+    let run = |env: &[(&str, &OsStr)]| {
+        let run = run_shards_env(&["run"], &args, env);
         assert_eq!(run.status, Some(0), "{}", run.stderr);
     };
-    // Runs well apart: each is served by the one VM refilled for the run before. "Apart"
-    // is past the pool's refill window, SRTT + 4·RTTVAR of its refills from start to ready
-    // (RFC 6298, as shards_api::demand keeps it), which the daemon alone sees: a loaded host's
-    // refills are slow to say they are ready, and two runs it judges one burst keep the
-    // pool at two for the keep-alive. So the spacing starts at a second and doubles while
-    // the pool keeps two, each try beginning again past the keep-alive, when the burst it
-    // saw is gone.
-    // Whether it keeps one is what it keeps once its refill is said: a pool that keeps two
-    // for a burst keeps them until its keep-alive, so one look tells (no window of the
-    // test's own, D209).
-    let mut apart = Duration::from_secs(1);
-    let mut kept_one = 0;
-    while kept_one < 4 {
-        run();
+    // A refill, once its daemon has said it: its window then the newest said.
+    let refilled = |said: usize| {
+        eventually(&home, "the pool's refill said", || windows().len() > said);
         settled(Patience::of(&home), "a refill", &|n| n >= 1);
-        if warm() == 1 {
-            kept_one += 1;
-            std::thread::sleep(apart);
-            continue;
-        }
-        apart *= 2;
-        assert!(
-            apart < KEEP,
-            "runs {apart:?} apart are still one burst to the pool: its refills leave no room under the keep-alive"
+    };
+    // Its first run boots its image and saves the template its pool refills from (D25).
+    let said = windows().len();
+    run(&env);
+    refilled(said);
+    // Runs apart: each begun once the window its daemon said at the refill before it has
+    // passed since the run before ended, so its claim comes more than one refill window
+    // after that run's, and it is served by the one VM refilled for the run before. A pool
+    // that judged two runs one burst keeps two until its keep-alive, so one look, once the
+    // refill is said, tells (no window of the test's own, D209). Each run's own VM is learned
+    // ([`Held`]): ended, it takes its time to go, and is no VM the pool keeps.
+    for n in 0..4 {
+        let window = windows().last().copied().unwrap();
+        std::thread::sleep(window);
+        let said = windows().len();
+        let mut apart = Held::start(&image, &format!("apart-{n}"), &env);
+        let vm = apart.vm(&env, &templates_named);
+        runs_own.borrow_mut().push(vm);
+        assert_eq!(apart.end(&home), Some(0), "a run apart");
+        refilled(said);
+        assert_eq!(
+            warm(),
+            1,
+            "runs begun {window:?} apart, the window their daemon said, were one burst to the pool:\n{}",
+            std::fs::read_to_string(&log).unwrap_or_default()
         );
-        kept_one = 0;
-        // Past the keep-alive: waited for as the pool empties.
-        settled(Patience::of(&home), "past the keep-alive", &|n| n == 0);
     }
+    // Its daemon again, its keep-alive the window it said last (whole seconds, as
+    // SHARDS_POOL_KEEP takes it): by its daemon's own estimate a refill comes within it, so a
+    // burst's refills come before its pool is idle past it.
+    let window = windows().last().copied().unwrap();
+    let keep = (window.as_secs() + u64::from(window.subsec_nanos() > 0)).to_string();
+    let stopped = run_shards_env(&["daemon"], &["stop"], &env);
+    assert_eq!(stopped.status, Some(0), "{stopped}");
+    // Its VMs end with it: none is counted as the next daemon's pool's.
+    all_end(&templates_named, "the first daemon's VMs, past its stop");
+    let env: [(&str, &OsStr); 3] = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_POOL", "3".as_ref()),
+        ("SHARDS_POOL_KEEP", keep.as_ref()),
+    ];
     // Three at once: the pool keeps more for the next burst, never past its most. Each
     // run held under way until all three are served, for its VM to be learned: what the
     // pool keeps is the template's processes but those, which go in their own time once
@@ -3046,7 +3073,7 @@ fn pools_keep_what_their_runs_need_while_they_come() {
         commands_with(&templates.to_string_lossy()),
         std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default()
     );
-    run();
+    run(&env);
     settled(Patience::of(&home), "after the keep-alive", &|n| n >= 1);
     let stopped = run_shards_env(&["daemon"], &["stop"], &env);
     assert_eq!(stopped.status, Some(0), "{stopped}");

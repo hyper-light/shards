@@ -25340,7 +25340,78 @@ from each round's `timed` phase pass the launch's wait for its writable layer (`
 decided` to `its writable layer …`) and, where its thread made it, that making. On macOS it
 runs as the user's own, through `macos-sched/launchd-run.sh`.
 
-Numbers: owed (ROOT runs it), on HVF and on KVM.
+Numbers on HVF: the A/B of D253's cut (a), ROOT's run r644, 2026-11-17 01:41Z to 02:07Z.
+- Host Adas-Mac-Studio-2: Mac16,9, M4 Max, 14 CPUs, 36 GiB, macOS 26.2 (25C56).
+- Run from kiln by the carrier `~/g121-tmp/cut-a-carrier` (a148e75), the A/B through
+  `macos-sched/launchd-run.sh`. The condition as the run recorded it: nice 10, priorities 20, 31
+  and 97, the VM threads at 31 and 97 (no QoS clamp, M317).
+- Load averages 4.2 to 6.2 during the A/B. As it began, 9.66 of the 14 CPUs were idle by the
+  1-minute average; the carrier asks 8.
+- A is dcac51807, main before the cut. B is 26c1ea5df, main with it; the cut's code reads the
+  same at main 18bc96988.
+- B's `ab.py`, 10 rounds ABBA of N=10: n=100 per arm and kind for boot, first output and stop;
+  n=10 for the layer's two rows, one timed pass a process.
+
+ms, p50 / p90 / p99 / max:
+
+| kind | span | A | B |
+|---|---|---|---|
+| Booted | boot | 74.875 / 77.804 / 81.498 / 84.237 | 73.011 / 76.992 / 80.454 / 85.908 |
+| Booted | first output | 77.629 / 80.566 / 84.064 / 86.672 | 75.819 / 79.636 / 83.351 / 88.624 |
+| Booted | stop | 1.529 / 1.638 / 1.899 / 2.077 | 1.546 / 1.647 / 1.765 / 1.818 |
+| Booted | layer: launch waited | 1.570 / 1.699 / 2.287 / 2.287 | 0.005 / 0.007 / 0.007 / 0.007 |
+| Booted | layer: its thread | n 0 | 1.612 / 2.441 / 2.579 / 2.579 |
+| Saved | boot | 197.886 / 208.676 / 215.528 / 219.769 | 196.578 / 208.006 / 216.419 / 223.142 |
+| Saved | first output | 205.932 / 216.748 / 223.910 / 229.462 | 204.792 / 217.101 / 225.052 / 231.049 |
+| Saved | stop | 2.038 / 2.179 / 5.830 / 6.055 | 2.059 / 2.188 / 2.245 / 2.347 |
+| Saved | layer: launch waited | 1.441 / 1.504 / 1.552 / 1.552 | 0.006 / 0.008 / 0.010 / 0.010 |
+| Saved | layer: its thread | n 0 | 1.719 / 2.484 / 2.598 / 2.598 |
+| Restored | boot | 18.721 / 20.734 / 22.216 / 24.203 | 18.608 / 20.183 / 20.799 / 21.504 |
+| Restored | first output | 23.918 / 25.896 / 28.881 / 29.215 | 24.092 / 25.511 / 26.339 / 26.648 |
+| Restored | stop | 1.511 / 1.628 / 1.771 / 2.010 | 1.514 / 1.644 / 1.752 / 1.846 |
+| Restored | layer: launch waited | 0.290 / 0.305 / 0.332 / 0.332 | 0.006 / 0.008 / 0.010 / 0.010 |
+| Restored | layer: its thread | n 0 | 0.288 / 0.305 / 0.314 / 0.314 |
+| Warm | boot | 0.267 / 0.343 / 0.369 / 0.371 | 0.273 / 0.353 / 0.377 / 0.388 |
+| Warm | first output | 5.158 / 5.714 / 5.946 / 6.436 | 5.210 / 5.710 / 6.079 / 6.084 |
+| Warm | stop | 1.634 / 1.827 / 4.991 / 5.755 | 1.649 / 1.779 / 4.380 / 4.743 |
+| Warm | layer: launch waited | 0.274 / 0.335 / 0.388 / 0.388 | 0.007 / 0.008 / 0.011 / 0.011 |
+| Warm | layer: its thread | n 0 | 0.346 / 0.460 / 0.499 / 0.499 |
+
+What each row's n can show (Le Boudec 2010, Theorem 2.1; M612's `interval`):
+- At n=100, a p50's distribution-free 95% interval runs from the 40th to the 61st sample, and a
+  p90's from the 84th to the 96th.
+- A p99 has none under n=368: all 100 samples lie below the true p99 with probability
+  0.99^100 = 0.366. A max has none at any n.
+- At n=10, a p50's runs from the 2nd to the 9th sample; a p90 and a p99 have none.
+- The summary above gives no interval's ends. Those need the samples.
+
+Read, for D253 (its amendment's *Kept*):
+- The cost the cut moves is the launch's wait for its layer. In A, 6 or more of each kind's 10
+  timed starts waited at least 1.570 ms (Booted), 1.441 (Saved), 0.290 (Restored) and 0.274 (a
+  warm host). In B, none of the 40 waited more than 0.011 ms. Its thread took 1.612, 1.719, 0.288
+  and 0.346 ms at p50.
+- Some spans neither build changed: every kind's stop, and Warm's boot (a warm host takes its
+  layer before `WARMED`, in both builds). Between the arms they moved 0.003 to 0.021 ms at p50, and
+  up to 3.708 ms at a max (Saved's stop).
+- Booted's and Saved's boot fell 1.864 and 1.308 ms at p50, and 0.812 and 0.670 at p90; at p99
+  and max they moved both ways, by up to 3.373 ms. Restored's fell at every rank.
+- Warm's first output is the request-to-usable span of the start path's 5 ms target. It was
+  5.158 ms at p50 in A and 5.210 in B: over 5 ms in both.
+
+Raw results: the run's archive, `~/g121-tmp/cut-a-20261117T014123Z-Adas-Mac-Studio-2.tar.gz`
+(SHA-256 56850adbdf314599e1ef068ed3fee009c7e27924ef7f76d6d12d9fc294f61a6f), and its log beside
+it, on that Studio. Neither is in this repository yet.
+
+Owed (ROOT):
+- B's single-arm costs at N=100, with their phase timelines (where the time goes). r644's carrier
+  refused them: the Studio was no longer quiet, with 4.13 CPUs idle where 8 were asked.
+- r644's logs, committed under `docs/research/measurements/image-start-ab/results/`, and from them
+  the p50 and p90 intervals above. From their timed passes, also each start's span from `its
+  microVM shaped` to `launching its VM`, A against B (n=10), for what the thread's work costs
+  the start beside it.
+- The p99: the A/B again with 38 rounds of N=10, n=380 per arm and kind. 38 is the fewest
+  rounds whose n reaches 368 and that is even, so that each arm goes first as often.
+- All of it on KVM, and on WHP where `vm::restores_here`.
 
 ### M600. Where a loaded Mac's `shards guest use` spends its time (D215, ROOT's batch 32)
 

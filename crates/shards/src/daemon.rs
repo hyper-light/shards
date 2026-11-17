@@ -9175,7 +9175,16 @@ impl<D: Disk> Daemon<D> {
                 match ready {
                     Ok(()) => {
                         pool.failures = 0;
-                        pool.demand.refilled(began.elapsed());
+                        let took = began.elapsed();
+                        pool.demand.refilled(took);
+                        // Said, as the daemon alone times its refills: the window a reader
+                        // of its pools spaces runs and sizes a keep-alive by (D26).
+                        log(format!(
+                            "pool of {}: a refill ready in {} us; runs within {} us of each other are one burst",
+                            key.dir.display(),
+                            took.as_micros(),
+                            pool.demand.window().as_micros()
+                        ));
                         // Its working set, where it records one, goes with its template,
                         // within what the refiller read the template's guest can hold.
                         let records = pool.working_set_limit.flatten().map(|limit| Records {
@@ -12143,19 +12152,22 @@ mod tests {
     fn a_stop_answers_each_end_while_its_homes_record_is_held() {
         let t = Test::new("kill-held");
         t.run(|t| {
-            let runs = [running(t, "a"), running(t, "b")];
+            // Names a client may give: two characters or more, as Docker's rule has it
+            // (`containers::valid_name`), which refused "a" at its create (ROOT's r652).
+            let names = ["first", "second"];
+            let runs = names.map(|name| running(t, name));
             let held = shards_image::store::Locked::exclusive(&t.daemon.home.join("ends.lock")).unwrap();
             let (ours, theirs) = UnixStream::pair().unwrap();
             let daemon = &t.t.daemon;
             let asked = t.threads.spawn(move || {
-                let argv = ["kill", "a", "b"].map(String::from);
+                let argv = ["kill", names[0], names[1]].map(String::from);
                 daemon.command(&argv, &asker(), &commands::Reply(&ours))
             });
             for (_, _, vm) in &runs {
                 assert_eq!(heard(vm), signal(9));
                 say(vm, kind::DONE, &[137]);
             }
-            for name in ["a", "b"] {
+            for name in names {
                 let m = read("an end of the kill not answered", &theirs, |c| {
                     shards_ipc::recv(c)
                 })
