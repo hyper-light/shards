@@ -12249,7 +12249,8 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
     client's own end; R* and C*, a bound on a party past W* that ticks but never answers, D215), the test process keeps in
     memory and under `target/judge-records/<os>-<arch>-<logical CPUs>/<call site>`, read
     back by the next run on the host (ROOT: a record learned on the host is data, not a
-    seed; every runner of one CI image shares its key, so a cached target keeps CI warm).
+    seed; every runner of one CI image shares its key, and CI keeps the records from run to
+    run by its runner's image: D261, *CI's judge learns across runs*).
     Each answer is taught in, merged with what another process kept, and written whole and
     renamed into place, by a name of its own (its process's and its keep's), the read, merge
     and rename one transaction under the record's lock (`.<record>.lock`, std's
@@ -37166,8 +37167,9 @@ post-mortem read of the printk ring through VMCOREINFO, not a debug port.
   - No bound past which WHP's test fails. None can be derived from passes in CI, so none was
     added (R03).
     - D215's judge bounds a wait by W*, the slowest answer of its kind on its host. A CI job
-      keeps no records (ci.yml caches no `target/judge-records`), so every kind starts cold
-      and follows its party's liveness (the person's ruling of 2026-11-13: no record seeds).
+      then kept no records (ci.yml cached no `target/judge-records` until *CI's judge learns
+      across runs*, below), so every kind started cold and followed its party's liveness (the
+      person's ruling of 2026-11-13: no record seeds).
     - Kept records would still need a pass on a nested WHP runner, and the one such run read
       since 35e2de91e did not pass (job 133508843966).
     - Smaller guests' passes bound nothing here. Sizes are kinds apart because a smaller
@@ -37243,10 +37245,8 @@ post-mortem read of the printk ring through VMCOREINFO, not a debug port.
     it earlier needs the kernel's symbols, which an arm64 Image does not carry.
     - A guest that never gets there says nothing, and its first line's wait follows its
       liveness until its kind has a pass on that host.
-    - CI keeps no records (ci.yml caches no `target/judge-records`), so every CI job's wait is
-      cold. On CI "fails fast" needs that cache, which is ROOT's to decide (the person's
-      ruling of 2026-11-13: a record learned on the host is data, not a seed; `host_class`
-      already keys records by a runner image's OS, architecture and CPUs).
+    - CI then kept no records, so every CI job's wait was cold, and on CI "fails fast" needed
+      that cache. ROOT decided to keep them: *CI's judge learns across runs*, below.
   - **What the next ci.yml run's x86_64 Windows jobs should show** (grep `D261 WHP boot`):
     - Expected: a burst of lines at the ring's first read, from "Linux version" through "smp:
       Brought up 1 node, 240 CPUs" (WHP's 240 at most on GitHub's runners, NR_CPUS 255), each
@@ -37270,6 +37270,64 @@ post-mortem read of the printk ring through VMCOREINFO, not a debug port.
     VMCOREINFO (printk.rs `infos`). In the test process that faults in a 1 GiB guest's
     untouched pages (shared memory on Linux, committed memory on Windows). The pace bounds its
     CPU; its resident memory is unmeasured.
+- **CI's judge learns across runs** (2026-11-17, kiln goal b2124227, lane ci-judge-cache).
+  ROOT's answer to the question above: CI keeps the judge's records. Until now every CI job
+  began with none, so each kind was cold and followed its party's liveness alone: no wait on
+  CI could fail fast.
+  - **What is kept.** `target/judge-records` alone, never the build: each kind's W*, R* and
+    C*, as the tests' waits keep them (`WaitKind::keep`, D209's waits). Its source is the
+    passing jobs' own answers.
+  - **Its key** (`actions/cache@v6.1.0`, pinned by tag as ci.yml's other actions are):
+    `judge-records-<ImageOS>-<ImageVersion>-<runner.arch>-<target>-<run id>-<run attempt>`,
+    restored by its prefix through `<target>-`, the newest entry kept for it.
+    - The runner's image, its OS and version (`$ImageOS-$ImageVersion`, which keys the GPU
+      renderer's cache too). A record is data of the host it was learned on (the person's
+      ruling of 2026-11-13), and a new image version is other software: its kernel, its
+      hypervisor. An image's first run starts cold.
+    - The runner's architecture and the target. `host_class` (OS, architecture, CPUs) names
+      the records' directory within an entry, but not the image or the build: the glibc and
+      musl jobs run other builds on one image, and windows-2022 and windows-2025 are one OS
+      and architecture on two images.
+    - The run's id and attempt: an entry once kept is never written again, so each run keeps
+      its own.
+    - No format version: the judge has none. A kept record says what it holds (`served`,
+      `rated`), and one the reader cannot read whole is read as none (`learn_kept`), its kind
+      cold until its next answer rewrites it.
+  - **Kept only by a passing job.** The action restores at its step and keeps in its post
+    step, which runs only where the job succeeded (its action.yml: `post-if: success()`). A
+    job that failed, ran out of time or was cancelled keeps nothing.
+    - Records only widen: a merge takes the larger W* and C* and the lesser R*
+      (`Record::merge`). So what a job keeps stays in every later bound.
+    - The judge already learns from passes alone. A wait teaches its kind only at an answer
+      that came while it was awaited (`Wait::ended`), a command's only when served
+      (`Wait::unserved` teaches nothing), `guest_says` only once its text is found while its
+      machine runs, and the give-back wait (`Falling`) the time to the last fall it saw. A wait
+      that stalls, ends or is refused returns before any teaching.
+  - **One writer.** A restore takes one entry, and GitHub's cache never merges two.
+    - ci.yml is the records' one writer. Each of its keys is one job's, and its runs on one
+      branch follow each other (its concurrency group: main's wait for the run under way, a
+      branch's newer push cancels the older). So each run restores the last passing run's
+      records and keeps them grown, and none shrinks, as the keep's lock keeps a host's from
+      shrinking (waits-11, PM M576).
+    - A branch's runs restore their own entries, then main's; main never reads a branch's.
+    - budget-e2e.yml's `e2e` and `windows-e2e` jobs and slates-fs.yml restore CI's records
+      and keep none (`actions/cache/restore@v6.1.0`): their runs overlap CI's, and an entry of
+      theirs would replace CI's newer one. `windows-e2e` restores none where it asks for a log
+      level: its programs then answer at another pace than CI's, which sets none.
+    - Not cached: budget-e2e.yml's `windows` job (libraries' own tests, which keep no
+      records), ci.yml's `musl` release part (shards-rego's stack guards alone), and the
+      benches of ci.yml's `firecracker` job and the measurement workflows.
+  - **Bounds.** A record is one line of at most 97 bytes (`served `, `rated ` and four u64
+    nanosecond counts of at most 20 digits), beside an empty lock file. Their number is the
+    suite's kinds. An entry's size is unmeasured: this Mac keeps no records now, and the post
+    step's log says each entry's size. GitHub removes entries unused for 7 days, and the least
+    recently used past the repository's cache limit.
+  - **Owed to ROOT.** Read main's next two passing runs: the first's post step says "Cache
+    saved with key: judge-records-…", the second's restore "Cache restored from key: …",
+    on every leg (the musl jobs' records are written in Alpine as the checkout's owner, whom
+    the action runs as). Then a stall of a learned kind is refused "past the slowest answer of
+    its kind seen on this host" before any step limit. The benefit is unmeasured until then,
+    and a nested WHP job keeps records only once one of its jobs passes whole.
 
 **Alternatives rejected.**
 - A write-only debug port (x86's 0xe9 debugcon): mainline x86 early_printk has no 0xe9
