@@ -3887,7 +3887,36 @@ fn checksum(path: &str) -> io::Result<(u64, u64)> {
     }
 }
 
-/// `read-dropped PATH SECONDS OUT`: says `reading PATH` as it begins.
+/// The step's cgroup's file pages as its `memory.stat` keeps them (its cgroup namespace's
+/// root, /sys/fs/cgroup): how much of the files read it holds, how much of that is inactive,
+/// and what reclaim in its own threads took and what came back, for a give-back's account:
+/// CI 44164945050 (x86_64 gnu) gave back 123 MiB of a 256 MiB file read once, which a warm
+/// builder's own reclaim of the file as it read, past its `memory.high` before its memory
+/// was plugged, would leave unheld; unobserved.
+fn file_stat() -> String {
+    const KEYS: [&str; 5] = [
+        "file",
+        "inactive_file",
+        "active_file",
+        "pgsteal_direct",
+        "workingset_refault_file",
+    ];
+    match std::fs::read_to_string("/sys/fs/cgroup/memory.stat") {
+        Ok(stat) => stat
+            .lines()
+            .filter(|line| {
+                line.split_whitespace()
+                    .next()
+                    .is_some_and(|key| KEYS.contains(&key))
+            })
+            .collect::<Vec<_>>()
+            .join(", "),
+        Err(e) => format!("unread: {e}"),
+    }
+}
+
+/// `read-dropped PATH SECONDS OUT`: says `reading PATH` as it begins, and its cgroup's file
+/// pages as it has read the file and where it kept them ([`file_stat`]).
 fn read_dropped(path: &str, secs: u64, out: &str) -> i32 {
     let _ = writeln!(io::stdout(), "reading {path}");
     let (total, first) = match checksum(path) {
@@ -3897,7 +3926,10 @@ fn read_dropped(path: &str, secs: u64, out: &str) -> i32 {
             return 1;
         }
     };
+    // Read before the line its host's word follows.
+    let stat = file_stat();
     let _ = writeln!(io::stdout(), "read {path} {total}");
+    let _ = writeln!(io::stdout(), "memory.stat as read: {stat}");
     let held = cached_kib().unwrap_or(0);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(secs);
     loop {
@@ -3907,7 +3939,7 @@ fn read_dropped(path: &str, secs: u64, out: &str) -> i32 {
             break;
         }
         if std::time::Instant::now() >= deadline {
-            let _ = writeln!(io::stdout(), "kept");
+            let _ = writeln!(io::stdout(), "kept; memory.stat: {}", file_stat());
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
