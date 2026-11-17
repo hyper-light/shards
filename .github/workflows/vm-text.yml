@@ -1,0 +1,58 @@
+name: vm-text
+
+# What a VM process's boot keeps of its own binary against Firecracker's (D36, Envelope row
+# 11), on the runner CI's comparison runs on: docs/research/measurements/vm-text/run.sh,
+# `windows` (the comparison with the host's fault-around at its own size, then at one page)
+# or `ab ROUNDS` (shards-vm as main builds it against `b_rustflags` for its musl helpers).
+# Runs when asked.
+on:
+  workflow_dispatch:
+    inputs:
+      run:
+        description: "run.sh's mode and arguments after OUT: windows, or ab ROUNDS"
+        required: true
+      b_rustflags:
+        description: "ab's arm B: RUSTFLAGS for the musl helpers' build"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  TOOLCHAIN: 1.98.1 # keep in sync with rust-toolchain.toml
+
+jobs:
+  measure:
+    name: vm-text (${{ inputs.run }})
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Install pinned Rust
+        run: scripts/retry 5 30 rustup toolchain install "$TOOLCHAIN" --profile minimal --target x86_64-unknown-linux-musl
+      - name: zig
+        run: scripts/install-zig
+      - name: KVM access
+        run: sudo chmod 666 /dev/kvm
+      - name: Host
+        run: |
+          nproc && free -m && lscpu | grep -E 'Model name|Virtualization|Hypervisor'
+          uname -r
+          sudo -n cat /sys/kernel/debug/fault_around_bytes
+      # The inputs reach the script through its environment, never the shell's text.
+      - name: Measure
+        env:
+          RUN: ${{ inputs.run }}
+          B_RUSTFLAGS: ${{ inputs.b_rustflags }}
+        run: |
+          read -r -a run <<<"$RUN"
+          docs/research/measurements/vm-text/run.sh target/vm-text "${run[@]}"
+      - uses: actions/upload-artifact@v7.0.1
+        if: always()
+        with:
+          name: vm-text-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            target/vm-text/
+            !target/vm-text/target-*/
+          if-no-files-found: warn
