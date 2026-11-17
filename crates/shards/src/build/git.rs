@@ -1406,6 +1406,21 @@ mod tests {
         (port, served)
     }
 
+    /// An asking of a [`serving`] script's: its client's waits follow their connections'
+    /// liveness alone, as the registry's clients of scripted servers' do (shards-registry
+    /// `testing::client`). A client that learns cuts a lookup's answer past the slowest its
+    /// path has shown and asks again at once (D222), on a connection the script never
+    /// answers: a fresh path's second answer is its slowest with chance 1/2 where their
+    /// times are alike (Glick 1978), and CI 43968984258's darwin job cut the re-ask after
+    /// the cut body so, its third connection refused.
+    fn scripted() -> Asking {
+        let Asking { client, dropped } = Asking::new(&Cancel::new(), None).unwrap();
+        Asking {
+            client: client.following_liveness(),
+            dropped,
+        }
+    }
+
     /// An advertisement's body the network cut short, 10 of its 32 bytes come, is fetched
     /// again, the asking said in the step's log, and read whole (D276).
     #[test]
@@ -1419,7 +1434,7 @@ mod tests {
             answer.extend_from_slice(if n == 0 { &WHOLE[..10] } else { &WHOLE[..] });
             answer
         });
-        let asking = Asking::new(&Cancel::new(), None).unwrap();
+        let asking = scripted();
         let said = RefCell::new(Vec::new());
         let url = format!("http://127.0.0.1:{port}/repo.git");
         let got = ridden(&asking, &|line| said.borrow_mut().push(line.to_string()), || {

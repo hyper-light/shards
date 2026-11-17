@@ -149,6 +149,33 @@ fn exits(home: &Path, daemon: i32, what: &str) {
     patience.done();
 }
 
+/// Waits until no process's command line names `named`, each one's end waited for while it
+/// goes on (`common::Wait` on its process, its kind its caller's call site), those that
+/// outlive it named: a home's VM processes once its daemon has gone. A [`Patience`] of the
+/// home follows what descends from its daemon, and so none of them once it has gone, their
+/// party gone at its first look (CI 43968984258, x86_64 musl: `a_dead_daemons_waiting_vms_end`
+/// refused 3.0 ms and `a_restored_microvm_ends_with_its_home` 1.8 ms in, "its members now:
+/// none followed").
+#[track_caller]
+fn all_end(named: &str, what: &str) {
+    let kind = WaitKind::at(std::panic::Location::caller());
+    for (vm, _) in commands_with(named) {
+        let mut ending = Wait::begin(kind, vm, None, "a VM process's end, its daemon gone");
+        while alive(i32::try_from(vm).unwrap()) {
+            if let Err(stall) = ending.look(false) {
+                panic!("{what}: {:?}: {}", commands_with(named), ending.refused(&stall));
+            }
+            std::thread::sleep(ending.next_look());
+        }
+        ending.answered();
+    }
+    assert!(
+        commands_with(named).is_empty(),
+        "{what}: {:?}",
+        commands_with(named)
+    );
+}
+
 fn daemon_pid(home: &Path) -> Option<i32> {
     std::fs::read_to_string(home.join("daemon.pid"))
         .ok()?
@@ -837,9 +864,7 @@ fn stop_ends_runs_and_waiting_vms() {
         Some(128 + 15),
         "the run was not stopped by SIGTERM"
     );
-    eventually(&home, "VMs outlived the daemon's stop", || {
-        processes_with(&templates).is_empty()
-    });
+    all_end(&templates, "VMs outlived the daemon's stop");
 }
 
 /// `daemon stop` stops each run as `stop vm` would (D26): with its own stop signal, and
@@ -1030,9 +1055,7 @@ fn a_dead_daemons_waiting_vms_end() {
     });
     let daemon = daemon_pid(&home).expect("a daemon pid");
     kill_now(daemon);
-    eventually(&home, "warm VMs outlived their daemon", || {
-        processes_with(&templates).is_empty()
-    });
+    all_end(&templates, "warm VMs outlived their daemon");
 }
 
 /// A client from another build replaces the daemon, and its run is served, its stdin whole:
@@ -3205,9 +3228,7 @@ fn a_daemon_whose_home_is_removed_exits_without_making_it_again() {
         matches!(std::fs::remove_dir_all(&path), Ok(())) || !path.exists()
     });
     exits(&home, daemon, "the daemon outlived its home");
-    eventually(&home, "VMs outlived their home", || {
-        processes_with(&named).is_empty()
-    });
+    all_end(&named, "VMs outlived their home");
     // Nothing that could make it again lives: looked at now, no window standing for "never"
     // (D209).
     let made: Vec<_> = std::fs::read_dir(&path)
@@ -3276,9 +3297,7 @@ fn a_restored_microvm_ends_with_its_home() {
         std::thread::sleep(ending.next_look());
     }
     ending.answered();
-    eventually(&home, "a restored VM outlived its home", || {
-        processes_with(&named).is_empty()
-    });
+    all_end(&named, "a restored VM outlived its home");
 }
 
 /// A daemon killed outright takes its runs with it: each VM, told how its run stops
@@ -3310,24 +3329,7 @@ fn a_killed_daemons_runs_end_with_it() {
     let named = home.to_string_lossy().into_owned();
     let daemon = daemon_pid(&home).expect("a daemon pid");
     kill_now(daemon);
-    // Each one's end waited for while it goes on (`common::Wait` on its process, its daemon
-    // gone), and those that outlive it named, for a failure to say which.
-    let kind = WaitKind::at(std::panic::Location::caller());
-    for (vm, _) in commands_with(&named) {
-        let mut ending = Wait::begin(kind, vm, None, "a run's end with its killed daemon");
-        while alive(i32::try_from(vm).unwrap()) {
-            if let Err(stall) = ending.look(false) {
-                panic!(
-                    "runs outlived their killed daemon: {:?}: {}",
-                    commands_with(&named),
-                    ending.refused(&stall)
-                );
-            }
-            std::thread::sleep(ending.next_look());
-        }
-        ending.answered();
-    }
-    assert!(commands_with(&named).is_empty(), "{:?}", commands_with(&named));
+    all_end(&named, "runs outlived their killed daemon");
 }
 
 /// A home named relatively is one home, wherever it is named from, however long, with
