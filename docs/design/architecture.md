@@ -29940,6 +29940,41 @@ Tested on the Windows 11 container on adacachy (10.0.26200, x86_64, rustc 1.99.1
   are not inheritable (GetHandleInformation).
 - `stream::tests::a_streams_socket_is_handed_over`: the socket taken carries both ways.
 
+**A judged wait looks before it asks, and its judge reads its party only where it has to wait
+(2026-11-17, own-35-ci-green, kiln goal fb3528f9; ROOT's ruling).** shards_ipc's judged sends
+and receives (`send_judged`, `recv_judged`: Unix's `send_with`, Windows' `write_all_now`)
+asked their judge as each wait began, before their first write or read, and the daemon's
+judge (`health::Judged`) read its party's process at its first ask (shards-api
+`Follow::begin`). So every run's handoff (`hand_over`: RUN, then its TAKEN) read its VM
+process before its RUN went, the send asking first, and every run-socket send
+(`RunSocket::send`) and every link and volume given a join share read theirs before they
+went: on Windows a ToolHelp snapshot of every process (progress.rs `grow`) and the system's
+records of every process and thread (`records`), each read of which took 13.1 to 13.8 ms on
+jupiter (PM M606), on the start path of every `shards run`.
+- *Decided.* Each judged wait looks first, its write or read itself and then a look with no
+  wait (a due already past), and asks its judge only once a look finds its socket not ready,
+  and again at each due that passes so (`shards_ipc::Judge`). `Judged` takes its clock as it
+  is made, before its ask, and reads its party's process at its first ask. Each answer
+  teaches its kind its time from the ask, and the work its follow read where one began
+  (`health::teach_answer`, as D188's exec waits do since 2026-11-17): a take there at the
+  first look teaches its slowest alone, and the handoff reads nothing of its VM process before
+  its RUN or its TAKEN. W* runs from the ask, as it did where the send asked first; R* and C*
+  are taught only from work a follow read. `commands::guest_timed`, which asks its `Judged`
+  itself, looks at its answer first too.
+- *Unchanged.* A wait that has to wait reads its party's process at its first ask; on Windows
+  that is the two listings above, and an answer that comes during the read is taken once it
+  ends.
+- *Tests* (written, not built or run: the lane's no-test rule). health.rs
+  `a_take_there_at_its_waiters_first_look_teaches_from_its_ask`: red at 3c117f5204, where the
+  judge, asked first, read this busy test process and taught the take its CPU and a W* timed
+  from that read. shards_ipc's `a_judged_wait_looks_before_its_judge_is_asked_again` (its
+  judge now never asked). Owed (ROOT): those, the daemon's handoff and join-share tests
+  (`a_vm_that_reads_nothing_and_runs_nothing_fails_its_handoff`,
+  `a_vm_slow_to_read_its_run_while_it_runs_keeps_its_handoff`,
+  `a_join_share_slow_to_take_a_volume_while_it_runs_keeps_it`) and shards_ipc's judged-wait
+  tests on Linux, macOS and Windows; and the A/B of Windows `shards run` start latency on
+  jupiter, both arms restoring one template.
+
 **What would falsify it.** A conforming client that needs to link the VMM. A VM process that
 ran no CPU for a whole W* of its kind and would still have answered: a working guest
 refused.

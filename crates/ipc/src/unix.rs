@@ -397,7 +397,9 @@ pub fn send_judged(
 /// in poll(2) until the time `judge` names, where it is asked again. `None` for the peer's
 /// end between messages.
 pub fn recv_judged(sock: &UnixStream, judge: &mut Judge<'_>) -> io::Result<Option<Message>> {
-    let mut due = judge()?;
+    // Its judge asked only once a look finds the message not whole: a due already past, so
+    // that a read first, then a poll with no wait, looks before it asks ([`Judge`]).
+    let mut due = Some(Instant::now());
     let mut incoming = Incoming::default();
     loop {
         match incoming.take(sock)? {
@@ -564,10 +566,9 @@ fn send_with(
         }
     }
     let total = HEADER + payload.len();
-    let mut due = match judge.as_deref_mut() {
-        Some(judge) => judge()?,
-        None => None,
-    };
+    // A judged send's judge asked only once a look finds no room: a due already past, so that
+    // its write first, or (macOS) a poll with no wait, looks before it asks ([`Judge`]).
+    let mut due = judge.is_some().then(Instant::now);
     let flags = if judge.is_some() { libc::MSG_DONTWAIT } else { 0 };
     #[cfg(target_os = "macos")]
     if let Some(judge) = judge.as_deref_mut() {
@@ -2383,9 +2384,10 @@ pub(crate) mod tests {
     /// Do send, judged, to a socket with room, and receive, judged, from one with a message
     /// waiting, each with a judge whose first due has passed as it answers (its first reading
     /// of its party outlasting W*) and that refuses at its next ask. Expect: both go, the judge
-    /// asked once. Red before: a wait whose due had passed asked its judge without looking at
-    /// the socket, and the judge refused a party that had nothing to do (batch 26, a daemon's
-    /// stop SIGTERM refused `Stalled` with its VM's socket empty).
+    /// never asked, as each wait looks before it asks and finds its socket ready (D215, amended
+    /// 2026-11-17; asked once before that). Red before the batch-26 cure: a wait whose due had
+    /// passed asked its judge without looking at the socket, and the judge refused a party that
+    /// had nothing to do (a daemon's stop SIGTERM refused `Stalled` with its VM's socket empty).
     #[test]
     fn a_judged_wait_looks_before_its_judge_is_asked_again() {
         let past = || {

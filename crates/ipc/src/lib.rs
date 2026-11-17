@@ -2546,8 +2546,12 @@ pub use pipe::{
 };
 
 /// When a judged wait (`send_judged`, `recv_judged`) next asks its judge, and whether it goes
-/// on: asked as the wait begins and each time the time it named passes with its stream not
-/// ready; `Ok(None)` waits on the stream's readiness alone, an error ends the wait with it.
+/// on: asked first once a look finds its stream not ready (each wait looks before it asks: its
+/// write or read itself, then a look with no wait), and each time the time it named passes
+/// with its stream not ready still; `Ok(None)` waits on the stream's readiness alone, an error
+/// ends the wait with it. A wait whose stream is ready at its first look never asks: a judge
+/// that reads its party as it is first asked reads it only where its wait has to wait (D215,
+/// amended 2026-11-17).
 pub type Judge<'a> = dyn FnMut() -> std::io::Result<Option<std::time::Instant>> + 'a;
 #[cfg(windows)]
 mod windows;

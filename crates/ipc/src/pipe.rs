@@ -1434,8 +1434,10 @@ impl Stream {
         let Some(handle) = &*guard else {
             return Err(io::ErrorKind::BrokenPipe.into());
         };
-        let mut due = match judge.as_deref_mut() {
-            Some(judge) => judge()?,
+        // A judged write's judge asked only once its write finds no room: a due already past,
+        // so that the write, then a wait of 0 ms on it, looks before it asks ([`Judge`]).
+        let mut due = match judge {
+            Some(_) => Some(Instant::now()),
             None => lock(&end.write_timeout).and_then(|t| Instant::now().checked_add(t)),
         };
         let mut left = buf;
@@ -1965,7 +1967,9 @@ pub fn recv_by(sock: &Stream, deadline: Instant) -> io::Result<Option<Message>> 
 /// names, where it is asked again, never by the stream's read timeout. A read cut at a due
 /// had moved nothing ([`Called::Late`]), so the next takes the message on where it was.
 pub fn recv_judged(sock: &Stream, judge: &mut Judge<'_>) -> io::Result<Option<Message>> {
-    let mut due = judge()?;
+    // Its judge asked only once a read finds nothing by a due already past: `read_by` looks
+    // at what is there before its deadline ([`Judge`]).
+    let mut due = Some(Instant::now());
     recv_with(sock, &mut due, Some(judge))
 }
 

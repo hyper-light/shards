@@ -825,11 +825,12 @@ impl<'a> Begun<'a> {
     }
 }
 
-/// What an exec's answer to an ask made at `asked` teaches its kind, `record` (D188, amended
-/// 2026-11-17): its time from the ask, its slowest, however it was waited for; and, where its
-/// microVM's process was followed from a look before the answer (`follow`), the work read from
-/// then, with its rate (D215: only work read through an answer teaches R* and C*). An answer
-/// there before its waiter first looked teaches its slowest alone.
+/// What an answer to an ask made at `asked` teaches its kind, `record`: an exec's (D188,
+/// amended 2026-11-17) and a judged exchange's ([`Judged`]; D215, amended 2026-11-17). Its
+/// time from the ask, its slowest, however it was waited for; and, where its party's process
+/// was followed from a look before the answer (`follow`), the work read from then, with its
+/// rate (D215: only work read through an answer teaches R* and C*). An answer there before
+/// its waiter first looked teaches its slowest alone.
 fn teach_answer(record: &Record, asked: Instant, follow: Option<&mut Follow<'_>>) {
     if let Some(follow) = follow {
         follow.answered();
@@ -933,11 +934,22 @@ fn await_exit(ours: &shards_ipc::Stream, begun: Begun<'_>) -> Ended {
 /// first answer, and once its party has gone (its socket's end then ends the wait), the
 /// socket's readiness alone; then its party looked at once each W* and the wait ended, typed
 /// ([`Stalled`]), where it ran nothing since the look before or could not be read.
+///
+/// Its clock is taken as it is made, before its ask, and its party's process is read first
+/// at its first ask, which shards_ipc's judged waits make only once a look finds their socket
+/// not ready ([`shards_ipc::Judge`]): an answer there before teaches its kind its time from
+/// the ask alone ([`teach_answer`]; D215, amended 2026-11-17). Read as its wait began, as it
+/// was, before its RUN was even sent, its process held every run's handoff for that read, on
+/// Windows a ToolHelp snapshot of every process and the system's records of every process and
+/// thread, each read of which took 13.1 to 13.8 ms on jupiter (PM M606).
 pub(super) struct Judged<'r> {
     pid: u32,
     record: &'r Record,
-    follow: Option<Follow<'r>>,
-    begun: bool,
+    /// When its exchange began, near enough: taken as it was made, before its ask.
+    asked: Instant,
+    /// Its party's process, followed from its first ask (within: none where its process had
+    /// gone); none before.
+    follow: Option<Option<Follow<'r>>>,
 }
 
 impl<'r> Judged<'r> {
@@ -945,30 +957,36 @@ impl<'r> Judged<'r> {
         Judged {
             pid,
             record,
+            asked: Instant::now(),
             follow: None,
-            begun: false,
         }
     }
 
-    /// When its wait next asks, or why it ends: asked as each wait begins, and at each time it
-    /// named that passed with the socket not ready.
+    /// When its wait next asks, or why it ends: asked once a look finds its socket not ready,
+    /// its party's process followed from then, and at each time it named that passed with the
+    /// socket not ready still.
     pub(super) fn judge(&mut self) -> std::io::Result<Option<Instant>> {
-        if !std::mem::replace(&mut self.begun, true) {
-            self.follow = following(self.pid, self.record).map_err(Stalled::error)?;
-            return Ok(self.follow.as_ref().and_then(Follow::due));
+        if self.follow.is_none() {
+            let followed = following(self.pid, self.record).map_err(Stalled::error)?;
+            let due = followed.as_ref().and_then(Follow::due);
+            self.follow = Some(followed);
+            return Ok(due);
         }
-        let Some(follow) = self.follow.as_mut() else {
+        let Some(Some(follow)) = self.follow.as_mut() else {
             return Ok(None);
         };
         follow.look().map_err(|why| Stalled::error(Cut::from(why)))?;
         Ok(follow.due())
     }
 
-    /// Its party answered: its kind learns from the answer.
+    /// Its party answered: its kind learns from the answer, its time from the ask, and the
+    /// work its follow read, where one began ([`teach_answer`]).
     pub(super) fn answered(&mut self) {
-        if let Some(follow) = self.follow.as_mut() {
-            follow.answered();
-        }
+        teach_answer(
+            self.record,
+            self.asked,
+            self.follow.as_mut().and_then(Option::as_mut),
+        );
     }
 }
 
@@ -1127,6 +1145,39 @@ mod tests {
         assert_eq!((ended.status, ended.cut), (Some(7), None));
         let shards_api::Seen::Learned { slowest, rated } = record.seen() else {
             panic!("an answer within its wait taught nothing");
+        };
+        assert!(
+            slowest >= answered,
+            "{slowest:?} from its ask, its answer {answered:?} past it"
+        );
+        assert_eq!(rated, None, "its process read before its waiter first looked");
+    }
+
+    /// A take there at its waiter's first look teaches its kind its time from the ask, whose
+    /// clock its judge takes as it is made, and its slowest alone: shards_ipc's judged waits
+    /// look before they ask their judge, which reads its party's process only at its first ask,
+    /// and none came (D215, amended 2026-11-17). Asked as the wait began, the judge read the
+    /// process before every run's TAKEN, on Windows a ToolHelp snapshot of every process and
+    /// 13.1 to 13.8 ms of the system's records (PM M606), and taught such a take the CPU this
+    /// busy test process ran meanwhile, timed from that read. Its party is this process, which
+    /// lives throughout.
+    #[test]
+    fn a_take_there_at_its_waiters_first_look_teaches_from_its_ask() {
+        let record = Record::new();
+        let (ours, theirs) = shards_ipc::Stream::pair().unwrap();
+        let mut judged = Judged::of(std::process::id(), &record);
+        let began = Instant::now();
+        // The run's way to its VM, which says it took it as it reads it.
+        std::thread::sleep(Duration::from_millis(1));
+        shards_ipc::send(&theirs, shards_ipc::kind::TAKEN, &[], &[]).unwrap();
+        let answered = began.elapsed();
+        let taken = shards_ipc::recv_judged(&ours, &mut || judged.judge())
+            .unwrap()
+            .unwrap();
+        assert_eq!(taken.kind, shards_ipc::kind::TAKEN);
+        judged.answered();
+        let shards_api::Seen::Learned { slowest, rated } = record.seen() else {
+            panic!("a take there at its waiter's first look taught nothing");
         };
         assert!(
             slowest >= answered,

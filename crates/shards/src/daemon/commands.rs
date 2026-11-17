@@ -3213,9 +3213,19 @@ fn guest_timed(
     vm: u32,
     record: &shards_api::Record,
 ) -> Result<Result<shards_vmm::vm::GuestTimes, String>, String> {
-    use std::sync::mpsc::RecvTimeoutError;
+    use std::sync::mpsc::{RecvTimeoutError, TryRecvError};
     let mut judged = super::health::Judged::of(vm, record);
     loop {
+        // Looked at before its judge is asked, as a judged wait looks: an answer there teaches
+        // its time from the ask alone, its process unread (D215, amended 2026-11-17).
+        match answer.try_recv() {
+            Ok(said) => {
+                judged.answered();
+                return Ok(said);
+            }
+            Err(TryRecvError::Disconnected) => return Err("its microVM stopped".into()),
+            Err(TryRecvError::Empty) => {}
+        }
         let due = judged
             .judge()
             .map_err(|e| format!("its microVM did not answer: {e}"))?;
