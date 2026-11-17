@@ -980,7 +980,7 @@ mod tests {
         let mut ours = pairs.clone();
         crate::compare::sort_by(&mut ours, |a, b| a.0.cmp(&b.0));
         let mut theirs = pairs;
-        theirs.sort_by(|a, b| a.0.cmp(&b.0));
+        theirs.sort_by_key(|a| a.0);
         assert_eq!(ours, theirs);
         let mut none: Vec<u8> = Vec::new();
         crate::compare::sort_by(&mut none, Ord::cmp);
