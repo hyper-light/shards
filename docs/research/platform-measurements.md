@@ -25344,9 +25344,10 @@ Numbers on HVF: the A/B of D253's cut (a), ROOT's run r644, 2026-11-17 01:41Z to
 - Host Adas-Mac-Studio-2: Mac16,9, M4 Max, 14 CPUs, 36 GiB, macOS 26.2 (25C56).
 - Run from kiln by the carrier `~/g121-tmp/cut-a-carrier` (a148e75), the A/B through
   `macos-sched/launchd-run.sh`. The condition as the run recorded it: nice 10, priorities 20, 31
-  and 97, the VM threads at 31 and 97 (no QoS clamp, M317).
-- Load averages 4.2 to 6.2 during the A/B. As it began, 9.66 of the 14 CPUs were idle by the
-  1-minute average; the carrier asks 8.
+  and 97, the VM threads at 31 and 97 (no QoS clamp, M317). kiln's log had no line on the run's
+  launchd jobs or on headroom, so kiln neither took nor paced them.
+- Load averages 4.2 to 6.2 during the A/B, which took 215 s. As it began, 9.66 of the 14 CPUs
+  were idle by the 1-minute average; the carrier asks 8.
 - A is dcac51807, main before the cut. B is 26c1ea5df, main with it; the cut's code reads the
   same at main 18bc96988.
 - B's `ab.py`, 10 rounds ABBA of N=10: n=100 per arm and kind for boot, first output and stop;
@@ -25383,7 +25384,6 @@ What each row's n can show (Le Boudec 2010, Theorem 2.1; M612's `interval`):
 - A p99 has none under n=368: all 100 samples lie below the true p99 with probability
   0.99^100 = 0.366. A max has none at any n.
 - At n=10, a p50's runs from the 2nd to the 9th sample; a p90 and a p99 have none.
-- The summary above gives no interval's ends. Those need the samples.
 
 Read, for D253 (its amendment's *Kept*):
 - The cost the cut moves is the launch's wait for its layer. In A, 6 or more of each kind's 10
@@ -25398,19 +25398,70 @@ Read, for D253 (its amendment's *Kept*):
 - Warm's first output is the request-to-usable span of the start path's 5 ms target. It was
   5.158 ms at p50 in A and 5.210 in B: over 5 ms in both.
 
-Raw results: the run's archive, `~/g121-tmp/cut-a-20261117T014123Z-Adas-Mac-Studio-2.tar.gz`
-(SHA-256 56850adbdf314599e1ef068ed3fee009c7e27924ef7f76d6d12d9fc294f61a6f), and its log beside
-it, on that Studio. Neither is in this repository yet.
+Intervals, from the samples: `python3 -I docs/research/measurements/image-start-ab/intervals.py
+docs/research/measurements/image-start-ab/results/r644/out`, its output beside the logs in
+`intervals.txt`. Its per-arm ranks repeat the table above. Each arm's 100 samples come ten to a
+process, and the rounds' own p50s spread wider than a pooled interval: A's Booted boot ran 73.563
+to 77.291 ms by round, against a pooled p50 interval of 74.420 to 75.375. So each comparison is
+read two ways:
+- **Pooled:** from B's interval's low end less A's high end, to its high end less A's low end.
+  Each bound holds at 95% at least, one-sided: each interval misses on a side with probability
+  at most 2.5%.
+- **By rounds:** the median of the ten rounds' B p50 less A p50, the two processes of a round run
+  one after the other (ABBA). Its interval is the 2nd to the 9th of the ten, which holds however
+  much processes differ.
+
+The boot, against D253's refusals; B less A, ms:
+
+| kind | pooled p50 | pooled p90 | by rounds: median, interval | the refusal | shown |
+|---|---|---|---|---|---|
+| Booted | -2.602 to -0.952 | -3.315 to 1.940 | -1.817, -2.552 to -0.262 | a fall short of 1.570 | no |
+| Saved | -4.429 to 1.186 | -8.815 to 6.972 | -1.154, -3.023 to 1.814 | a fall short of 1.441 | no |
+| Restored | -1.182 to 0.967 | -1.566 to -0.075 | -0.210, -0.938 to 0.188 | a rise | no |
+| Warm | -0.016 to 0.025 | -0.008 to 0.035 | 0.007, -0.011 to 0.027 | a rise | no |
+
+The span the wait was on, from `its microVM shaped` to `launching its VM` (n=10 an arm and kind,
+one timed pass a process; ms):
+
+| kind | A's p50, interval | B's p50, interval | pooled p50: B less A | by rounds: median, interval | A's wait |
+|---|---|---|---|---|---|
+| Booted | 7.841, 7.717 to 7.970 | 6.110, 6.064 to 6.165 | -1.906 to -1.552 | -1.751, -1.841 to -1.494 | 1.570 |
+| Saved | 7.205, 7.076 to 7.475 | 5.712, 5.568 to 5.835 | -1.907 to -1.241 | -1.498, -1.874 to -1.278 | 1.441 |
+| Restored | 6.025, 6.012 to 6.200 | 5.756, 5.713 to 5.777 | -0.487 to -0.235 | -0.274, -0.512 to -0.243 | 0.290 |
+| Warm | 6.614, 6.189 to 6.738 | 6.116, 5.714 to 6.337 | -1.024 to 0.148 | -0.475, -0.690 to -0.277 | 0.274 |
+
+Read:
+- **No interval shows either of D253's refusals.** No interval shows a rise of Restored's or
+  Warm's boot; Restored's pooled p90 shows a fall. No interval shows Booted's or Saved's boot
+  falling short of its wait.
+  - Booted's boot shows a fall at p50, pooled and by rounds.
+  - Saved's boot shows neither a fall nor a rise. Its save spreads it: A's p90 lies 10.790 ms
+    past its p50.
+- **Where the wait was, the start fell by it.** On each kind, the span from shaped to launching
+  fell by an interval that holds A's wait, or by more (Warm, by rounds), and none shows a fall
+  short of it. By rounds, Booted's fell 1.494 to 1.841 ms against a wait of 1.570, and Saved's
+  1.278 to 1.874 against 1.441. So at p50, these intervals show the thread's making costing the
+  rest of the start before its launch nothing.
+- **What r644 cannot tell:**
+  - whether the boot's p90 falls by the wait (Booted's p90 interval runs from -3.315 to 1.940);
+  - the shaped-to-launching span's p90 (no interval at n=10);
+  - every p99.
+
+  The 38-round rerun gives n=380 for the spans, where a p99 has its interval (the 372nd to the
+  380th sample), and n=38 for the timed rows, where a p90 has one (the 30th to the 38th).
+
+Raw results: `docs/research/measurements/image-start-ab/results/r644/` holds the run's 27 logs,
+as its archive held them: `out/` (each process), `run.log`, `carrier.log`, `smoke.log`,
+`looks.log`, `kiln.log` (empty: no line matched) and both builds' logs. The archive's SHA-256 is
+56850adbdf314599e1ef068ed3fee009c7e27924ef7f76d6d12d9fc294f61a6f.
 
 Owed (ROOT):
 - B's single-arm costs at N=100, with their phase timelines (where the time goes). r644's carrier
-  refused them: the Studio was no longer quiet, with 4.13 CPUs idle where 8 were asked.
-- r644's logs, committed under `docs/research/measurements/image-start-ab/results/`, and from them
-  the p50 and p90 intervals above. From their timed passes, also each start's span from `its
-  microVM shaped` to `launching its VM`, A against B (n=10), for what the thread's work costs
-  the start beside it.
-- The p99: the A/B again with 38 rounds of N=10, n=380 per arm and kind. 38 is the fewest
-  rounds whose n reaches 368 and that is even, so that each arm goes first as often.
+  refused them: the Studio was no longer quiet, with 4.13 CPUs idle where 8 were asked. They run
+  as r666, the carrier's `bash run.sh costs`.
+- The p90 and p99: the A/B again with 38 rounds of N=10, n=380 per arm and kind. 38 is the fewest
+  rounds whose n reaches 368 and that is even, so that each arm goes first as often. The
+  carrier's `bash run.sh` with `CUT_A_ROUNDS=38`.
 - All of it on KVM, and on WHP where `vm::restores_here`.
 
 ### M600. Where a loaded Mac's `shards guest use` spends its time (D215, ROOT's batch 32)

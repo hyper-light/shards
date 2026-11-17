@@ -1,0 +1,1229 @@
+=== A-0 2026-11-17T02:02:48Z load { 4.20 4.65 4.27 }
+14578 69395 10  20 SN     0.0   2496 /bin/zsh
+14591     1 10  31 SN     0.0   2272 /bin/zsh
+14593 14591 10  31 SN     0.0  17568 /Users/adalundhe/.pyenv/versions/3.14.2/bin/python3
+14627 14593 10  31 SN     0.0  69936 /Users/adalundhe/.rustup/toolchains/1.98.1-aarch64-apple-darwin/bin/cargo
+14628 14627 10  31 SN     7.0  52176 /Users/adalundhe/.cache/cut-a/a/target/release/deps/api_image-c665f96ed393319f
+19246 14628 10  31 SNs    0.7  30720 /Users/adalundhe/.cache/cut-a/a/target/e2e/shards-42f57e3b88cbd378/shards
+19248 19246 10  97 SN     0.3  14208 /Users/adalundhe/Library/Caches/shards/helpers/ce64f8cf1ef2ec792e405b75e3b0c44298fc/shards-vm
+19255 14578 10  20 SN     0.3   1184 sleep
+19265 14628 10  31 SNs    1.9  30656 /Users/adalundhe/.cache/cut-a/a/target/e2e/shards-42f57e3b88cbd378/shards
+19267 19265 10  97 SN     1.0  14160 /Users/adalundhe/Library/Caches/shards/helpers/ce64f8cf1ef2ec792e405b75e3b0c44298fc/shards-vm
+USER        PID   TT   %CPU STAT PRI     STIME     UTIME COMMAND
+adalundhe 19248   ??    0.3 S    31T   0:00.00   0:00.00 /Users/adalundhe/Librar
+          19248         0.0 S    31T   0:00.00   0:00.00 
+          19248         0.0 S    31T   0:00.00   0:00.00 
+          19248         0.0 S    31T   0:00.00   0:00.00 
+          19248         0.0 S    97R   0:00.00   0:00.00 
+          19248         0.0 S    97R   0:00.00   0:00.00 
+          19248         0.0 S    97R   0:00.00   0:00.00 
+          19248         0.0 S    97R   0:00.00   0:00.00 
+          19248         0.0 S    97R   0:00.00   0:00.00 
+          19248         0.0 S    97R   0:00.00   0:00.00 
+          19248         0.0 S    97R   0:00.00   0:00.00 
+          19248         0.0 S    97R   0:00.00   0:00.00 
+          19248         0.0 S    97R   0:00.00   0:00.00 
+          19248         0.0 S    97R   0:00.00   0:00.00 
+          19248         0.0 S    97R   0:00.00   0:00.00 
+          19248         0.0 S    97R   0:00.00   0:00.00 
+          19248         0.0 S    31T   0:00.00   0:00.00 
+          19248         0.0 S    31T   0:00.00   0:00.00 
+          19248         0.0 S    31T   0:00.00   0:00.00 
+USER        PID   TT   %CPU STAT PRI     STIME     UTIME COMMAND
+adalundhe 19267   ??    0.9 S    31T   0:00.00   0:00.00 /Users/adalundhe/Librar
+          19267         0.0 S    31T   0:00.00   0:00.00 
+          19267         0.0 S    31T   0:00.00   0:00.00 
+          19267         0.0 S    31T   0:00.00   0:00.00 
+          19267         0.1 S    97R   0:00.00   0:00.00 
+          19267         0.0 S    97R   0:00.00   0:00.00 
+          19267         0.0 S    97R   0:00.00   0:00.00 
+          19267         0.0 S    97R   0:00.00   0:00.00 
+          19267         0.0 S    97R   0:00.00   0:00.00 
+          19267         0.0 S    97R   0:00.00   0:00.00 
+          19267         0.0 S    97R   0:00.00   0:00.00 
+          19267         0.0 S    97R   0:00.00   0:00.00 
+          19267         0.0 S    97R   0:00.00   0:00.00 
+          19267         0.0 S    97R   0:00.00   0:00.00 
+          19267         0.0 S    97R   0:00.00   0:00.00 
+          19267         0.0 S    97R   0:00.00   0:00.00 
+          19267         0.0 S    31T   0:00.00   0:00.00 
+          19267         0.0 S    31T   0:00.00   0:00.00 
+          19267         0.0 S    31T   0:00.00   0:00.00 
+=== B-0 2026-11-17T02:03:28Z load { 4.71 4.72 4.32 }
+14578 69395 10  20 SN     0.0   2496 /bin/zsh
+14591     1 10  31 SN     0.0   2272 /bin/zsh
+14593 14591 10  31 SN     0.0  17568 /Users/adalundhe/.pyenv/versions/3.14.2/bin/python3
+19638 14593 10  31 SN     0.0  70544 /Users/adalundhe/.rustup/toolchains/1.98.1-aarch64-apple-darwin/bin/cargo
+19640 19638 10  31 SN     9.5  52176 /Users/adalundhe/.cache/cut-a/b/target/release/deps/api_image-c665f96ed393319f
+24264 14578 10  20 SN     0.1   1184 sleep
+24269 19640 10  31 SNs    1.6  31056 /Users/adalundhe/.cache/cut-a/b/target/e2e/shards-cb93be605a552cfd/shards
+24270 24269 10  97 SN     1.0  14128 /Users/adalundhe/Library/Caches/shards/helpers/044b6b23be4d35b90f34765de3b0c44298fc/shards-vm
+24284 19640 10  31 SNs    2.9  30896 /Users/adalundhe/.cache/cut-a/b/target/e2e/shards-cb93be605a552cfd/shards
+24285 24284 10  97 SN     1.6  14528 /Users/adalundhe/Library/Caches/shards/helpers/044b6b23be4d35b90f34765de3b0c44298fc/shards-vm
+24286 19640 10  31 SNs    2.8  30832 /Users/adalundhe/.cache/cut-a/b/target/e2e/shards-cb93be605a552cfd/shards
+24289 24286 10  97 RN     0.0 152128 /Users/adalundhe/Library/Caches/shards/helpers/044b6b23be4d35b90f34765de3b0c44298fc/shards-vm
+USER        PID   TT   %CPU STAT PRI     STIME     UTIME COMMAND
+adalundhe 24270   ??    0.9 S    31T   0:00.00   0:00.00 /Users/adalundhe/Librar
+          24270         0.0 S    31T   0:00.00   0:00.00 
+          24270         0.0 S    31T   0:00.00   0:00.00 
+          24270         0.0 S    31T   0:00.00   0:00.00 
+          24270         0.1 S    97R   0:00.00   0:00.00 
+          24270         0.0 S    97R   0:00.00   0:00.00 
+          24270         0.0 S    97R   0:00.00   0:00.00 
+          24270         0.0 S    97R   0:00.00   0:00.00 
+          24270         0.0 S    97R   0:00.00   0:00.00 
+          24270         0.0 S    97R   0:00.00   0:00.00 
+          24270         0.0 S    97R   0:00.00   0:00.00 
+          24270         0.0 S    97R   0:00.00   0:00.00 
+          24270         0.0 S    97R   0:00.00   0:00.00 
+          24270         0.0 S    97R   0:00.00   0:00.00 
+          24270         0.0 S    97R   0:00.00   0:00.00 
+          24270         0.0 S    97R   0:00.00   0:00.00 
+          24270         0.0 S    31T   0:00.00   0:00.00 
+          24270         0.0 S    31T   0:00.00   0:00.00 
+          24270         0.0 S    31T   0:00.00   0:00.00 
+USER        PID   TT   %CPU STAT PRI     STIME     UTIME COMMAND
+adalundhe 24285   ??    1.6 S    31T   0:00.00   0:00.00 /Users/adalundhe/Librar
+          24285         0.0 S    31T   0:00.00   0:00.00 
+          24285         0.0 S    31T   0:00.00   0:00.00 
+          24285         0.0 S    31T   0:00.00   0:00.00 
+          24285         0.0 S    97R   0:00.00   0:00.00 
+          24285         0.0 S    97R   0:00.00   0:00.00 
+          24285         0.0 S    97R   0:00.00   0:00.00 
+          24285         0.0 S    97R   0:00.00   0:00.00 
+          24285         0.0 S    97R   0:00.00   0:00.00 
+          24285         0.0 S    97R   0:00.00   0:00.00 
+          24285         0.0 S    97R   0:00.00   0:00.00 
+          24285         0.0 S    97R   0:00.00   0:00.00 
+          24285         0.0 S    97R   0:00.00   0:00.00 
+          24285         0.0 S    97R   0:00.00   0:00.00 
+          24285         0.0 S    97R   0:00.00   0:00.00 
+          24285         0.0 S    97R   0:00.00   0:00.00 
+          24285         0.0 S    31T   0:00.00   0:00.00 
+          24285         0.0 S    31T   0:00.00   0:00.00 
+          24285         0.0 S    31T   0:00.00   0:00.00 
+USER        PID   TT   %CPU STAT PRI     STIME     UTIME COMMAND
+adalundhe 24289   ??    0.0 S    31T   0:00.00   0:00.00 /Users/adalundhe/Librar
+          24289         0.0 S    31T   0:00.00   0:00.00 
+          24289         0.0 S    31T   0:00.00   0:00.00 
+          24289         0.0 S    31T   0:00.00   0:00.00 
+          24289         0.0 R    97R   0:00.01   0:00.03 
+          24289         0.0 S    97R   0:00.00   0:00.00 
+          24289         0.0 S    31T   0:00.00   0:00.00 
+          24289         0.0 S    97R   0:00.00   0:00.00 
+          24289         0.0 S    97R   0:00.00   0:00.00 
+          24289         0.0 S    97R   0:00.00   0:00.00 
+          24289         0.0 S    97R   0:00.00   0:00.00 
+          24289         0.0 S    97R   0:00.00   0:00.00 
+          24289         0.0 S    97R   0:00.00   0:00.00 
+          24289         0.0 S    97R   0:00.00   0:00.00 
+          24289         0.0 S    97R   0:00.00   0:00.00 
+          24289         0.0 S    97R   0:00.00   0:00.00 
+          24289         0.0 S    97R   0:00.00   0:00.00 
+=== B-1 2026-11-17T02:03:39Z load { 4.22 4.61 4.28 }
+14578 69395 10  20 SN     0.0   2496 /bin/zsh
+14591     1 10  31 SN     0.0   2272 /bin/zsh
+14593 14591 10  31 SN     0.0  17616 /Users/adalundhe/.pyenv/versions/3.14.2/bin/python3
+24656 14593 10  31 SN     0.0  70320 /Users/adalundhe/.rustup/toolchains/1.98.1-aarch64-apple-darwin/bin/cargo
+24657 24656 10  31 RN     9.1  70816 /Users/adalundhe/.cache/cut-a/b/target/release/deps/api_image-c665f96ed393319f
+24785 14578 10  20 SN     0.2   1184 sleep
+24788 24657 10  31 SNs    0.7  31216 /Users/adalundhe/.cache/cut-a/b/target/e2e/shards-cb93be605a552cfd/shards
+24790 24788 10  97 SN     0.3  14432 /Users/adalundhe/Library/Caches/shards/helpers/044b6b23be4d35b90f34765de3b0c44298fc/shards-vm
+24794 24657 10  31 SNs    3.0  30832 /Users/adalundhe/.cache/cut-a/b/target/e2e/shards-cb93be605a552cfd/shards
+24796 24794 10  97 SN     1.7  14768 /Users/adalundhe/Library/Caches/shards/helpers/044b6b23be4d35b90f34765de3b0c44298fc/shards-vm
+24798 24657 10  31 SNs    2.8  42720 /Users/adalundhe/.cache/cut-a/b/target/e2e/shards-cb93be605a552cfd/shards
+24799 24798 10  97 RN     2.6 294848 /Users/adalundhe/Library/Caches/shards/helpers/044b6b23be4d35b90f34765de3b0c44298fc/shards-vm
+USER        PID   TT   %CPU STAT PRI     STIME     UTIME COMMAND
+adalundhe 24790   ??    0.3 S    31T   0:00.00   0:00.00 /Users/adalundhe/Librar
+          24790         0.0 S    31T   0:00.00   0:00.00 
+          24790         0.0 S    31T   0:00.00   0:00.00 
+          24790         0.0 S    31T   0:00.00   0:00.00 
+          24790         0.0 S    97R   0:00.00   0:00.00 
+          24790         0.0 S    97R   0:00.00   0:00.00 
+          24790         0.0 S    97R   0:00.00   0:00.00 
+          24790         0.0 S    97R   0:00.00   0:00.00 
+          24790         0.0 S    97R   0:00.00   0:00.00 
+          24790         0.0 S    97R   0:00.00   0:00.00 
+          24790         0.0 S    97R   0:00.00   0:00.00 
+          24790         0.0 S    97R   0:00.00   0:00.00 
+          24790         0.0 S    97R   0:00.00   0:00.00 
+          24790         0.0 S    97R   0:00.00   0:00.00 
+          24790         0.0 S    97R   0:00.00   0:00.00 
+          24790         0.0 S    97R   0:00.00   0:00.00 
+          24790         0.0 S    31T   0:00.00   0:00.00 
+          24790         0.0 S    31T   0:00.00   0:00.00 
+          24790         0.0 S    31T   0:00.00   0:00.00 
+USER        PID   TT   %CPU STAT PRI     STIME     UTIME COMMAND
+adalundhe 24796   ??    1.5 S    31T   0:00.00   0:00.00 /Users/adalundhe/Librar
+          24796         0.0 S    31T   0:00.00   0:00.00 
+          24796         0.0 S    31T   0:00.00   0:00.00 
+          24796         0.0 S    31T   0:00.00   0:00.00 
+          24796         0.2 S    97R   0:00.00   0:00.00 
+          24796         0.0 S    97R   0:00.00   0:00.00 
+          24796         0.0 S    97R   0:00.00   0:00.00 
+          24796         0.0 S    97R   0:00.00   0:00.00 
+          24796         0.0 S    97R   0:00.00   0:00.00 
+          24796         0.0 S    97R   0:00.00   0:00.00 
+          24796         0.0 S    97R   0:00.00   0:00.00 
+          24796         0.0 S    97R   0:00.00   0:00.00 
+          24796         0.0 S    97R   0:00.00   0:00.00 
+          24796         0.0 S    97R   0:00.00   0:00.00 
+          24796         0.0 S    97R   0:00.00   0:00.00 
+          24796         0.0 S    97R   0:00.00   0:00.00 
+          24796         0.0 S    31T   0:00.00   0:00.00 
+          24796         0.0 S    31T   0:00.00   0:00.00 
+          24796         0.0 S    31T   0:00.00   0:00.00 
+USER        PID   TT   %CPU STAT PRI     STIME     UTIME COMMAND
+adalundhe 24799   ??    1.5 S    31T   0:00.00   0:00.00 /Users/adalundhe/Librar
+          24799         0.0 S    31T   0:00.00   0:00.00 
+          24799         0.0 S    31T   0:00.00   0:00.00 
+          24799         0.0 S    31T   0:00.00   0:00.00 
+          24799         0.0 S    31T   0:00.00   0:00.00 
+          24799         0.0 S    31T   0:00.00   0:00.00 
+          24799         0.0 R    31T   0:00.02   0:00.01 
+          24799         1.1 S    97R   0:00.01   0:00.05 
+          24799         0.0 S    97R   0:00.00   0:00.00 
+          24799         0.0 S    31T   0:00.00   0:00.00 
+=== A-1 2026-11-17T02:03:45Z load { 4.60 4.69 4.31 }
+14578 69395 10  20 SN     0.0   2496 /bin/zsh
+14591     1 10  31 SN     0.0   2272 /bin/zsh
+14593 14591 10  31 SN     0.0  17616 /Users/adalundhe/.pyenv/versions/3.14.2/bin/python3
+25175 14593 10  31 SN     0.0  70528 /Users/adalundhe/.rustup/toolchains/1.98.1-aarch64-apple-darwin/bin/cargo
+25176 25175 10  31 SN     9.0  70752 /Users/adalundhe/.cache/cut-a/a/target/release/deps/api_image-c665f96ed393319f
+25259 14578 10  20 SN     0.2   1184 sleep
+25262 25176 10  31 SNs    0.7  30720 /Users/adalundhe/.cache/cut-a/a/target/e2e/shards-42f57e3b88cbd378/shards
+25264 25262 10  97 SN     0.3  14144 /Users/adalundhe/Library/Caches/shards/helpers/ce64f8cf1ef2ec792e405b75e3b0c44298fc/shards-vm
+25269 25176 10  31 SNs    3.2  30640 /Users/adalundhe/.cache/cut-a/a/target/e2e/shards-42f57e3b88cbd378/shards
+25275 25269 10  97 SN     1.7  14784 /Users/adalundhe/Library/Caches/shards/helpers/ce64f8cf1ef2ec792e405b75e3b0c44298fc/shards-vm
+25281 25176 10  31 SNs    3.2  42592 /Users/adalundhe/.cache/cut-a/a/target/e2e/shards-42f57e3b88cbd378/shards
+25283 25281 10  97 RN     0.0 134896 /Users/adalundhe/Library/Caches/shards/helpers/ce64f8cf1ef2ec792e405b75e3b0c44298fc/shards-vm
+USER        PID   TT   %CPU STAT PRI     STIME     UTIME COMMAND
+adalundhe 25264   ??    0.3 S    31T   0:00.00   0:00.00 /Users/adalundhe/Librar
+          25264         0.0 S    31T   0:00.00   0:00.00 
+          25264         0.0 S    31T   0:00.00   0:00.00 
+          25264         0.0 S    31T   0:00.00   0:00.00 
+          25264         0.0 S    97R   0:00.00   0:00.00 
+          25264         0.0 S    97R   0:00.00   0:00.00 
+          25264         0.0 S    97R   0:00.00   0:00.00 
+          25264         0.0 S    97R   0:00.00   0:00.00 
+          25264         0.0 S    97R   0:00.00   0:00.00 
+          25264         0.0 S    97R   0:00.00   0:00.00 
+          25264         0.0 S    97R   0:00.00   0:00.00 
+          25264         0.0 S    97R   0:00.00   0:00.00 
+          25264         0.0 S    97R   0:00.00   0:00.00 
+          25264         0.0 S    97R   0:00.00   0:00.00 
+          25264         0.0 S    97R   0:00.00   0:00.00 
+          25264         0.0 S    97R   0:00.00   0:00.00 
+          25264         0.0 S    31T   0:00.00   0:00.00 
+          25264         0.0 S    31T   0:00.00   0:00.00 
+          25264         0.0 S    31T   0:00.00   0:00.00 
+USER        PID   TT   %CPU STAT PRI     STIME     UTIME COMMAND
+adalundhe 25275   ??    1.5 S    31T   0:00.00   0:00.00 /Users/adalundhe/Librar
+          25275         0.0 S    31T   0:00.00   0:00.00 
+          25275         0.0 S    31T   0:00.00   0:00.00 
+          25275         0.0 S    31T   0:00.00   0:00.00 
+          25275         0.2 S    97R   0:00.00   0:00.00 
+          25275         0.0 S    97R   0:00.00   0:00.00 
+          25275         0.0 S    97R   0:00.00   0:00.00 
+          25275         0.0 S    97R   0:00.00   0:00.00 
+          25275         0.0 S    97R   0:00.00   0:00.00 
+          25275         0.0 S    97R   0:00.00   0:00.00 
+          25275         0.0 S    97R   0:00.00   0:00.00 
+          25275         0.0 S    97R   0:00.00   0:00.00 
+          25275         0.0 S    97R   0:00.00   0:00.00 
+          25275         0.0 S    97R   0:00.00   0:00.00 
+          25275         0.0 S    97R   0:00.00   0:00.00 
+          25275         0.0 S    97R   0:00.00   0:00.00 
+          25275         0.0 S    31T   0:00.00   0:00.00 
+          25275         0.0 S    31T   0:00.00   0:00.00 
+          25275         0.0 S    31T   0:00.00   0:00.00 
+USER        PID   TT   %CPU STAT PRI     STIME     UTIME COMMAND
+adalundhe 25283   ??    0.0 S    31T   0:00.00   0:00.00 /Users/adalundhe/Librar
+          25283         0.0 S    31T   0:00.00   0:00.00 
+          25283         0.0 S    31T   0:00.00   0:00.00 
+          25283         0.0 S    31T   0:00.00   0:00.00 
+          25283         0.0 S    31T   0:00.00   0:00.00 
+          25283         0.0 S    31T   0:00.00   0:00.00 
+          25283         0.0 S    31T   0:00.00   0:00.00 
+          25283         0.0 R    97R   0:00.01   0:00.03 
+          25283         0.0 S    97R   0:00.00   0:00.00 
+          25283         0.0 S    31T   0:00.00   0:00.00 
+          25283         0.0 S    97R   0:00.00   0:00.00 
+          25283         0.0 S    97R   0:00.00   0:00.00 
+          25283         0.0 S    97R   0:00.00   0:00.00 
+          25283         0.0 S    97R   0:00.00   0:00.00 
+          25283         0.0 S    97R   0:00.00   0:00.00 
+          25283         0.0 S    97R   0:00.00   0:00.00 
+          25283         0.0 S    97R   0:00.00   0:00.00 
+          25283         0.0 S    97R   0:00.00   0:00.00 
+          25283         0.0 S    97R   0:00.00   0:00.00 
+          25283         0.0 S    97R   0:00.00   0:00.00 
+=== A-2 2026-11-17T02:03:51Z load { 4.40 4.64 4.30 }
+14578 69395 10  20 SN     0.0   2496 /bin/zsh
+14591     1 10  31 SN     0.0   2272 /bin/zsh
+14593 14591 10  31 SN     0.0  17616 /Users/adalundhe/.pyenv/versions/3.14.2/bin/python3
+25637 14593 10  31 SN     0.0  70736 /Users/adalundhe/.rustup/toolchains/1.98.1-aarch64-apple-darwin/bin/cargo
+25638 25637 10  31 SN     7.8  70784 /Users/adalundhe/.cache/cut-a/a/target/release/deps/api_image-c665f96ed393319f
+25729 14578 10  20 SN     0.2   1184 sleep
+25783 25638 10  31 SNs    2.1  30752 /Users/adalundhe/.cache/cut-a/a/target/e2e/shards-42f57e3b88cbd378/shards
+25784 25638 10  31 SNs    2.0  30640 /Users/adalundhe/.cache/cut-a/a/target/e2e/shards-42f57e3b88cbd378/shards
+25787 25783 10  97 SN     1.0  14640 /Users/adalundhe/Library/Caches/shards/helpers/ce64f8cf1ef2ec792e405b75e3b0c44298fc/shards-vm
+25788 25784 10  97 SN     1.1  14768 /Users/adalundhe/Library/Caches/shards/helpers/ce64f8cf1ef2ec792e405b75e3b0c44298fc/shards-vm
+25796 25638 10  31 SNs    3.1  42608 /Users/adalundhe/.cache/cut-a/a/target/e2e/shards-42f57e3b88cbd378/shards
+25797 25796 10  97 RN    18.1 279760 /Users/adalundhe/Library/Caches/shards/helpers/ce64f8cf1ef2ec792e405b75e3b0c44298fc/shards-vm
+USER        PID   TT   %CPU STAT PRI     STIME     UTIME COMMAND
+adalundhe 25787   ??    0.9 S    31T   0:00.00   0:00.00 /Users/adalundhe/Librar
+          25787         0.0 S    31T   0:00.00   0:00.00 
+          25787         0.0 S    31T   0:00.00   0:00.00 
+          25787         0.0 S    31T   0:00.00   0:00.00 
+          25787         0.1 S    97R   0:00.00   0:00.00 
+          25787         0.0 S    97R   0:00.00   0:00.00 
+          25787         0.0 S    97R   0:00.00   0:00.00 
+          25787         0.0 S    97R   0:00.00   0:00.00 
+          25787         0.0 S    97R   0:00.00   0:00.00 
+          25787         0.0 S    97R   0:00.00   0:00.00 
+          25787         0.0 S    97R   0:00.00   0:00.00 
+          25787         0.0 S    97R   0:00.00   0:00.00 
+          25787         0.0 S    97R   0:00.00   0:00.00 
+          25787         0.0 S    97R   0:00.00   0:00.00 
+          25787         0.0 S    97R   0:00.00   0:00.00 
+          25787         0.0 S    97R   0:00.00   0:00.00 
+          25787         0.0 S    31T   0:00.00   0:00.00 
+          25787         0.0 S    31T   0:00.00   0:00.00 
+          25787         0.0 S    31T   0:00.00   0:00.00 
+USER        PID   TT   %CPU STAT PRI     STIME     UTIME COMMAND
+adalundhe 25788   ??    1.0 S    31T   0:00.00   0:00.00 /Users/adalundhe/Librar
+          25788         0.0 S    31T   0:00.00   0:00.00 
+          25788         0.0 S    31T   0:00.00   0:00.00 
+          25788         0.0 S    31T   0:00.00   0:00.00 
+          25788         0.1 S    97R   0:00.00   0:00.00 
+          25788         0.0 S    97R   0:00.00   0:00.00 
+          25788         0.0 S    97R   0:00.00   0:00.00 
+          25788         0.0 S    97R   0:00.00   0:00.00 
+          25788         0.0 S    97R   0:00.00   0:00.00 
+          25788         0.0 S    97R   0:00.00   0:00.00 
+          25788         0.0 S    97R   0:00.00   0:00.00 
+          25788         0.0 S    97R   0:00.00   0:00.00 
+          25788         0.0 S    97R   0:00.00   0:00.00 
+          25788         0.0 S    97R   0:00.00   0:00.00 
+          25788         0.0 S    97R   0:00.00   0:00.00 
+          25788         0.0 S    97R   0:00.00   0:00.00 
+          25788         0.0 S    31T   0:00.00   0:00.00 
+          25788         0.0 S    31T   0:00.00   0:00.00 
+          25788         0.0 S    31T   0:00.00   0:00.00 
+USER        PID   TT   %CPU STAT PRI     STIME     UTIME COMMAND
+adalundhe 25797   ??    1.5 S    31T   0:00.00   0:00.00 /Users/adalundhe/Librar
+          25797         0.0 S    31T   0:00.00   0:00.00 
+          25797         0.0 S    31T   0:00.00   0:00.00 
+          25797         0.0 S    31T   0:00.00   0:00.00 
+          25797         0.0 S    31T   0:00.00   0:00.00 
+          25797         0.0 S    31T   0:00.00   0:00.00 
+          25797         0.0 R    31T   0:00.02   0:00.01 
+          25797        16.6 S    97R   0:00.01   0:00.05 
+          25797         0.0 S    97R   0:00.00   0:00.00 
+          25797         0.0 S    31T   0:00.00   0:00.00 
+=== B-2 2026-11-17T02:03:58Z load { 4.49 4.65 4.30 }
+14578 69395 10  20 SN     0.0   2496 /bin/zsh
+14591     1 10  31 SN     0.0   2272 /bin/zsh
+14593 14591 10  31 SN     0.0  17616 /Users/adalundhe/.pyenv/versions/3.14.2/bin/python3
+26359 14593 10  31 SN     0.0  70720 /Users/adalundhe/.rustup/toolchains/1.98.1-aarch64-apple-darwin/bin/cargo
+26361 26359 10  31 SN     8.5  70704 /Users/adalundhe/.cache/cut-a/b/target/release/deps/api_image-c665f96ed393319f
+26410 14578 10  20 SN     0.1   1184 sleep
+26428 26361 10  31 SNs    3.0  30816 /Users/adalundhe/.cache/cut-a/b/target/e2e/shards-cb93be605a552cfd/shards
+26429 26361 10  31 SNs    2.9  30976 /Users/adalundhe/.cache/cut-a/b/target/e2e/shards-cb93be605a552cfd/shards
+26431 26428 10  97 SN     1.6  14768 /Users/adalundhe/Library/Caches/shards/helpers/044b6b23be4d35b90f34765de3b0c44298fc/shards-vm
+26432 26429 10  97 SN     1.8  14736 /Users/adalundhe/Library/Caches/shards/helpers/044b6b23be4d35b90f34765de3b0c44298fc/shards-vm
+26434 26361 10  31 SNs    2.8  42736 /Users/adalundhe/.cache/cut-a/b/target/e2e/shards-cb93be605a552cfd/shards
+26435 26434 10  97 RN     1.6 251184 /Users/adalundhe/Library/Caches/shards/helpers/044b6b23be4d35b90f34765de3b0c44298fc/shards-vm
+USER        PID   TT   %CPU STAT PRI     STIME     UTIME COMMAND
+adalundhe 26431   ??    1.5 S    31T   0:00.00   0:00.00 /Users/adalundhe/Librar
+          26431         0.0 S    31T   0:00.00   0:00.00 
+          26431         0.0 S    31T   0:00.00   0:00.00 
+          26431         0.0 S    31T   0:00.00   0:00.00 
+          26431         0.1 S    97R   0:00.00   0:00.00 
+          26431         0.0 S    97R   0:00.00   0:00.00 
+          26431         0.0 S    97R   0:00.00   0:00.00 
+          26431         0.0 S    97R   0:00.00   0:00.00 
+          26431         0.0 S    97R   0:00.00   0:00.00 
+          26431         0.0 S    97R   0:00.00   0:00.00 
+          26431         0.0 S    97R   0:00.00   0:00.00 
+          26431         0.0 S    97R   0:00.00   0:00.00 
+          26431         0.0 S    97R   0:00.00   0:00.00 
+          26431         0.0 S    97R   0:00.00   0:00.00 
+          26431         0.0 S    97R   0:00.00   0:00.00 
+          26431         0.0 S    97R   0:00.00   0:00.00 
+          26431         0.0 S    31T   0:00.00   0:00.00 
+          26431         0.0 S    31T   0:00.00   0:00.00 
+          26431         0.0 S    31T   0:00.00   0:00.00 
+USER        PID   TT   %CPU STAT PRI     STIME     UTIME COMMAND
+adalundhe 26432   ??    1.6 S    31T   0:00.00   0:00.00 /Users/adalundhe/Librar
+          26432         0.0 S    31T   0:00.00   0:00.00 
+          26432         0.0 S    31T   0:00.00   0:00.00 
+          26432         0.0 S    31T   0:00.00   0:00.00 
+          26432         0.2 S    97R   0:00.00   0:00.00 
+          26432         0.0 S    97R   0:00.00   0:00.00 
+          26432         0.0 S    97R   0:00.00   0:00.00 
+          26432         0.0 S    97R   0:00.00   0:00.00 
+          26432         0.0 S    97R   0:00.00   0:00.00 
+          26432         0.0 S    97R   0:00.00   0:00.00 
+          26432         0.0 S    97R   0:00.00   0:00.00 
+          26432         0.0 S    97R   0:00.00   0:00.00 
+          26432         0.0 S    97R   0:00.00   0:00.00 
+          26432         0.0 S    97R   0:00.00   0:00.00 
+          26432         0.0 S    97R   0:00.00   0:00.00 
+          26432         0.0 S    97R   0:00.00   0:00.00 
+          26432         0.0 S    31T   0:00.00   0:00.00 
+          26432         0.0 S    31T   0:00.00   0:00.00 
+          26432         0.0 S    31T   0:00.00   0:00.00 
+USER        PID   TT   %CPU STAT PRI     STIME     UTIME COMMAND
+adalundhe 26435   ??    1.5 S    31T   0:00.00   0:00.00 /Users/adalundhe/Librar
+          26435         0.0 S    31T   0:00.00   0:00.00 
+          26435         0.0 S    31T   0:00.00   0:00.00 
+          26435         0.0 S    31T   0:00.00   0:00.00 
+          26435         0.0 S    31T   0:00.00   0:00.00 
+          26435         0.0 S    31T   0:00.00   0:00.00 
+          26435         0.0 R    31T   0:00.00   0:00.00 
+          26435         0.1 S    97R   0:00.01   0:00.05 
+          26435         0.0 S    97R   0:00.00   0:00.00 
+          26435         0.0 S    31T   0:00.00   0:00.00 
+=== B-3 2026-11-17T02:04:08Z load { 4.49 4.65 4.31 }
+14578 69395 10  20 SN     0.0   2496 /bin/zsh
+14591     1 10  31 SN     0.0   2272 /bin/zsh
+14593 14591 10  31 SN     0.0  17616 /Users/adalundhe/.pyenv/versions/3.14.2/bin/python3
+26825 14593 10  31 SN     0.0  70496 /Users/adalundhe/.rustup/toolchains/1.98.1-aarch64-apple-darwin/bin/cargo
+26828 26825 10  31 SN    10.0  70720 /Users/adalundhe/.cache/cut-a/b/target/release/deps/api_image-c665f96ed393319f
+26939 14578 10  20 SN     0.0   1184 sleep
+26950 26828 10  31 SNs    1.9  30912 /Users/adalundhe/.cache/cut-a/b/target/e2e/shards-cb93be605a552cfd/shards
+26952 26950 10  97 SN     1.0  14128 /Users/adalundhe/Library/Caches/shards/helpers/044b6b23be4d35b90f34765de3b0c44298fc/shards-vm
+26959 26828 10  31 SNs    2.2  30864 /Users/adalundhe/.cache/cut-a/b/target/e2e/shards-cb93be605a552cfd/shards
+26964 26959 10  97 SN     1.7  14752 /Users/adalundhe/Library/Caches/shards/helpers/044b6b23be4d35b90f34765de3b0c44298fc/shards-vm
+26967 26828 10  31 SNs    2.8  42672 /Users/adalundhe/.cache/cut-a/b/target/e2e/shards-cb93be605a552cfd/shards
+26968 26967 10  97 RN     8.1 324800 /Users/adalundhe/Library/Caches/shards/helpers/044b6b23be4d35b90f34765de3b0c44298fc/shards-vm
+USER        PID   TT   %CPU STAT PRI     STIME     UTIME COMMAND
+adalundhe 26952   ??    0.9 S    31T   0:00.00   0:00.00 /Users/adalundhe/Librar
+          26952         0.0 S    31T   0:00.00   0:00.00 
+          26952         0.0 S    31T   0:00.00   0:00.00 
+          26952         0.0 S    31T   0:00.00   0:00.00 
+          26952         0.1 S    97R   0:00.00   0:00.00 
+          26952         0.0 S    97R   0:00.00   0:00.00 
+          26952         0.0 S    97R   0:00.00   0:00.00 
+          26952         0.0 S    97R   0:00.00   0:00.00 
+          26952         0.0 S    97R   0:00.00   0:00.00 
+          26952         0.0 S    97R   0:00.00   0:00.00 
+          26952         0.0 S    97R   0:00.00   0:00.00 
+          26952         0.0 S    97R   0:00.00   0:00.00 
+          26952         0.0 S    97R   0:00.00   0:00.00 
+          26952         0.0 S    97R   0:00.00   0:00.00 
+          26952         0.0 S    97R   0:00.00   0:00.00 
+          26952         0.0 S    97R   0:00.00   0:00.00 
+          26952         0.0 S    31T   0:00.00   0:00.00 
+          26952         0.0 S    31T   0:00.00   0:00.00 
+          26952         0.0 S    31T   0:00.00   0:00.00 
+USER        PID   TT   %CPU STAT PRI     STIME     UTIME COMMAND
+adalundhe 26964   ??    1.5 S    31T   0:00.00   0:00.00 /Users/adalundhe/Librar
+          26964         0.0 S    31T   0:00.00   0:00.00 
+          26964         0.0 S    31T   0:00.00   0:00.00 
+          26964         0.0 S    31T   0:00.00   0:00.00 
+          26964         0.2 S    97R   0:00.00   0:00.00 
+          26964         0.0 S    97R   0:00.00   0:00.00 
+          26964         0.0 S    97R   0:00.00   0:00.00 
+          26964         0.0 S    97R   0:00.00   0:00.00 
+          26964         0.0 S    97R   0:00.00   0:00.00 
+          26964         0.0 S    97R   0:00.00   0:00.00 
+          26964         0.0 S    97R   0:00.00   0:00.00 
+          26964         0.0 S    97R   0:00.00   0:00.00 
+          26964         0.0 S    97R   0:00.00   0:00.00 
+          26964         0.0 S    97R   0:00.00   0:00.00 
+          26964         0.0 S    97R   0:00.00   0:00.00 
+          26964         0.0 S    97R   0:00.00   0:00.00 
+          26964         0.0 S    31T   0:00.00   0:00.00 
+          26964         0.0 S    31T   0:00.00   0:00.00 
+          26964         0.0 S    31T   0:00.00   0:00.00 
+USER        PID   TT   %CPU STAT PRI     STIME     UTIME COMMAND
+adalundhe 26968   ??    1.5 S    31T   0:00.00   0:00.00 /Users/adalundhe/Librar
+          26968         0.0 S    31T   0:00.00   0:00.00 
+          26968         0.0 S    31T   0:00.00   0:00.00 
+          26968         0.0 S    31T   0:00.00   0:00.00 
+          26968         0.0 S    31T   0:00.00   0:00.00 
+          26968         0.0 S    31T   0:00.00   0:00.00 
+          26968         0.0 R    31T   0:00.02   0:00.01 
+          26968         6.6 S    97R   0:00.01   0:00.05 
+          26968         0.0 S    97R   0:00.00   0:00.00 
+          26968         0.0 S    31T   0:00.00   0:00.00 
+=== A-3 2026-11-17T02:04:15Z load { 4.37 4.62 4.30 }
+14578 69395 10  20 SN     0.0   2496 /bin/zsh
+14591     1 10  31 SN     0.0   2272 /bin/zsh
+14593 14591 10  31 SN     0.0  17616 /Users/adalundhe/.pyenv/versions/3.14.2/bin/python3
+27341 14593 10  31 SN     0.0  70288 /Users/adalundhe/.rustup/toolchains/1.98.1-aarch64-apple-darwin/bin/cargo
+27343 27341 10  31 SN    11.2  70720 /Users/adalundhe/.cache/cut-a/a/target/release/deps/api_image-c665f96ed393319f
+27413 14578 10  20 SN     0.1   1184 sleep
+27422 27343 10  31 SNs    1.9  30592 /Users/adalundhe/.cache/cut-a/a/target/e2e/shards-42f57e3b88cbd378/shards
+27424 27422 10  97 SN     1.1  14160 /Users/adalundhe/Library/Caches/shards/helpers/ce64f8cf1ef2ec792e405b75e3b0c44298fc/shards-vm
+27428 27343 10  31 SNs    3.0  30704 /Users/adalundhe/.cache/cut-a/a/target/e2e/shards-42f57e3b88cbd378/shards
+27430 27428 10  97 SN     1.7  14672 /Users/adalundhe/Library/Caches/shards/helpers/ce64f8cf1ef2ec792e405b75e3b0c44298fc/shards-vm
+27440 27343 10  31 SNs    3.1  42640 /Users/adalundhe/.cache/cut-a/a/target/e2e/shards-42f57e3b88cbd378/shards
+27448 27440 10  97 RN     0.0  92784 /Users/adalundhe/Library/Caches/shards/helpers/ce64f8cf1ef2ec792e405b75e3b0c44298fc/shards-vm
+USER        PID   TT   %CPU STAT PRI     STIME     UTIME COMMAND
+adalundhe 27424   ??    1.0 S    31T   0:00.00   0:00.00 /Users/adalundhe/Librar
+          27424         0.0 S    31T   0:00.00   0:00.00 
+          27424         0.0 S    31T   0:00.00   0:00.00 
+          27424         0.0 S    31T   0:00.00   0:00.00 
+          27424         0.1 S    97R   0:00.00   0:00.00 
+          27424         0.0 S    97R   0:00.00   0:00.00 
+          27424         0.0 S    97R   0:00.00   0:00.00 
+          27424         0.0 S    97R   0:00.00   0:00.00 
+          27424         0.0 S    97R   0:00.00   0:00.00 
+          27424         0.0 S    97R   0:00.00   0:00.00 
+          27424         0.0 S    97R   0:00.00   0:00.00 
+          27424         0.0 S    97R   0:00.00   0:00.00 
+          27424         0.0 S    97R   0:00.00   0:00.00 
+          27424         0.0 S    97R   0:00.00   0:00.00 
+          27424         0.0 S    97R   0:00.00   0:00.00 
+          27424         0.0 S    97R   0:00.00   0:00.00 
+          27424         0.0 S    31T   0:00.00   0:00.00 
+          27424         0.0 S    31T   0:00.00   0:00.00 
+          27424         0.0 S    31T   0:00.00   0:00.00 
+USER        PID   TT   %CPU STAT PRI     STIME     UTIME COMMAND
+adalundhe 27430   ??    1.5 S    31T   0:00.00   0:00.00 /Users/adalundhe/Librar
+          27430         0.0 S    31T   0:00.00   0:00.00 
+          27430         0.0 S    31T   0:00.00   0:00.00 
+          27430         0.0 S    31T   0:00.00   0:00.00 
+          27430         0.2 S    97R   0:00.00   0:00.00 
+          27430         0.0 S    97R   0:00.00   0:00.00 
+          27430         0.0 S    97R   0:00.00   0:00.00 
+          27430         0.0 S    97R   0:00.00   0:00.00 
+          27430         0.0 S    97R   0:00.00   0:00.00 
+          27430         0.0 S    97R   0:00.00   0:00.00 
+          27430         0.0 S    97R   0:00.00   0:00.00 
+          27430         0.0 S    97R   0:00.00   0:00.00 
+          27430         0.0 S    97R   0:00.00   0:00.00 
+          27430         0.0 S    97R   0:00.00   0:00.00 
+          27430         0.0 S    97R   0:00.00   0:00.00 
+          27430         0.0 S    97R   0:00.00   0:00.00 
+          27430         0.0 S    31T   0:00.00   0:00.00 
+          27430         0.0 S    31T   0:00.00   0:00.00 
+          27430         0.0 S    31T   0:00.00   0:00.00 
+USER        PID   TT   %CPU STAT PRI     STIME     UTIME COMMAND
+adalundhe 27448   ??    0.0 S    31T   0:00.00   0:00.00 /Users/adalundhe/Librar
+          27448         0.0 S    31T   0:00.00   0:00.00 
+          27448         0.0 S    31T   0:00.00   0:00.00 
+          27448         0.0 S    31T   0:00.00   0:00.00 
+          27448         0.0 S    31T   0:00.00   0:00.00 
+          27448         0.0 S    31T   0:00.00   0:00.00 
+          27448         0.0 S    31T   0:00.00   0:00.00 
+          27448         0.0 R    97R   0:00.00   0:00.02 
+          27448         0.0 S    97R   0:00.00   0:00.00 
+          27448         0.0 S    31T   0:00.00   0:00.00 
+          27448         0.0 S    97R   0:00.00   0:00.00 
+          27448         0.0 S    97R   0:00.00   0:00.00 
+          27448         0.0 S    97R   0:00.00   0:00.00 
+          27448         0.0 S    97R   0:00.00   0:00.00 
+          27448         0.0 S    97R   0:00.00   0:00.00 
+          27448         0.0 S    97R   0:00.00   0:00.00 
+          27448         0.0 S    97R   0:00.00   0:00.00 
+          27448         0.0 S    97R   0:00.00   0:00.00 
+          27448         0.0 S    97R   0:00.00   0:00.00 
+          27448         0.0 S    97R   0:00.00   0:00.00 
+=== A-4 2026-11-17T02:04:22Z load { 4.50 4.64 4.31 }
+14578 69395 10  20 SN     0.0   2496 /bin/zsh
+14591     1 10  31 SN     0.0   2272 /bin/zsh
+14593 14591 10  31 SN     0.0  17632 /Users/adalundhe/.pyenv/versions/3.14.2/bin/python3
+27804 14593 10  31 SN     0.0  70832 /Users/adalundhe/.rustup/toolchains/1.98.1-aarch64-apple-darwin/bin/cargo
+27806 27804 10  31 RN     8.1  70720 /Users/adalundhe/.cache/cut-a/a/target/release/deps/api_image-c665f96ed393319f
+27890 14578 10  20 SN     0.0   1184 sleep
+27906 27806 10  31 SNs    1.2  30704 /Users/adalundhe/.cache/cut-a/a/target/e2e/shards-42f57e3b88cbd378/shards
+27908 27906 10  97 SN     0.6  14224 /Users/adalundhe/Library/Caches/shards/helpers/ce64f8cf1ef2ec792e405b75e3b0c44298fc/shards-vm
+27917 27806 10  31 SNs    1.2  30720 /Users/adalundhe/.cache/cut-a/a/target/e2e/shards-42f57e3b88cbd378/shards
+27919 27917 10  97 SN     0.0  14800 /Users/adalundhe/Library/Caches/shards/helpers/ce64f8cf1ef2ec792e405b75e3b0c44298fc/shards-vm
+USER        PID   TT   %CPU STAT PRI     STIME     UTIME COMMAND
+adalundhe 27908   ??    0.6 S    31T   0:00.00   0:00.00 /Users/adalundhe/Librar
+          27908         0.0 S    31T   0:00.00   0:00.00 
+          27908         0.0 S    31T   0:00.00   0:00.00 
+          27908         0.0 S    31T   0:00.00   0:00.00 
+          27908         0.0 S    97R   0:00.00   0:00.00 
+          27908         0.0 S    97R   0:00.00   0:00.00 
+          27908         0.0 S    97R   0:00.00   0:00.00 
+          27908         0.0 S    97R   0:00.00   0:00.00 
+          27908         0.0 S    97R   0:00.00   0:00.00 
+          27908         0.0 S    97R   0:00.00   0:00.00 
+          27908         0.0 S    97R   0:00.00   0:00.00 
+          27908         0.0 S    97R   0:00.00   0:00.00 
+          27908         0.0 S    97R   0:00.00   0:00.00 
+          27908         0.0 S    97R   0:00.00   0:00.00 
+          27908         0.0 S    97R   0:00.00   0:00.00 
+          27908         0.0 S    97R   0:00.00   0:00.00 
+          27908         0.0 S    31T   0:00.00   0:00.00 
+          27908         0.0 S    31T   0:00.00   0:00.00 
+          27908         0.0 S    31T   0:00.00   0:00.00 
+USER        PID   TT   %CPU STAT PRI     STIME     UTIME COMMAND
+adalundhe 27919   ??    0.0 S    31T   0:00.00   0:00.00 /Users/adalundhe/Librar
+          27919         0.0 S    31T   0:00.00   0:00.00 
+          27919         0.0 S    31T   0:00.00   0:00.00 
+          27919         0.0 S    31T   0:00.00   0:00.00 
+          27919         0.0 S    97R   0:00.00   0:00.00 
+          27919         0.0 S    97R   0:00.00   0:00.00 
+          27919         0.0 S    97R   0:00.00   0:00.00 
+          27919         0.0 S    97R   0:00.00   0:00.00 
+          27919         0.0 S    97R   0:00.00   0:00.00 
+          27919         0.0 S    97R   0:00.00   0:00.00 
+          27919         0.0 S    97R   0:00.00   0:00.00 
+          27919         0.0 S    97R   0:00.00   0:00.00 
+          27919         0.0 S    97R   0:00.00   0:00.00 
+          27919         0.0 S    97R   0:00.00   0:00.00 
+          27919         0.0 S    97R   0:00.00   0:00.00 
+          27919         0.0 S    97R   0:00.00   0:00.00 
+          27919         0.0 S    31T   0:00.00   0:00.00 
+          27919         0.0 S    31T   0:00.00   0:00.00 
+          27919         0.0 S    31T   0:00.00   0:00.00 
+USER   PID   TT   %CPU STAT PRI     STIME     UTIME COMMAND
+=== B-4 2026-11-17T02:04:29Z load { 5.67 4.90 4.40 }
+14578 69395 10  20 SN     0.0   2496 /bin/zsh
+14591     1 10  31 SN     0.0   2272 /bin/zsh
+14593 14591 10  31 SN     0.0  17632 /Users/adalundhe/.pyenv/versions/3.14.2/bin/python3
+28470 14593 10  31 SN     0.0  70672 /Users/adalundhe/.rustup/toolchains/1.98.1-aarch64-apple-darwin/bin/cargo
+28471 28470 10  31 SN     6.9  70880 /Users/adalundhe/.cache/cut-a/b/target/release/deps/api_image-c665f96ed393319f
+28555 14578 10  20 SN     0.1   1184 sleep
+28564 28471 10  31 SNs    1.1  30976 /Users/adalundhe/.cache/cut-a/b/target/e2e/shards-cb93be605a552cfd/shards
+28566 28564 10  97 SN     0.9  14128 /Users/adalundhe/Library/Caches/shards/helpers/044b6b23be4d35b90f34765de3b0c44298fc/shards-vm
+28570 28471 10  31 SNs    0.0  30880 /Users/adalundhe/.cache/cut-a/b/target/e2e/shards-cb93be605a552cfd/shards
+28572 28471 10  31 SNs    0.0  30816 /Users/adalundhe/.cache/cut-a/b/target/e2e/shards-cb93be605a552cfd/shards
+28574 28570 10  97 SN     0.0  14560 /Users/adalundhe/Library/Caches/shards/helpers/044b6b23be4d35b90f34765de3b0c44298fc/shards-vm
+28581 28572 10  97 RN     0.0 135744 /Users/adalundhe/Library/Caches/shards/helpers/044b6b23be4d35b90f34765de3b0c44298fc/shards-vm
+USER        PID   TT   %CPU STAT PRI     STIME     UTIME COMMAND
+adalundhe 28566   ??    0.8 S    31T   0:00.00   0:00.00 /Users/adalundhe/Librar
+          28566         0.0 S    31T   0:00.00   0:00.00 
+          28566         0.0 S    31T   0:00.00   0:00.00 
+          28566         0.0 S    31T   0:00.00   0:00.00 
+          28566         0.1 S    97R   0:00.00   0:00.00 
+          28566         0.0 S    97R   0:00.00   0:00.00 
+          28566         0.0 S    97R   0:00.00   0:00.00 
+          28566         0.0 S    97R   0:00.00   0:00.00 
+          28566         0.0 S    97R   0:00.00   0:00.00 
+          28566         0.0 S    97R   0:00.00   0:00.00 
+          28566         0.0 S    97R   0:00.00   0:00.00 
+          28566         0.0 S    97R   0:00.00   0:00.00 
+          28566         0.0 S    97R   0:00.00   0:00.00 
+          28566         0.0 S    97R   0:00.00   0:00.00 
+          28566         0.0 S    97R   0:00.00   0:00.00 
+          28566         0.0 S    97R   0:00.00   0:00.00 
+          28566         0.0 S    31T   0:00.00   0:00.00 
+          28566         0.0 S    31T   0:00.00   0:00.00 
+          28566         0.0 S    31T   0:00.00   0:00.00 
+USER        PID   TT   %CPU STAT PRI     STIME     UTIME COMMAND
+adalundhe 28574   ??    0.0 S    31T   0:00.00   0:00.00 /Users/adalundhe/Librar
+          28574         0.0 S    31T   0:00.00   0:00.00 
+          28574         0.0 S    31T   0:00.00   0:00.00 
+          28574         0.0 S    31T   0:00.00   0:00.00 
+          28574         0.0 S    97R   0:00.00   0:00.00 
+          28574         0.0 S    97R   0:00.00   0:00.00 
+          28574         0.0 S    97R   0:00.00   0:00.00 
+          28574         0.0 S    97R   0:00.00   0:00.00 
+          28574         0.0 S    97R   0:00.00   0:00.00 
+          28574         0.0 S    97R   0:00.00   0:00.00 
+          28574         0.0 S    97R   0:00.00   0:00.00 
+          28574         0.0 S    97R   0:00.00   0:00.00 
+          28574         0.0 S    97R   0:00.00   0:00.00 
+          28574         0.0 S    97R   0:00.00   0:00.00 
+          28574         0.0 S    97R   0:00.00   0:00.00 
+          28574         0.0 S    97R   0:00.00   0:00.00 
+          28574         0.0 S    31T   0:00.00   0:00.00 
+          28574         0.0 S    31T   0:00.00   0:00.00 
+          28574         0.0 S    31T   0:00.00   0:00.00 
+USER        PID   TT   %CPU STAT PRI     STIME     UTIME COMMAND
+adalundhe 28581   ??    0.0 S    31T   0:00.00   0:00.00 /Users/adalundhe/Librar
+          28581         0.0 S    31T   0:00.00   0:00.00 
+          28581         0.0 S    31T   0:00.00   0:00.00 
+          28581         0.0 S    31T   0:00.00   0:00.00 
+          28581         0.0 R    97R   0:00.01   0:00.03 
+          28581         0.0 S    97R   0:00.00   0:00.00 
+          28581         0.0 S    31T   0:00.00   0:00.00 
+          28581         0.0 S    97R   0:00.00   0:00.00 
+          28581         0.0 S    97R   0:00.00   0:00.00 
+          28581         0.0 S    97R   0:00.00   0:00.00 
+          28581         0.0 S    97R   0:00.00   0:00.00 
+          28581         0.0 S    97R   0:00.00   0:00.00 
+          28581         0.0 S    97R   0:00.00   0:00.00 
+          28581         0.0 S    97R   0:00.00   0:00.00 
+          28581         0.0 S    97R   0:00.00   0:00.00 
+          28581         0.0 S    97R   0:00.00   0:00.00 
+          28581         0.0 S    97R   0:00.00   0:00.00 
+=== B-5 2026-11-17T02:04:35Z load { 5.29 4.83 4.38 }
+14578 69395 10  20 SN     0.0   2496 /bin/zsh
+14591     1 10  31 SN     0.0   2272 /bin/zsh
+14593 14591 10  31 SN     0.0  17632 /Users/adalundhe/.pyenv/versions/3.14.2/bin/python3
+28935 14593 10  31 SN     0.0  70608 /Users/adalundhe/.rustup/toolchains/1.98.1-aarch64-apple-darwin/bin/cargo
+28936 28935 10  31 SN     7.9  70736 /Users/adalundhe/.cache/cut-a/b/target/release/deps/api_image-c665f96ed393319f
+28977 14578 10  20 SN     0.1   1184 sleep
+28990 28936 10  31 SNs    3.1  30800 /Users/adalundhe/.cache/cut-a/b/target/e2e/shards-cb93be605a552cfd/shards
+28991 28936 10  31 SNs    3.0  30736 /Users/adalundhe/.cache/cut-a/b/target/e2e/shards-cb93be605a552cfd/shards
+28993 28990 10  97 SN     1.8  14784 /Users/adalundhe/Library/Caches/shards/helpers/044b6b23be4d35b90f34765de3b0c44298fc/shards-vm
+28994 28991 10  97 SN     1.6  14752 /Users/adalundhe/Library/Caches/shards/helpers/044b6b23be4d35b90f34765de3b0c44298fc/shards-vm
+28999 28936 10  31 SNs    0.0  42768 /Users/adalundhe/.cache/cut-a/b/target/e2e/shards-cb93be605a552cfd/shards
+29006 28999 10  97 RN     0.0 124464 /Users/adalundhe/Library/Caches/shards/helpers/044b6b23be4d35b90f34765de3b0c44298fc/shards-vm
+USER        PID   TT   %CPU STAT PRI     STIME     UTIME COMMAND
+adalundhe 28993   ??    1.6 S    31T   0:00.00   0:00.00 /Users/adalundhe/Librar
+          28993         0.0 S    31T   0:00.00   0:00.00 
+          28993         0.0 S    31T   0:00.00   0:00.00 
+          28993         0.0 S    31T   0:00.00   0:00.00 
+          28993         0.2 S    97R   0:00.00   0:00.00 
+          28993         0.0 S    97R   0:00.00   0:00.00 
+          28993         0.0 S    97R   0:00.00   0:00.00 
+          28993         0.0 S    97R   0:00.00   0:00.00 
+          28993         0.0 S    97R   0:00.00   0:00.00 
+          28993         0.0 S    97R   0:00.00   0:00.00 
+          28993         0.0 S    97R   0:00.00   0:00.00 
+          28993         0.0 S    97R   0:00.00   0:00.00 
+          28993         0.0 S    97R   0:00.00   0:00.00 
+          28993         0.0 S    97R   0:00.00   0:00.00 
+          28993         0.0 S    97R   0:00.00   0:00.00 
+          28993         0.0 S    97R   0:00.00   0:00.00 
+          28993         0.0 S    31T   0:00.00   0:00.00 
+          28993         0.0 S    31T   0:00.00   0:00.00 
+          28993         0.0 S    31T   0:00.00   0:00.00 
+USER        PID   TT   %CPU STAT PRI     STIME     UTIME COMMAND
+adalundhe 28994   ??    1.5 S    31T   0:00.00   0:00.00 /Users/adalundhe/Librar
+          28994         0.0 S    31T   0:00.00   0:00.00 
+          28994         0.0 S    31T   0:00.00   0:00.00 
+          28994         0.0 S    31T   0:00.00   0:00.00 
+          28994         0.1 S    97R   0:00.00   0:00.00 
+          28994         0.0 S    97R   0:00.00   0:00.00 
+          28994         0.0 S    97R   0:00.00   0:00.00 
+          28994         0.0 S    97R   0:00.00   0:00.00 
+          28994         0.0 S    97R   0:00.00   0:00.00 
+          28994         0.0 S    97R   0:00.00   0:00.00 
+          28994         0.0 S    97R   0:00.00   0:00.00 
+          28994         0.0 S    97R   0:00.00   0:00.00 
+          28994         0.0 S    97R   0:00.00   0:00.00 
+          28994         0.0 S    97R   0:00.00   0:00.00 
+          28994         0.0 S    97R   0:00.00   0:00.00 
+          28994         0.0 S    97R   0:00.00   0:00.00 
+          28994         0.0 S    31T   0:00.00   0:00.00 
+          28994         0.0 S    31T   0:00.00   0:00.00 
+          28994         0.0 S    31T   0:00.00   0:00.00 
+USER        PID   TT   %CPU STAT PRI     STIME     UTIME COMMAND
+adalundhe 29006   ??    0.0 S    31T   0:00.00   0:00.00 /Users/adalundhe/Librar
+          29006         0.0 S    31T   0:00.00   0:00.00 
+          29006         0.0 S    31T   0:00.00   0:00.00 
+          29006         0.0 S    31T   0:00.00   0:00.00 
+          29006         0.0 S    31T   0:00.00   0:00.00 
+          29006         0.0 S    31T   0:00.00   0:00.00 
+          29006         0.0 S    31T   0:00.00   0:00.00 
+          29006         0.0 R    97R   0:00.01   0:00.03 
+          29006         0.0 S    97R   0:00.00   0:00.00 
+          29006         0.0 S    31T   0:00.00   0:00.00 
+          29006         0.0 S    97R   0:00.00   0:00.00 
+          29006         0.0 S    97R   0:00.00   0:00.00 
+          29006         0.0 S    97R   0:00.00   0:00.00 
+          29006         0.0 S    97R   0:00.00   0:00.00 
+          29006         0.0 S    97R   0:00.00   0:00.00 
+          29006         0.0 S    97R   0:00.00   0:00.00 
+          29006         0.0 S    97R   0:00.00   0:00.00 
+          29006         0.0 S    97R   0:00.00   0:00.00 
+          29006         0.0 S    97R   0:00.00   0:00.00 
+          29006         0.0 S    97R   0:00.00   0:00.00 
+=== A-5 2026-11-17T02:04:43Z load { 5.31 4.85 4.40 }
+14578 69395 10  20 SN     0.0   2496 /bin/zsh
+14591     1 10  31 SN     0.0   2272 /bin/zsh
+14593 14591 10  31 SN     0.0  17632 /Users/adalundhe/.pyenv/versions/3.14.2/bin/python3
+29401 14593 10  31 SN     0.0  70912 /Users/adalundhe/.rustup/toolchains/1.98.1-aarch64-apple-darwin/bin/cargo
+29402 29401 10  31 SN     8.3  70720 /Users/adalundhe/.cache/cut-a/a/target/release/deps/api_image-c665f96ed393319f
+29501 29402 10  31 SNs    0.7  30688 /Users/adalundhe/.cache/cut-a/a/target/e2e/shards-42f57e3b88cbd378/shards
+29503 29501 10  97 SN     0.3  14288 /Users/adalundhe/Library/Caches/shards/helpers/ce64f8cf1ef2ec792e405b75e3b0c44298fc/shards-vm
+29505 14578 10  20 SN     0.2   1184 sleep
+29511 29402 10  31 SNs    1.9  30672 /Users/adalundhe/.cache/cut-a/a/target/e2e/shards-42f57e3b88cbd378/shards
+29514 29511 10  97 SN     1.0  14704 /Users/adalundhe/Library/Caches/shards/helpers/ce64f8cf1ef2ec792e405b75e3b0c44298fc/shards-vm
+29516 29402 10  31 SNs    3.3  42592 /Users/adalundhe/.cache/cut-a/a/target/e2e/shards-42f57e3b88cbd378/shards
+29517 29516 10  97 UN    10.6  68272 /Users/adalundhe/Library/Caches/shards/helpers/ce64f8cf1ef2ec792e405b75e3b0c44298fc/shards-vm
+USER        PID   TT   %CPU STAT PRI     STIME     UTIME COMMAND
+adalundhe 29503   ??    0.3 S    31T   0:00.00   0:00.00 /Users/adalundhe/Librar
+          29503         0.0 S    31T   0:00.00   0:00.00 
+          29503         0.0 S    31T   0:00.00   0:00.00 
+          29503         0.0 S    31T   0:00.00   0:00.00 
+          29503         0.0 S    97R   0:00.00   0:00.00 
+          29503         0.0 S    97R   0:00.00   0:00.00 
+          29503         0.0 S    97R   0:00.00   0:00.00 
+          29503         0.0 S    97R   0:00.00   0:00.00 
+          29503         0.0 S    97R   0:00.00   0:00.00 
+          29503         0.0 S    97R   0:00.00   0:00.00 
+          29503         0.0 S    97R   0:00.00   0:00.00 
+          29503         0.0 S    97R   0:00.00   0:00.00 
+          29503         0.0 S    97R   0:00.00   0:00.00 
+          29503         0.0 S    97R   0:00.00   0:00.00 
+          29503         0.0 S    97R   0:00.00   0:00.00 
+          29503         0.0 S    97R   0:00.00   0:00.00 
+          29503         0.0 S    31T   0:00.00   0:00.00 
+          29503         0.0 S    31T   0:00.00   0:00.00 
+          29503         0.0 S    31T   0:00.00   0:00.00 
+USER        PID   TT   %CPU STAT PRI     STIME     UTIME COMMAND
+adalundhe 29514   ??    0.9 S    31T   0:00.00   0:00.00 /Users/adalundhe/Librar
+          29514         0.0 S    31T   0:00.00   0:00.00 
+          29514         0.0 S    31T   0:00.00   0:00.00 
+          29514         0.0 S    31T   0:00.00   0:00.00 
+          29514         0.1 S    97R   0:00.00   0:00.00 
+          29514         0.0 S    97R   0:00.00   0:00.00 
+          29514         0.0 S    97R   0:00.00   0:00.00 
+          29514         0.0 S    97R   0:00.00   0:00.00 
+          29514         0.0 S    97R   0:00.00   0:00.00 
+          29514         0.0 S    97R   0:00.00   0:00.00 
+          29514         0.0 S    97R   0:00.00   0:00.00 
+          29514         0.0 S    97R   0:00.00   0:00.00 
+          29514         0.0 S    97R   0:00.00   0:00.00 
+          29514         0.0 S    97R   0:00.00   0:00.00 
+          29514         0.0 S    97R   0:00.00   0:00.00 
+          29514         0.0 S    97R   0:00.00   0:00.00 
+          29514         0.0 S    31T   0:00.00   0:00.00 
+          29514         0.0 S    31T   0:00.00   0:00.00 
+          29514         0.0 S    31T   0:00.00   0:00.00 
+USER        PID   TT   %CPU STAT PRI     STIME     UTIME COMMAND
+adalundhe 29517   ??    0.9 S    31T   0:00.00   0:00.00 /Users/adalundhe/Librar
+          29517         0.0 S    31T   0:00.00   0:00.00 
+          29517         0.0 S    31T   0:00.00   0:00.00 
+          29517         0.0 S    31T   0:00.00   0:00.00 
+          29517         0.0 S    31T   0:00.00   0:00.00 
+          29517         0.0 S    31T   0:00.00   0:00.00 
+          29517        17.5 U    31T   0:00.05   0:00.01 
+          29517        13.8 S    97R   0:00.01   0:00.05 
+          29517         0.0 S    97R   0:00.00   0:00.00 
+          29517         0.0 S    31T   0:00.00   0:00.00 
+          29517         0.0 S    97R   0:00.00   0:00.00 
+          29517         0.0 S    97R   0:00.00   0:00.00 
+          29517         0.0 S    97R   0:00.00   0:00.00 
+          29517         0.0 S    97R   0:00.00   0:00.00 
+          29517         0.0 S    97R   0:00.00   0:00.00 
+          29517         0.0 S    97R   0:00.00   0:00.00 
+          29517         0.0 S    97R   0:00.00   0:00.00 
+          29517         0.0 S    97R   0:00.00   0:00.00 
+          29517         0.0 S    97R   0:00.00   0:00.00 
+          29517         0.0 S    97R   0:00.00   0:00.00 
+=== A-6 2026-11-17T02:04:49Z load { 5.76 4.95 4.43 }
+14578 69395 10  20 SN     0.0   2496 /bin/zsh
+14591     1 10  31 SN     0.0   2272 /bin/zsh
+14593 14591 10  31 SN     0.0  17632 /Users/adalundhe/.pyenv/versions/3.14.2/bin/python3
+29878 14593 10  31 SN     0.0  71024 /Users/adalundhe/.rustup/toolchains/1.98.1-aarch64-apple-darwin/bin/cargo
+29879 29878 10  31 SN     6.0  70752 /Users/adalundhe/.cache/cut-a/a/target/release/deps/api_image-c665f96ed393319f
+29929 14578 10  20 SN     0.1   1184 sleep
+29939 29879 10  31 SNs    1.2  30672 /Users/adalundhe/.cache/cut-a/a/target/e2e/shards-42f57e3b88cbd378/shards
+29942 29939 10  97 SN     0.5  14032 /Users/adalundhe/Library/Caches/shards/helpers/ce64f8cf1ef2ec792e405b75e3b0c44298fc/shards-vm
+29955 29879 10  31 SNs    0.0  30656 /Users/adalundhe/.cache/cut-a/a/target/e2e/shards-42f57e3b88cbd378/shards
+29957 29879 10  31 SNs    0.0  42704 /Users/adalundhe/.cache/cut-a/a/target/e2e/shards-42f57e3b88cbd378/shards
+29958 29955 10  97 SN     0.0  14544 /Users/adalundhe/Library/Caches/shards/helpers/ce64f8cf1ef2ec792e405b75e3b0c44298fc/shards-vm
+USER        PID   TT   %CPU STAT PRI     STIME     UTIME COMMAND
+adalundhe 29942   ??    0.5 S    31T   0:00.00   0:00.00 /Users/adalundhe/Librar
+          29942         0.0 S    31T   0:00.00   0:00.00 
+          29942         0.0 S    31T   0:00.00   0:00.00 
+          29942         0.0 S    31T   0:00.00   0:00.00 
+          29942         0.0 S    97R   0:00.00   0:00.00 
+          29942         0.0 S    97R   0:00.00   0:00.00 
+          29942         0.0 S    97R   0:00.00   0:00.00 
+          29942         0.0 S    97R   0:00.00   0:00.00 
+          29942         0.0 S    97R   0:00.00   0:00.00 
+          29942         0.0 S    97R   0:00.00   0:00.00 
+          29942         0.0 S    97R   0:00.00   0:00.00 
+          29942         0.0 S    97R   0:00.00   0:00.00 
+          29942         0.0 S    97R   0:00.00   0:00.00 
+          29942         0.0 S    97R   0:00.00   0:00.00 
+          29942         0.0 S    97R   0:00.00   0:00.00 
+          29942         0.0 S    97R   0:00.00   0:00.00 
+          29942         0.0 S    31T   0:00.00   0:00.00 
+          29942         0.0 S    31T   0:00.00   0:00.00 
+          29942         0.0 S    31T   0:00.00   0:00.00 
+USER        PID   TT   %CPU STAT PRI     STIME     UTIME COMMAND
+adalundhe 29958   ??    0.0 S    31T   0:00.00   0:00.00 /Users/adalundhe/Librar
+          29958         0.0 S    31T   0:00.00   0:00.00 
+          29958         0.0 S    31T   0:00.00   0:00.00 
+          29958         0.0 S    31T   0:00.00   0:00.00 
+          29958         0.0 S    97R   0:00.00   0:00.00 
+          29958         0.0 S    97R   0:00.00   0:00.00 
+          29958         0.0 S    97R   0:00.00   0:00.00 
+          29958         0.0 S    97R   0:00.00   0:00.00 
+          29958         0.0 S    97R   0:00.00   0:00.00 
+          29958         0.0 S    97R   0:00.00   0:00.00 
+          29958         0.0 S    97R   0:00.00   0:00.00 
+          29958         0.0 S    97R   0:00.00   0:00.00 
+          29958         0.0 S    97R   0:00.00   0:00.00 
+          29958         0.0 S    97R   0:00.00   0:00.00 
+          29958         0.0 S    97R   0:00.00   0:00.00 
+          29958         0.0 S    97R   0:00.00   0:00.00 
+          29958         0.0 S    31T   0:00.00   0:00.00 
+          29958         0.0 S    31T   0:00.00   0:00.00 
+          29958         0.0 S    31T   0:00.00   0:00.00 
+=== B-6 2026-11-17T02:04:55Z load { 6.10 5.04 4.47 }
+14578 69395 10  20 SN     0.0   2496 /bin/zsh
+14591     1 10  31 SN     0.0   2272 /bin/zsh
+14593 14591 10  31 SN     0.0  17632 /Users/adalundhe/.pyenv/versions/3.14.2/bin/python3
+30345 14593 10  31 SN     0.0  70640 /Users/adalundhe/.rustup/toolchains/1.98.1-aarch64-apple-darwin/bin/cargo
+30348 30345 10  31 SN     5.8  70736 /Users/adalundhe/.cache/cut-a/b/target/release/deps/api_image-c665f96ed393319f
+30401 14578 10  20 SN     0.0   1184 sleep
+30411 30348 10  31 SNs    1.1  30864 /Users/adalundhe/.cache/cut-a/b/target/e2e/shards-cb93be605a552cfd/shards
+30414 30411 10  97 SN     0.5  14160 /Users/adalundhe/Library/Caches/shards/helpers/044b6b23be4d35b90f34765de3b0c44298fc/shards-vm
+USER        PID   TT   %CPU STAT PRI     STIME     UTIME COMMAND
+adalundhe 30414   ??    0.5 S    31T   0:00.00   0:00.00 /Users/adalundhe/Librar
+          30414         0.0 S    31T   0:00.00   0:00.00 
+          30414         0.0 S    31T   0:00.00   0:00.00 
+          30414         0.0 S    31T   0:00.00   0:00.00 
+          30414         0.0 S    97R   0:00.00   0:00.00 
+          30414         0.0 S    97R   0:00.00   0:00.00 
+          30414         0.0 S    97R   0:00.00   0:00.00 
+          30414         0.0 S    97R   0:00.00   0:00.00 
+          30414         0.0 S    97R   0:00.00   0:00.00 
+          30414         0.0 S    97R   0:00.00   0:00.00 
+          30414         0.0 S    97R   0:00.00   0:00.00 
+          30414         0.0 S    97R   0:00.00   0:00.00 
+          30414         0.0 S    97R   0:00.00   0:00.00 
+          30414         0.0 S    97R   0:00.00   0:00.00 
+          30414         0.0 S    97R   0:00.00   0:00.00 
+          30414         0.0 S    97R   0:00.00   0:00.00 
+          30414         0.0 S    31T   0:00.00   0:00.00 
+          30414         0.0 S    31T   0:00.00   0:00.00 
+          30414         0.0 S    31T   0:00.00   0:00.00 
+=== B-7 2026-11-17T02:05:02Z load { 6.17 5.07 4.48 }
+14578 69395 10  20 SN     0.0   2496 /bin/zsh
+14591     1 10  31 SN     0.0   2272 /bin/zsh
+14593 14591 10  31 SN     0.0  17632 /Users/adalundhe/.pyenv/versions/3.14.2/bin/python3
+30804 14593 10  31 SN     0.0  70240 /Users/adalundhe/.rustup/toolchains/1.98.1-aarch64-apple-darwin/bin/cargo
+30805 30804 10  31 SN     9.8  70832 /Users/adalundhe/.cache/cut-a/b/target/release/deps/api_image-c665f96ed393319f
+30868 14578 10  20 SN     0.0   1184 sleep
+30879 30805 10  31 SNs    1.1  30816 /Users/adalundhe/.cache/cut-a/b/target/e2e/shards-cb93be605a552cfd/shards
+30880 30879 10  97 SN     0.6  14144 /Users/adalundhe/Library/Caches/shards/helpers/044b6b23be4d35b90f34765de3b0c44298fc/shards-vm
+30885 30805 10  31 SNs    3.0  30992 /Users/adalundhe/.cache/cut-a/b/target/e2e/shards-cb93be605a552cfd/shards
+30887 30885 10  97 SN     1.7  14688 /Users/adalundhe/Library/Caches/shards/helpers/044b6b23be4d35b90f34765de3b0c44298fc/shards-vm
+USER        PID   TT   %CPU STAT PRI     STIME     UTIME COMMAND
+adalundhe 30880   ??    0.6 S    31T   0:00.00   0:00.00 /Users/adalundhe/Librar
+          30880         0.0 S    31T   0:00.00   0:00.00 
+          30880         0.0 S    31T   0:00.00   0:00.00 
+          30880         0.0 S    31T   0:00.00   0:00.00 
+          30880         0.0 S    97R   0:00.00   0:00.00 
+          30880         0.0 S    97R   0:00.00   0:00.00 
+          30880         0.0 S    97R   0:00.00   0:00.00 
+          30880         0.0 S    97R   0:00.00   0:00.00 
+          30880         0.0 S    97R   0:00.00   0:00.00 
+          30880         0.0 S    97R   0:00.00   0:00.00 
+          30880         0.0 S    97R   0:00.00   0:00.00 
+          30880         0.0 S    97R   0:00.00   0:00.00 
+          30880         0.0 S    97R   0:00.00   0:00.00 
+          30880         0.0 S    97R   0:00.00   0:00.00 
+          30880         0.0 S    97R   0:00.00   0:00.00 
+          30880         0.0 S    97R   0:00.00   0:00.00 
+          30880         0.0 S    31T   0:00.00   0:00.00 
+          30880         0.0 S    31T   0:00.00   0:00.00 
+          30880         0.0 S    31T   0:00.00   0:00.00 
+USER        PID   TT   %CPU STAT PRI     STIME     UTIME COMMAND
+adalundhe 30887   ??    1.5 S    31T   0:00.00   0:00.00 /Users/adalundhe/Librar
+          30887         0.0 S    31T   0:00.00   0:00.00 
+          30887         0.0 S    31T   0:00.00   0:00.00 
+          30887         0.0 S    31T   0:00.00   0:00.00 
+          30887         0.2 S    97R   0:00.00   0:00.00 
+          30887         0.0 S    97R   0:00.00   0:00.00 
+          30887         0.0 S    97R   0:00.00   0:00.00 
+          30887         0.0 S    97R   0:00.00   0:00.00 
+          30887         0.0 S    97R   0:00.00   0:00.00 
+          30887         0.0 S    97R   0:00.00   0:00.00 
+          30887         0.0 S    97R   0:00.00   0:00.00 
+          30887         0.0 S    97R   0:00.00   0:00.00 
+          30887         0.0 S    97R   0:00.00   0:00.00 
+          30887         0.0 S    97R   0:00.00   0:00.00 
+          30887         0.0 S    97R   0:00.00   0:00.00 
+          30887         0.0 S    97R   0:00.00   0:00.00 
+          30887         0.0 S    31T   0:00.00   0:00.00 
+          30887         0.0 S    31T   0:00.00   0:00.00 
+          30887         0.0 S    31T   0:00.00   0:00.00 
+=== A-7 2026-11-17T02:05:09Z load { 5.78 5.02 4.47 }
+14578 69395 10  20 SN     0.0   2496 /bin/zsh
+14591     1 10  31 SN     0.0   2272 /bin/zsh
+14593 14591 10  31 SN     0.0  17632 /Users/adalundhe/.pyenv/versions/3.14.2/bin/python3
+31261 14593 10  31 SN     0.0  70224 /Users/adalundhe/.rustup/toolchains/1.98.1-aarch64-apple-darwin/bin/cargo
+31262 31261 10  31 SN     8.8  70688 /Users/adalundhe/.cache/cut-a/a/target/release/deps/api_image-c665f96ed393319f
+31391 14578 10  20 SN     0.1   1184 sleep
+31400 31262 10  31 SNs    3.1  30624 /Users/adalundhe/.cache/cut-a/a/target/e2e/shards-42f57e3b88cbd378/shards
+31402 31400 10  97 SN     1.8  14160 /Users/adalundhe/Library/Caches/shards/helpers/ce64f8cf1ef2ec792e405b75e3b0c44298fc/shards-vm
+31408 31262 10  31 SNs    0.0  30592 /Users/adalundhe/.cache/cut-a/a/target/e2e/shards-42f57e3b88cbd378/shards
+31410 31262 10  31 SNs    0.0  30576 /Users/adalundhe/.cache/cut-a/a/target/e2e/shards-42f57e3b88cbd378/shards
+31411 31408 10  97 SN     0.0  14576 /Users/adalundhe/Library/Caches/shards/helpers/ce64f8cf1ef2ec792e405b75e3b0c44298fc/shards-vm
+31416 31410 10  97 RN     0.0 123376 /Users/adalundhe/Library/Caches/shards/helpers/ce64f8cf1ef2ec792e405b75e3b0c44298fc/shards-vm
+USER        PID   TT   %CPU STAT PRI     STIME     UTIME COMMAND
+adalundhe 31402   ??    0.9 S    31T   0:00.00   0:00.00 /Users/adalundhe/Librar
+          31402         0.0 S    31T   0:00.00   0:00.00 
+          31402         0.0 S    31T   0:00.00   0:00.00 
+          31402         0.0 S    31T   0:00.00   0:00.00 
+          31402         0.1 S    97R   0:00.00   0:00.00 
+          31402         0.0 S    97R   0:00.00   0:00.00 
+          31402         0.0 S    97R   0:00.00   0:00.00 
+          31402         0.0 S    97R   0:00.00   0:00.00 
+          31402         0.0 S    97R   0:00.00   0:00.00 
+          31402         0.0 S    97R   0:00.00   0:00.00 
+          31402         0.0 S    97R   0:00.00   0:00.00 
+          31402         0.0 S    97R   0:00.00   0:00.00 
+          31402         0.0 S    97R   0:00.00   0:00.00 
+          31402         0.0 S    97R   0:00.00   0:00.00 
+          31402         0.0 S    97R   0:00.00   0:00.00 
+          31402         0.0 S    97R   0:00.00   0:00.00 
+          31402         0.0 S    31T   0:00.00   0:00.00 
+          31402         0.0 S    31T   0:00.00   0:00.00 
+          31402         0.0 S    31T   0:00.00   0:00.00 
+USER        PID   TT   %CPU STAT PRI     STIME     UTIME COMMAND
+adalundhe 31411   ??    1.5 S    31T   0:00.00   0:00.00 /Users/adalundhe/Librar
+          31411         0.0 S    31T   0:00.00   0:00.00 
+          31411         0.0 S    31T   0:00.00   0:00.00 
+          31411         0.0 S    31T   0:00.00   0:00.00 
+          31411         0.3 S    97R   0:00.00   0:00.00 
+          31411         0.0 S    97R   0:00.00   0:00.00 
+          31411         0.0 S    97R   0:00.00   0:00.00 
+          31411         0.0 S    97R   0:00.00   0:00.00 
+          31411         0.0 S    97R   0:00.00   0:00.00 
+          31411         0.0 S    97R   0:00.00   0:00.00 
+          31411         0.0 S    97R   0:00.00   0:00.00 
+          31411         0.0 S    97R   0:00.00   0:00.00 
+          31411         0.0 S    97R   0:00.00   0:00.00 
+          31411         0.0 S    97R   0:00.00   0:00.00 
+          31411         0.0 S    97R   0:00.00   0:00.00 
+          31411         0.0 S    97R   0:00.00   0:00.00 
+          31411         0.0 S    31T   0:00.00   0:00.00 
+          31411         0.0 S    31T   0:00.00   0:00.00 
+          31411         0.0 S    31T   0:00.00   0:00.00 
+USER        PID   TT   %CPU STAT PRI     STIME     UTIME COMMAND
+adalundhe 31416   ??    1.2 S    31T   0:00.00   0:00.00 /Users/adalundhe/Librar
+          31416         0.0 S    31T   0:00.00   0:00.00 
+          31416         0.0 S    31T   0:00.00   0:00.00 
+          31416         0.0 S    31T   0:00.00   0:00.00 
+          31416         7.9 R    97R   0:00.01   0:00.03 
+          31416         0.0 S    97R   0:00.00   0:00.00 
+          31416         0.0 S    31T   0:00.00   0:00.00 
+          31416         0.0 S    97R   0:00.00   0:00.00 
+          31416         0.0 S    97R   0:00.00   0:00.00 
+          31416         0.0 S    97R   0:00.00   0:00.00 
+          31416         0.0 S    97R   0:00.00   0:00.00 
+          31416         0.0 S    97R   0:00.00   0:00.00 
+          31416         0.0 S    97R   0:00.00   0:00.00 
+          31416         0.0 S    97R   0:00.00   0:00.00 
+          31416         0.0 S    97R   0:00.00   0:00.00 
+          31416         0.0 S    97R   0:00.00   0:00.00 
+          31416         0.0 S    97R   0:00.00   0:00.00 
+=== A-8 2026-11-17T02:05:19Z load { 5.28 4.94 4.45 }
+14578 69395 10  20 SN     0.0   2496 /bin/zsh
+14591     1 10  31 SN     0.0   2272 /bin/zsh
+14593 14591 10  31 SN     0.0  17632 /Users/adalundhe/.pyenv/versions/3.14.2/bin/python3
+31792 14593 10  31 SN     0.0  70608 /Users/adalundhe/.rustup/toolchains/1.98.1-aarch64-apple-darwin/bin/cargo
+31793 31792 10  31 RN     8.9  70656 /Users/adalundhe/.cache/cut-a/a/target/release/deps/api_image-c665f96ed393319f
+31900 14578 10  20 SN     0.1   1184 sleep
+31912 31793 10  31 SNs    1.2  30688 /Users/adalundhe/.cache/cut-a/a/target/e2e/shards-42f57e3b88cbd378/shards
+31915 31912 10  97 SN     0.7  14112 /Users/adalundhe/Library/Caches/shards/helpers/ce64f8cf1ef2ec792e405b75e3b0c44298fc/shards-vm
+31920 31793 10  31 SNs    3.1  30768 /Users/adalundhe/.cache/cut-a/a/target/e2e/shards-42f57e3b88cbd378/shards
+31921 31793 10   0 ?NEs   0.0      0 (shards)
+31922 31920 10  97 SN     1.8  14704 /Users/adalundhe/Library/Caches/shards/helpers/ce64f8cf1ef2ec792e405b75e3b0c44298fc/shards-vm
+USER        PID   TT   %CPU STAT PRI     STIME     UTIME COMMAND
+adalundhe 31915   ??    0.6 S    31T   0:00.00   0:00.00 /Users/adalundhe/Librar
+          31915         0.0 S    31T   0:00.00   0:00.00 
+          31915         0.0 S    31T   0:00.00   0:00.00 
+          31915         0.0 S    31T   0:00.00   0:00.00 
+          31915         0.1 S    97R   0:00.00   0:00.00 
+          31915         0.0 S    97R   0:00.00   0:00.00 
+          31915         0.0 S    97R   0:00.00   0:00.00 
+          31915         0.0 S    97R   0:00.00   0:00.00 
+          31915         0.0 S    97R   0:00.00   0:00.00 
+          31915         0.0 S    97R   0:00.00   0:00.00 
+          31915         0.0 S    97R   0:00.00   0:00.00 
+          31915         0.0 S    97R   0:00.00   0:00.00 
+          31915         0.0 S    97R   0:00.00   0:00.00 
+          31915         0.0 S    97R   0:00.00   0:00.00 
+          31915         0.0 S    97R   0:00.00   0:00.00 
+          31915         0.0 S    97R   0:00.00   0:00.00 
+          31915         0.0 S    31T   0:00.00   0:00.00 
+          31915         0.0 S    31T   0:00.00   0:00.00 
+          31915         0.0 S    31T   0:00.00   0:00.00 
+USER        PID   TT   %CPU STAT PRI     STIME     UTIME COMMAND
+adalundhe 31922   ??    1.5 S    31T   0:00.00   0:00.00 /Users/adalundhe/Librar
+          31922         0.0 S    31T   0:00.00   0:00.00 
+          31922         0.0 S    31T   0:00.00   0:00.00 
+          31922         0.0 S    31T   0:00.00   0:00.00 
+          31922         0.3 S    97R   0:00.00   0:00.00 
+          31922         0.0 S    97R   0:00.00   0:00.00 
+          31922         0.0 S    97R   0:00.00   0:00.00 
+          31922         0.0 S    97R   0:00.00   0:00.00 
+          31922         0.0 S    97R   0:00.00   0:00.00 
+          31922         0.0 S    97R   0:00.00   0:00.00 
+          31922         0.0 S    97R   0:00.00   0:00.00 
+          31922         0.0 S    97R   0:00.00   0:00.00 
+          31922         0.0 S    97R   0:00.00   0:00.00 
+          31922         0.0 S    97R   0:00.00   0:00.00 
+          31922         0.0 S    97R   0:00.00   0:00.00 
+          31922         0.0 S    97R   0:00.00   0:00.00 
+          31922         0.0 S    31T   0:00.00   0:00.00 
+          31922         0.0 S    31T   0:00.00   0:00.00 
+          31922         0.0 S    31T   0:00.00   0:00.00 
+USER   PID   TT   %CPU STAT PRI     STIME     UTIME COMMAND
+=== B-8 2026-11-17T02:05:29Z load { 5.17 4.92 4.45 }
+14578 69395 10  20 SN     0.0   2496 /bin/zsh
+14591     1 10  31 SN     0.0   2272 /bin/zsh
+14593 14591 10  31 SN     0.0  17632 /Users/adalundhe/.pyenv/versions/3.14.2/bin/python3
+32285 14593 10  31 SN     0.0  70944 /Users/adalundhe/.rustup/toolchains/1.98.1-aarch64-apple-darwin/bin/cargo
+32286 32285 10  31 SN     6.8  70784 /Users/adalundhe/.cache/cut-a/b/target/release/deps/api_image-c665f96ed393319f
+32413 32286 10  31 SNs    0.4  30800 /Users/adalundhe/.cache/cut-a/b/target/e2e/shards-cb93be605a552cfd/shards
+32415 32413 10  97 SN     0.2  14448 /Users/adalundhe/Library/Caches/shards/helpers/044b6b23be4d35b90f34765de3b0c44298fc/shards-vm
+32417 14578 10  20 SN     0.2   1184 sleep
+32422 32286 10  31 SNs    1.9  30704 /Users/adalundhe/.cache/cut-a/b/target/e2e/shards-cb93be605a552cfd/shards
+32424 32422 10  97 SN     1.0  14752 /Users/adalundhe/Library/Caches/shards/helpers/044b6b23be4d35b90f34765de3b0c44298fc/shards-vm
+32426 32286 10  31 SNs    1.9  42672 /Users/adalundhe/.cache/cut-a/b/target/e2e/shards-cb93be605a552cfd/shards
+32427 32426 10  97 UN    28.9  68112 /Users/adalundhe/Library/Caches/shards/helpers/044b6b23be4d35b90f34765de3b0c44298fc/shards-vm
+USER        PID   TT   %CPU STAT PRI     STIME     UTIME COMMAND
+adalundhe 32415   ??    0.2 S    31T   0:00.00   0:00.00 /Users/adalundhe/Librar
+          32415         0.0 S    31T   0:00.00   0:00.00 
+          32415         0.0 S    31T   0:00.00   0:00.00 
+          32415         0.0 S    31T   0:00.00   0:00.00 
+          32415         0.0 S    97R   0:00.00   0:00.00 
+          32415         0.0 S    97R   0:00.00   0:00.00 
+          32415         0.0 S    97R   0:00.00   0:00.00 
+          32415         0.0 S    97R   0:00.00   0:00.00 
+          32415         0.0 S    97R   0:00.00   0:00.00 
+          32415         0.0 S    97R   0:00.00   0:00.00 
+          32415         0.0 S    97R   0:00.00   0:00.00 
+          32415         0.0 S    97R   0:00.00   0:00.00 
+          32415         0.0 S    97R   0:00.00   0:00.00 
+          32415         0.0 S    97R   0:00.00   0:00.00 
+          32415         0.0 S    97R   0:00.00   0:00.00 
+          32415         0.0 S    97R   0:00.00   0:00.00 
+          32415         0.0 S    31T   0:00.00   0:00.00 
+          32415         0.0 S    31T   0:00.00   0:00.00 
+          32415         0.0 S    31T   0:00.00   0:00.00 
+USER        PID   TT   %CPU STAT PRI     STIME     UTIME COMMAND
+adalundhe 32424   ??    0.9 S    31T   0:00.00   0:00.00 /Users/adalundhe/Librar
+          32424         0.0 S    31T   0:00.00   0:00.00 
+          32424         0.0 S    31T   0:00.00   0:00.00 
+          32424         0.0 S    31T   0:00.00   0:00.00 
+          32424         0.1 S    97R   0:00.00   0:00.00 
+          32424         0.0 S    97R   0:00.00   0:00.00 
+          32424         0.0 S    97R   0:00.00   0:00.00 
+          32424         0.0 S    97R   0:00.00   0:00.00 
+          32424         0.0 S    97R   0:00.00   0:00.00 
+          32424         0.0 S    97R   0:00.00   0:00.00 
+          32424         0.0 S    97R   0:00.00   0:00.00 
+          32424         0.0 S    97R   0:00.00   0:00.00 
+          32424         0.0 S    97R   0:00.00   0:00.00 
+          32424         0.0 S    97R   0:00.00   0:00.00 
+          32424         0.0 S    97R   0:00.00   0:00.00 
+          32424         0.0 S    97R   0:00.00   0:00.00 
+          32424         0.0 S    31T   0:00.00   0:00.00 
+          32424         0.0 S    31T   0:00.00   0:00.00 
+          32424         0.0 S    31T   0:00.00   0:00.00 
+USER        PID   TT   %CPU STAT PRI     STIME     UTIME COMMAND
+adalundhe 32427   ??    1.5 S    31T   0:00.00   0:00.00 /Users/adalundhe/Librar
+          32427         0.0 S    31T   0:00.00   0:00.00 
+          32427         0.0 S    31T   0:00.00   0:00.00 
+          32427         0.0 S    31T   0:00.00   0:00.00 
+          32427         0.0 S    31T   0:00.00   0:00.00 
+          32427         0.0 S    31T   0:00.00   0:00.00 
+          32427        10.6 U    31T   0:00.05   0:00.01 
+          32427        16.8 S    97R   0:00.01   0:00.05 
+          32427         0.0 S    97R   0:00.00   0:00.00 
+          32427         0.0 S    31T   0:00.00   0:00.00 
+          32427         0.0 S    97R   0:00.00   0:00.00 
+          32427         0.0 S    97R   0:00.00   0:00.00 
+          32427         0.0 S    97R   0:00.00   0:00.00 
+          32427         0.0 S    97R   0:00.00   0:00.00 
+          32427         0.0 S    97R   0:00.00   0:00.00 
+          32427         0.0 S    97R   0:00.00   0:00.00 
+          32427         0.0 S    97R   0:00.00   0:00.00 
+          32427         0.0 S    97R   0:00.00   0:00.00 
+          32427         0.0 S    97R   0:00.00   0:00.00 
+          32427         0.0 S    97R   0:00.00   0:00.00 
+=== B-9 2026-11-17T02:05:36Z load { 5.63 5.02 4.48 }
+14578 69395 10  20 SN     0.0   2496 /bin/zsh
+14591     1 10  31 SN     0.0   2272 /bin/zsh
+14593 14591 10  31 SN     0.0  17632 /Users/adalundhe/.pyenv/versions/3.14.2/bin/python3
+33145 14593 10  31 SN     0.0  70560 /Users/adalundhe/.rustup/toolchains/1.98.1-aarch64-apple-darwin/bin/cargo
+33146 33145 10  31 SN     9.8  70720 /Users/adalundhe/.cache/cut-a/b/target/release/deps/api_image-c665f96ed393319f
+33270 14578 10  20 SN     0.0   1184 sleep
+33286 33146 10  31 SNs    0.7  30960 /Users/adalundhe/.cache/cut-a/b/target/e2e/shards-cb93be605a552cfd/shards
+33289 33286 10  97 SN     0.3  14096 /Users/adalundhe/Library/Caches/shards/helpers/044b6b23be4d35b90f34765de3b0c44298fc/shards-vm
+33304 33146 10  31 SNs    2.8  31104 /Users/adalundhe/.cache/cut-a/b/target/e2e/shards-cb93be605a552cfd/shards
+33307 33304 10  97 SN     1.8  14720 /Users/adalundhe/Library/Caches/shards/helpers/044b6b23be4d35b90f34765de3b0c44298fc/shards-vm
+USER        PID   TT   %CPU STAT PRI     STIME     UTIME COMMAND
+adalundhe 33289   ??    0.3 S    31T   0:00.00   0:00.00 /Users/adalundhe/Librar
+          33289         0.0 S    31T   0:00.00   0:00.00 
+          33289         0.0 S    31T   0:00.00   0:00.00 
+          33289         0.0 S    31T   0:00.00   0:00.00 
+          33289         0.0 S    97R   0:00.00   0:00.00 
+          33289         0.0 S    97R   0:00.00   0:00.00 
+          33289         0.0 S    97R   0:00.00   0:00.00 
+          33289         0.0 S    97R   0:00.00   0:00.00 
+          33289         0.0 S    97R   0:00.00   0:00.00 
+          33289         0.0 S    97R   0:00.00   0:00.00 
+          33289         0.0 S    97R   0:00.00   0:00.00 
+          33289         0.0 S    97R   0:00.00   0:00.00 
+          33289         0.0 S    97R   0:00.00   0:00.00 
+          33289         0.0 S    97R   0:00.00   0:00.00 
+          33289         0.0 S    97R   0:00.00   0:00.00 
+          33289         0.0 S    97R   0:00.00   0:00.00 
+          33289         0.0 S    31T   0:00.00   0:00.00 
+          33289         0.0 S    31T   0:00.00   0:00.00 
+          33289         0.0 S    31T   0:00.00   0:00.00 
+USER        PID   TT   %CPU STAT PRI     STIME     UTIME COMMAND
+adalundhe 33307   ??    1.6 S    31T   0:00.00   0:00.00 /Users/adalundhe/Librar
+          33307         0.0 S    31T   0:00.00   0:00.00 
+          33307         0.0 S    31T   0:00.00   0:00.00 
+          33307         0.0 S    31T   0:00.00   0:00.00 
+          33307         0.2 S    97R   0:00.00   0:00.00 
+          33307         0.0 S    97R   0:00.00   0:00.00 
+          33307         0.0 S    97R   0:00.00   0:00.00 
+          33307         0.0 S    97R   0:00.00   0:00.00 
+          33307         0.0 S    97R   0:00.00   0:00.00 
+          33307         0.0 S    97R   0:00.00   0:00.00 
+          33307         0.0 S    97R   0:00.00   0:00.00 
+          33307         0.0 S    97R   0:00.00   0:00.00 
+          33307         0.0 S    97R   0:00.00   0:00.00 
+          33307         0.0 S    97R   0:00.00   0:00.00 
+          33307         0.0 S    97R   0:00.00   0:00.00 
+          33307         0.0 S    97R   0:00.00   0:00.00 
+          33307         0.0 S    31T   0:00.00   0:00.00 
+          33307         0.0 S    31T   0:00.00   0:00.00 
+          33307         0.0 S    31T   0:00.00   0:00.00 
+=== A-9 2026-11-17T02:05:42Z load { 5.50 5.00 4.48 }
+14578 69395 10  20 SN     0.0   2496 /bin/zsh
+14591     1 10  31 SN     0.0   2272 /bin/zsh
+14593 14591 10  31 SN     0.0  17632 /Users/adalundhe/.pyenv/versions/3.14.2/bin/python3
+33697 14593 10  31 SN     0.0  70592 /Users/adalundhe/.rustup/toolchains/1.98.1-aarch64-apple-darwin/bin/cargo
+33698 33697 10  31 SN     9.8  70720 /Users/adalundhe/.cache/cut-a/a/target/release/deps/api_image-c665f96ed393319f
+33768 14578 10  20 SN     0.0   1184 sleep
+33787 33698 10  31 SNs    1.2  30768 /Users/adalundhe/.cache/cut-a/a/target/e2e/shards-42f57e3b88cbd378/shards
+33789 33787 10  97 SN     0.6  14160 /Users/adalundhe/Library/Caches/shards/helpers/ce64f8cf1ef2ec792e405b75e3b0c44298fc/shards-vm
+33800 33698 10  31 SNs    3.1  30784 /Users/adalundhe/.cache/cut-a/a/target/e2e/shards-42f57e3b88cbd378/shards
+33802 33800 10  97 SN     1.7  14752 /Users/adalundhe/Library/Caches/shards/helpers/ce64f8cf1ef2ec792e405b75e3b0c44298fc/shards-vm
+USER        PID   TT   %CPU STAT PRI     STIME     UTIME COMMAND
+adalundhe 33789   ??    0.6 S    31T   0:00.00   0:00.00 /Users/adalundhe/Librar
+          33789         0.0 S    31T   0:00.00   0:00.00 
+          33789         0.0 S    31T   0:00.00   0:00.00 
+          33789         0.0 S    31T   0:00.00   0:00.00 
+          33789         0.0 S    97R   0:00.00   0:00.00 
+          33789         0.0 S    97R   0:00.00   0:00.00 
+          33789         0.0 S    97R   0:00.00   0:00.00 
+          33789         0.0 S    97R   0:00.00   0:00.00 
+          33789         0.0 S    97R   0:00.00   0:00.00 
+          33789         0.0 S    97R   0:00.00   0:00.00 
+          33789         0.0 S    97R   0:00.00   0:00.00 
+          33789         0.0 S    97R   0:00.00   0:00.00 
+          33789         0.0 S    97R   0:00.00   0:00.00 
+          33789         0.0 S    97R   0:00.00   0:00.00 
+          33789         0.0 S    97R   0:00.00   0:00.00 
+          33789         0.0 S    97R   0:00.00   0:00.00 
+          33789         0.0 S    31T   0:00.00   0:00.00 
+          33789         0.0 S    31T   0:00.00   0:00.00 
+          33789         0.0 S    31T   0:00.00   0:00.00 
+USER        PID   TT   %CPU STAT PRI     STIME     UTIME COMMAND
+adalundhe 33802   ??    1.5 S    31T   0:00.00   0:00.00 /Users/adalundhe/Librar
+          33802         0.0 S    31T   0:00.00   0:00.00 
+          33802         0.0 S    31T   0:00.00   0:00.00 
+          33802         0.0 S    31T   0:00.00   0:00.00 
+          33802         0.2 S    97R   0:00.00   0:00.00 
+          33802         0.0 S    97R   0:00.00   0:00.00 
+          33802         0.0 S    97R   0:00.00   0:00.00 
+          33802         0.0 S    97R   0:00.00   0:00.00 
+          33802         0.0 S    97R   0:00.00   0:00.00 
+          33802         0.0 S    97R   0:00.00   0:00.00 
+          33802         0.0 S    97R   0:00.00   0:00.00 
+          33802         0.0 S    97R   0:00.00   0:00.00 
+          33802         0.0 S    97R   0:00.00   0:00.00 
+          33802         0.0 S    97R   0:00.00   0:00.00 
+          33802         0.0 S    97R   0:00.00   0:00.00 
+          33802         0.0 S    97R   0:00.00   0:00.00 
+          33802         0.0 S    31T   0:00.00   0:00.00 
+          33802         0.0 S    31T   0:00.00   0:00.00 
+          33802         0.0 S    31T   0:00.00   0:00.00 

@@ -1,0 +1,92 @@
+=== host Adas-Mac-Studio-2, Mac16,9, Apple M4 Max, macOS 26.2 (25C56), 14 CPUs (10+4 by performance level), 36.0 GiB
+=== user adalundhe, console adalundhe, GUI login yes; kiln kiln 0.2.0; this run's nice 10, priority 20; needs 'macos,cpus=8,mem=16g,disk=30g'; mode run
+=== carrier a148e75; TMPDIR /var/folders/fm/xn3dqgj1397387_rj_1qzxbm0000gn/T/
+=== room before the builds: load 2.57 on 14 CPUs, 11.43 idle (8 asked); 32.0 GiB of memory available (16.0 asked); 45.5 GiB of disk free (R16: 30)
+=== A dcac51807 2026-11-16 setup: the census reads api_run.rs's "pmem" and "unpmem" as the DEVICE words th
+=== B 26c1ea5df 2026-11-16 Merge origin/main (dcac51807) into p/start-path-cut-a: start-path cut (a) on cu (fetched in 423 s)
+    the job: nice 10, priority  31
+    USER        PID   TT   %CPU STAT PRI     STIME     UTIME COMMAND
+    adalundhe 71930   ??    0.2 S    31T   0:00.02   0:00.02 /Users/adalundhe/.pyenv/versions/3.14.2/bin/python3 -I docs/research/measurements/macos-sched/qos.py
+              71930        12.2 S    37T   0:00.00   0:00.23 
+              71930        14.1 S    37T   0:00.00   0:00.22 
+              71930        17.7 R    31T   0:00.00   0:00.18 
+              71930        30.6 S    20T   0:00.00   0:00.28 
+              71930        20.5 S     4T   0:00.00   0:00.10 
+    
+=== kernel Image-6.18.48-aarch64-836568f8ad2c fetched, sha256 c9dd57ba93276d9fc3842a6014b05111dec4ff42cfc0b23ea18b73438743e755
+=== arm a built in 345 s: its target 2.4 GiB
+=== arm b built in 386 s: its target 2.4 GiB
+=== 5.4 GiB in /Users/adalundhe/.cache/cut-a
+=== settling 65 s, for this run's own load to leave the 1-minute average
+=== room after the builds: load 4.34 on 14 CPUs, 9.66 idle (8 asked); 32.0 GiB of memory available (16.0 asked); 39.1 GiB of disk free (R16: 30)
+=== look at A-0: load 4.20; nice 10 | priority  20  31  97 | VM threads 31 97 
+=== look at B-0: load 4.71; nice 10 | priority   0  20  31  97 | VM threads 31 97 
+=== look at B-1: load 4.22; nice 10 | priority  20  31  97 | VM threads 31 97 
+=== look at A-1: load 4.60; nice 10 | priority  20  31  97 | VM threads 31 97 
+=== look at A-2: load 4.40; nice 10 | priority  20  31  97 | VM threads 31 97 
+=== look at B-2: load 4.49; nice 10 | priority  20  31  97 | VM threads 31 97 
+=== look at B-3: load 4.49; nice 10 | priority  20  31  97 | VM threads 31 46 97 
+=== look at A-3: load 4.37; nice 10 | priority  20  31  97 | VM threads 31 97 
+=== look at A-4: load 4.50; nice 10 | priority  20  31  97 | VM threads 31 97 
+=== look at B-4: load 5.67; nice 10 | priority  20  31  97 | VM threads 31 97 
+=== look at B-5: load 5.29; nice 10 | priority  20  31  97 | VM threads 31 97 
+=== look at A-5: load 5.31; nice 10 | priority  20  31  97 | VM threads 31 97 
+=== look at A-6: load 5.76; nice 10 | priority  20  31  97 | VM threads 31 97 
+=== look at B-6: load 6.10; nice 10 | priority  20  31  97 | VM threads 31 97 
+=== look at B-7: load 6.17; nice 10 | priority  20  31  97 | VM threads 31 97 
+=== look at A-7: load 5.78; nice 10 | priority  20  31  97 | VM threads 31 97 
+=== look at A-8: load 5.28; nice 10 | priority  20  31  97 | VM threads 31 97 
+=== look at B-8: load 5.17; nice 10 | priority  20  31  97 | VM threads 31 97 
+=== look at B-9: load 5.63; nice 10 | priority  20  31  97 | VM threads 31 97 
+=== look at A-9: load 5.50; nice 10 | priority  20  31  97 | VM threads 31 97 
+=== the A/B ended, exit 0, in 215 s
+host Adas-Mac-Studio-2.local, Darwin 25.2.0 arm64, 14 CPUs; load (4.07666015625, 4.63427734375, 4.2509765625) before, (5.38037109375, 4.9873046875, 4.4775390625) after; 10 rounds ABBA, N 10
+A dcac51807512 (/Users/adalundhe/.cache/cut-a/a), logs /Users/adalundhe/.cache/cut-a/out/A-0.log, /Users/adalundhe/.cache/cut-a/out/A-1.log, /Users/adalundhe/.cache/cut-a/out/A-2.log, /Users/adalundhe/.cache/cut-a/out/A-3.log, /Users/adalundhe/.cache/cut-a/out/A-4.log, /Users/adalundhe/.cache/cut-a/out/A-5.log, /Users/adalundhe/.cache/cut-a/out/A-6.log, /Users/adalundhe/.cache/cut-a/out/A-7.log, /Users/adalundhe/.cache/cut-a/out/A-8.log, /Users/adalundhe/.cache/cut-a/out/A-9.log
+  Booted    boot                 n 100 p50 74.875 p90 77.804 p99 81.498 max 84.237 ms
+  Booted    first output         n 100 p50 77.629 p90 80.566 p99 84.064 max 86.672 ms
+  Booted    stop                 n 100 p50 1.529 p90 1.638 p99 1.899 max 2.077 ms
+  Booted    layer: launch waited n 10 p50 1.570 p90 1.699 p99 2.287 max 2.287 ms
+  Booted    layer: its thread    n 0
+  Saved     boot                 n 100 p50 197.886 p90 208.676 p99 215.528 max 219.769 ms
+  Saved     first output         n 100 p50 205.932 p90 216.748 p99 223.910 max 229.462 ms
+  Saved     stop                 n 100 p50 2.038 p90 2.179 p99 5.830 max 6.055 ms
+  Saved     layer: launch waited n 10 p50 1.441 p90 1.504 p99 1.552 max 1.552 ms
+  Saved     layer: its thread    n 0
+  Restored  boot                 n 100 p50 18.721 p90 20.734 p99 22.216 max 24.203 ms
+  Restored  first output         n 100 p50 23.918 p90 25.896 p99 28.881 max 29.215 ms
+  Restored  stop                 n 100 p50 1.511 p90 1.628 p99 1.771 max 2.010 ms
+  Restored  layer: launch waited n 10 p50 0.290 p90 0.305 p99 0.332 max 0.332 ms
+  Restored  layer: its thread    n 0
+  Warm      boot                 n 100 p50 0.267 p90 0.343 p99 0.369 max 0.371 ms
+  Warm      first output         n 100 p50 5.158 p90 5.714 p99 5.946 max 6.436 ms
+  Warm      stop                 n 100 p50 1.634 p90 1.827 p99 4.991 max 5.755 ms
+  Warm      layer: launch waited n 10 p50 0.274 p90 0.335 p99 0.388 max 0.388 ms
+  Warm      layer: its thread    n 0
+B 26c1ea5df2c3 (/Users/adalundhe/.cache/cut-a/b), logs /Users/adalundhe/.cache/cut-a/out/B-0.log, /Users/adalundhe/.cache/cut-a/out/B-1.log, /Users/adalundhe/.cache/cut-a/out/B-2.log, /Users/adalundhe/.cache/cut-a/out/B-3.log, /Users/adalundhe/.cache/cut-a/out/B-4.log, /Users/adalundhe/.cache/cut-a/out/B-5.log, /Users/adalundhe/.cache/cut-a/out/B-6.log, /Users/adalundhe/.cache/cut-a/out/B-7.log, /Users/adalundhe/.cache/cut-a/out/B-8.log, /Users/adalundhe/.cache/cut-a/out/B-9.log
+  Booted    boot                 n 100 p50 73.011 p90 76.992 p99 80.454 max 85.908 ms
+  Booted    first output         n 100 p50 75.819 p90 79.636 p99 83.351 max 88.624 ms
+  Booted    stop                 n 100 p50 1.546 p90 1.647 p99 1.765 max 1.818 ms
+  Booted    layer: launch waited n 10 p50 0.005 p90 0.007 p99 0.007 max 0.007 ms
+  Booted    layer: its thread    n 10 p50 1.612 p90 2.441 p99 2.579 max 2.579 ms
+  Saved     boot                 n 100 p50 196.578 p90 208.006 p99 216.419 max 223.142 ms
+  Saved     first output         n 100 p50 204.792 p90 217.101 p99 225.052 max 231.049 ms
+  Saved     stop                 n 100 p50 2.059 p90 2.188 p99 2.245 max 2.347 ms
+  Saved     layer: launch waited n 10 p50 0.006 p90 0.008 p99 0.010 max 0.010 ms
+  Saved     layer: its thread    n 10 p50 1.719 p90 2.484 p99 2.598 max 2.598 ms
+  Restored  boot                 n 100 p50 18.608 p90 20.183 p99 20.799 max 21.504 ms
+  Restored  first output         n 100 p50 24.092 p90 25.511 p99 26.339 max 26.648 ms
+  Restored  stop                 n 100 p50 1.514 p90 1.644 p99 1.752 max 1.846 ms
+  Restored  layer: launch waited n 10 p50 0.006 p90 0.008 p99 0.010 max 0.010 ms
+  Restored  layer: its thread    n 10 p50 0.288 p90 0.305 p99 0.314 max 0.314 ms
+  Warm      boot                 n 100 p50 0.273 p90 0.353 p99 0.377 max 0.388 ms
+  Warm      first output         n 100 p50 5.210 p90 5.710 p99 6.079 max 6.084 ms
+  Warm      stop                 n 100 p50 1.649 p90 1.779 p99 4.380 max 4.743 ms
+  Warm      layer: launch waited n 10 p50 0.007 p90 0.008 p99 0.011 max 0.011 ms
+  Warm      layer: its thread    n 10 p50 0.346 p90 0.460 p99 0.499 max 0.499 ms
+=== settling 97 s, for this run's own load to leave the 1-minute average
+=== room before B's single-arm costs: load 9.87 on 14 CPUs, 4.13 idle (8 asked); 32.0 GiB of memory available (16.0 asked); 37.8 GiB of disk free (R16: 30)
+=== not quiet (before B's single-arm costs): 4.13 CPUs idle, under the 8 asked
+=== REFUSED: not quiet, or no room, for B's single-arm costs (above); the A/B above stands
+=== kiln's log during the run: 0 lines on this run's launchd jobs, 0 on headroom (kiln.log in the evidence)
+=== condition over 20 looks: nice 10 | priority 20 31 97 | VM threads 31 97 
+=== (nice 0 with VM threads above 20: the user's own; nice 20: kiln took the job as its agent's; VM threads at 20 or below: a QoS clamp. README.md)
