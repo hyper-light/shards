@@ -324,14 +324,21 @@ pub(super) fn fs_stats(fd: host::Raw) -> Result<FsStats, Errno> {
 /// group and mode (`$LXUID`, `$LXGID`, `$LXMOD`), a device's numbers (`$LXDEV`) where its
 /// kind is one the host keeps no node of; none where WSL keeps no owner or group. A mode
 /// alone is the file's own, as a Unix host's is, which [`ntfs::stat`] reads: a chmod of a
-/// file the host made keeps it its share's default owner's, as on Unix (D38).
+/// file the host made keeps it its share's default owner's, as on Unix (D38). A word there
+/// that is not WSL's four bytes is a broken record, refused (EIO) as Unix refuses an owner's
+/// attribute no owner parses: read as absent, a node whose `$LXUID` broke was its share's
+/// default owner's, or root's beside a whole `$LXGID` (runs-01).
 fn owner_of(fd: BorrowedHandle<'_>) -> Result<Option<Vec<u8>>, Errno> {
     let eas = ntfs::eas(fd)?;
-    let word = |name: &[u8]| -> Option<u32> {
-        let (_, v) = eas.iter().find(|(n, _)| n.eq_ignore_ascii_case(name))?;
-        Some(u32::from_le_bytes(<[u8; 4]>::try_from(v.get(..4)?).ok()?))
+    let word = |name: &[u8]| -> Result<Option<u32>, Errno> {
+        let Some((_, v)) = eas.iter().find(|(n, _)| n.eq_ignore_ascii_case(name)) else {
+            return Ok(None);
+        };
+        <[u8; 4]>::try_from(v.as_slice())
+            .map(|w| Some(u32::from_le_bytes(w)))
+            .map_err(|_| EIO)
     };
-    let (uid, gid, mode) = (word(b"$LXUID"), word(b"$LXGID"), word(b"$LXMOD"));
+    let (uid, gid, mode) = (word(b"$LXUID")?, word(b"$LXGID")?, word(b"$LXMOD")?);
     if uid.is_none() && gid.is_none() {
         return Ok(None);
     }
@@ -426,6 +433,15 @@ pub(super) fn list_xattr(fd: host::Raw) -> Result<Vec<u8>, Errno> {
         }
     }
     Ok(out)
+}
+
+/// `fd`'s file's owner's record broken, as a test breaks it: its `$LXUID` a word of other
+/// than WSL's four bytes ([`owner_of`]). Its owner's attribute is set through WSL's words
+/// alone, which [`fset_xattr`] refuses a value no owner parses for (EINVAL).
+#[cfg(test)]
+pub(super) fn break_owner(fd: host::Raw) -> Result<(), Errno> {
+    let broken: (&[u8], &[u8]) = (b"$LXUID", &[1]);
+    ntfs::set_eas(able(fd, FILE_WRITE_EA)?.handle(), &[broken])
 }
 
 /// The server's own name for its owner's attribute.

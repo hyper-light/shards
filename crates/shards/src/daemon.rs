@@ -13184,6 +13184,22 @@ mod tests {
         });
     }
 
+    /// Waits until the closed daemon's slots let go of it ([`Daemon::slots_hold`]), until
+    /// the time the first that holds it lets go at, as its listener waits until then
+    /// (`wait_for_work`'s timeout, through [`timed`]): a let-go comes with the clock, no
+    /// thread running toward it, which a judged wait knows of by that deadline alone (D215).
+    /// None registered, its party's threads all asleep, the wait was refused 0.15 to 0.3 s
+    /// into the slowest take's 0.2 or 0.5 s on every Windows and Linux job of CI 44076016255
+    /// and 44077430171.
+    fn until_let_go(t: &Test, what: &str) {
+        let due = t
+            .daemon
+            .slots_hold()
+            .1
+            .map(|at| at.saturating_duration_since(Instant::now()));
+        timed(due, || t.until(what, |d| !d.slots_hold().0));
+    }
+
     /// A closed daemon's slots hold it while each client takes what it is given: one read
     /// late is still whole, as a stepping-aside daemon's RESTART must reach its client
     /// (cut off by its exit before its slot passed it on, x86_64 CI); and a client that
@@ -13256,9 +13272,7 @@ mod tests {
                 .values()
                 .find_map(|l| l.waiting)
                 .expect("its write");
-            t.until("a client that takes nothing held its closed daemon", |d| {
-                !d.slots_hold().0
-            });
+            until_let_go(t, "a client that takes nothing held its closed daemon");
             assert!(
                 since.elapsed() >= lock(&t.daemon.seen).answer_wait().unwrap(),
                 "{:?}",
@@ -13301,9 +13315,11 @@ mod tests {
             let answer = vec![b'x'; 1 << 20];
             std::thread::scope(|s| {
                 let writer = party::spawn_in(s, || living.answer(&ours, kind::ERR, &answer));
-                t.until("a client that takes nothing held its closed daemon", |d| {
-                    !d.slots_hold().0
+                // Its let-go's time set once its writer waits on its client.
+                t.until("its writer did not wait on its client", |d| {
+                    lock(&d.live).values().any(|l| l.waiting.is_some())
                 });
+                until_let_go(t, "a client that takes nothing held its closed daemon");
                 drop(client);
                 assert!(writer.join().unwrap().is_err());
             });
@@ -14010,12 +14026,22 @@ mod tests {
             whole.ask(kind::CONTAINER, &command, &[]).unwrap();
             assert_eq!(last(&whole), kind::END);
             drop(whole);
+            t.until("the whole request's client stayed in hand", |d| {
+                d.busy.load(Ordering::SeqCst) == 0
+            });
             // Its first byte (no streams), then after a pause, the rest: no descriptors, and
-            // the request.
+            // the request. Paused once the daemon has counted it in hand, which it does as it
+            // is about to time the rest (`serve_slot`), so that the rest's wait as the daemon
+            // times it holds the pause whole: paused from the write, a slot thread that came
+            // to its first byte late timed less (CI 44076016255, aarch64 gnu: 299.88 ms of a
+            // 300 ms pause).
             let pause = Duration::from_millis(300);
             let paused = take();
             let mut writes = say(&paused);
             writes.write_all(&[0]).unwrap();
+            t.until("the paused client was not counted in hand", |d| {
+                d.busy.load(Ordering::SeqCst) == 1
+            });
             std::thread::sleep(pause);
             let mut rest = vec![0u8];
             rest.extend(s::frame(kind::CONTAINER, &command).unwrap());
@@ -14027,16 +14053,18 @@ mod tests {
             );
             // The whole request's rest taught nothing; the paused one's, waited on, teaches.
             let learned = lock(&t.daemon.seen).request_stall();
-            assert!(learned.is_some_and(|w| w >= pause), "{learned:?}");
+            let Some(learned) = learned.filter(|w| *w >= pause) else {
+                panic!("{learned:?}");
+            };
             drop((writes, paused));
             // Nothing past its first byte for longer than the slowest rest seen: told to ask
-            // again, no sooner.
+            // again, no sooner, its wait timed from no earlier than the write.
             let silent = take();
             let mut writes = say(&silent);
             let t0 = Instant::now();
             writes.write_all(&[0]).unwrap();
             assert_eq!(last(&silent), kind::RESTART);
-            assert!(t0.elapsed() >= pause, "{:?}", t0.elapsed());
+            assert!(t0.elapsed() >= learned, "{:?} of {learned:?}", t0.elapsed());
             drop((writes, silent));
             t.daemon.close();
         });

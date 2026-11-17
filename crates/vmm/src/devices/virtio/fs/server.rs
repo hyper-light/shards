@@ -4868,15 +4868,12 @@ mod tests {
         OWNER_ERRORS.set((Some(EIO), None));
         assert_eq!(answer(&s, &req(op::LOOKUP, ROOT, 1000, &name("private"))).0, -EIO);
         OWNER_ERRORS.set((None, None));
+        // Its record broken in the host's own form: on Windows a word of WSL's, which the
+        // owner's attribute is never set raw through (CI's arm64 Windows runner, runs
+        // 44076016255 and 44077430171: EINVAL here), and which was read as absent.
         let file = std::fs::File::open(path.join("private")).unwrap();
         use super::host::AsRaw as _;
-        fset_xattr(
-            host::Owned::from(file).raw(),
-            &owner_xattr().unwrap(),
-            b"broken",
-            0,
-        )
-        .unwrap();
+        break_owner(host::Owned::from(file).raw()).unwrap();
         assert_eq!(answer(&s, &req(op::LOOKUP, ROOT, 1000, &name("private"))).0, -EIO);
     }
 

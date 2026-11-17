@@ -798,8 +798,9 @@ mod tests {
     }
 
     /// The governor holds each period over the limit's own period: a thread held to half a
-    /// CPU at a g of 5 ms, a period of 10, is held to that period's end, never to a period
-    /// of another's.
+    /// CPU at a g of 5 ms, a period of 10, is held to that period's end, and through as many
+    /// of its own after it as what it was charged overran, whole shares of it (D265), never
+    /// to a period of another's.
     #[test]
     fn the_governor_holds_over_the_limits_period() {
         /// Lets the thread go however the test ends.
@@ -811,8 +812,11 @@ mod tests {
             }
         }
         let hold = Hold::new(1);
-        let period = Duration::from_millis(10);
-        assert_eq!(hold.set_at(500, Duration::from_millis(5)).unwrap().period, period);
+        let (milli, period) = (500, Duration::from_millis(10));
+        assert_eq!(
+            hold.set_at(milli, Duration::from_millis(5)).unwrap().period,
+            period
+        );
         let stop = AtomicBool::new(false);
         std::thread::scope(|s| {
             let ends = Ends(&hold, &stop);
@@ -836,7 +840,20 @@ mod tests {
                 std::hint::spin_loop();
             };
             let left = until.saturating_duration_since(Instant::now());
-            assert!(left <= period, "held {left:?} more, its period {period:?}");
+            // The periods its charge owes, read no sooner than the governor read it: one where
+            // the thread's clock shows the share spent as it is, more where it moves in steps
+            // past the share, as Windows' does (GetThreadTimes, its clock's 15.625 ms ticks
+            // against a share of 5 ms: CI's arm64 Windows runner, runs 44076016255 and
+            // 44077430171, held 13.6 and 20.0 ms more, three periods owed).
+            let share = share_of(
+                NonZeroU64::new(milli).unwrap(),
+                u64::try_from(period.as_nanos()).unwrap(),
+            );
+            let owed = (hold.used(Charged::ToThread) / share).max(1);
+            assert!(
+                left <= period * u32::try_from(owed).unwrap(),
+                "held {left:?} more, its period {period:?}, {owed} owed"
+            );
             drop(ends);
             governor.join().unwrap();
         });

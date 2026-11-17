@@ -94,9 +94,14 @@ pub fn number_compare(x: &str, y: &str) -> Ordering {
     }
     match (exact(x), exact(y)) {
         (Some(a), Some(b)) => compare_exact(&a, &b),
-        // What OPA panics on ("illegal value") never reaches here: OPA's numbers come
-        // from its lexer, JSON and to_number. Order them by text, to stay total.
-        _ => x.cmp(y),
+        // What `exact` cannot read, a JSON number whose exponent is past i64's (OPA panics
+        // on it, "illegal value"), comes after every number it reads, and by text among its
+        // own, so that the order stays total. By text against the others too, `66e<huge>`
+        // came before 7 and after 10, and Rust's sort panicked on such an array ("does not
+        // correctly implement a total order": the rego-builtins fuzz target, CI 44077430171).
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => x.cmp(y),
     }
 }
 
@@ -901,6 +906,47 @@ mod tests {
         assert_eq!(compares("33", "3e33333333332"), Less);
         assert_eq!(compares("3e33333333332", "33"), Greater);
         assert_eq!(compares("1202022222200000E0297138122009577", "1"), Greater);
+    }
+
+    /// CI's fuzzing (run 44077430171, rego-builtins' crash-1023800b6193): `sort` of an array
+    /// whose numbers' exponents are past i64's among others, which `exact` cannot read. By
+    /// text against the others, `66e<huge>` came before 7 and after 10, and the sort panicked.
+    /// They come after every number `exact` reads, by text among their own: every triple
+    /// orders consistently, and a sort of them answers, the unread last.
+    #[test]
+    fn numbers_past_every_exponent_order_totally_with_the_rest() {
+        let numbers = [
+            "7",
+            "10",
+            "55",
+            "-1",
+            "0",
+            "1.5",
+            "5555555555555555570666666666666666",
+            "66e66666666666666666666",
+            "-66e66666666666666666666",
+            "5e-99999999999999999999",
+            "66e666666666666666666665555",
+        ];
+        for a in numbers {
+            for b in numbers {
+                assert_eq!(
+                    number_compare(a, b),
+                    number_compare(b, a).reverse(),
+                    "{a} against {b}"
+                );
+                for c in numbers {
+                    if number_compare(a, b) != Greater && number_compare(b, c) != Greater {
+                        assert_ne!(number_compare(a, c), Greater, "{a} <= {b} <= {c}");
+                    }
+                }
+            }
+        }
+        let mut sorted = numbers.map(|n| super::Number(n.into()));
+        sorted.sort();
+        let read = |n: &super::Number| exact(n.text()).is_some();
+        let unread = sorted.iter().position(|n| !read(n)).unwrap();
+        assert!(sorted[..unread].iter().all(read) && !sorted[unread..].iter().any(read));
     }
 
     #[test]

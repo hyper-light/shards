@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
-"""The pages of a restored guest's memory file that shards-vm holds private copies of as its
-guest first beats, as two runs of the Firecracker comparison read them (benches/
-firecracker.rs `pages_to`: `pages.tsv` beside each run's samples), and those one run's guest
-wrote that the other's did not: what one host's restore writes that another's does not.
+"""The pages of a restored guest's memory file that its VMM holds private copies of as the
+guest first beats, as runs of the Firecracker comparison read them (benches/firecracker.rs
+`pages_to`: `pages.tsv` beside each run's samples), and those one side's guest wrote that the
+other's did not: two hosts' restores of shards (`PAGES`), or shards' and Firecracker's in
+one run (`PAGES@firecracker`, whose guests boot the same kernel).
 
-    written.py PAGES_A PAGES_B [VMLINUX]
+    written.py PAGES_A[@VMM] PAGES_B[@VMM] [VMLINUX]
 
-Each page by its offset in the memory file. With VMLINUX, the guest's kernel, each page of
-its image is also named by the symbols on it (`nm`), where the memory file holds the guest's
-RAM from guest-physical 0 and the kernel lies at its link address less __START_KERNEL_map
-(x86_64, no KASLR): a per-CPU, slab or page-table page stays unnamed."""
+VMM is the name its process runs as (shards-vm unless named), and its guest's memory is every
+file it maps but its own binary. Each page by its offset in that file. With VMLINUX, the
+guest's kernel, each page of its image is also named by the symbols on it (`nm`), where the
+memory file holds the guest's RAM from guest-physical 0 and the kernel lies at its link
+address less __START_KERNEL_map (x86_64, no KASLR): a per-CPU, slab or page-table page stays
+unnamed."""
+import os
 import subprocess
 import sys
 
@@ -17,14 +21,19 @@ import sys
 START_KERNEL_MAP = 0xFFFFFFFF80000000
 
 
-def written(path):
-    """Each shards-vm restore's privately copied pages of its memory file, by offset, and
-    the page size of the host that read them."""
+def written(spec):
+    """Each restore's privately copied pages of its guest's memory, by offset, and the page
+    size of the host that read them."""
+    path, _, vmm = spec.partition("@")
     pages, size = set(), 0
     with open(path) as f:
         for line in f:
-            vmm, _, file, _, page, runs = line.rstrip("\n").split("\t")
-            if not vmm.endswith("shards-vm restore") or not file.endswith("/memory") or not runs:
+            label, _, file, _, page, runs = line.rstrip("\n").split("\t")
+            program, _, phase = label.rpartition(" ")
+            name = os.path.basename(program)
+            if phase != "restore" or not name.startswith(vmm or "shards-vm") or not runs:
+                continue
+            if os.path.basename(file) == name:
                 continue
             size = int(page)
             for run in runs.split(","):

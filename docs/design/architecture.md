@@ -3335,6 +3335,35 @@ one CLI.
       `--symbol-ordering-file`), then 2 rounds of both, alternated. If B keeps the envelope
       and its time, its ordering file joins the VM process's link (vm-process/build.rs), and
       how it follows the code as the code changes is decided then.
+    - *That A/B measured nothing* (run 44076339609 at fc9f30ccc, AMD EPYC 9V74; the
+      record's `ab-44076339609.txt`). Its arm B named its order in
+      `CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS`, which the nested build of the VM
+      process never read. Cargo sets `CARGO_ENCODED_RUSTFLAGS` for a build script, so
+      crates/shards/build.rs's nested cargo inherits it, and it is the first of Cargo's
+      "four mutually exclusive sources of extra flags", "checked in order, with the first
+      one being used" (Cargo's configuration reference, `build.rustflags`). So B built as A:
+      each section of its VM process the same size, and every boot of both arms 2,240,512
+      bytes of text resident. Its order, 2,923 symbols from A's 490 touched pages, linked
+      nothing. B won nothing, and nothing was cut.
+    - *The A/B again* (owed, the coordinator's): the same command, its arms now trees. B is
+      main's tree again, a git worktree, with A's order kept as
+      `crates/vm-process/order/<arch>.txt`. vm-process/build.rs links by an order kept so
+      for the target's architecture (LLD's `--symbol-ordering-file`, and
+      `--no-warn-symbol-ordering` for symbols a later build no longer has), under the same
+      terms as the packing: musl, rust-lld, not the GPU's VM process. None is kept, so
+      nothing links by one yet. B is the change that would land: its order file. `run.sh`'s
+      `ab ROUNDS REF` compares main with any revision so, never by flags.
+    - *CI's run 44077430171* (a223a63bc, AMD EPYC 9V45). The boot read as before:
+      `rss_file` +23 pages, `pss_file` +24 and `overhead` +1, each one value a pair. The
+      density read `fleet_private` +0.015625 MiB and `fleet_pte` +0.00390625 MiB, and the
+      restore `rss_anon` +0.0195312 MiB, each worse. `fleet_private` and `rss_anon` are the
+      restored guest's private copies, 230 pages to Firecracker's 157, outweighing
+      Firecracker's own larger anonymous memory on this host
+      (docs/research/measurements/restore-anon, whose `written.py` over the run's
+      `pages.tsv` names the pages; owed). `fleet_pte`, a page table's page more a VM, is
+      unread: the log says no mapping's address, only its offset in 2 MiB. Its Arrival step
+      reported each rate as it ended and passed in 84 s, and its judge's records were
+      restored from the job's own key and kept again (D209 Part 11).
 - A daemon's build is its binary's identity, which includes what it carries; one given
   another VM binary (`SHARDS_VM_BINARY`, for VMM work and tests) is another build.
 - **Tests:** `helpers::tests` (written whole once, found after, a cut copy replaced);
@@ -25912,6 +25941,17 @@ held to more than OPA's answers:
     panics on most such pairs ("illegal value": `big.Rat.SetString` refuses |exp5| > 10^6
     and |exp2| > 10^7, go1.26.1 `math/big/ratconv.go`; `big.Float.SetString`, exponents
     past int32). Shards answers exactly.
+  - A number whose exponent is past i64's, which `number::exact_parts` refuses (and OPA
+    panics on), was ordered by its text against the rest, which is no total order: on CI's
+    fuzzing (run 44077430171, rego-builtins' crash-1023800b6193) `sort` of such an array
+    panicked in Rust's sort ("user-provided comparison function does not correctly
+    implement a total order"), `66e<huge>` before 7 and after 10. It now comes after every
+    number `exact_parts` reads, and by text among its own (2026-11-17, kiln goal a8b1ce42,
+    lane own-36-tag; value.rs `numbers_past_every_exponent_order_totally_with_the_rest`).
+    OPA's own quirk stays as OPA has it: a number with a `.` loses its trailing `.` and `0`
+    there, so `10.0` equals both `1` and `10`, no total order either. Open: Rust's sorts,
+    and BTree sets and maps built from iterators, which sort, may panic on it where Go's
+    sort does not.
   - Addition and subtraction keep the smaller operand's bits within prec + 2 of the
     larger's top, the rest a sticky bit (and a borrow). The round bit is then at or above
     the cut, so the result rounds as Go's exact sum does (160,000 random sums and
@@ -39391,7 +39431,15 @@ finds nothing.
   npfs, strucsup.c `NpDeleteFcb`, run once a name has no instance, cancels its waiters
   `STATUS_OBJECT_NAME_NOT_FOUND`; the client's os error 2) and refused:
   WHP's managed-guest rate test, 6 of 6 on windows-2022 and -2025. While a VM listens, its
-  name always has an instance; a dial is refused only once it has ended.
+  name always has an instance; a dial is refused only once it has ended. *Amended again
+  2026-11-17 (CI 44077430171):* the broken pair's way up is closed before its replacement is
+  made (`Listening::close_up`), its way down kept as the name's instance until then. Left
+  listening, its way up stood beside the replacement's as the waiting client, let in by the
+  replacement's way down, opened a way up, and could take it: its connection was no pair's,
+  and the replacement waited on its way up for ever, every later client waiting behind it
+  (the muxer's `a_client_waiting_as_a_broken_pair_is_replaced_is_let_in`, arm64 Windows: not
+  let in after 10 s). No client opens a way up but through a way down of its own pair; the
+  broken pair's own has gone, so no client finds the way up's name without an instance.
 - *Dials* go through the dialer as before (S3's spawner); with none, the muxer opens the
   host port's pair itself, waiting for nothing (`shards_ipc::vsock_open` to now): a taken pair
   refuses at once, as a socket's full backlog does, rather than stall the device.
