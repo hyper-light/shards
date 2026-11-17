@@ -25340,7 +25340,129 @@ from each round's `timed` phase pass the launch's wait for its writable layer (`
 decided` to `its writable layer …`) and, where its thread made it, that making. On macOS it
 runs as the user's own, through `macos-sched/launchd-run.sh`.
 
-Numbers: owed (ROOT runs it), on HVF and on KVM.
+Numbers on HVF: the A/B of D253's cut (a), ROOT's run r644, 2026-11-17 01:41Z to 02:07Z.
+- Host Adas-Mac-Studio-2: Mac16,9, M4 Max, 14 CPUs, 36 GiB, macOS 26.2 (25C56).
+- Run from kiln by the carrier `~/g121-tmp/cut-a-carrier` (a148e75), the A/B through
+  `macos-sched/launchd-run.sh`. The condition as the run recorded it: nice 10, priorities 20, 31
+  and 97, the VM threads at 31 and 97 (no QoS clamp, M317). kiln's log had no line on the run's
+  launchd jobs or on headroom, so kiln neither took nor paced them.
+- Load averages 4.2 to 6.2 during the A/B, which took 215 s. As it began, 9.66 of the 14 CPUs
+  were idle by the 1-minute average; the carrier asks 8.
+- A is dcac51807, main before the cut. B is 26c1ea5df, main with it; the cut's code reads the
+  same at main 18bc96988.
+- B's `ab.py`, 10 rounds ABBA of N=10: n=100 per arm and kind for boot, first output and stop;
+  n=10 for the layer's two rows, one timed pass a process.
+
+ms, p50 / p90 / p99 / max:
+
+| kind | span | A | B |
+|---|---|---|---|
+| Booted | boot | 74.875 / 77.804 / 81.498 / 84.237 | 73.011 / 76.992 / 80.454 / 85.908 |
+| Booted | first output | 77.629 / 80.566 / 84.064 / 86.672 | 75.819 / 79.636 / 83.351 / 88.624 |
+| Booted | stop | 1.529 / 1.638 / 1.899 / 2.077 | 1.546 / 1.647 / 1.765 / 1.818 |
+| Booted | layer: launch waited | 1.570 / 1.699 / 2.287 / 2.287 | 0.005 / 0.007 / 0.007 / 0.007 |
+| Booted | layer: its thread | n 0 | 1.612 / 2.441 / 2.579 / 2.579 |
+| Saved | boot | 197.886 / 208.676 / 215.528 / 219.769 | 196.578 / 208.006 / 216.419 / 223.142 |
+| Saved | first output | 205.932 / 216.748 / 223.910 / 229.462 | 204.792 / 217.101 / 225.052 / 231.049 |
+| Saved | stop | 2.038 / 2.179 / 5.830 / 6.055 | 2.059 / 2.188 / 2.245 / 2.347 |
+| Saved | layer: launch waited | 1.441 / 1.504 / 1.552 / 1.552 | 0.006 / 0.008 / 0.010 / 0.010 |
+| Saved | layer: its thread | n 0 | 1.719 / 2.484 / 2.598 / 2.598 |
+| Restored | boot | 18.721 / 20.734 / 22.216 / 24.203 | 18.608 / 20.183 / 20.799 / 21.504 |
+| Restored | first output | 23.918 / 25.896 / 28.881 / 29.215 | 24.092 / 25.511 / 26.339 / 26.648 |
+| Restored | stop | 1.511 / 1.628 / 1.771 / 2.010 | 1.514 / 1.644 / 1.752 / 1.846 |
+| Restored | layer: launch waited | 0.290 / 0.305 / 0.332 / 0.332 | 0.006 / 0.008 / 0.010 / 0.010 |
+| Restored | layer: its thread | n 0 | 0.288 / 0.305 / 0.314 / 0.314 |
+| Warm | boot | 0.267 / 0.343 / 0.369 / 0.371 | 0.273 / 0.353 / 0.377 / 0.388 |
+| Warm | first output | 5.158 / 5.714 / 5.946 / 6.436 | 5.210 / 5.710 / 6.079 / 6.084 |
+| Warm | stop | 1.634 / 1.827 / 4.991 / 5.755 | 1.649 / 1.779 / 4.380 / 4.743 |
+| Warm | layer: launch waited | 0.274 / 0.335 / 0.388 / 0.388 | 0.007 / 0.008 / 0.011 / 0.011 |
+| Warm | layer: its thread | n 0 | 0.346 / 0.460 / 0.499 / 0.499 |
+
+What each row's n can show (Le Boudec 2010, Theorem 2.1; M612's `interval`):
+- At n=100, a p50's distribution-free 95% interval runs from the 40th to the 61st sample, and a
+  p90's from the 84th to the 96th.
+- A p99 has none under n=368: all 100 samples lie below the true p99 with probability
+  0.99^100 = 0.366. A max has none at any n.
+- At n=10, a p50's runs from the 2nd to the 9th sample; a p90 and a p99 have none.
+
+Read, for D253 (its amendment's *Kept*):
+- The cost the cut moves is the launch's wait for its layer. In A, 6 or more of each kind's 10
+  timed starts waited at least 1.570 ms (Booted), 1.441 (Saved), 0.290 (Restored) and 0.274 (a
+  warm host). In B, none of the 40 waited more than 0.011 ms. Its thread took 1.612, 1.719, 0.288
+  and 0.346 ms at p50.
+- Some spans neither build changed: every kind's stop, and Warm's boot (a warm host takes its
+  layer before `WARMED`, in both builds). Between the arms they moved 0.003 to 0.021 ms at p50, and
+  up to 3.708 ms at a max (Saved's stop).
+- Booted's and Saved's boot fell 1.864 and 1.308 ms at p50, and 0.812 and 0.670 at p90; at p99
+  and max they moved both ways, by up to 3.373 ms. Restored's fell at every rank.
+- Warm's first output is the request-to-usable span of the start path's 5 ms target. It was
+  5.158 ms at p50 in A and 5.210 in B: over 5 ms in both.
+
+Intervals, from the samples: `python3 -I docs/research/measurements/image-start-ab/intervals.py
+docs/research/measurements/image-start-ab/results/r644/out`, its output beside the logs in
+`intervals.txt`. Its per-arm ranks repeat the table above. Each arm's 100 samples come ten to a
+process, and the rounds' own p50s spread wider than a pooled interval: A's Booted boot ran 73.563
+to 77.291 ms by round, against a pooled p50 interval of 74.420 to 75.375. So each comparison is
+read two ways:
+- **Pooled:** from B's interval's low end less A's high end, to its high end less A's low end.
+  Each bound holds at 95% at least, one-sided: each interval misses on a side with probability
+  at most 2.5%.
+- **By rounds:** the median of the ten rounds' B p50 less A p50, the two processes of a round run
+  one after the other (ABBA). Its interval is the 2nd to the 9th of the ten, which holds however
+  much processes differ.
+
+The boot, against D253's refusals; B less A, ms:
+
+| kind | pooled p50 | pooled p90 | by rounds: median, interval | the refusal | shown |
+|---|---|---|---|---|---|
+| Booted | -2.602 to -0.952 | -3.315 to 1.940 | -1.817, -2.552 to -0.262 | a fall short of 1.570 | no |
+| Saved | -4.429 to 1.186 | -8.815 to 6.972 | -1.154, -3.023 to 1.814 | a fall short of 1.441 | no |
+| Restored | -1.182 to 0.967 | -1.566 to -0.075 | -0.210, -0.938 to 0.188 | a rise | no |
+| Warm | -0.016 to 0.025 | -0.008 to 0.035 | 0.007, -0.011 to 0.027 | a rise | no |
+
+The span the wait was on, from `its microVM shaped` to `launching its VM` (n=10 an arm and kind,
+one timed pass a process; ms):
+
+| kind | A's p50, interval | B's p50, interval | pooled p50: B less A | by rounds: median, interval | A's wait |
+|---|---|---|---|---|---|
+| Booted | 7.841, 7.717 to 7.970 | 6.110, 6.064 to 6.165 | -1.906 to -1.552 | -1.751, -1.841 to -1.494 | 1.570 |
+| Saved | 7.205, 7.076 to 7.475 | 5.712, 5.568 to 5.835 | -1.907 to -1.241 | -1.498, -1.874 to -1.278 | 1.441 |
+| Restored | 6.025, 6.012 to 6.200 | 5.756, 5.713 to 5.777 | -0.487 to -0.235 | -0.274, -0.512 to -0.243 | 0.290 |
+| Warm | 6.614, 6.189 to 6.738 | 6.116, 5.714 to 6.337 | -1.024 to 0.148 | -0.475, -0.690 to -0.277 | 0.274 |
+
+Read:
+- **No interval shows either of D253's refusals.** No interval shows a rise of Restored's or
+  Warm's boot; Restored's pooled p90 shows a fall. No interval shows Booted's or Saved's boot
+  falling short of its wait.
+  - Booted's boot shows a fall at p50, pooled and by rounds.
+  - Saved's boot shows neither a fall nor a rise. Its save spreads it: A's p90 lies 10.790 ms
+    past its p50.
+- **Where the wait was, the start fell by it.** On each kind, the span from shaped to launching
+  fell by an interval that holds A's wait, or by more (Warm, by rounds), and none shows a fall
+  short of it. By rounds, Booted's fell 1.494 to 1.841 ms against a wait of 1.570, and Saved's
+  1.278 to 1.874 against 1.441. So at p50, these intervals show the thread's making costing the
+  rest of the start before its launch nothing.
+- **What r644 cannot tell:**
+  - whether the boot's p90 falls by the wait (Booted's p90 interval runs from -3.315 to 1.940);
+  - the shaped-to-launching span's p90 (no interval at n=10);
+  - every p99.
+
+  The 38-round rerun gives n=380 for the spans, where a p99 has its interval (the 372nd to the
+  380th sample), and n=38 for the timed rows, where a p90 has one (the 30th to the 38th).
+
+Raw results: `docs/research/measurements/image-start-ab/results/r644/` holds the run's 27 logs,
+as its archive held them: `out/` (each process), `run.log`, `carrier.log`, `smoke.log`,
+`looks.log`, `kiln.log` (empty: no line matched) and both builds' logs. The archive's SHA-256 is
+56850adbdf314599e1ef068ed3fee009c7e27924ef7f76d6d12d9fc294f61a6f.
+
+Owed (ROOT):
+- B's single-arm costs at N=100, with their phase timelines (where the time goes). r644's carrier
+  refused them: the Studio was no longer quiet, with 4.13 CPUs idle where 8 were asked. They run
+  as r666, the carrier's `bash run.sh costs`.
+- The p90 and p99: the A/B again with 38 rounds of N=10, n=380 per arm and kind. 38 is the fewest
+  rounds whose n reaches 368 and that is even, so that each arm goes first as often. The
+  carrier's `bash run.sh` with `CUT_A_ROUNDS=38`.
+- All of it on KVM, and on WHP where `vm::restores_here`.
 
 ### M600. Where a loaded Mac's `shards guest use` spends its time (D215, ROOT's batch 32)
 
@@ -25869,3 +25991,30 @@ the counts are a process's, not a thread's. n is one run of each child.
   yet: the person's rule of 2026-11-16 leaves every build and test to ROOT.
 - **Numbers.** Owed (ROOT runs it): on HVF and KVM, the plan's two backends; and on WHP, where
   `vm::restores_here()` says snapshots restore.
+
+### M613. CI's arm64 Windows lane: its build of the tests outgrew its tests' step (M423, M560; CI 43990298220)
+
+- **Question.** Main's CI at f6ad71083 (run 43990298220) cut arm64 Windows' tests' step at its
+  35 minutes, as it had cut it in every run since 2026-11-16 (43876891053, 43926955660,
+  43968984258). Hung tests, or a step too short for what it now holds?
+- **Method.** `docs/research/measurements/ci-limits/limits.py CACHE RUNS` over the nine main
+  runs at the top of runs.txt (2026-11-12 to 2026-11-17). It now splits arm64 Windows' step as
+  it splits x86_64 Linux's, at cargo's `Finished` line (or the tests' own build step where a
+  job has one), takes a step as run out where GitHub's annotation of its job says so (the
+  limits changed within runs.txt's span: M420, M423), and counts a job cancelled at its own
+  limit by the steps it finished.
+- **Found.** Building the tests on windows-11-arm: n 9, p50 21.1, max 30.8 minutes (20.3 to
+  21.1 on 2026-11-12; 27.7, 28.2, 27.8 and 30.8 since). Running them: n 5, p50 11.8, max 12.1,
+  all of 2026-11-12; the four runs since ran out in the shards binary's unit tests, 4.3 to 7.4
+  minutes after their build, where the rest took 11.8 to 12.0 in the runs that ran through: a
+  step of 46.9 to 47.2. The job's other steps: max 17.1 in the run cut at the job's 52 (its
+  last step cut too); each step's slowest summed, 18.3 (lints 10.9, release's stack guards 2.4,
+  zig 2.3, the host's check 1.5). Beside it, the other native jobs' other steps reached 14.1
+  (macOS), 17.1 (windows-2025) and 16.3 (windows-2022), past the 13.0 and 16.1 of M420.
+- **Decided.** As M560 did for the musl job: arm64 Windows builds the tests in a step of its
+  own (`Build the tests`, ci.yml's `build_minutes`), 42 minutes, a third above 30.8. Running
+  them keeps the 35: M423's limit of a step that built them too, so it bounds them from above,
+  as their own slowest since is unmeasured. Its job 102 (42, 35 and a third above 18.3). The
+  native jobs' default job limit 75 (56 and a third above macOS' 14.1); windows-2025's job 145
+  (122 and a third above 17.1). limits.py derives them again as runs gather: running the tests
+  on windows-11-arm, once runs run them through, sets their own limit.

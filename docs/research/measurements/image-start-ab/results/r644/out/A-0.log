@@ -1,0 +1,495 @@
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=aarch64_apple_darwin
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'aarch64-apple-darwin'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/Users/adalundhe/.cache/cut-a/a/target/release/build/aws-lc-sys-a6aaf3311725cafc/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Using flag: -ffile-prefix-map=/Users/adalundhe/.cache/cut-a/a/vendor/aws-lc-sys=
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/Users/adalundhe/.cache/cut-a/a/target/release/build/aws-lc-sys-a6aaf3311725cafc/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/Users/adalundhe/.cache/cut-a/a/target/release/build/aws-lc-sys-a6aaf3311725cafc/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'neon_sha3_check.c' succeeded - Ok(["/Users/adalundhe/.cache/cut-a/a/target/release/build/aws-lc-sys-a6aaf3311725cafc/out/out-neon_sha3_check/7dfda64fdf5a526c-neon_sha3_check.o"]).
+    Finished `release` profile [optimized + debuginfo] target(s) in 0.07s
+     Running tests/api_image.rs (target/release/deps/api_image-c665f96ed393319f)
+
+running 1 test
+   Compiling libc v0.2.189
+   Compiling find-msvc-tools v0.1.14
+   Compiling shlex v2.0.1
+   Compiling dunce v1.0.5
+   Compiling pkg-config v0.3.34
+   Compiling fs_extra v1.3.0
+   Compiling aws-lc-rs v1.18.1 (/Users/adalundhe/.cache/cut-a/a/vendor/aws-lc-rs)
+   Compiling zeroize v1.9.0
+   Compiling serde_core v1.0.229
+   Compiling zmij v1.0.23
+   Compiling serde_json v1.0.151
+   Compiling serde v1.0.229
+   Compiling shards-abi v0.1.0 (/Users/adalundhe/.cache/cut-a/a/crates/abi)
+   Compiling itoa v1.0.18
+   Compiling memchr v2.8.3
+   Compiling rustls-pki-types v1.15.1
+   Compiling rustls v0.23.46
+   Compiling untrusted v0.9.0
+   Compiling once_cell v1.21.4
+   Compiling subtle v2.6.1
+   Compiling shards-http2 v0.1.0 (/Users/adalundhe/.cache/cut-a/a/crates/http2)
+   Compiling shards-devcgroup v0.1.0 (/Users/adalundhe/.cache/cut-a/a/crates/devcgroup)
+   Compiling jobserver v0.1.35
+   Compiling shards-seccomp v0.1.0 (/Users/adalundhe/.cache/cut-a/a/crates/seccomp)
+   Compiling cc v1.5.1
+   Compiling cmake v0.1.58
+   Compiling aws-lc-sys v0.45.0 (/Users/adalundhe/.cache/cut-a/a/vendor/aws-lc-sys)
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'CARGO_ENCODED_RUSTFLAGS': ''
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=universal
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'aarch64-unknown-linux-musl'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/Users/adalundhe/.cache/cut-a/a/target/guest/aarch64-unknown-linux-musl/guest/build/aws-lc-sys-9b7dbba38ec4bf3c/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Environment Variable found 'CC_aarch64_unknown_linux_musl': '/Users/adalundhe/.cache/cut-a/a/scripts/zig-cc'
+warning: aws-lc-sys@0.45.0: Setting CC_aarch64_unknown_linux_musl: /Users/adalundhe/.cache/cut-a/a/scripts/zig-cc
+warning: aws-lc-sys@0.45.0: Using flag: -ffile-prefix-map=/Users/adalundhe/.cache/cut-a/a/vendor/aws-lc-sys=
+warning: aws-lc-sys@0.45.0: Size-optimized AWS-LC build enabled. Applying OPENSSL_SMALL and disabling AVX-512 assembly.
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/Users/adalundhe/.cache/cut-a/a/target/guest/aarch64-unknown-linux-musl/guest/build/aws-lc-sys-9b7dbba38ec4bf3c/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/Users/adalundhe/.cache/cut-a/a/target/guest/aarch64-unknown-linux-musl/guest/build/aws-lc-sys-9b7dbba38ec4bf3c/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'neon_sha3_check.c' succeeded - Ok(["/Users/adalundhe/.cache/cut-a/a/target/guest/aarch64-unknown-linux-musl/guest/build/aws-lc-sys-9b7dbba38ec4bf3c/out/out-neon_sha3_check/7dfda64fdf5a526c-neon_sha3_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'linux_random_h.c' succeeded - Ok(["/Users/adalundhe/.cache/cut-a/a/target/guest/aarch64-unknown-linux-musl/guest/build/aws-lc-sys-9b7dbba38ec4bf3c/out/out-linux_random_h/7dfda64fdf5a526c-linux_random_h.o"]).
+   Compiling rustls-webpki v0.103.16
+   Compiling shards-testguest v0.1.0 (/Users/adalundhe/.cache/cut-a/a/crates/testguest)
+    Finished `guest` profile [optimized] target(s) in 31.52s
+IMAGE-START-SAMPLE round 0 Booted from Booted boot_us 75857 usable_us 78511 stop_us 1541
+IMAGE-START-SAMPLE round 0 Saved from Saved boot_us 202258 usable_us 210380 stop_us 2042
+IMAGE-START-SAMPLE round 0 Restored from Restored boot_us 19757 usable_us 25035 stop_us 1413
+IMAGE-START-SAMPLE round 0 Warm from Warm boot_us 246 usable_us 5702 stop_us 1658
+IMAGE-START-SAMPLE round 1 Saved from Saved boot_us 193826 usable_us 201980 stop_us 1799
+IMAGE-START-SAMPLE round 1 Restored from Restored boot_us 19380 usable_us 25213 stop_us 1771
+IMAGE-START-SAMPLE round 1 Warm from Warm boot_us 264 usable_us 5714 stop_us 1633
+IMAGE-START-SAMPLE round 1 Booted from Booted boot_us 74982 usable_us 77988 stop_us 1360
+IMAGE-START-SAMPLE round 2 Restored from Restored boot_us 18384 usable_us 23245 stop_us 1486
+IMAGE-START-SAMPLE round 2 Warm from Warm boot_us 230 usable_us 5159 stop_us 1386
+IMAGE-START-SAMPLE round 2 Booted from Booted boot_us 74069 usable_us 76425 stop_us 1526
+IMAGE-START-SAMPLE round 2 Saved from Saved boot_us 199050 usable_us 203918 stop_us 2128
+IMAGE-START-SAMPLE round 3 Warm from Warm boot_us 267 usable_us 5203 stop_us 1776
+IMAGE-START-SAMPLE round 3 Booted from Booted boot_us 73746 usable_us 76187 stop_us 1503
+IMAGE-START-SAMPLE round 3 Saved from Saved boot_us 192642 usable_us 201007 stop_us 1934
+IMAGE-START-SAMPLE round 3 Restored from Restored boot_us 17840 usable_us 22994 stop_us 1473
+IMAGE-START-SAMPLE round 4 Booted from Booted boot_us 73812 usable_us 77014 stop_us 1665
+IMAGE-START-SAMPLE round 4 Saved from Saved boot_us 195080 usable_us 203174 stop_us 2036
+IMAGE-START-SAMPLE round 4 Restored from Restored boot_us 18293 usable_us 23252 stop_us 1537
+IMAGE-START-SAMPLE round 4 Warm from Warm boot_us 249 usable_us 5076 stop_us 1726
+IMAGE-START-SAMPLE round 5 Saved from Saved boot_us 200675 usable_us 209329 stop_us 2129
+IMAGE-START-SAMPLE round 5 Restored from Restored boot_us 18499 usable_us 23303 stop_us 1472
+IMAGE-START-SAMPLE round 5 Warm from Warm boot_us 274 usable_us 4986 stop_us 1667
+IMAGE-START-SAMPLE round 5 Booted from Booted boot_us 75375 usable_us 78500 stop_us 1497
+IMAGE-START-SAMPLE round 6 Restored from Restored boot_us 18273 usable_us 23689 stop_us 1515
+IMAGE-START-SAMPLE round 6 Warm from Warm boot_us 252 usable_us 5128 stop_us 1687
+IMAGE-START-SAMPLE round 6 Booted from Booted boot_us 74544 usable_us 76948 stop_us 1443
+IMAGE-START-SAMPLE round 6 Saved from Saved boot_us 192688 usable_us 200604 stop_us 1884
+IMAGE-START-SAMPLE round 7 Warm from Warm boot_us 289 usable_us 5764 stop_us 1659
+IMAGE-START-SAMPLE round 7 Booted from Booted boot_us 75220 usable_us 78305 stop_us 1432
+IMAGE-START-SAMPLE round 7 Saved from Saved boot_us 204078 usable_us 213062 stop_us 2058
+IMAGE-START-SAMPLE round 7 Restored from Restored boot_us 18371 usable_us 23486 stop_us 1587
+IMAGE-START-SAMPLE round 8 Booted from Booted boot_us 74507 usable_us 77629 stop_us 1504
+IMAGE-START-SAMPLE round 8 Saved from Saved boot_us 192779 usable_us 200595 stop_us 2088
+IMAGE-START-SAMPLE round 8 Restored from Restored boot_us 19092 usable_us 24840 stop_us 1455
+IMAGE-START-SAMPLE round 8 Warm from Warm boot_us 246 usable_us 5090 stop_us 1650
+IMAGE-START-SAMPLE round 9 Saved from Saved boot_us 191396 usable_us 199547 stop_us 2107
+IMAGE-START-SAMPLE round 9 Restored from Restored boot_us 18374 usable_us 24749 stop_us 1424
+IMAGE-START-SAMPLE round 9 Warm from Warm boot_us 249 usable_us 4865 stop_us 1651
+IMAGE-START-SAMPLE round 9 Booted from Booted boot_us 72984 usable_us 75400 stop_us 1554
+MEASURED IMAGE START Booted boot, hex.image.boot's span (backend hvf, Darwin 25.2.0): n 10 p50 74.507292ms p90 75.375709ms p99 75.857083ms max 75.857083ms (host Adas-Mac-Studio-2.local macos-aarch64-14, dcac51807512)
+MEASURED IMAGE START Booted to first output (backend hvf, Darwin 25.2.0): n 10 p50 77.014416ms p90 78.500917ms p99 78.511166ms max 78.511166ms (host Adas-Mac-Studio-2.local macos-aarch64-14, dcac51807512)
+MEASURED IMAGE START Booted stop (backend hvf, Darwin 25.2.0): n 10 p50 1.503125ms p90 1.554375ms p99 1.665417ms max 1.665417ms (host Adas-Mac-Studio-2.local macos-aarch64-14, dcac51807512)
+MEASURED IMAGE START Saved boot, hex.image.boot's span (backend hvf, Darwin 25.2.0): n 10 p50 193.826916ms p90 202.258791ms p99 204.078417ms max 204.078417ms (host Adas-Mac-Studio-2.local macos-aarch64-14, dcac51807512)
+MEASURED IMAGE START Saved to first output (backend hvf, Darwin 25.2.0): n 10 p50 201.980458ms p90 210.380583ms p99 213.062167ms max 213.062167ms (host Adas-Mac-Studio-2.local macos-aarch64-14, dcac51807512)
+MEASURED IMAGE START Saved stop (backend hvf, Darwin 25.2.0): n 10 p50 2.042959ms p90 2.12825ms p99 2.129167ms max 2.129167ms (host Adas-Mac-Studio-2.local macos-aarch64-14, dcac51807512)
+MEASURED IMAGE START Restored boot, hex.image.boot's span (backend hvf, Darwin 25.2.0): n 10 p50 18.374375ms p90 19.38075ms p99 19.757541ms max 19.757541ms (host Adas-Mac-Studio-2.local macos-aarch64-14, dcac51807512)
+MEASURED IMAGE START Restored to first output (backend hvf, Darwin 25.2.0): n 10 p50 23.486625ms p90 25.0355ms p99 25.213ms max 25.213ms (host Adas-Mac-Studio-2.local macos-aarch64-14, dcac51807512)
+MEASURED IMAGE START Restored stop (backend hvf, Darwin 25.2.0): n 10 p50 1.473375ms p90 1.587291ms p99 1.771584ms max 1.771584ms (host Adas-Mac-Studio-2.local macos-aarch64-14, dcac51807512)
+MEASURED IMAGE START Warm boot, hex.image.boot's span (backend hvf, Darwin 25.2.0): n 10 p50 249.583µs p90 274µs p99 289.542µs max 289.542µs (host Adas-Mac-Studio-2.local macos-aarch64-14, dcac51807512)
+MEASURED IMAGE START Warm to first output (backend hvf, Darwin 25.2.0): n 10 p50 5.128708ms p90 5.714666ms p99 5.764042ms max 5.764042ms (host Adas-Mac-Studio-2.local macos-aarch64-14, dcac51807512)
+MEASURED IMAGE START Warm stop (backend hvf, Darwin 25.2.0): n 10 p50 1.658542ms p90 1.726542ms p99 1.77625ms max 1.77625ms (host Adas-Mac-Studio-2.local macos-aarch64-14, dcac51807512)
+IMAGE-START-PHASES timed Booted from Booted: boot 73341 us, first output 75699 us, stop 1557 us; every timed line in us from the boot's call:
+IMAGE-START-PHASES timed Booted       168            caller    its run host 19594 started
+IMAGE-START-PHASES timed Booted       192       +24  caller    its run's request sending
+IMAGE-START-PHASES timed Booted       195        +3  caller    its run's request sent
+IMAGE-START-PHASES timed Booted      1857     +1662  run host  its clock began at unix 1794880971868734 us
+IMAGE-START-PHASES timed Booted      1883       +26  run host  its request read
+IMAGE-START-PHASES timed Booted      2782      +899  run host  its image prepared
+IMAGE-START-PHASES timed Booted      3810     +1028  run host  its microVM shaped
+IMAGE-START-PHASES timed Booted      9788     +5978  run host  its security made: its guest's kernel read, its filters compiled
+IMAGE-START-PHASES timed Booted      9824       +36  run host  its members staged, its ports bound
+IMAGE-START-PHASES timed Booted      9840       +16  run host  its setup's security composed
+IMAGE-START-PHASES timed Booted      9849        +9  run host  its run planned
+IMAGE-START-PHASES timed Booted      9856        +7  run host  prepared sha256:56bdb58ee1e2a09605b3668170d69c767f9582f242e9458a244a9c1216c2e14c, 1 vCPUs, 512 MiB; starting its VM
+IMAGE-START-PHASES timed Booted      9899       +43  run host  its VM's binary checked
+IMAGE-START-PHASES timed Booted      9903        +4  run host  its network decided
+IMAGE-START-PHASES timed Booted     11396     +1493  run host  its writable layer made
+IMAGE-START-PHASES timed Booted     11400        +4  run host  launching its VM
+IMAGE-START-PHASES timed Booted     11456       +56  run host  spawning the VM
+IMAGE-START-PHASES timed Booted     11619      +163  run host  the VM spawned, its process 19597
+IMAGE-START-PHASES timed Booted     11642       +23  run host  the VM's grants: 0 of its asks answered
+IMAGE-START-PHASES timed Booted     16275     +4633  run host  the VM's grants: 1 of its asks answered
+IMAGE-START-PHASES timed Booted     73108    +56833  run host  its VM said READY
+IMAGE-START-PHASES timed Booted     73114        +6  run host  its VM's start settled
+IMAGE-START-PHASES timed Booted     73119        +5  run host  its VM process 19597 is ready (Booted)
+IMAGE-START-PHASES timed Booted     73184       +65  run host  its VM took the run
+IMAGE-START-PHASES timed Booted     73229       +45  run host  its start told its orchestrator
+IMAGE-START-PHASES timed Booted     73236        +7  caller    its host's answer 16 read
+IMAGE-START-PHASES timed Booted     73244        +8  caller    its start taken
+IMAGE-START-PHASES timed Booted     73268       +24  caller    its members' outputs pumped
+IMAGE-START-PHASES timed Booted     73269        +1  caller    its diagnostics' file named
+IMAGE-START-PHASES timed Booted     73270        +1  caller    its diagnostics' keeper taken
+IMAGE-START-PHASES timed Booted     73278        +8  run host  its writable layer's name let go of
+IMAGE-START-PHASES timed Booted     73283        +5  caller    its diagnostics' file cut to its length
+IMAGE-START-PHASES timed Booted     73338       +55  caller    its diagnostics kept
+IMAGE-START-PHASES timed Booted     73341        +3  caller    the boot answered
+IMAGE-START-PHASES timed Booted     75574     +2233  run host  its VM said STARTED
+IMAGE-START-PHASES timed Booted     75699      +125  caller    its harness's first output read
+IMAGE-START-PHASES timed Saved from Saved: boot 199498 us, first output 207873 us, stop 1738 us; every timed line in us from the boot's call:
+IMAGE-START-PHASES timed Saved       193            caller    its run host 19599 started
+IMAGE-START-PHASES timed Saved       217       +24  caller    its run's request sending
+IMAGE-START-PHASES timed Saved       220        +3  caller    its run's request sent
+IMAGE-START-PHASES timed Saved      1960     +1740  run host  its clock began at unix 1794880971950877 us
+IMAGE-START-PHASES timed Saved      1985       +25  run host  its request read
+IMAGE-START-PHASES timed Saved      2928      +943  run host  its image prepared
+IMAGE-START-PHASES timed Saved      3973     +1045  run host  its microVM shaped
+IMAGE-START-PHASES timed Saved      9445     +5472  run host  its security made: its guest's kernel read, its filters compiled
+IMAGE-START-PHASES timed Saved      9492       +47  run host  its members staged, its ports bound
+IMAGE-START-PHASES timed Saved      9506       +14  run host  its setup's security composed
+IMAGE-START-PHASES timed Saved      9514        +8  run host  its run planned
+IMAGE-START-PHASES timed Saved      9521        +7  run host  prepared sha256:7ad63f4a23de832d69b4049cae1f4290de8d8443bca558e02c0df5093d83b37f, 1 vCPUs, 512 MiB; starting its VM
+IMAGE-START-PHASES timed Saved      9598       +77  run host  its VM's binary checked
+IMAGE-START-PHASES timed Saved      9613       +15  run host  its network decided
+IMAGE-START-PHASES timed Saved     11073     +1460  run host  its writable layer made
+IMAGE-START-PHASES timed Saved     11077        +4  run host  launching its VM
+IMAGE-START-PHASES timed Saved     11137       +60  run host  spawning the VM
+IMAGE-START-PHASES timed Saved     11317      +180  run host  the VM spawned, its process 19605
+IMAGE-START-PHASES timed Saved     11347       +30  run host  the VM's grants: 0 of its asks answered
+IMAGE-START-PHASES timed Saved     22122    +10775  run host  the VM's grants: 1 of its asks answered
+IMAGE-START-PHASES timed Saved    191067   +168945  run host  its VM said READY
+IMAGE-START-PHASES timed Saved    199268     +8201  run host  its VM's start settled
+IMAGE-START-PHASES timed Saved    199273        +5  run host  its VM process 19605 is ready (Saved)
+IMAGE-START-PHASES timed Saved    199340       +67  run host  its VM took the run
+IMAGE-START-PHASES timed Saved    199390       +50  run host  its start told its orchestrator
+IMAGE-START-PHASES timed Saved    199401       +11  caller    its host's answer 16 read
+IMAGE-START-PHASES timed Saved    199410        +9  caller    its start taken
+IMAGE-START-PHASES timed Saved    199436       +26  caller    its members' outputs pumped
+IMAGE-START-PHASES timed Saved    199437        +1  caller    its diagnostics' file named
+IMAGE-START-PHASES timed Saved    199438        +1  caller    its diagnostics' keeper taken
+IMAGE-START-PHASES timed Saved    199439        +1  run host  its writable layer's name let go of
+IMAGE-START-PHASES timed Saved    199448        +9  caller    its diagnostics' file cut to its length
+IMAGE-START-PHASES timed Saved    199496       +48  caller    its diagnostics kept
+IMAGE-START-PHASES timed Saved    199498        +2  caller    the boot answered
+IMAGE-START-PHASES timed Saved    207682     +8184  run host  its VM said STARTED
+IMAGE-START-PHASES timed Saved    207873      +191  caller    its harness's first output read
+IMAGE-START-PHASES timed Restored from Restored: boot 18255 us, first output 23512 us, stop 1465 us; every timed line in us from the boot's call:
+IMAGE-START-PHASES timed Restored       176            caller    its run host 19608 started
+IMAGE-START-PHASES timed Restored       204       +28  caller    its run's request sending
+IMAGE-START-PHASES timed Restored       207        +3  caller    its run's request sent
+IMAGE-START-PHASES timed Restored      1820     +1613  run host  its clock began at unix 1794880972161394 us
+IMAGE-START-PHASES timed Restored      1842       +22  run host  its request read
+IMAGE-START-PHASES timed Restored      2674      +832  run host  its image prepared
+IMAGE-START-PHASES timed Restored      3702     +1028  run host  its microVM shaped
+IMAGE-START-PHASES timed Restored      9119     +5417  run host  its security made: its guest's kernel read, its filters compiled
+IMAGE-START-PHASES timed Restored      9159       +40  run host  its members staged, its ports bound
+IMAGE-START-PHASES timed Restored      9173       +14  run host  its setup's security composed
+IMAGE-START-PHASES timed Restored      9181        +8  run host  its run planned
+IMAGE-START-PHASES timed Restored      9187        +6  run host  prepared sha256:56bdb58ee1e2a09605b3668170d69c767f9582f242e9458a244a9c1216c2e14c, 1 vCPUs, 512 MiB; starting its VM
+IMAGE-START-PHASES timed Restored      9267       +80  run host  its VM's binary checked
+IMAGE-START-PHASES timed Restored      9420      +153  run host  its network decided
+IMAGE-START-PHASES timed Restored      9710      +290  run host  its writable layer cloned
+IMAGE-START-PHASES timed Restored      9714        +4  run host  launching its VM
+IMAGE-START-PHASES timed Restored      9770       +56  run host  spawning the VM
+IMAGE-START-PHASES timed Restored      9920      +150  run host  the VM spawned, its process 19609
+IMAGE-START-PHASES timed Restored      9945       +25  run host  the VM's grants: 0 of its asks answered
+IMAGE-START-PHASES timed Restored     14909     +4964  run host  the VM's grants: 1 of its asks answered
+IMAGE-START-PHASES timed Restored     15044      +135  run host  the VM's grants: 2 of its asks answered
+IMAGE-START-PHASES timed Restored     15115       +71  run host  the VM's grants: 3 of its asks answered
+IMAGE-START-PHASES timed Restored     18063     +2948  run host  its VM said READY
+IMAGE-START-PHASES timed Restored     18067        +4  run host  its VM's start settled
+IMAGE-START-PHASES timed Restored     18071        +4  run host  its VM process 19609 is ready (Restored)
+IMAGE-START-PHASES timed Restored     18128       +57  run host  its VM took the run
+IMAGE-START-PHASES timed Restored     18167       +39  run host  its start told its orchestrator
+IMAGE-START-PHASES timed Restored     18176        +9  caller    its host's answer 16 read
+IMAGE-START-PHASES timed Restored     18198       +22  caller    its start taken
+IMAGE-START-PHASES timed Restored     18203        +5  run host  its writable layer's name let go of
+IMAGE-START-PHASES timed Restored     18222       +19  caller    its members' outputs pumped
+IMAGE-START-PHASES timed Restored     18223        +1  caller    its diagnostics' file named
+IMAGE-START-PHASES timed Restored     18223        +0  caller    its diagnostics' keeper taken
+IMAGE-START-PHASES timed Restored     18231        +8  caller    its diagnostics' file cut to its length
+IMAGE-START-PHASES timed Restored     18254       +23  caller    its diagnostics kept
+IMAGE-START-PHASES timed Restored     18255        +1  caller    the boot answered
+IMAGE-START-PHASES timed Restored     23343     +5088  run host  its VM said STARTED
+IMAGE-START-PHASES timed Restored     23512      +169  caller    its harness's first output read
+IMAGE-START-PHASES timed Warm from Warm: boot 384 us, first output 5314 us, stop 1629 us; every timed line in us from the boot's call:
+IMAGE-START-PHASES timed Warm   -326543            caller    its run host 19592 started
+IMAGE-START-PHASES timed Warm   -324836     +1707  run host  its clock began at unix 1794880971860709 us
+IMAGE-START-PHASES timed Warm   -324812       +24  run host  its request read
+IMAGE-START-PHASES timed Warm   -323915      +897  run host  its image prepared
+IMAGE-START-PHASES timed Warm   -322818     +1097  run host  its microVM shaped
+IMAGE-START-PHASES timed Warm   -316706     +6112  run host  its security made: its guest's kernel read, its filters compiled
+IMAGE-START-PHASES timed Warm   -316647       +59  run host  its VM's binary checked
+IMAGE-START-PHASES timed Warm   -316520      +127  run host  its network decided
+IMAGE-START-PHASES timed Warm   -316207      +313  run host  its writable layer cloned
+IMAGE-START-PHASES timed Warm   -316204        +3  run host  launching its VM
+IMAGE-START-PHASES timed Warm   -316152       +52  run host  spawning the VM
+IMAGE-START-PHASES timed Warm   -315988      +164  run host  the VM spawned, its process 19595
+IMAGE-START-PHASES timed Warm   -315927       +61  run host  the VM's grants: 0 of its asks answered
+IMAGE-START-PHASES timed Warm   -310376     +5551  run host  the VM's grants: 1 of its asks answered
+IMAGE-START-PHASES timed Warm   -310249      +127  run host  the VM's grants: 2 of its asks answered
+IMAGE-START-PHASES timed Warm   -310182       +67  run host  the VM's grants: 3 of its asks answered
+IMAGE-START-PHASES timed Warm   -306996     +3186  run host  its VM said READY
+IMAGE-START-PHASES timed Warm   -306994        +2  run host  its VM's start settled
+IMAGE-START-PHASES timed Warm   -306958       +36  run host  its writable layer's name let go of
+IMAGE-START-PHASES timed Warm   -306913       +45  run host  its agent-control key made
+IMAGE-START-PHASES timed Warm   -306911        +2  run host  warm, its VM process 19595 ready (Restored)
+IMAGE-START-PHASES timed Warm   -306895       +16  caller    its host's answer 32 read
+IMAGE-START-PHASES timed Warm        24   +306919  caller    its run's request sending
+IMAGE-START-PHASES timed Warm        28        +4  caller    its run's request sent
+IMAGE-START-PHASES timed Warm        36        +8  run host  its run's request read
+IMAGE-START-PHASES timed Warm        73       +37  run host  its members staged, its ports bound
+IMAGE-START-PHASES timed Warm        91       +18  run host  its setup's security composed
+IMAGE-START-PHASES timed Warm       100        +9  run host  its run planned
+IMAGE-START-PHASES timed Warm       105        +5  run host  its VM process 19595 is ready (Warm)
+IMAGE-START-PHASES timed Warm       154       +49  run host  its VM took the run
+IMAGE-START-PHASES timed Warm       189       +35  run host  its start told its orchestrator
+IMAGE-START-PHASES timed Warm       190        +1  run host  its writable layer's name let go of
+IMAGE-START-PHASES timed Warm       195        +5  caller    its host's answer 16 read
+IMAGE-START-PHASES timed Warm       222       +27  caller    its start taken
+IMAGE-START-PHASES timed Warm       301       +79  caller    its members' outputs pumped
+IMAGE-START-PHASES timed Warm       307        +6  caller    its diagnostics' file named
+IMAGE-START-PHASES timed Warm       307        +0  caller    its diagnostics' keeper taken
+IMAGE-START-PHASES timed Warm       333       +26  caller    its diagnostics' file cut to its length
+IMAGE-START-PHASES timed Warm       381       +48  caller    its diagnostics kept
+IMAGE-START-PHASES timed Warm       384        +3  caller    the boot answered
+IMAGE-START-PHASES timed Warm      5144     +4760  run host  its VM said STARTED
+IMAGE-START-PHASES timed Warm      5314      +170  caller    its harness's first output read
+IMAGE-START-PHASES debug Booted from Booted: boot 76448 us, first output 78978 us, stop 1571 us; every timed line in us from the boot's call:
+IMAGE-START-PHASES debug Booted       185            caller    its run host 19627 started
+IMAGE-START-PHASES debug Booted       210       +25  caller    its run's request sending
+IMAGE-START-PHASES debug Booted       213        +3  caller    its run's request sent
+IMAGE-START-PHASES debug Booted      1798     +1585  run host  its clock began at unix 1794880972577337 us
+IMAGE-START-PHASES debug Booted      1824       +26  run host  its request read
+IMAGE-START-PHASES debug Booted      2675      +851  run host  its image prepared
+IMAGE-START-PHASES debug Booted      3752     +1077  run host  its microVM shaped
+IMAGE-START-PHASES debug Booted      9777     +6025  run host  its security made: its guest's kernel read, its filters compiled
+IMAGE-START-PHASES debug Booted      9815       +38  run host  its members staged, its ports bound
+IMAGE-START-PHASES debug Booted      9829       +14  run host  its setup's security composed
+IMAGE-START-PHASES debug Booted      9839       +10  run host  its run planned
+IMAGE-START-PHASES debug Booted      9847        +8  run host  prepared sha256:56bdb58ee1e2a09605b3668170d69c767f9582f242e9458a244a9c1216c2e14c, 1 vCPUs, 512 MiB; starting its VM
+IMAGE-START-PHASES debug Booted      9892       +45  run host  its VM's binary checked
+IMAGE-START-PHASES debug Booted      9894        +2  run host  its network decided
+IMAGE-START-PHASES debug Booted     11437     +1543  run host  its writable layer made
+IMAGE-START-PHASES debug Booted     11442        +5  run host  launching its VM
+IMAGE-START-PHASES debug Booted     11497       +55  run host  spawning the VM
+IMAGE-START-PHASES debug Booted     11662      +165  run host  the VM spawned, its process 19630
+IMAGE-START-PHASES debug Booted     11694       +32  run host  the VM's grants: 0 of its asks answered
+IMAGE-START-PHASES debug Booted     16067     +4373  vm 19630  its log began at unix 1794880972591638 us
+IMAGE-START-PHASES debug Booted     16265      +198  run host  the VM's grants: 1 of its asks answered
+IMAGE-START-PHASES debug Booted     16544      +279  vm 19630  VM created and RAM mapped
+IMAGE-START-PHASES debug Booted     16623       +79  vm 19630  GIC created
+IMAGE-START-PHASES debug Booted     17650     +1027  vm 19630  kernel and initrd copied
+IMAGE-START-PHASES debug Booted     17684       +34  vm 19630  kernel entry 0x80200000 end 0x81570000; dtb at 0x9fe00000 (3400 bytes)
+IMAGE-START-PHASES debug Booted     17850      +166  vm 19630  vCPUs set up in 162 us, the slowest vCPU 0 in 162 us
+IMAGE-START-PHASES debug Booted     17852        +2  vm 19630  the machine's start finished in 2 us
+IMAGE-START-PHASES debug Booted     17856        +4  vm 19630  1 vCPU(s) ready to run after 1800 us
+IMAGE-START-PHASES debug Booted     23512     +5656  vm 19630  trapped write of sysreg 0x809c
+IMAGE-START-PHASES debug Booted     23518        +6  vm 19630  trapped write of sysreg 0x8084
+IMAGE-START-PHASES debug Booted     39402    +15884  vm 19630  guest marker 1 at 23346 us
+IMAGE-START-PHASES debug Booted     72317    +32915  vm 19630  a guest's flush of its writable layer in 4241 us
+IMAGE-START-PHASES debug Booted     76194     +3877  vm 19630  guest marker 3 at 60138 us
+IMAGE-START-PHASES debug Booted     76200        +6  run host  its VM said READY
+IMAGE-START-PHASES debug Booted     76205        +5  run host  its VM's start settled
+IMAGE-START-PHASES debug Booted     76210        +5  run host  its VM process 19630 is ready (Booted)
+IMAGE-START-PHASES debug Booted     76271       +61  run host  its VM took the run
+IMAGE-START-PHASES debug Booted     76282       +11  vm 19630  the hold: 0 milli-CPU, held to None over 1.007124ms, from g 1.007124ms (Step { late: Some(7.124µs), clock: Some(1µs) }; its clock: Ok(1µs))
+IMAGE-START-PHASES debug Booted     76316       +34  run host  its start told its orchestrator
+IMAGE-START-PHASES debug Booted     76326       +10  caller    its host's answer 16 read
+IMAGE-START-PHASES debug Booted     76337       +11  caller    its start taken
+IMAGE-START-PHASES debug Booted     76364       +27  caller    its members' outputs pumped
+IMAGE-START-PHASES debug Booted     76365        +1  caller    its diagnostics' file named
+IMAGE-START-PHASES debug Booted     76365        +0  caller    its diagnostics' keeper taken
+IMAGE-START-PHASES debug Booted     76365        +0  run host  its writable layer's name let go of
+IMAGE-START-PHASES debug Booted     76380       +15  caller    its diagnostics' file cut to its length
+IMAGE-START-PHASES debug Booted     76441       +61  caller    its diagnostics kept
+IMAGE-START-PHASES debug Booted     76448        +7  caller    the boot answered
+IMAGE-START-PHASES debug Booted     78789     +2341  vm 19630  guest marker 4 at 62733 us
+IMAGE-START-PHASES debug Booted     78825       +36  run host  its VM said STARTED
+IMAGE-START-PHASES debug Booted     78978      +153  caller    its harness's first output read
+IMAGE-START-PHASES debug Saved from Saved: boot 194289 us, first output 202637 us, stop 2086 us; every timed line in us from the boot's call:
+IMAGE-START-PHASES debug Saved       200            caller    its run host 19631 started
+IMAGE-START-PHASES debug Saved       220       +20  caller    its run's request sending
+IMAGE-START-PHASES debug Saved       223        +3  caller    its run's request sent
+IMAGE-START-PHASES debug Saved      1909     +1686  run host  its clock began at unix 1794880972660062 us
+IMAGE-START-PHASES debug Saved      1937       +28  run host  its request read
+IMAGE-START-PHASES debug Saved      2852      +915  run host  its image prepared
+IMAGE-START-PHASES debug Saved      3893     +1041  run host  its microVM shaped
+IMAGE-START-PHASES debug Saved      9419     +5526  run host  its security made: its guest's kernel read, its filters compiled
+IMAGE-START-PHASES debug Saved      9462       +43  run host  its members staged, its ports bound
+IMAGE-START-PHASES debug Saved      9477       +15  run host  its setup's security composed
+IMAGE-START-PHASES debug Saved      9484        +7  run host  its run planned
+IMAGE-START-PHASES debug Saved      9491        +7  run host  prepared sha256:7ad63f4a23de832d69b4049cae1f4290de8d8443bca558e02c0df5093d83b37f, 1 vCPUs, 512 MiB; starting its VM
+IMAGE-START-PHASES debug Saved      9569       +78  run host  its VM's binary checked
+IMAGE-START-PHASES debug Saved      9585       +16  run host  its network decided
+IMAGE-START-PHASES debug Saved     11022     +1437  run host  its writable layer made
+IMAGE-START-PHASES debug Saved     11027        +5  run host  launching its VM
+IMAGE-START-PHASES debug Saved     11091       +64  run host  spawning the VM
+IMAGE-START-PHASES debug Saved     11258      +167  run host  the VM spawned, its process 19632
+IMAGE-START-PHASES debug Saved     11280       +22  run host  the VM's grants: 0 of its asks answered
+IMAGE-START-PHASES debug Saved     16322     +5042  vm 19632  its log began at unix 1794880972674517 us
+IMAGE-START-PHASES debug Saved     20562     +4240  run host  the VM's grants: 1 of its asks answered
+IMAGE-START-PHASES debug Saved     22562     +2000  vm 19632  VM created and RAM mapped
+IMAGE-START-PHASES debug Saved     22585       +23  vm 19632  GIC created
+IMAGE-START-PHASES debug Saved     23596     +1011  vm 19632  kernel and initrd copied
+IMAGE-START-PHASES debug Saved     23630       +34  vm 19632  kernel entry 0x80200000 end 0x81570000; dtb at 0x9fe00000 (3416 bytes)
+IMAGE-START-PHASES debug Saved     23784      +154  vm 19632  vCPUs set up in 138 us, the slowest vCPU 0 in 138 us
+IMAGE-START-PHASES debug Saved     23787        +3  vm 19632  the machine's start finished in 3 us
+IMAGE-START-PHASES debug Saved     23800       +13  vm 19632  1 vCPU(s) ready to run after 7491 us
+IMAGE-START-PHASES debug Saved     29803     +6003  vm 19632  trapped write of sysreg 0x809c
+IMAGE-START-PHASES debug Saved     29811        +8  vm 19632  trapped write of sysreg 0x8084
+IMAGE-START-PHASES debug Saved     46552    +16741  vm 19632  guest marker 1 at 30243 us
+IMAGE-START-PHASES debug Saved     72611    +26059  vm 19632  a guest's flush of its writable layer in 1916 us
+IMAGE-START-PHASES debug Saved    135107    +62496  vm 19632  its layer: 18 ranges of data, 442368 bytes of 10995367936
+IMAGE-START-PHASES debug Saved    144435     +9328  vm 19632  snapshot written to /var/folders/fm/xn3dqgj1397387_rj_1qzxbm0000gn/T/shards-tests/14628/api-cost-saved-2/templates/c1d8c7d8fdf63ac462b2863799e4649ca78027096e8ef147c10464a6eb075990.new-19631-0 in 55195 us
+IMAGE-START-PHASES debug Saved    144461       +26  vm 19632  its DAX windows' heads mapped back from its snapshot in 23 us: 1 parts of its heads taken from its guest in 7 us, mapped back in 12 us (1 blocks from the copy, 0 fresh, 0 runs of zeros given back; the copy's index read in 0 us, its blocks mapped in 11 us), given back in 2 us
+IMAGE-START-PHASES debug Saved    146017     +1556  vm 19632  its writable layer's head mapped back from its snapshot in 1554 us
+IMAGE-START-PHASES debug Saved    146938      +921  vm 19632  guest marker 2 at 130629 us
+IMAGE-START-PHASES debug Saved    147583      +645  vm 19632  guest marker 3 at 131274 us
+IMAGE-START-PHASES debug Saved    185769    +38186  vm 19632  snapshot made durable in 39450 us
+IMAGE-START-PHASES debug Saved    185816       +47  run host  its VM said READY
+IMAGE-START-PHASES debug Saved    194067     +8251  run host  its VM's start settled
+IMAGE-START-PHASES debug Saved    194073        +6  run host  its VM process 19632 is ready (Saved)
+IMAGE-START-PHASES debug Saved    194143       +70  run host  its VM took the run
+IMAGE-START-PHASES debug Saved    194149        +6  vm 19632  the hold: 0 milli-CPU, held to None over 1.016749ms, from g 1.016749ms (Step { late: Some(16.749µs), clock: Some(1µs) }; its clock: Ok(1µs))
+IMAGE-START-PHASES debug Saved    194183       +34  run host  its start told its orchestrator
+IMAGE-START-PHASES debug Saved    194192        +9  caller    its host's answer 16 read
+IMAGE-START-PHASES debug Saved    194204       +12  caller    its start taken
+IMAGE-START-PHASES debug Saved    194224       +20  run host  its writable layer's name let go of
+IMAGE-START-PHASES debug Saved    194232        +8  caller    its members' outputs pumped
+IMAGE-START-PHASES debug Saved    194233        +1  caller    its diagnostics' file named
+IMAGE-START-PHASES debug Saved    194233        +0  caller    its diagnostics' keeper taken
+IMAGE-START-PHASES debug Saved    194241        +8  caller    its diagnostics' file cut to its length
+IMAGE-START-PHASES debug Saved    194288       +47  caller    its diagnostics kept
+IMAGE-START-PHASES debug Saved    194289        +1  caller    the boot answered
+IMAGE-START-PHASES debug Saved    202404     +8115  vm 19632  guest marker 4 at 186095 us
+IMAGE-START-PHASES debug Saved    202438       +34  run host  its VM said STARTED
+IMAGE-START-PHASES debug Saved    202637      +199  caller    its harness's first output read
+IMAGE-START-PHASES debug Restored from Restored: boot 18815 us, first output 23487 us, stop 1354 us; every timed line in us from the boot's call:
+IMAGE-START-PHASES debug Restored       183            caller    its run host 19633 started
+IMAGE-START-PHASES debug Restored       204       +21  caller    its run's request sending
+IMAGE-START-PHASES debug Restored       207        +3  caller    its run's request sent
+IMAGE-START-PHASES debug Restored      1920     +1713  run host  its clock began at unix 1794880972865876 us
+IMAGE-START-PHASES debug Restored      1944       +24  run host  its request read
+IMAGE-START-PHASES debug Restored      2846      +902  run host  its image prepared
+IMAGE-START-PHASES debug Restored      3894     +1048  run host  its microVM shaped
+IMAGE-START-PHASES debug Restored      9478     +5584  run host  its security made: its guest's kernel read, its filters compiled
+IMAGE-START-PHASES debug Restored      9520       +42  run host  its members staged, its ports bound
+IMAGE-START-PHASES debug Restored      9533       +13  run host  its setup's security composed
+IMAGE-START-PHASES debug Restored      9541        +8  run host  its run planned
+IMAGE-START-PHASES debug Restored      9548        +7  run host  prepared sha256:56bdb58ee1e2a09605b3668170d69c767f9582f242e9458a244a9c1216c2e14c, 1 vCPUs, 512 MiB; starting its VM
+IMAGE-START-PHASES debug Restored      9629       +81  run host  its VM's binary checked
+IMAGE-START-PHASES debug Restored      9795      +166  run host  its network decided
+IMAGE-START-PHASES debug Restored     10096      +301  run host  its writable layer cloned
+IMAGE-START-PHASES debug Restored     10100        +4  run host  launching its VM
+IMAGE-START-PHASES debug Restored     10160       +60  run host  spawning the VM
+IMAGE-START-PHASES debug Restored     10336      +176  run host  the VM spawned, its process 19634
+IMAGE-START-PHASES debug Restored     10359       +23  run host  the VM's grants: 0 of its asks answered
+IMAGE-START-PHASES debug Restored     15370     +5011  vm 19634  its log began at unix 1794880972879365 us
+IMAGE-START-PHASES debug Restored     15510      +140  run host  the VM's grants: 1 of its asks answered
+IMAGE-START-PHASES debug Restored     15645      +135  run host  the VM's grants: 2 of its asks answered
+IMAGE-START-PHASES debug Restored     15722       +77  run host  the VM's grants: 3 of its asks answered
+IMAGE-START-PHASES debug Restored     16151      +429  vm 19634  VM created and RAM mapped
+IMAGE-START-PHASES debug Restored     16214       +63  vm 19634  GIC created
+IMAGE-START-PHASES debug Restored     16300       +86  vm 19634  restored a 512 MiB guest from /var/folders/fm/xn3dqgj1397387_rj_1qzxbm0000gn/T/shards-tests/14628/api-cost-home-0/templates/8a6fb5839be32fceb6b7e4c0ddb31bedb79ac044e4eb8385136dd0837b8431fd
+IMAGE-START-PHASES debug Restored     16461      +161  vm 19634  vCPU 0: created in 101 us, 0 pages of its working set prefetched in 2 us, its state restored in 10 us
+IMAGE-START-PHASES debug Restored     16469        +8  vm 19634  vCPUs set up in 165 us, the slowest vCPU 0 in 165 us
+IMAGE-START-PHASES debug Restored     17926     +1457  vm 19634  the machine's start finished in 1457 us
+IMAGE-START-PHASES debug Restored     17929        +3  vm 19634  dropped the restore's state: 864 bytes of vCPU state, 127563 of devices, 0 of working set
+IMAGE-START-PHASES debug Restored     17945       +16  vm 19634  1 vCPU(s) ready to run after 2582 us
+IMAGE-START-PHASES debug Restored     18254      +309  vm 19634  guest marker 2 at 2891 us
+IMAGE-START-PHASES debug Restored     18630      +376  run host  its VM said READY
+IMAGE-START-PHASES debug Restored     18632        +2  run host  its VM's start settled
+IMAGE-START-PHASES debug Restored     18635        +3  run host  its VM process 19634 is ready (Restored)
+IMAGE-START-PHASES debug Restored     18690       +55  run host  its VM took the run
+IMAGE-START-PHASES debug Restored     18693        +3  vm 19634  the hold: 0 milli-CPU, held to None over 1.016332ms, from g 1.016332ms (Step { late: Some(16.332µs), clock: Some(1µs) }; its clock: Ok(1µs))
+IMAGE-START-PHASES debug Restored     18704       +11  vm 19634  guest marker 3 at 3341 us
+IMAGE-START-PHASES debug Restored     18727       +23  run host  its start told its orchestrator
+IMAGE-START-PHASES debug Restored     18737       +10  caller    its host's answer 16 read
+IMAGE-START-PHASES debug Restored     18746        +9  caller    its start taken
+IMAGE-START-PHASES debug Restored     18763       +17  run host  its writable layer's name let go of
+IMAGE-START-PHASES debug Restored     18769        +6  caller    its members' outputs pumped
+IMAGE-START-PHASES debug Restored     18770        +1  caller    its diagnostics' file named
+IMAGE-START-PHASES debug Restored     18770        +0  caller    its diagnostics' keeper taken
+IMAGE-START-PHASES debug Restored     18781       +11  caller    its diagnostics' file cut to its length
+IMAGE-START-PHASES debug Restored     18814       +33  caller    its diagnostics kept
+IMAGE-START-PHASES debug Restored     18815        +1  caller    the boot answered
+IMAGE-START-PHASES debug Restored     23261     +4446  vm 19634  guest marker 4 at 7898 us
+IMAGE-START-PHASES debug Restored     23296       +35  run host  its VM said STARTED
+IMAGE-START-PHASES debug Restored     23487      +191  caller    its harness's first output read
+IMAGE-START-PHASES debug Warm from Warm: boot 269 us, first output 5004 us, stop 1586 us; every timed line in us from the boot's call:
+IMAGE-START-PHASES debug Warm   -321897            caller    its run host 19626 started
+IMAGE-START-PHASES debug Warm   -320315     +1582  run host  its clock began at unix 1794880972569851 us
+IMAGE-START-PHASES debug Warm   -320294       +21  run host  its request read
+IMAGE-START-PHASES debug Warm   -319479      +815  run host  its image prepared
+IMAGE-START-PHASES debug Warm   -318389     +1090  run host  its microVM shaped
+IMAGE-START-PHASES debug Warm   -312634     +5755  run host  its security made: its guest's kernel read, its filters compiled
+IMAGE-START-PHASES debug Warm   -312566       +68  run host  its VM's binary checked
+IMAGE-START-PHASES debug Warm   -312440      +126  run host  its network decided
+IMAGE-START-PHASES debug Warm   -312155      +285  run host  its writable layer cloned
+IMAGE-START-PHASES debug Warm   -312151        +4  run host  launching its VM
+IMAGE-START-PHASES debug Warm   -312102       +49  run host  spawning the VM
+IMAGE-START-PHASES debug Warm   -311960      +142  run host  the VM spawned, its process 19628
+IMAGE-START-PHASES debug Warm   -311894       +66  run host  the VM's grants: 0 of its asks answered
+IMAGE-START-PHASES debug Warm   -306549     +5345  vm 19628  its log began at unix 1794880972583646 us
+IMAGE-START-PHASES debug Warm   -306405      +144  run host  the VM's grants: 1 of its asks answered
+IMAGE-START-PHASES debug Warm   -306291      +114  run host  the VM's grants: 2 of its asks answered
+IMAGE-START-PHASES debug Warm   -306225       +66  run host  the VM's grants: 3 of its asks answered
+IMAGE-START-PHASES debug Warm   -305544      +681  vm 19628  VM created and RAM mapped
+IMAGE-START-PHASES debug Warm   -305493       +51  vm 19628  GIC created
+IMAGE-START-PHASES debug Warm   -305409       +84  vm 19628  restored a 512 MiB guest from /var/folders/fm/xn3dqgj1397387_rj_1qzxbm0000gn/T/shards-tests/14628/api-cost-home-0/templates/8a6fb5839be32fceb6b7e4c0ddb31bedb79ac044e4eb8385136dd0837b8431fd
+IMAGE-START-PHASES debug Warm   -305257      +152  vm 19628  vCPU 0: created in 99 us, 0 pages of its working set prefetched in 1 us, its state restored in 8 us
+IMAGE-START-PHASES debug Warm   -305250        +7  vm 19628  vCPUs set up in 155 us, the slowest vCPU 0 in 155 us
+IMAGE-START-PHASES debug Warm   -303504     +1746  vm 19628  the machine's start finished in 1746 us
+IMAGE-START-PHASES debug Warm   -303499        +5  vm 19628  dropped the restore's state: 864 bytes of vCPU state, 127563 of devices, 0 of working set
+IMAGE-START-PHASES debug Warm   -303492        +7  vm 19628  1 vCPU(s) ready to run after 3067 us
+IMAGE-START-PHASES debug Warm   -303318      +174  vm 19628  guest marker 2 at 3241 us
+IMAGE-START-PHASES debug Warm   -302976      +342  run host  its VM said READY
+IMAGE-START-PHASES debug Warm   -302973        +3  run host  its VM's start settled
+IMAGE-START-PHASES debug Warm   -302932       +41  run host  its writable layer's name let go of
+IMAGE-START-PHASES debug Warm   -302912       +20  vm 19628  guest marker 3 at 3647 us
+IMAGE-START-PHASES debug Warm   -302884       +28  run host  its agent-control key made
+IMAGE-START-PHASES debug Warm   -302881        +3  run host  warm, its VM process 19628 ready (Restored)
+IMAGE-START-PHASES debug Warm   -302868       +13  caller    its host's answer 32 read
+IMAGE-START-PHASES debug Warm        25   +302893  caller    its run's request sending
+IMAGE-START-PHASES debug Warm        30        +5  caller    its run's request sent
+IMAGE-START-PHASES debug Warm        37        +7  run host  its run's request read
+IMAGE-START-PHASES debug Warm        77       +40  run host  its members staged, its ports bound
+IMAGE-START-PHASES debug Warm        90       +13  run host  its setup's security composed
+IMAGE-START-PHASES debug Warm        98        +8  run host  its run planned
+IMAGE-START-PHASES debug Warm       104        +6  run host  its VM process 19628 is ready (Warm)
+IMAGE-START-PHASES debug Warm       150       +46  run host  its VM took the run
+IMAGE-START-PHASES debug Warm       160       +10  vm 19628  the hold: 0 milli-CPU, held to None over 1.014915ms, from g 1.014915ms (Step { late: Some(14.915µs), clock: Some(1µs) }; its clock: Ok(1µs))
+IMAGE-START-PHASES debug Warm       181       +21  run host  its start told its orchestrator
+IMAGE-START-PHASES debug Warm       182        +1  run host  its writable layer's name let go of
+IMAGE-START-PHASES debug Warm       190        +8  caller    its host's answer 16 read
+IMAGE-START-PHASES debug Warm       197        +7  caller    its start taken
+IMAGE-START-PHASES debug Warm       232       +35  caller    its members' outputs pumped
+IMAGE-START-PHASES debug Warm       236        +4  caller    its diagnostics' file named
+IMAGE-START-PHASES debug Warm       236        +0  caller    its diagnostics' keeper taken
+IMAGE-START-PHASES debug Warm       246       +10  caller    its diagnostics' file cut to its length
+IMAGE-START-PHASES debug Warm       264       +18  caller    its diagnostics kept
+IMAGE-START-PHASES debug Warm       269        +5  caller    the boot answered
+IMAGE-START-PHASES debug Warm      4743     +4474  vm 19628  guest marker 4 at 311302 us
+IMAGE-START-PHASES debug Warm      4796       +53  run host  its VM said STARTED
+IMAGE-START-PHASES debug Warm      5004      +208  caller    its harness's first output read
+test image_start_costs ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 47 filtered out; finished in 38.71s
+
