@@ -38,16 +38,28 @@ touches. Both VMMs, boot and restore, n = 30 a setting.
 - The boot's touched pages, laid out together, would take
   ceil(touched bytes / 64 KiB) windows of text. If that is at least 2 fewer than now, the
   cut is the boot path ordered first (LLD's `--symbol-ordering-file`, the functions on the
-  touched pages in their order), which costs no instruction. Its file is then made from those
-  pages, which the bench says only by count today: listing them is the next tool, built
-  once this says it pays.
+  touched pages in their order), which costs no instruction.
 - If it is not, ordering cannot take 2 windows, and the cut is text size:
   `-C opt-level=s` for the musl helpers, whose speed `to_ready`, `to_beat` and the restore
   bench weigh.
 
-**The A/B** (ROOT's). `run.sh OUT ab ROUNDS` with `B_RUSTFLAGS` the cut's flags (`gh workflow
-run vm-text.yml --ref main -f run='ab 2' -f b_rustflags='-C opt-level=s'`): A as main builds
-it, B with the flags for the musl helpers' build, each in a target directory of its own, the
-rounds' order alternating, n = 30 pairs a run. It keeps each arm's sections (`readelf -lSdW`,
-`size -A`), each run's samples, stdout, stderr and envelope, and `maps.txt`. The flags reach
-the init's musl build too, whose memory the comparison does not count.
+**What it decided** (run 44031672087 at 2893961893, AMD EPYC 9V74, 2026-11-17; its `maps.txt`
+in `windows.txt`). With fault-around at one page shards-vm's boot touched 490 of its text's
+579 pages and 48 of its read-only segment's; Firecracker's 196 of 617 and 33. Laid out
+together the 490 take 31 windows, 32 as the text's start falls, where the boot keeps 2,240,512
+bytes now: the cut is the boot path ordered first.
+
+| Fault-around | shards-vm text | its read-only segment | Firecracker text | its read-only segment |
+|---|---|---|---|---|
+| host's, 64 KiB | 2,240,512 / 2,371,584 | 196,608 / 319,488 | 2,002,944 / 2,527,232 | 262,144 / 446,464 |
+| one page | 2,007,040 / 2,371,584 | 196,608 / 319,488 | 802,816 / 2,527,232 | 135,168 / 446,464 |
+
+**The A/B** (ROOT's). `run.sh OUT order ROUNDS` (`gh workflow run vm-text.yml --ref main -f
+run='order 2'`): arm A as main builds it, its comparison with fault-around at one page, its
+boot's pages of shards-vm (the bench's `pages.tsv`, `pages_to`) made an ordering file
+(`order.py`), arm B linked by it, each in a target directory of its own, then the rounds of
+both, their order alternating, n = 30 pairs a run. `run.sh OUT ab ROUNDS` does the same for
+any `B_RUSTFLAGS` (`-f run='ab 2' -f b_rustflags='-C opt-level=s'`). Each keeps each arm's
+sections (`readelf -lSdW`, `size -A`), each run's samples, stdout, stderr and envelope, and
+`maps.txt`. B's flags reach the init's musl build too, whose memory the comparison does not
+count.

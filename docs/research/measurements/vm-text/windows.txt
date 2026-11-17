@@ -1,0 +1,55 @@
+# vm-text run 44031672087 (2893961893, AMD EPYC 9V74), 2026-11-17: maps.py's lines
+windows-4096.stderr shards-vm boot: file-backed 2203648 = 2007040/2371584 + 196608/319488 + 32768/32768 anon + 12288/24576 anon
+windows-4096.stderr firecracker-v1.17.0-x86_64 boot: file-backed 1011712 = 802816/2527232 + 135168/446464 + 73728/73728 + 65536/65536 anon
+windows-4096.stderr shards-vm restore: file-backed 2207744 = 2011136/2371584 + 196608/319488 + 32768/32768 anon
+windows-4096.stderr firecracker-v1.17.0-x86_64 restore: file-backed 1114112 = 892928/2527232 + 147456/446464 + 73728/73728 + 65536/65536 anon
+windows-65536.stderr shards-vm boot: file-backed 2437120 = 2240512/2371584 + 196608/319488 + 32768/32768 anon + 12288/24576 anon
+windows-65536.stderr firecracker-v1.17.0-x86_64 boot: file-backed 2338816 = 2002944/2527232 + 262144/446464 + 73728/73728 + 65536/65536 anon
+windows-65536.stderr shards-vm restore: file-backed 2437120 = 2240512/2371584 + 196608/319488 + 32768/32768 anon
+windows-65536.stderr firecracker-v1.17.0-x86_64 restore: file-backed 2469888 = 2134016/2527232 + 262144/446464 + 73728/73728 + 65536/65536 anon
+
+# scripts/bench-envelope, fault-around 65536 bytes
+firecracker (2893961, AMD EPYC 9V74 80-Core Processor, load 1.38 1.61 1.45)
+  overhead   shards 2.5 MiB, Firecracker 2.5 MiB: median difference +0.0078125 [+0.0078125, +0.0078125], worse (outside the envelope)
+  peak_rss   shards 56.1 MiB, Firecracker 55.5 MiB: median difference +0.447266 [+0.0605469, +0.804688], worse (outside the envelope)
+  pss        shards 56.1 MiB, Firecracker 55.5 MiB: median difference +0.451172 [+0.0644531, +0.808594], worse (outside the envelope)
+  pss_file   shards 2.3 MiB, Firecracker 2.2 MiB: median difference +0.09375 [+0.09375, +0.09375], worse (outside the envelope)
+  rss_anon   shards 53.7 MiB, Firecracker 53.3 MiB: median difference +0.357422 [-0.0390625, +0.714844], tied
+  rss_file   shards 2.3 MiB, Firecracker 2.2 MiB: median difference +0.0898438 [+0.0898438, +0.0898438], worse (outside the envelope)
+  to_ready   shards 199615.5 us, Firecracker 268138.0 us: median difference -67814.3 [-69800.1, -66645.4], better
+firecracker_density (2893961, AMD EPYC 9V74 80-Core Processor, load 1.29 1.56 1.44)
+  fleet_host shards 0.4 MiB, Firecracker 0.9 MiB: median difference -0.422607 [-0.579346, -0.000488281], better
+  fleet_private shards 1.0 MiB, Firecracker 1.0 MiB: median difference -0.0195312 [-0.0234375, -0.015625], better
+  fleet_pss  shards 1.3 MiB, Firecracker 1.9 MiB: median difference -0.612305 [-0.638184, -0.59668], better
+  fleet_pte  shards 0.2 MiB, Firecracker 0.2 MiB: median difference +0 [+0, +0.00390625], tied
+firecracker_restore (2893961, AMD EPYC 9V74 80-Core Processor, load 1.29 1.56 1.44)
+  overhead   shards 2.5 MiB, Firecracker 2.8 MiB: median difference -0.304688 [-0.304688, -0.304688], better
+  peak_rss   shards 5.5 MiB, Firecracker 15.0 MiB: median difference -9.51953 [-9.51953, -9.51953], better
+  pss        shards 5.5 MiB, Firecracker 15.0 MiB: median difference -9.51562 [-9.51562, -9.51562], better
+  pss_file   shards 4.5 MiB, Firecracker 14.0 MiB: median difference -9.49609 [-9.49609, -9.48828], better
+  rss_anon   shards 1.0 MiB, Firecracker 1.0 MiB: median difference -0.0214844 [-0.0273438, -0.0195312], better
+  rss_file   shards 4.5 MiB, Firecracker 14.0 MiB: median difference -9.5 [-9.5, -9.49219], better
+  to_beat    shards 8064.7 us, Firecracker 15296.4 us: median difference -7464.77 [-8503.41, -6744.73], better
+
+# scripts/bench-envelope, fault-around 4096 bytes
+firecracker (2893961, AMD EPYC 9V74 80-Core Processor, load 1.16 1.50 1.42)
+  overhead   shards 2.3 MiB, Firecracker 1.2 MiB: median difference +1.05078 [+1.05078, +1.05469], worse (outside the envelope)
+  peak_rss   shards 55.7 MiB, Firecracker 54.3 MiB: median difference +1.5625 [+1.18164, +1.73633], worse (outside the envelope)
+  pss        shards 55.6 MiB, Firecracker 54.2 MiB: median difference +1.56641 [+1.18555, +1.74023], worse (outside the envelope)
+  pss_file   shards 2.1 MiB, Firecracker 1.0 MiB: median difference +1.13672 [+1.13672, +1.13672], worse (outside the envelope)
+  rss_anon   shards 53.5 MiB, Firecracker 53.3 MiB: median difference +0.427734 [+0.0488281, +0.601562], worse (outside the envelope)
+  rss_file   shards 2.1 MiB, Firecracker 1.0 MiB: median difference +1.13281 [+1.13281, +1.13281], worse (outside the envelope)
+  to_ready   shards 214878.2 us, Firecracker 284198.3 us: median difference -68347.6 [-75905.2, -52523.2], better
+firecracker_density (2893961, AMD EPYC 9V74 80-Core Processor, load 1.29 1.50 1.43)
+  fleet_host shards 0.3 MiB, Firecracker 0.7 MiB: median difference -0.469238 [-0.509521, -0.0998535], better
+  fleet_private shards 1.0 MiB, Firecracker 1.0 MiB: median difference -0.0234375 [-0.03125, -0.0195312], better
+  fleet_pss  shards 1.3 MiB, Firecracker 1.2 MiB: median difference +0.0830078 [+0.0712891, +0.0869141], worse (outside the envelope)
+  fleet_pte  shards 0.2 MiB, Firecracker 0.2 MiB: median difference +0 [+0, +0.00390625], tied
+firecracker_restore (2893961, AMD EPYC 9V74 80-Core Processor, load 1.29 1.50 1.43)
+  overhead   shards 2.3 MiB, Firecracker 1.5 MiB: median difference +0.769531 [+0.769531, +0.769531], worse (outside the envelope)
+  peak_rss   shards 5.3 MiB, Firecracker 3.6 MiB: median difference +1.69922 [+1.69531, +1.69922], worse (outside the envelope)
+  pss        shards 5.3 MiB, Firecracker 3.6 MiB: median difference +1.70312 [+1.69922, +1.70312], worse (outside the envelope)
+  pss_file   shards 4.3 MiB, Firecracker 2.6 MiB: median difference +1.73438 [+1.73438, +1.73438], worse (outside the envelope)
+  rss_anon   shards 1.0 MiB, Firecracker 1.0 MiB: median difference -0.03125 [-0.0351562, -0.03125], better
+  rss_file   shards 4.3 MiB, Firecracker 2.6 MiB: median difference +1.73047 [+1.73047, +1.73047], worse (outside the envelope)
+  to_beat    shards 8123.6 us, Firecracker 15553.8 us: median difference -7623.05 [-7916.68, -7275.16], better
