@@ -18,6 +18,10 @@
 //!   `rate_R_done`: the rate they were answered at, per second, over the step's span to
 //!   its last answer.
 //!
+//! Each rate's requests are waited for as the tests wait on what clients bring about
+//! together ([`answered`]): a request that never ends fails the bench, saying what its home
+//! showed, rather than holding it to its CI job's limit.
+//!
 //! `cargo bench -p shards --bench arrival [-- --rates 2,5,10 --secs 10]`
 
 #![allow(
@@ -46,6 +50,7 @@ fn main() {
 #[cfg(unix)]
 fn main() {
     use std::process::{Command, Stdio};
+    use std::sync::mpsc;
     use std::time::{Duration, Instant};
 
     use support::{report, run_env, stats};
@@ -95,7 +100,10 @@ fn main() {
     for &rate in &rates {
         let start = Instant::now();
         let mut due = 0.0f64;
-        let mut requests = Vec::new();
+        // Each request's client as its thread spawns it, and each request's end.
+        let (spawned, spawns) = mpsc::channel();
+        let (ended, ends) = mpsc::channel();
+        let mut n = 0usize;
         loop {
             // Exponential gaps: a Poisson process of `rate` per second.
             due += -uniform().ln() / rate;
@@ -113,19 +121,31 @@ fn main() {
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null());
-            requests.push(std::thread::spawn(move || {
-                let ok = command.status().is_ok_and(|s| s.success());
+            let (spawned, ended) = (spawned.clone(), ended.clone());
+            std::thread::spawn(move || {
+                let child = command.spawn();
+                let client = child.as_ref().ok().map(std::process::Child::id);
+                let _ = spawned.send(client);
+                let ok = child
+                    .and_then(|mut child| child.wait())
+                    .is_ok_and(|s| s.success());
                 let done = Instant::now();
-                (ok, done.duration_since(at).as_secs_f64() * 1e6, done)
-            }));
+                let latency_us = done.duration_since(at).as_secs_f64() * 1e6;
+                let _ = ended.send(End {
+                    client,
+                    ok,
+                    latency_us,
+                    done,
+                });
+            });
+            n += 1;
         }
-        let n = requests.len();
+        let clients: Vec<u32> = spawns.iter().take(n).flatten().collect();
         let (mut latency, mut failed, mut last) = (Vec::with_capacity(n), 0usize, start);
-        for r in requests {
-            let (ok, us, done) = r.join().unwrap();
-            last = last.max(done);
-            if ok {
-                latency.push(us);
+        for end in answered(rate, &ends, n, &clients, &home) {
+            last = last.max(end.done);
+            if end.ok {
+                latency.push(end.latency_us);
             } else {
                 failed += 1;
             }
@@ -149,4 +169,79 @@ fn main() {
         ],
         &rows,
     );
+}
+
+/// A request's end: its client (none where it could not be spawned), whether its command
+/// ran, its latency from when it was due, in microseconds, and when it ended.
+#[cfg(unix)]
+struct End {
+    client: Option<u32>,
+    ok: bool,
+    latency_us: f64,
+    done: std::time::Instant,
+}
+
+/// The ends of rate `rate`'s `n` requests as `ends` brings them, `clients` their clients,
+/// waited for as the tests wait on what clients bring about together
+/// ([`common::Patience::clients`]: its party the clients, what descends from them and
+/// `home`'s daemon, judged by D215's judge as D209 rules, its kind's W* the slowest of the
+/// rates' waits before it on this host, no bound of the bench's own). Each request was once
+/// waited on with no judge at all, and two CI runs' firecracker jobs ran to their 30-minute
+/// limit in this step, their logs unkept (43782275660, 43838392544). Refused, the bench fails
+/// ([`stalled`]).
+#[cfg(unix)]
+fn answered(
+    rate: f64,
+    ends: &std::sync::mpsc::Receiver<End>,
+    n: usize,
+    clients: &[u32],
+    home: &std::path::Path,
+) -> Vec<End> {
+    let mut patience = common::Patience::clients(clients, home);
+    let mut answered = Vec::with_capacity(n);
+    while answered.len() < n {
+        match ends.recv_timeout(patience.next_look()) {
+            Ok(end) => answered.push(end),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) if patience.holds() => {}
+            Err(_) => stalled(rate, &answered, clients, home),
+        }
+    }
+    patience.done();
+    answered
+}
+
+/// Rate `rate`'s requests' wait refused, its account said ([`common::Patience::holds`]):
+/// says which requests never ended, then what their home shows ([`common::stacks_of`]: its
+/// runs, its microVMs' processes, its daemon's log), ends their clients and stops its daemon,
+/// and fails the bench. The home is kept, its daemon's whole log in it.
+#[cfg(unix)]
+fn stalled(rate: f64, answered: &[End], clients: &[u32], home: &std::path::Path) -> ! {
+    use std::io::Write as _;
+    let waited: Vec<u32> = clients
+        .iter()
+        .copied()
+        .filter(|&client| !answered.iter().any(|end| end.client == Some(client)))
+        .collect();
+    let said = format!(
+        "rate {rate}: {} of its requests never ended, their clients {waited:?}, its home {}",
+        waited.len(),
+        home.display()
+    );
+    let _ = writeln!(std::io::stderr(), "{said}");
+    let named: Vec<(&str, u32)> = waited
+        .iter()
+        .map(|&client| ("a request's client", client))
+        .collect();
+    let _ = writeln!(std::io::stderr(), "{}", common::stacks_of(&named, Some(home)));
+    for &client in &waited {
+        if let Ok(pid) = i32::try_from(client) {
+            common::kill_now(pid);
+        }
+    }
+    support::run_env(
+        &["daemon".to_string(), "stop".to_string()],
+        false,
+        &[("SHARDS_HOME", home.as_os_str())],
+    );
+    panic!("{said}");
 }
