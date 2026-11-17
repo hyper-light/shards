@@ -28667,6 +28667,27 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
           the one record).
         - Unproven (R09): whether the guest idled those 5.7 ms in its own kernel or its
           nested host did not run it. The run that would tell is owed to ROOT.
+    - *Steal, as a VM host's judge sees it* (2026-11-17, goal fb3528f9, ROOT's question: CI's
+      runners are VMs; is the hypervisor's taking their CPUs read as the host's hold?).
+      - *Already counted.* From inside a VM, the hypervisor taking all of its CPUs stops the
+        judge's own looking thread too. Its look runs late by that time, which is the host's
+        hold and counts toward no party's window (the lateness ruling above, `Judge::meant`).
+      - *Also counted.* A party thread woken onto a CPU the hypervisor holds is runnable
+        until it runs. A pending wakeup's `TASK_WAKING` reads as `R` (fs/proc/array.c,
+        `__task_state_index`), and so does a thread kept from a CPU. Its run-queue wait
+        (`run_delay`, Documentation/scheduler/sched-stats.rst) is read too (`Queued`).
+      - *Not read.* `/proc/stat`'s `steal` column (proc(5): time spent in other operating
+        systems when running in a virtualized environment, in clock ticks). It would matter
+        only where a party thread sleeps on a timer of a CPU the hypervisor holds while the
+        judge's CPU runs, which nothing has shown.
+      - *Read against the case that asked.* CI 43968984258's x86_64 musl refusals of engine.rs'
+        create (`files_go_in_and_out_of_a_microvm_by_copy`) and `/system/df`
+        (`images_are_tagged_traced_removed_and_pruned`) had their looks' lateness out (3.46
+        and 2.21 ms). They found 5.67 and 6.31 ms of stillness past it, every daemon thread
+        `S`, none runnable: the judge ran through it, so it was no whole-VM steal.
+      - *Then.* No cure; the next traced run decides. A refusal's account now says where each
+        member's threads wait (`common::waits_in`: `/proc/<pid>/task/<tid>/wchan`, proc(5)),
+        so the next one names what the daemon's threads slept on.
     - *A party is what was found of it until it ends* (waits-09, waits-10). A process once
       found is followed until it has gone or ended, wherever it is listed since: a daemon's
       microVMs as they end after it (a daemon stop's party), a client's children reparented
