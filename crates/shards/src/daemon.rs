@@ -9175,7 +9175,16 @@ impl<D: Disk> Daemon<D> {
                 match ready {
                     Ok(()) => {
                         pool.failures = 0;
-                        pool.demand.refilled(began.elapsed());
+                        let took = began.elapsed();
+                        pool.demand.refilled(took);
+                        // Said, as the daemon alone times its refills: the window a reader
+                        // of its pools spaces runs and sizes a keep-alive by (D26).
+                        log(format!(
+                            "pool of {}: a refill ready in {} us; runs within {} us of each other are one burst",
+                            key.dir.display(),
+                            took.as_micros(),
+                            pool.demand.window().as_micros()
+                        ));
                         // Its working set, where it records one, goes with its template,
                         // within what the refiller read the template's guest can hold.
                         let records = pool.working_set_limit.flatten().map(|limit| Records {

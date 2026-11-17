@@ -1349,6 +1349,13 @@ for the exit status.
         as TCP estimates a round trip's, and its window that estimate's retransmission
         timeout, SRTT + 4·RTTVAR (RFC 6298 §2; its 1 s initial RTO until the first
         refill is timed): runs closer together than that may wait for a refill.
+      - Its daemon says each refill it times, and the window it then keeps ("pool of DIR: a
+        refill ready in N us; runs within W us of each other are one burst", 2026-11-17,
+        goal fb3528f9), as only the daemon measures them. daemon.rs'
+        `pools_keep_what_their_runs_need_while_they_come` spaces its runs past the window
+        said, and starts its daemon again with a keep-alive as long as that window (R03). Its
+        fixed keep-alive of 15 s was under a loaded host's window: CI 43968984258's x86_64
+        musl job found runs 16 s apart still one burst.
       - A pool idle for SHARDS_POOL_KEEP seconds (600), none of its runs going and none
         claimed or ended within them, ends its ready VMs and keeps none until its next
         run, which is served all the same: a fixed keep-alive, as AWS and Azure keep a
