@@ -1,7 +1,8 @@
 //! A directory a test has of its own, in the system's temporary directory, removed as the
 //! test goes, a failing test's too: its value is dropped as the panic unwinds, and a
 //! failing test's says first, on stderr, the end of each log its programs wrote in it
-//! (a daemon's log, a run's stderr, a VM's sample), which says why it failed. Each test
+//! (a daemon's log, a run's stderr, a VM's sample), which says why it failed; and each
+//! panic of a process that made one is said on stderr as it happens. Each test
 //! process's are under `shards-tests/<pid>/`, so that a process killed before it removed
 //! its own leaves them where the next one finds them: the first directory a process makes
 //! removes those of every process that has ended. Only that directory is swept, and only
@@ -74,6 +75,31 @@ fn per_process_most() -> Option<libc::rlim_t> {
     None
 }
 
+/// Says each panic of this process on its stderr as it happens, which libtest does not
+/// capture, then gives it to the hook it replaced. libtest prints a failing test's panic only
+/// in its failures section, as its binary ends, so a binary its step's limit cut after a test
+/// had failed in it said no word of why (CI 43990298220: boot.rs'
+/// `a_managed_guest_is_held_to_the_rate_its_client_asks_on_its_socket` on both x86_64
+/// Windows jobs, two of containers.rs' on x86_64 gnu; 43968984258: two of api_image's on
+/// windows-2025). A panic a test makes on purpose and catches is said too. None is set on a
+/// panicking thread, where taking the hook panics.
+fn say_panics() {
+    use std::io::Write as _;
+    if std::thread::panicking() {
+        return;
+    }
+    let before = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let thread = std::thread::current();
+        let _ = writeln!(
+            io::stderr().lock(),
+            "--- said as it happened: thread '{}' {info}",
+            thread.name().unwrap_or("<unnamed>")
+        );
+        before(info);
+    }));
+}
+
 /// A test's directory, made empty, removed as it is dropped.
 #[derive(Debug)]
 pub struct TempDir(PathBuf);
@@ -101,6 +127,7 @@ impl TempDir {
             #[cfg(unix)]
             raise_descriptor_limit();
             sweep(&parent);
+            say_panics();
         });
         let n = N.fetch_add(1, Ordering::Relaxed);
         let dir = parent
@@ -560,6 +587,32 @@ mod tests {
             drop(dir);
             assert!(!path.exists());
         }
+    }
+
+    /// What [`a_test_failing_with_its_directory`] fails saying.
+    const FAILED: &str = "a failure whose words outlive its binary";
+
+    /// A panic is said on stderr as it happens, beside libtest's failures section, which
+    /// libtest prints on stdout only as its binary ends, and never where its step's limit
+    /// cuts the binary first (CI 43990298220, boot.rs' rate test on both x86_64 Windows
+    /// jobs). Red with no hook set (`say_panics` left out): the panic's words on stdout alone.
+    #[test]
+    fn a_panic_is_said_as_it_happens() {
+        let ran = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "tests::a_test_failing_with_its_directory", "--ignored"])
+            .output()
+            .unwrap();
+        let said = String::from_utf8_lossy(&ran.stderr);
+        assert_eq!(ran.status.code(), Some(101), "{:?}\n{said}", ran.status);
+        assert!(said.contains(FAILED), "{said}");
+    }
+
+    /// The process [`a_panic_is_said_as_it_happens`] runs.
+    #[test]
+    #[ignore = "a process of its own for a_panic_is_said_as_it_happens, which runs it"]
+    fn a_test_failing_with_its_directory() {
+        let _dir = TempDir::new("fails").unwrap();
+        panic!("{FAILED}");
     }
 
     /// Directories made and dropped on many threads at once are each made: the process's
