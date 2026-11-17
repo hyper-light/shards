@@ -10620,9 +10620,14 @@ start's looks was refused before any VM process had been looked at twice: under 
 on adacachy2 (Linux 7.3.3 x86_64) at 8bfa6150e and 9d2da923d, 97.49 ms after its command
 began against a slowest start of 32.44 ms, its slice at its `memory.high` with 4345 `high`
 events. `a_slow_start_is_refused_only_past_a_whole_slice_without_progress_or_hold` plays
-starts of 500 ms against a slowest of 30 ms, one with an idle stand-in VM process not yet
-judged and one in a slice whose PSI total grows, each followed to its end, and a start that
-never comes, refused past a whole slice. The record is the reads held to none
+starts of 500 ms against a slowest of 30 ms, one with a running stand-in VM process not yet
+judged and one in a slice its host holds all along, each followed to its end, and a start
+that never comes, refused past a whole slice. The held slice's PSI total is read at each
+look as its kernel sums one, a stall still on counted to the read's own clock (Linux 7.2
+kernel/sched/psi.c `psi_show`, `get_recent_times`): the time since the stall began. Until
+2026-11-17 a thread of the test's wrote it each 5 ms, and CI runs 43876891053 (x86_64 musl)
+and 43926955660 (arm64 gnu) refused that start 60 and 361 ms in, a look finding the total as
+the look before had where the thread had not run between them. The record is the reads held to none
 alone, never seeded, so that a budget's reads never raise the bound they are judged by.
 Until 237f3ebe7 the medians of 3 were held within twice those under none, a multiple, and
 each read was waited on 600 s and past that while its microVM ran: on adacachy2 (32 CPUs)
