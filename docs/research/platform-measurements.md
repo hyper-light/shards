@@ -26348,3 +26348,13 @@ the counts are a process's, not a thread's. n is one run of each child.
   pages hold 0.1 to 0.2 MiB more at p50, for 46 to 50 ms less to `to_ready` (PM M157, M279).
   What else shards' guest touches that Firecracker's does not is unmeasured: no reading keeps
   a boot's guest memory by page (`pages.tsv` keeps files' mappings).
+- **Decided** (ROOT's ruling, R14, 2026-11-17). Measure the rest, and allow the row
+  meanwhile. Each boot of the comparison records its guest memory as its `rss_anon` is read
+  (benches/firecracker.rs `guest_memory`, `write_guest`): over the guest's mappings, smaps'
+  `Rss`, `AnonHugePages` and `Private_Dirty`, each mapping's span and huge bytes, and the
+  pages held in each huge page's span (pagemap's present and exclusive pages), into
+  `firecracker-guest.tsv` beside the samples; docs/research/measurements/boot-anon's
+  `attribute.py` takes each pair's gap apart into the VMMs' own memory, huge pages' rounding
+  and pages touched. Meanwhile docs/benchmarks-envelope.toml allows `firecracker/rss_anon`
+  up to the largest median gap measured, 654 KiB (44138427198's a-1), until 2026-12-01: one
+  CI cycle on the reading, then ROOT's runs of it.

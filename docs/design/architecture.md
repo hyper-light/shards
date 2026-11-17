@@ -3480,6 +3480,17 @@ one CLI.
         cure's A/B and the four runs of one binary above (PM M616's table). The CI time the
         six pairs add is unmeasured until a run shows it. Fewer copies than the draw, the
         other way, stays measured and open in D25.
+      - *The boot's `rss_anon`* (PM M617; ROOT's ruling, R14, 2026-11-17). Above
+        Firecracker's on both CPU vendors, not Intel's alone: median gaps of +0.14 to +0.64
+        MiB on an Intel Xeon 6975P-C and -0.43 to +0.47 on AMD EPYC, worse in 2 of 4 runs and
+        3 of 8. THP's boot advice holds 0.1 to 0.2 MiB of it at p50 for a boot 46 to 50 ms
+        faster; the rest is unattributed. Each boot now records its guest memory (smaps'
+        `Rss`, `AnonHugePages` and `Private_Dirty` over its mappings, and the pages held in
+        each huge page's span: benches/firecracker.rs `guest_memory`), which
+        docs/research/measurements/boot-anon's `attribute.py` takes apart into the VMMs' own
+        memory, huge pages' rounding and pages touched. Until it has, the row is allowed up
+        to 654 KiB, the largest median gap measured, lapsing on 2026-12-01: one CI cycle on
+        the reading and ROOT's runs of it (docs/benchmarks-envelope.toml).
 - A daemon's build is its binary's identity, which includes what it carries; one given
   another VM binary (`SHARDS_VM_BINARY`, for VMM work and tests) is another build.
 - **Tests:** `helpers::tests` (written whole once, found after, a cut copy replaced);

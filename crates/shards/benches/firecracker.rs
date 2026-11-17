@@ -27,6 +27,11 @@
 //!   a private mapping of its snapshot file: the pages it only reads are the file's, in the
 //!   page cache every VM restored from that snapshot shares, and a page it writes becomes
 //!   an anonymous copy of its own.
+//! - Each boot's guest memory, which the envelope does not check (`Guest`): its mappings'
+//!   `Rss`, `AnonHugePages` and `Private_Dirty`, and the pages held in each huge page's span
+//!   of it, at the reading, into `firecracker-guest.tsv` beside the samples
+//!   (SHARDS_BENCH_SAMPLES): the boot's `rss_anon` taken apart by
+//!   docs/research/measurements/boot-anon (PM M617).
 //!
 //! Firecracker is its pinned release binary, run without the jailer as its getting-started
 //! guide runs it: `--no-api --config-file`, default seccomp filters. Each iteration
@@ -174,6 +179,34 @@ mod compare {
         /// private copy of ([`touched`]): what a working set recorded then would hold,
         /// read and written; none for a boot.
         touched: Option<(u64, u64)>,
+        /// A boot's guest memory as its host held it at the reading ([`guest_memory`]):
+        /// none for a restore, whose guest memory is its snapshot's file.
+        guest: Option<Guest>,
+    }
+
+    /// A boot's guest memory as its host holds it at the reading, over the mappings of
+    /// guest memory ([`guest_mappings`]), in address order from guest memory's first byte:
+    /// their resident, huge anonymous and privately dirtied bytes (`Rss`, `AnonHugePages`,
+    /// `Private_Dirty` in /proc/PID/smaps), each mapping's span and huge bytes, and the
+    /// pages it holds in each huge page's span of it (2 MiB under 4 KiB pages). What
+    /// shards' boot holds of its guest's memory against Firecracker's, as huge pages round
+    /// its guest's touches up and as its guest touches more
+    /// (docs/research/measurements/boot-anon).
+    struct Guest {
+        rss: u64,
+        anon_huge: u64,
+        private_dirty: u64,
+        /// Each mapping's first byte, from guest memory's, its length, and its huge
+        /// anonymous bytes.
+        spans: Vec<(u64, u64, u64)>,
+        /// The pages held in each huge page's span, from guest memory's first byte: present
+        /// and mapped by this process alone (/proc/PID/pagemap bits 63 and 56), as `Rss`
+        /// counts them. A guest's read of memory nothing wrote maps the zero page, present
+        /// and counted by neither (fs/proc/task_mmu.c `pte_to_pagemap_entry`).
+        held: Vec<u64>,
+        /// The host's page and huge page, in bytes.
+        page: u64,
+        huge: u64,
     }
 
     /// The walking guest's command line (testguest `walk`, 512 MiB).
@@ -397,6 +430,14 @@ mod compare {
                 .collect::<Vec<_>>()
         };
         let paired = |a: Vec<f64>, b: Vec<f64>| a.iter().zip(&b).map(|(x, y)| x - y).collect::<Vec<_>>();
+        // Each boot's guest memory, which the envelope does not check: resident, in huge
+        // pages and privately dirtied, and the huge pages' spans of it it holds pages in.
+        let of_guest = |v: &[Sample], f: fn(&Guest) -> f64| {
+            v.iter()
+                .map(|s| s.guest.as_ref().map_or(f64::NAN, f))
+                .collect::<Vec<_>>()
+        };
+        write_guest(&shards, &fc);
         let mib =
             |v: &[Sample], f: fn(&Sample) -> u64| v.iter().map(|s| f(s) as f64 / MIB).collect::<Vec<_>>();
         support::report(
@@ -429,6 +470,34 @@ mod compare {
                 support::stats("fc_pss", "MiB", mib(&fc, |s| s.pss_bytes)),
                 support::stats("shards_pss_file", "MiB", mib(&shards, |s| s.pss_file_bytes)),
                 support::stats("fc_pss_file", "MiB", mib(&fc, |s| s.pss_file_bytes)),
+                support::diagnostic(
+                    "shards_guest_rss",
+                    "MiB",
+                    of_guest(&shards, |g| g.rss as f64 / MIB),
+                ),
+                support::diagnostic("fc_guest_rss", "MiB", of_guest(&fc, |g| g.rss as f64 / MIB)),
+                support::diagnostic(
+                    "shards_guest_huge",
+                    "MiB",
+                    of_guest(&shards, |g| g.anon_huge as f64 / MIB),
+                ),
+                support::diagnostic(
+                    "fc_guest_huge",
+                    "MiB",
+                    of_guest(&fc, |g| g.anon_huge as f64 / MIB),
+                ),
+                support::diagnostic(
+                    "shards_guest_dirty",
+                    "MiB",
+                    of_guest(&shards, |g| g.private_dirty as f64 / MIB),
+                ),
+                support::diagnostic(
+                    "fc_guest_dirty",
+                    "MiB",
+                    of_guest(&fc, |g| g.private_dirty as f64 / MIB),
+                ),
+                support::diagnostic("shards_guest_regions", "", of_guest(&shards, regions_held)),
+                support::diagnostic("fc_guest_regions", "", of_guest(&fc, regions_held)),
             ],
         );
         let fleet: usize = support::option("--fleet").map_or(16, |v| v.parse().expect("--fleet K"));
@@ -1170,6 +1239,7 @@ mod compare {
             anon_huge_bytes: anon_huge.unwrap_or(0),
             kvm,
             touched,
+            guest: None,
         }
     }
 
@@ -1591,6 +1661,7 @@ mod compare {
         let [peak, anon, file] = ["VmHWM", "RssAnon", "RssFile"].map(|field| status_bytes(pid, field));
         let [pss, pss_file, anon_huge] =
             ["Pss", "Pss_File", "AnonHugePages"].map(|field| rollup_bytes(pid, field));
+        let guest = guest_memory(pid, guest_bytes);
         describe_mappings(pid, &format!("{} boot", command.get_program().to_string_lossy()));
         // SAFETY: the child is not yet reaped, so `pid` still names it.
         unsafe { libc::kill(pid, libc::SIGKILL) };
@@ -1615,6 +1686,7 @@ mod compare {
             anon_huge_bytes: anon_huge.unwrap_or(0),
             kvm: None,
             touched: None,
+            guest,
         }
     }
 
@@ -1797,6 +1869,137 @@ mod compare {
             .open(path)
             .unwrap();
         std::io::Write::write_all(&mut tsv, out.as_bytes()).unwrap();
+    }
+
+    /// The host's PMD-mapped huge page, the span THP rounds a touch of anonymous memory up to
+    /// (/sys/kernel/mm/transparent_hugepage/hpage_pmd_size: 2 MiB under 4 KiB pages); none
+    /// without THP.
+    fn huge_page_bytes() -> Option<u64> {
+        std::fs::read_to_string("/sys/kernel/mm/transparent_hugepage/hpage_pmd_size")
+            .ok()?
+            .trim()
+            .parse()
+            .ok()
+    }
+
+    /// How many huge pages' spans of a boot's guest memory hold a page: its 2 MiB-aligned
+    /// regions the guest touched, each of which a huge page holds whole.
+    fn regions_held(guest: &Guest) -> f64 {
+        guest.held.iter().filter(|&&pages| pages > 0).count() as f64
+    }
+
+    /// `pid`'s guest memory, `guest_bytes` of it, at the reading ([`Guest`]): none where its
+    /// smaps or pagemap, or the host's huge page, cannot be read, or no mapping is guest
+    /// memory.
+    fn guest_memory(pid: libc::pid_t, guest_bytes: u64) -> Option<Guest> {
+        use std::os::unix::fs::FileExt as _;
+        const PRESENT: u64 = 1 << 63;
+        const EXCLUSIVE: u64 = 1 << 56;
+        let huge = huge_page_bytes()?;
+        // SAFETY: sysconf(3) of a name, which only reads.
+        let page = u64::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) }).ok()?;
+        let smaps = std::fs::read_to_string(format!("/proc/{pid}/smaps")).ok()?;
+        // Each mapping's start, end, and `Rss`, `AnonHugePages` and `Private_Dirty` bytes, in
+        // address order.
+        let fields = ["Rss:", "AnonHugePages:", "Private_Dirty:"];
+        let mut maps: Vec<(u64, u64, [u64; 3])> = Vec::new();
+        for line in smaps.lines() {
+            let mut words = line.split_whitespace();
+            let Some(first) = words.next() else { continue };
+            if let Some((start, end)) = first.split_once('-')
+                && let (Ok(start), Ok(end)) = (u64::from_str_radix(start, 16), u64::from_str_radix(end, 16))
+            {
+                maps.push((start, end, [0; 3]));
+            } else if let Some(field) = fields.iter().position(|f| *f == first)
+                && let Some(last) = maps.last_mut()
+                && let Some(kib) = words.next().and_then(|v| v.parse::<u64>().ok())
+            {
+                last.2[field] = kib * 1024;
+            }
+        }
+        let spans: Vec<(u64, u64)> = maps.iter().map(|&(start, end, _)| (start, end)).collect();
+        let ours: Vec<(u64, u64, [u64; 3])> = guest_mappings(&spans, guest_bytes)
+            .iter()
+            .zip(&maps)
+            .filter_map(|(guest, map)| guest.then_some(*map))
+            .collect();
+        if ours.is_empty() {
+            return None;
+        }
+        let pagemap = std::fs::File::open(format!("/proc/{pid}/pagemap")).ok()?;
+        let mut guest = Guest {
+            rss: 0,
+            anon_huge: 0,
+            private_dirty: 0,
+            spans: Vec::new(),
+            held: Vec::new(),
+            page,
+            huge,
+        };
+        let mut from = 0;
+        for (start, end, [rss, anon_huge, private_dirty]) in ours {
+            guest.rss += rss;
+            guest.anon_huge += anon_huge;
+            guest.private_dirty += private_dirty;
+            guest.spans.push((from, end - start, anon_huge));
+            let mut entries = vec![0u8; usize::try_from((end - start) / page * 8).ok()?];
+            pagemap.read_exact_at(&mut entries, start / page * 8).ok()?;
+            for (i, entry) in entries.as_chunks::<8>().0.iter().enumerate() {
+                let entry = u64::from_ne_bytes(*entry);
+                if entry & PRESENT == 0 || entry & EXCLUSIVE == 0 {
+                    continue;
+                }
+                let span = usize::try_from((from + i as u64 * page) / huge).ok()?;
+                if guest.held.len() <= span {
+                    guest.held.resize(span + 1, 0);
+                }
+                guest.held[span] += 1;
+            }
+            from += end - start;
+        }
+        // Each huge page's span of guest memory, held or not.
+        guest.held.resize(usize::try_from(from.div_ceil(huge)).ok()?, 0);
+        Some(guest)
+    }
+
+    /// Each boot's guest memory ([`Guest`]) and `rss_anon`, a row each in the order taken,
+    /// into `firecracker-guest.tsv` beside the samples (SHARDS_BENCH_SAMPLES), which the
+    /// envelope does not read: the boot's `rss_anon` gap taken apart by
+    /// docs/research/measurements/boot-anon/attribute.py.
+    fn write_guest(shards: &[Sample], fc: &[Sample]) {
+        let Some(dir) = std::env::var_os("SHARDS_BENCH_SAMPLES") else {
+            return;
+        };
+        let mut tsv =
+            String::from("vmm\trun\trss_anon\tguest_rss\tguest_huge\tguest_dirty\tpage\thuge\tspans\theld\n");
+        for (vmm, samples) in [("shards", shards), ("firecracker", fc)] {
+            for (i, s) in samples.iter().enumerate() {
+                let anon = s.rss_anon_bytes;
+                let Some(g) = &s.guest else {
+                    tsv.push_str(&format!("{vmm}\t{i}\t{anon}\t-\t-\t-\t-\t-\t-\t-\n"));
+                    continue;
+                };
+                let spans: Vec<String> = g
+                    .spans
+                    .iter()
+                    .map(|(at, len, huge)| format!("{at:#x}+{len:#x}:{huge}"))
+                    .collect();
+                let held: Vec<String> = g.held.iter().map(u64::to_string).collect();
+                tsv.push_str(&format!(
+                    "{vmm}\t{i}\t{anon}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+                    g.rss,
+                    g.anon_huge,
+                    g.private_dirty,
+                    g.page,
+                    g.huge,
+                    spans.join(","),
+                    held.join(",")
+                ));
+            }
+        }
+        let dir = PathBuf::from(dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("firecracker-guest.tsv"), tsv).unwrap();
     }
 
     /// Resident bytes of `pid` outside guest memory, by Firecracker's rule
