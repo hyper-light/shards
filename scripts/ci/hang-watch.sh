@@ -1,5 +1,8 @@
 #!/bin/bash
-# CI on Linux, beside the tests: a test's `shards` command that has run 40 s (the tests'
+# CI on Linux, beside the tests: a test's `shards` command (the build's e2e copy's, or a
+# gated test's copy in its own test directory, containers.rs `Gated`, which this missed:
+# `rm_cancels_a_run_whose_vm_is_not_ready` ran to its job's step limit undumped, CI job
+# 133659472581) that has run 40 s (the tests'
 # helper ends one at 60 s) is taken as hung, and the state of every process of its home is
 # kept in OUT: ps, each thread's kernel stack and gdb's backtraces of the home's daemon and
 # what runs under it (its spawner, and the VM, share and network processes it made), the
@@ -18,13 +21,14 @@ out=$1
 mkdir -p "$out"
 
 dump() {
-    local cli=$1 at home daemon="" d p next tree shards id
+    local cli=$1 at home daemon="" d p next tree shards id vm
     at="$out/hang-$(date +%H%M%S)-$cli"
     mkdir -p "$at"
     tr '\0' ' ' < "/proc/$cli/cmdline" > "$at/command.txt" 2>/dev/null
     # The command's own binary, which runs from here whatever its path is in its container.
     shards=/proc/$cli/exe
     home=$(tr '\0' '\n' < "/proc/$cli/environ" 2>/dev/null | sed -n 's/^SHARDS_HOME=//p' | head -1)
+    vm=$(tr '\0' '\n' < "/proc/$cli/environ" 2>/dev/null | sed -n 's/^SHARDS_VM_BINARY=//p' | head -1)
     echo "home: $home" >> "$at/command.txt"
     ps -eLo pid,tid,ppid,pgid,etimes,stat,wchan:32,comm,args > "$at/ps.txt"
     [ -n "$home" ] || return
@@ -54,8 +58,11 @@ dump() {
     for p in $tree; do
         sudo timeout 15 gdb -p "$p" -batch -ex "set pagination off" -ex "thread apply all bt" > "$at/gdb-$p.txt" 2>&1 &
     done
-    # What each running microVM's guest is doing, where the test guest is there to say.
-    if [ -n "$daemon" ]; then
+    # What each running microVM's guest is doing, where the test guest is there to say. Not
+    # where the command names a VM binary of its own (a gated test's): its daemon is of
+    # another build than a command without it (shards_ipc `Identity::of_build`), and asked
+    # by one would step aside, its state gone.
+    if [ -n "$daemon" ] && [ -z "$vm" ]; then
         for id in $(SHARDS_HOME=$home timeout 15 "$shards" ps -q 2>/dev/null); do
             # Privileged: a kernel stack is read with CAP_SYS_ADMIN (proc(5)).
             SHARDS_HOME=$home timeout 20 "$shards" exec --privileged -u 0 "$id" /bin/testguest stacks \
@@ -67,7 +74,7 @@ dump() {
 
 seen=" "
 while true; do
-    for cli in $(pgrep -f "/target/[^ ]*/e2e/shards-[0-9a-f]+/shards |/target/e2e/shards-[0-9a-f]+/shards "); do
+    for cli in $(pgrep -f "/target/[^ ]*/e2e/shards-[0-9a-f]+/shards |/target/e2e/shards-[0-9a-f]+/shards |/shards-tests/[0-9]+/[^ /]+/shards "); do
         # A command gone since pgrep found it has no cmdline to read: said nowhere.
         case "$({ tr '\0' ' ' < "/proc/$cli/cmdline"; } 2>/dev/null)" in
             "" | *"shards daemon"* | *"shards spawner"* | *"shards share"*) continue ;;

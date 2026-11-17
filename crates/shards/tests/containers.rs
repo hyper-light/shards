@@ -179,11 +179,29 @@ fn exit(child: &mut Child, home: &Path) -> Option<i32> {
             return status.code();
         }
         if !patience.holds() {
+            let stood = standing(home);
             let _ = child.kill();
-            panic!("shards run did not exit, it, its daemon and microVMs no longer progressing");
+            panic!(
+                "shards (process {}) did not exit, it, its daemon and microVMs no longer progressing\n{stood}",
+                child.id()
+            );
         }
         std::thread::sleep(Duration::from_millis(5));
     }
+}
+
+/// Where `home` stands, read with no client of its own, which, of another build than its
+/// daemon (a gated test's daemon, [`Gated`]), would replace that daemon
+/// (`shards_ipc::Identity::of_build`): its daemon's last words, last first, and the processes
+/// under it. Linux CI's hang watcher takes their stacks.
+fn standing(home: &Path) -> String {
+    let log = std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default();
+    let tail: Vec<&str> = log.lines().rev().take(40).collect();
+    format!(
+        "daemon.log, last first:\n{}\nprocesses:\n{}",
+        tail.join("\n"),
+        common::processes_under(&log)
+    )
 }
 
 /// Waits for process `pid` to end while it goes on (`common::Wait` on it and what descends
@@ -8146,7 +8164,12 @@ fn usage_mistakes_are_answered_without_a_daemon() {
 /// This build's `shards`, whose runs' VMs wait before they are ready for as long as the
 /// test keeps a gate shut, so that a run stays pending, its microVM created (audit A06).
 /// On Unix it is in a directory of its own, with a VM process binary (`SHARDS_VM_BINARY`)
-/// that waits for the gate to open before it becomes this build's. Windows has no exec,
+/// that waits at the gate, a FIFO, before it becomes this build's: in its open of it,
+/// running nothing, until a writer opens it (fifo(7)), so that a client the test waits on
+/// is judged on its own progress and its daemon's, never on a gate's poll (one stuck past a
+/// polled gate ran to CI's step limit, undumped: CI 43968984258, x86_64 gnu,
+/// `rm_cancels_a_run_whose_vm_is_not_ready`). Let through, it goes on where the test opened
+/// the gate, and ends where the test ended first. Windows has no exec,
 /// and a VM process opens nothing but what its daemon opens for it (D30): there the gate
 /// is a copy of the init its runs boot, held open sharing nothing under an oplock
 /// ([`common::Oplocked`]), so that the daemon's open of it for a VM waits until the gate opens.
@@ -8157,6 +8180,11 @@ struct Gated {
     #[cfg(windows)]
     held: std::cell::RefCell<Option<common::Oplocked>>,
     dir: TempDir,
+    // After the directory: the gate's FIFO is held open for writing until its name has gone,
+    // so that a VM process that comes to it as the directory goes finds no FIFO, never one
+    // with no writer to wait for.
+    #[cfg(unix)]
+    writer: std::cell::RefCell<Option<std::fs::File>>,
 }
 
 impl Gated {
@@ -8169,17 +8197,24 @@ impl Gated {
                 shards_testdir::program_copy(from, &dir.join(to)).unwrap();
             }
         }
+        let gate = dir.join("gate");
+        let fifo = std::ffi::CString::new(gate.as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY: mkfifo(3) of a NUL-terminated path.
+        let made = unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) };
+        assert_eq!(made, 0, "{}: {}", gate.display(), std::io::Error::last_os_error());
         let vm = dir.join("shards-vm");
-        // It gives up once the test's directory has gone.
         let script = format!(
-            "#!/bin/sh\nwhile [ ! -e '{open}' ]; do [ -d '{dir}' ] || exit 1; sleep 0.01; done\nexec '{vm}' \"$@\"\n",
+            "#!/bin/sh\n: <'{gate}'\n[ -e '{open}' ] || exit 1\nexec '{vm}' \"$@\"\n",
+            gate = gate.display(),
             open = dir.join("open").display(),
-            dir = dir.display(),
             vm = shards_vm().display()
         );
         // Exec'd by the daemon's spawner.
         shards_testdir::program(&vm, &script).unwrap();
-        Gated { dir }
+        Gated {
+            dir,
+            writer: std::cell::RefCell::new(None),
+        }
     }
 
     #[cfg(windows)]
@@ -8196,6 +8231,18 @@ impl Gated {
     #[cfg(unix)]
     fn open(&self) {
         std::fs::write(self.dir.join("open"), b"").unwrap();
+        *self.writer.borrow_mut() = Some(self.open_writer().unwrap());
+    }
+
+    /// The gate's FIFO opened for writing, which lets every VM process at it through, and
+    /// every one after while it is held: read and write, so that its open waits for no reader
+    /// (fifo(7): Linux; XNU's `fifo_open` alike).
+    #[cfg(unix)]
+    fn open_writer(&self) -> std::io::Result<std::fs::File> {
+        std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(self.dir.join("gate"))
     }
 
     #[cfg(windows)]
@@ -8261,6 +8308,18 @@ impl Gated {
     }
 }
 
+/// A gate the test left shut lets its VM processes through as the test ends, to find it shut
+/// for good and end.
+#[cfg(unix)]
+impl Drop for Gated {
+    fn drop(&mut self) {
+        if self.writer.get_mut().is_none() {
+            let writer = self.open_writer().ok();
+            *self.writer.get_mut() = writer;
+        }
+    }
+}
+
 /// A command left going, its output collected as it comes.
 struct Going {
     child: Child,
@@ -8302,10 +8361,6 @@ fn created(gated: &Gated, home: &Path, run: &mut Going) -> String {
         }
         *last.borrow_mut() = listed.to_string();
         if !patience.holds() {
-            // Where the run stands: what the daemon said, and its processes.
-            let log = std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default();
-            let tail: Vec<&str> = log.lines().rev().take(40).collect();
-            let procs = common::processes_under(&log);
             // The run's client, if it has ended: what it said.
             let client = match run.child.try_wait() {
                 Ok(Some(status)) => {
@@ -8319,9 +8374,9 @@ fn created(gated: &Gated, home: &Path, run: &mut Going) -> String {
                 Err(e) => format!("unknown: {e}"),
             };
             panic!(
-                "the run's container never showed while its daemon progressed; the last ps: {}\nthe run's client: {client}\ndaemon.log, last first:\n{}\nprocesses:\n{procs}",
+                "the run's container never showed while its daemon progressed; the last ps: {}\nthe run's client: {client}\n{}",
                 last.borrow(),
-                tail.join("\n")
+                standing(home)
             );
         }
         std::thread::sleep(Duration::from_millis(20));
