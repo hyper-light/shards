@@ -1531,7 +1531,28 @@ for the exit status.
     `a_vms_machine_ends_once_its_run_is_over_and_its_daemon_gone` (every order of the
     course's moves). Not covered: a guest that never ends its command once SIGKILLed, nor
     answers its layer's ask, holds its VM still, as a cold home's daemon waits on one (D217);
-    and a microVM held at a live move's last save (D176 part 7) stays held. `stop` returns
+    and a microVM held at a live move's last save (D176 part 7) stays held.
+    **Amended (goal #36, CI 44077430171):** the layer's ask is covered. A daemon that ends
+    settles no layer still to come: `tell_end` takes a run out of `runs` at its end, and the
+    stop thread (`stop_each`) and the exit (`quiet`) look at `runs` alone, so a daemon whose
+    home went stepped aside and exited while a microVM it still followed for its layer had its
+    end told and its layer's ask out (x86_64 musl, containers.rs
+    `run_limits_a_microvms_resources`: daemon 143243 gone as the test ended at 14:45:48, its
+    microVM 208470 and network process 208466 still there at 14:50:37, reparented to the
+    container's init, the VM's `workload` thread reading its run's connection, no relay of its
+    daemon's or its client's, its signal connection ended at its command's end). Its own link
+    closing past its end told showed nothing, as a daemon that goes on lets go of it then. Now
+    it shows the daemon gone while the VM still owes it its layer's word (warm.rs
+    `LAYER_OWED`, `Course::shows_gone`): from the run's taking, where it asks for the layer,
+    to the word that it is sent; a layer kept in its file is said once its machine is down, and
+    owed until then. And its machine ends once its end is told and its daemon gone, its layer's
+    word unwaited for (`Course::ends`): it is its daemon's alone, and an ask its guest never
+    answers held it for ever. Tests: warm.rs
+    `a_vms_machine_ends_once_its_runs_end_is_told_and_its_daemon_gone` and
+    `a_daemons_link_closing_shows_it_gone_while_it_follows_the_run`. Still open, the daemon's
+    own close: it neither waits for nor ends a microVM settling its layer (`settling` is
+    awaited only by requests on that microVM: its start, commit, inspect and visits), so a
+    `stop daemon` right after a run's end leaves that layer unsettled. `stop` returns
     once the daemon has let go of its home: the daemon unlocks it and closes the stop
     connections itself, last, since the kernel closes an exiting process's descriptors
     in no order to rely on (XNU `fdt_invalidate` closes the highest first).
