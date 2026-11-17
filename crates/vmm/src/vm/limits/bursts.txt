@@ -1,21 +1,24 @@
 # The bursts of refused VM entries D261 measured on EC2's Intel runners (Intel Xeon 6975P-C,
-# KVM under Amazon EC2): every host model's first burst width is the widest (vm::limits,
-# `measured_width_us`), until its records learn a wider one.
+# KVM under Amazon EC2): every host model's first burst width is the largest gap between
+# consecutive refusals of any of them (vm::limits, `measured_width_us`), unless its records keep
+# a larger one; never a burst's span (ROOT's ruling of 2026-11-17).
 #
-# Each line is one burst: the span, in microseconds, from the first to the last VMCS kvm_intel
-# dumped in it ("kvm_intel: VMCS ..., last attempted VM-entry on CPU N", the dmesg of the job's
-# failure step, timestamps of the job's own kernel), then where it was measured: the CI run,
-# its job, the first and last dump's dmesg seconds, and the dumps in it. A burst's dumps came
-# at most 1.13 s apart; bursts came 15.4 s apart or more.
+# Each line is one burst: the largest gap, in microseconds, between consecutive VMCS dumps
+# kvm_intel made in it ("kvm_intel: VMCS ..., last attempted VM-entry on CPU N", the dmesg of the
+# job's failure step, timestamps of the job's own kernel), its span from the first dump to the
+# last, then where it was measured: the CI run, its job, the first and last dump's dmesg
+# seconds, and the dumps in it. docs/research/measurements/vcpus/bursts.py checks each against
+# its job's log. A burst's consecutive dumps came at most 1.122999 s apart, its first and last
+# at most 1.132342 s; bursts came 15.4 s apart or more.
 #
-# burst SPAN_US RUN JOB FIRST LAST DUMPS
-burst 1079886 44076016255 x86_64-unknown-linux-musl 2419.069529 2420.149415 17
-burst 66448 44076016255 x86_64-unknown-linux-musl 3765.808596 3765.875044 33
-burst 866848 44076016255 x86_64-unknown-linux-gnu 2020.190759 2021.057607 17
-burst 3188 44076016255 x86_64-unknown-linux-gnu 3271.283751 3271.286939 4
-burst 1132342 44077430171 x86_64-unknown-linux-musl 2382.263049 2383.395391 3
-burst 452158 44077430171 x86_64-unknown-linux-musl 3040.956945 3041.409103 4
-burst 20363 44077430171 x86_64-unknown-linux-musl 3437.082340 3437.102703 7
-burst 9810 44031797055 x86_64-unknown-linux-musl 2357.391798 2357.401608 7
-burst 54718 44031797055 x86_64-unknown-linux-musl 2372.838428 2372.893146 4
-burst 42606 44031797055 x86_64-unknown-linux-musl 3408.993093 3409.035699 35
+# gap GAP_US SPAN_US RUN JOB FIRST LAST DUMPS
+gap 641131 1079886 44076016255 x86_64-unknown-linux-musl 2419.069529 2420.149415 17
+gap 5172 66448 44076016255 x86_64-unknown-linux-musl 3765.808596 3765.875044 33
+gap 532868 866848 44076016255 x86_64-unknown-linux-gnu 2020.190759 2021.057607 17
+gap 1418 3188 44076016255 x86_64-unknown-linux-gnu 3271.283751 3271.286939 4
+gap 1122999 1132342 44077430171 x86_64-unknown-linux-musl 2382.263049 2383.395391 3
+gap 356556 452158 44077430171 x86_64-unknown-linux-musl 3040.956945 3041.409103 4
+gap 5351 20363 44077430171 x86_64-unknown-linux-musl 3437.082340 3437.102703 7
+gap 4960 9810 44031797055 x86_64-unknown-linux-musl 2357.391798 2357.401608 7
+gap 46052 54718 44031797055 x86_64-unknown-linux-musl 2372.838428 2372.893146 4
+gap 3526 42606 44031797055 x86_64-unknown-linux-musl 3408.993093 3409.035699 35

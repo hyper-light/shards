@@ -22,10 +22,14 @@
 //! ([`the_hosts`], ROOT's ruling of 2026-11-17): VMX's VM-instruction error 7, on a host that is
 //! itself a VM, with a witness. Either its guest had run, so its host had entered what it then
 //! refused; or another VM process, whose guest had run, was refused within its host model's
-//! burst width. The records keep each refusal's moment beside the counts, and learn the width
-//! from them ([`keep_refusal`]); its first value is the widest burst D261 measured
-//! (`limits/bursts.txt`). A machine refused before its guest ran, with no such refusal beside
-//! it, is what a VMM's own error looks like, and its failure stands.
+//! burst width: the largest gap between consecutive refusals of one burst, never a burst's
+//! whole span, which a long chain of close refusals would widen without end (ROOT's ruling of
+//! 2026-11-17). The records keep each refusal's moment beside the counts, and the largest such
+//! gap of the bursts they see ([`keep_refusal`]); the width is that, or the largest D261
+//! measured (`limits/bursts.txt`) where that is larger. A burst's refusals each come within the
+//! width of the one before, so no burst the records see widens it: only one measured wider
+//! does. A machine refused before its guest ran, with no such refusal beside it, is what a
+//! VMM's own error looks like, and its failure stands.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -297,8 +301,9 @@ pub fn now_us() -> u64 {
 
 /// A host model's records: its file in the records' directory, a line a count, `COUNT RAN
 /// REFUSED LAST`, LAST the vCPU the last refusal named or `-`; beside them, a line a refusal a
-/// burst may yet join, `refusal AT_US MACHINE ran|first`, and the widest burst its host model
-/// has had, `burst SPAN_US` (D261's gate, [`keep_refusal`]).
+/// burst may yet join, `refusal AT_US MACHINE ran|first`, and the largest gap between
+/// consecutive refusals of one burst its host model has had, `gap GAP_US` (D261's gate,
+/// [`keep_refusal`]).
 #[derive(Debug, Clone)]
 pub struct Limits {
     file: PathBuf,
@@ -357,8 +362,9 @@ impl Limits {
         refusals_in(&self.kept())
     }
 
-    /// This host model's burst width, in microseconds: the widest burst its records have
-    /// learned, or the widest D261 measured where that is wider ([`measured_width_us`]).
+    /// This host model's burst width, in microseconds: the largest gap between consecutive
+    /// refusals of one burst its records keep, or the largest D261 measured where that is
+    /// larger ([`measured_width_us`]).
     pub fn burst_width_us(&self) -> u64 {
         width_us(&self.kept())
     }
@@ -460,7 +466,8 @@ pub fn keep(file: std::fs::File, vcpus: u32, outcome: Outcome) -> io::Result<BTr
 
 /// Keeps a machine of `vcpus` vCPUs' refusal at vCPU `vcpu` as [`keep`] does, and `refusal`
 /// beside the counts, for D261's gate ([`the_hosts`]): the refusals a burst may yet join
-/// (`joined`), and the widest burst its host model has had, learned from them.
+/// (`joined`), and the largest gap between consecutive refusals of one burst its host model
+/// has had.
 pub fn keep_refusal(
     file: std::fs::File,
     vcpus: u32,
@@ -485,7 +492,7 @@ fn locked(
     Ok(all)
 }
 
-/// [`keep`]'s write, under its lock: the refusals and the widest burst kept beside the counts
+/// [`keep`]'s write, under its lock: the refusals and the largest gap kept beside the counts
 /// written back, `refusal` joined to them where there is one.
 fn rewrite(
     file: &mut std::fs::File,
@@ -498,7 +505,7 @@ fn rewrite(
     let was_text = String::from_utf8_lossy(&was);
     let mut all = parse(&was_text);
     let mut refusals = refusals_in(&was_text);
-    let mut burst = burst_in(&was_text);
+    let mut gap = gap_in(&was_text);
     let o = all.entry(vcpus).or_default();
     match outcome {
         Outcome::Ran => o.ran = o.ran.saturating_add(1),
@@ -508,12 +515,12 @@ fn rewrite(
         }
     }
     if let Some(refusal) = refusal {
-        let (kept, span) = joined(&refusals, refusal, width_us(&was_text));
+        let (kept, burst) = joined(&refusals, refusal, width_us(&was_text));
         refusals = kept;
-        burst = burst.max(span);
+        gap = gap.max(burst);
     }
     let mut now = text(&all);
-    now.push_str(&refusals_text(&refusals, burst));
+    now.push_str(&refusals_text(&refusals, gap));
     now.extend(std::iter::repeat_n('\n', was.len().saturating_sub(now.len())));
     file.seek(io::SeekFrom::Start(0))?;
     file.write_all(now.as_bytes())?;
@@ -570,9 +577,9 @@ fn parse(text: &str) -> BTreeMap<u32, Outcomes> {
     all
 }
 
-/// The first word of a refusal's line in records' text, and of a burst's.
+/// The first word of a refusal's line in records' text, and of a burst's largest gap's.
 const REFUSAL: &str = "refusal";
-const BURST: &str = "burst";
+const GAP: &str = "gap";
 /// A refusal's last word: its guest had run, or not.
 const RAN: &str = "ran";
 const FIRST: &str = "first";
@@ -601,13 +608,13 @@ fn refusals_in(text: &str) -> Vec<Refusal> {
         .collect()
 }
 
-/// The widest burst `text` keeps, in microseconds: its widest `burst SPAN_US` line's span,
-/// words past it (where a measured burst was measured) aside. None where it keeps none.
-fn burst_in(text: &str) -> Option<u64> {
+/// The largest gap `text` keeps, in microseconds: its largest `gap GAP_US` line's, words past
+/// it (where a measured burst was measured) aside. None where it keeps none.
+fn gap_in(text: &str) -> Option<u64> {
     text.lines()
         .filter_map(|line| {
             let mut words = line.split_whitespace();
-            if words.next()? != BURST {
+            if words.next()? != GAP {
                 return None;
             }
             words.next()?.parse::<u64>().ok()
@@ -615,8 +622,8 @@ fn burst_in(text: &str) -> Option<u64> {
         .max()
 }
 
-/// The refusals and the widest burst kept beside the counts, as records' text.
-fn refusals_text(refusals: &[Refusal], burst: Option<u64>) -> String {
+/// The refusals and the largest gap kept beside the counts, as records' text.
+fn refusals_text(refusals: &[Refusal], gap: Option<u64>) -> String {
     let mut text: String = refusals
         .iter()
         .map(|r| {
@@ -624,33 +631,35 @@ fn refusals_text(refusals: &[Refusal], burst: Option<u64>) -> String {
             format!("{REFUSAL} {} {} {ran}\n", r.at_us, r.machine)
         })
         .collect();
-    if let Some(span) = burst {
-        text.push_str(&format!("{BURST} {span}\n"));
+    if let Some(gap) = gap {
+        text.push_str(&format!("{GAP} {gap}\n"));
     }
     text
 }
 
-/// The bursts of refused entries D261 measured on EC2's Intel runners, as `burst SPAN_US`
-/// lines followed by where each was measured: every host model's first burst width.
+/// The bursts of refused entries D261 measured on EC2's Intel runners, as `gap GAP_US` lines,
+/// each burst's largest gap between consecutive refusals, followed by where each was measured:
+/// every host model's first burst width.
 const MEASURED: &str = include_str!("limits/bursts.txt");
 
-/// The widest burst D261 measured, in microseconds (`limits/bursts.txt`): a host model's burst
-/// width until its records learn a wider one. None measured, none wide.
+/// The largest gap between consecutive refused entries of one burst D261 measured, in
+/// microseconds (`limits/bursts.txt`): a host model's burst width, unless its records keep a
+/// larger one. None measured, none wide.
 pub fn measured_width_us() -> u64 {
-    burst_in(MEASURED).unwrap_or(0)
+    gap_in(MEASURED).unwrap_or(0)
 }
 
-/// A host model's burst width, as records' `text` keep it: the widest burst they have
-/// learned, or the widest D261 measured where that is wider.
+/// A host model's burst width, as records' `text` keep it: the largest gap of one burst they
+/// keep, or the largest D261 measured where that is larger.
 fn width_us(text: &str) -> u64 {
-    burst_in(text).map_or_else(measured_width_us, |kept| kept.max(measured_width_us()))
+    gap_in(text).map_or_else(measured_width_us, |kept| kept.max(measured_width_us()))
 }
 
 /// The refusals kept once `new` joins `kept`, and the burst it then belongs to: `kept` and
 /// `new` in order of their moments, in chains whose every refusal is within `width_us` of the
 /// one before. The chain `new` joined and every later one are kept; those before it are
-/// further than the width from every refusal to come, and are let go of. The span is that
-/// chain's, where it is a burst ([`burst_span`]).
+/// further than the width from every refusal to come, and are let go of. With them, that
+/// chain's largest gap between consecutive refusals, where it is a burst ([`burst_gap`]).
 fn joined(kept: &[Refusal], new: Refusal, width_us: u64) -> (Vec<Refusal>, Option<u64>) {
     let mut all = kept.to_vec();
     all.push(new);
@@ -670,20 +679,30 @@ fn joined(kept: &[Refusal], new: Refusal, width_us: u64) -> (Vec<Refusal>, Optio
     let Some(at) = chains.iter().position(|chain| chain.contains(&new)) else {
         return (vec![new], None);
     };
-    let span = chains.get(at).and_then(|chain| burst_span(chain.as_slice()));
-    (chains.into_iter().skip(at).flatten().collect(), span)
+    let gap = chains.get(at).and_then(|chain| burst_gap(chain.as_slice()));
+    (chains.into_iter().skip(at).flatten().collect(), gap)
 }
 
-/// A chain of refusals' span, first to last, where it is a burst of its host's: refusals of
-/// two VM processes or more, one of whose guests had run. None where it is one machine's, or
-/// none of its guests had run, as a VMM's own error's would be.
-fn burst_span(chain: &[Refusal]) -> Option<u64> {
-    let (first, last) = (chain.first()?, chain.last()?);
+/// The largest gap between consecutive refusals of a chain, in order of their moments, where
+/// it is a burst of its host's: refusals of two VM processes or more, one of whose guests had
+/// run. Never its whole span, which a long chain of close refusals would widen without end
+/// (ROOT's ruling of 2026-11-17). None where it is one machine's, or none of its guests had
+/// run, as a VMM's own error's would be.
+fn burst_gap(chain: &[Refusal]) -> Option<u64> {
     let machines = chain
         .iter()
         .map(|r| r.machine)
         .collect::<std::collections::BTreeSet<_>>();
-    (machines.len() > 1 && chain.iter().any(|r| r.entered)).then_some(last.at_us.saturating_sub(first.at_us))
+    if machines.len() < 2 || !chain.iter().any(|r| r.entered) {
+        return None;
+    }
+    chain
+        .windows(2)
+        .filter_map(|pair| match pair {
+            [before, after] => Some(after.at_us.saturating_sub(before.at_us)),
+            _ => None,
+        })
+        .max()
 }
 
 /// A machine whose vCPU its host's hypervisor refused to enter (KVM_EXIT_FAIL_ENTRY's hardware
@@ -1550,15 +1569,16 @@ mod tests {
         assert_eq!(the_hosts(&said(&bare), &[], width), Err(NotTheHosts::NotNested));
     }
 
-    /// A host model's burst width starts at the widest burst D261 measured: CI 44077430171's
-    /// x86_64 musl job, its A/B arms' refusals 1.132342 s apart, first to last. Its records
-    /// learn a wider one from a chain of refusals each within the width of the one before, of
-    /// two VM processes or more, one of whose guests had run; they keep the refusals a burst
-    /// may yet join, let go of a burst's once a refusal past the width begins another, and keep
-    /// the widest burst. One machine's refusals are no burst.
+    /// A host model's burst width starts at the largest gap between consecutive refusals of one
+    /// burst D261 measured: CI 44077430171's x86_64 musl job, its VMCS dumps at 2382.272392 and
+    /// 2383.395391, 1.122999 s apart (that burst's span, 1.132342 s, is no gap). Its records keep
+    /// the refusals a burst may yet join, let go of a burst's once a refusal past the width
+    /// begins another, and keep each burst's largest gap, which never widens the width: a
+    /// burst's refusals each come within the width of the one before. One machine's refusals
+    /// are no burst.
     #[test]
-    fn the_burst_width_starts_at_the_widest_burst_measured_and_learns_wider_ones() {
-        assert_eq!(measured_width_us(), 1_132_342);
+    fn the_burst_width_starts_at_the_largest_gap_measured_and_no_burst_widens_it() {
+        assert_eq!(measured_width_us(), 1_122_999);
         for run in ["44076016255", "44077430171", "44031797055"] {
             assert!(MEASURED.contains(run), "{run}");
         }
@@ -1588,7 +1608,11 @@ mod tests {
             )
             .unwrap();
         }
-        assert_eq!(limits.burst_width_us(), 2 * width, "learned");
+        assert_eq!(
+            limits.burst_width_us(),
+            width,
+            "a burst whose gaps are the width widened it"
+        );
         assert_eq!(limits.refusals().len(), 3, "the burst's kept");
         let later = Refusal {
             at_us: t0 + 10 * width,
@@ -1597,7 +1621,7 @@ mod tests {
         };
         keep_refusal(limits.opened().unwrap(), 4, 0, later).unwrap();
         assert_eq!(limits.refusals(), [later], "the burst before let go of");
-        assert_eq!(limits.burst_width_us(), 2 * width, "its width kept");
+        assert_eq!(limits.burst_width_us(), width, "its width kept");
         for at_us in [t0 + 10 * width + 1, t0 + 13 * width] {
             keep_refusal(
                 limits.opened().unwrap(),
@@ -1613,9 +1637,37 @@ mod tests {
         }
         assert_eq!(
             limits.burst_width_us(),
-            2 * width,
+            width,
             "one machine's refusals are no burst"
         );
         assert_eq!(limits.outcomes().get(&4).map(|o| o.refused), Some(6));
+    }
+
+    /// A long chain of close refusals leaves a host model's burst width unchanged (ROOT's
+    /// ruling of 2026-11-17): a burst teaches the largest gap between its consecutive
+    /// refusals, never its whole span. Here a hundred refusals of two VM processes, one of
+    /// whose guests had run, each a tenth of the width after the one before: one burst whose
+    /// span is nearly ten widths and whose largest gap is a tenth of one. Taught its span, the
+    /// width grew to that span, and a refusal anywhere in the next ten widths found a witness.
+    #[test]
+    fn a_long_chain_of_close_refusals_leaves_the_burst_width_unchanged() {
+        let dir = shards_testdir::TempDir::new("limits-chain").unwrap();
+        let limits = Limits::at(dir.path().to_path_buf(), ec2());
+        let width = measured_width_us();
+        let t0 = 7_000_000_000u64;
+        for i in 0..100u64 {
+            let refusal = Refusal {
+                at_us: t0 + i * (width / 10),
+                machine: if i % 2 == 0 { 9000 } else { 9001 },
+                entered: i == 0,
+            };
+            keep_refusal(limits.opened().unwrap(), 2, 0, refusal).unwrap();
+        }
+        assert_eq!(limits.refusals().len(), 100, "one burst, kept whole");
+        assert_eq!(
+            limits.burst_width_us(),
+            width,
+            "a chain of close refusals widened the burst width"
+        );
     }
 }

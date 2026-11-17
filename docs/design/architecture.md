@@ -38284,10 +38284,24 @@ post-mortem read of the printk ring through VMCOREINFO, not a debug port.
           refusal's moment, VM process and whether its guest had run are kept beside the counts
           while a burst may join them (`refusal AT_US MACHINE ran|first`). A chain of refusals,
           each within the width of the one before, of two VM processes or more and one whose
-          guest had run, is a burst; the widest one's span is kept (`burst SPAN_US`). The first
-          value is the widest burst measured (`limits/bursts.txt`, each with its run): 1.132342
-          s, 44077430171's two arms' refusals, first to last. The measured bursts' dumps came
-          at most 1.13 s apart, the bursts 15.4 s or more apart.
+          guest had run, is a burst; the largest gap between its consecutive refusals is kept
+          (`gap GAP_US`), never its span (ROOT's ruling of 2026-11-17: a chain's span widened
+          the width with each close refusal it took in, so that a long chain of them made the
+          window as long as the chain, and a refusal anywhere in it found a witness). The width
+          is the largest gap kept or measured (`limits/bursts.txt`, each burst with its run and
+          its span, checked against its job's log by
+          `docs/research/measurements/vcpus/bursts.py`): 1.122999 s, between 44077430171's
+          musl job's VMCS dumps at 2382.272392 and 2383.395391, its burst's span 1.132342 s. A
+          burst's refusals each come within the width of the one before, so no burst the
+          records see widens it: only a burst measured wider does. Each measured burst's
+          witnesses still came within it: CI 44076016255's gnu arm and its three first-entry
+          refusals 0.532868 to 0.702252 s after it, runs_init 0.641131 s after the musl arm.
+          The measured bursts came 15.4 s or more apart. Held by `limits`
+          `a_long_chain_of_close_refusals_leaves_the_burst_width_unchanged` (a hundred refusals
+          a tenth of the width apart: a span of nearly ten widths, the width unchanged) and
+          `the_burst_width_starts_at_the_largest_gap_measured_and_no_burst_widens_it`. Written,
+          not built or run (the lane's no-test rule); owed to ROOT: `cargo test --locked
+          --profile test-release -p shards-vmm --lib vm::limits::tests`.
         - *Where it is read* (`common::host_refused`). Witnesses come from the records the
           refusal's VM process kept it in and from the tests' own (`common::vcpu_limits`), where
           `boots_the_hosts_maximum_vcpu_count` keeps its in-process machines' refusals with
