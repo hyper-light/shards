@@ -38538,8 +38538,8 @@ post-mortem read of the printk ring through VMCOREINFO, not a debug port.
     - The processors: `GetActiveProcessorCount(ALL_PROCESSOR_GROUPS)` (Microsoft Learn,
       "Returns the number of active processors in a processor group or in the system").
     - CI's runners' leaves set bit 12 (0x41d3c, 0x941d3c); jupiter's (0x940d1c) do not (M379).
-  - **Not in scope.** Bare-metal WHP: the data is nested only. ROOT measures overcommit on
-    jupiter (32 logical processors) and rules on extending the cap from that. WHP on arm64:
+  - **Not in scope.** Bare-metal WHP: measured on jupiter since, and ruled uncapped (below,
+    with the arms past 30 vCPUs). WHP on arm64:
     unmeasured, and its nesting (HvRegisterFeaturesInfo bit 4) is read by a hypercall, which
     no root-partition process makes. KVM and HVF: no change.
   - **Tests** (written, not run; ROOT's): vmm
@@ -38569,7 +38569,25 @@ post-mortem read of the printk ring through VMCOREINFO, not a debug port.
     - **Ruled (ROOT, 2026-11-17): the nested cap stays WHP's.** What fails is WHP's late
       onlining, a rendezvous of every online CPU for each CPU brought up past the first; KVM
       brings them all up at boot, where the kernel defers that rendezvous to one
-      (`set_cache_aps_delayed_init`), and its guests came up whole on the same 4 nested CPUs. ci.yml's x86_64 Windows jobs (`boots_the_hosts_maximum_vcpu_count` at 4
+      (`set_cache_aps_delayed_init`), and its guests came up whole on the same 4 nested CPUs.
+    - **Ruled (ROOT, 2026-11-17): no cap on bare-metal WHP.** There WHP's guests bring every
+      CPU up at boot, as the product does on a host that is no nested Hyper-V, and guests of
+      more vCPUs than the host's logical processors came up whole at every count tried: past
+      the processors a step, from 0.900 s to 11.76 s, then slow growth, to 39.43 s at 240.
+      That is bounded, where the nested host's late onlining ran past its 122-minute bounds
+      (above): the measured reason the cap stays nested-only. ROOT's r799 at 95247a79c1 on
+      jupiter (Windows 11 10.0.26200, AMD Ryzen AI Max+ 395, 32 logical processors, bare
+      metal), the D261 A/B arm's "brought up" time at each count, every run exit 0:
+
+      | vCPUs | brought up |
+      |---|---|
+      | 32 | 0.900 s |
+      | 48 | 11.76 s |
+      | 64 | 12.23 s |
+      | 128 | 16.47 s |
+      | 240 | 39.43 s |
+
+  - **Owed.** ci.yml's x86_64 Windows jobs (`boots_the_hosts_maximum_vcpu_count` at 4
     vCPUs, the storms sized so). The 8 lint targets.
 - **CI's judge learns across runs** (2026-11-17, kiln goal b2124227, lane ci-judge-cache).
   ROOT's answer to the question above: CI keeps the judge's records. Until now every CI job
