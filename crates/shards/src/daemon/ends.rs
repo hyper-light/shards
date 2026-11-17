@@ -151,31 +151,52 @@ impl Ends {
         (!slowest.is_zero()).then_some(slowest)
     }
 
-    /// An end of `kind` heard `took` after its signal: kept where it is the slowest yet,
-    /// with what the home's record holds now (another process of the home, a daemon or a
-    /// run's host, may have kept one since this read it), in memory and in the home:
-    /// written whole, then renamed over the record, so that a reader finds the old record
-    /// or the new. A record that cannot be written leaves this process's own, and says why.
+    /// An end of `kind` heard `took` after its signal: kept where it is the slowest yet, in
+    /// memory ([`learn`](Self::learn)) and in the home ([`keep`](Self::keep)).
     pub(crate) fn heard(&self, kind: End, took: Duration) -> Result<(), String> {
+        self.learn(kind, took);
+        self.keep()
+    }
+
+    /// An end of `kind` heard `took` after its signal, kept in this process's memory where it
+    /// is the slowest yet: its kind's slice from now. It waits on no file: a stop of many
+    /// keeps the ends it hears in the home once, as it ends (`end_all`), where a keep of
+    /// each, two flushes of the disk on macOS (`platform::write_in`), held up every end
+    /// after it (D217).
+    pub(crate) fn learn(&self, kind: End, took: Duration) {
         let mut slowest = lock(&self.slowest);
         let was = slowest.of(kind);
         *was = (*was).max(took);
+    }
+
+    /// What this process has learned, put with what the home's record holds now (another
+    /// process of the home, a daemon or a run's host, may have kept one since this read it),
+    /// in memory and in the home where either is slower: written whole, then renamed over
+    /// the record, so that a reader finds the old record or the new. The memory's lock is
+    /// not held over the record's lock or its flush, which a slice wanted meanwhile would
+    /// wait on. A record that cannot be written leaves this process's own, for the next keep,
+    /// and says why.
+    pub(crate) fn keep(&self) -> Result<(), String> {
         let fail = |e| format!("keeping this host's ends in {}: {e}", self.path.display());
         // Every process rereads and merges under this stable lock, not the replaced
         // record's inode. Locked releases flock before close (M244).
         let _writing =
             shards_image::store::Locked::exclusive(&self.path.with_extension("lock")).map_err(fail)?;
         let recorded = Slowest::read(&self.path);
-        *slowest = slowest.with(recorded);
-        if *slowest == recorded {
+        let kept = {
+            let mut slowest = lock(&self.slowest);
+            *slowest = slowest.with(recorded);
+            *slowest
+        };
+        if kept == recorded {
             return Ok(());
         }
         let text = format!(
             "teardown {}\nexit {}\nhelper {}\nstart {}\n",
-            slowest.teardown.as_millis(),
-            slowest.exit.as_millis(),
-            slowest.helper.as_millis(),
-            slowest.start.as_millis()
+            kept.teardown.as_millis(),
+            kept.exit.as_millis(),
+            kept.helper.as_millis(),
+            kept.start.as_millis()
         );
         let dir = shards_vmm::platform::open_dir(home_of(&self.path)).map_err(fail)?;
         shards_vmm::platform::write_in(&dir, RECORD, text.as_bytes()).map_err(fail)

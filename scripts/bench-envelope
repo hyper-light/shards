@@ -4,11 +4,12 @@ any measured axis, under the same guest and the same host (docs/audit/2026-09-29
 "a Pareto improvement").
 
 Reads the raw samples the benchmarks write where SHARDS_BENCH_SAMPLES says
-(benches/support, `report`). Each `shards_X` row pairs with `fc_X` by index: the two VMMs
-ran interleaved, alternating which went first, so each pair saw the same host. For each
-metric, the median of the paired differences (shards minus Firecracker) with a bootstrap
-95% interval, 10,000 resamples, seeded: shards is worse when the whole interval is above
-zero, better when it is below, and tied otherwise. Every metric is lower-is-better.
+(benches/support, `report`), each as measured. Each `shards_X` row pairs with `fc_X` by
+index: the two VMMs ran interleaved, alternating which went first, so each pair saw the
+same host. For each metric, the median of the paired differences (shards minus
+Firecracker) with a bootstrap 95% interval, 10,000 resamples, seeded: shards is worse when
+the whole interval is above zero, better when it is below, and tied otherwise. Every
+metric is lower-is-better.
 
 A metric shards is worse on fails the check unless docs/benchmarks-envelope.toml allows
 it: each allowance names the metric (`bench/metric`), why, the most it allows (`at_most`,
@@ -73,14 +74,14 @@ for path in files:
         unit = rows[name]["unit"]
         line = (f"  {metric:<10} shards {statistics.median(ours):.1f} {unit}, Firecracker "
                 f"{statistics.median(theirs):.1f} {unit}: median difference "
-                f"{statistics.median(diffs):+.1f} [{low:+.1f}, {high:+.1f}], {verdict}")
+                f"{statistics.median(diffs):+.6g} [{low:+.6g}, {high:+.6g}], {verdict}")
         key = f"{bench}/{metric}"
         if verdict == "worse":
             difference = statistics.median(diffs)
             if key in allowed and difference <= allowed[key][1]:
-                line += f" (allowed up to {allowed[key][1]:+.1f}: {allowed[key][0]})"
+                line += f" (allowed up to {allowed[key][1]:+.6g}: {allowed[key][0]})"
             elif key in allowed:
-                line += f" (outside the envelope: allowed up to {allowed[key][1]:+.1f})"
+                line += f" (outside the envelope: allowed up to {allowed[key][1]:+.6g})"
                 failed = True
             else:
                 line += " (outside the envelope)"
