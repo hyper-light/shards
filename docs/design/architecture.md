@@ -3269,6 +3269,36 @@ one CLI.
     colder crates (a speed A/B); LLD's `--icf` (which folds functions whose addresses a
     program may compare); and the same packing for the network process, which each
     networked VM runs too.
+  - *Read after it* (2026-11-17, goal 1453357d, lane own-38-released; CI's logs, the table
+    in `docs/research/measurements/vm-text/`). The Envelope still fails on the boot's
+    `rss_file` and `pss_file`, +0.0898438 and +0.09375 MiB (23 and 24 pages), one value a
+    pair (b18952ae6 on Intel Xeon 6975P-C, 8d6029e4d on AMD EPYC 7763; 0c3213356's job kept
+    no log). The packing took 36,864 bytes from the read-only segment, whose resident bytes
+    stayed 196,608, and the text stayed 2,371,584 bytes mapped, 2,240,512 resident: the
+    GPU device's gate took out nothing fat LTO had kept. Both VMMs' binaries are in the page
+    cache as the bench runs them, and a read fault maps the cached pages of the 64 KiB around
+    it (Linux 7.2-rc4 mm/memory.c `do_fault_around`, 16 pages by default), so a boot keeps
+    each window it touches whole: shards-vm all of its text but 131,072 bytes, Firecracker
+    79% of its. The row is bounded by Firecracker's own paired samples, no allowance
+    (docs/benchmarks-envelope.toml), and each boot keeps the same pages, so any gap above
+    zero fails: shards-vm must keep at most Firecracker's 2,338,816 bytes, 24 pages fewer.
+    A cut takes whole windows, so it must take 2 (32 pages); 1 leaves it 8 pages over. The
+    same cut takes the boot's `overhead` (+2 and +3 pages, the file's 24 less shards' smaller
+    anonymous memory) under too. The restore reads better on every axis but one: in
+    b18952ae6 its `rss_anon` read +0.0253906 MiB, worse, and in 8d6029e4d better; that is
+    not row 11, and its cause is unread.
+    - *What decides the cut* (owed, the coordinator's, R14): the comparison with
+      fault-around at the host's size and at one page, where each VMM's text keeps only the
+      pages its boot touches (`run.sh OUT windows`; on CI's runner `gh workflow run
+      vm-text.yml --ref main -f run=windows`). If those pages, laid out together, take at
+      least 2 windows fewer than the text's now, the cut is the boot path ordered first
+      (LLD's `--symbol-ordering-file` naming the functions on the touched pages), at no
+      instruction's cost; listing the pages for it is the next tool, built once this says it
+      pays. If not, the cut is text size, `-C opt-level=s` for the musl helpers, whose
+      speed `to_ready`, `to_beat` and the restore bench weigh. Either is then held to an A/B
+      (`run.sh OUT ab ROUNDS` with `B_RUSTFLAGS`; `gh workflow run vm-text.yml --ref main -f
+      run='ab 2' -f b_rustflags='-C opt-level=s'`), its arms built apart and alternated, n =
+      30 pairs a run. No memory is cut before it.
 - A daemon's build is its binary's identity, which includes what it carries; one given
   another VM binary (`SHARDS_VM_BINARY`, for VMM work and tests) is another build.
 - **Tests:** `helpers::tests` (written whole once, found after, a cut copy replaced);
