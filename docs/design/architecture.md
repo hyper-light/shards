@@ -36878,6 +36878,94 @@ post-mortem read of the printk ring through VMCOREINFO, not a debug port.
     that names another console leaves a kernel without hvc's driver (`configure guest`, D28)
     dying the same way; `CONFIG_DEVTMPFS_MOUNT` "does not affect initramfs based booting"
     (drivers/base/Kconfig).
+- **The x86-64 CI boot failures after S2** (2026-11-16, kiln goal b2124227, lane boot-x86;
+  read from CI's logs, not reproduced, so R09 stays open).
+  - Symptoms, in every x86-64 run on main from 43696971451 (ec7de3568) on, and in none up to
+    43615849356 (d7ff8a094):
+    - KVM: `vCPU N: VM entry failed (hardware reason 0x7)`. `boots_the_hosts_maximum_vcpu_count`
+      failed so in 6 of the 8 Linux test jobs that reached it (N = 31, 13, 9, 0, 1, 48 in jobs
+      132841793999, 133067614182, 133067614137, 133283300166, 133508844000, 133593634113).
+      snapshot.rs' 255-vCPU storms failed so too (N = 0, 89, job 133593634113).
+    - WHP: the same test never ends (job 133508843966: 3170 s, then the step's 122 minutes).
+  - What 0x7 is.
+    - KVM_RUN returned KVM_EXIT_FAIL_ENTRY, "the vcpu could not be run due to unknown
+      reasons", its reason architecture-specific (Linux v7.0 Documentation/virt/kvm/api.rst
+      l. 6664-6666).
+    - VMX gives it in two cases (arch/x86/kvm/vmx/vmx.c l. 6853-6869). An entry that failed
+      while loading the guest's state reports its exit reason, bit 31 set. A VMLAUNCH or
+      VMRESUME that failed outright (`vmx->fail`) reports its VM-instruction error.
+    - 7 is the second's "VM entry with invalid control field(s)": the Intel SDM Vol. 3C's
+      table of VM-instruction error numbers, and its VMLAUNCH/VMRESUME, "VMfailValid(VM entry
+      with invalid VMX-control field(s))", for a failure of the chapter "VM Entries"' checks
+      on the VMX controls.
+    - SVM reports a failed VMRUN by its exit code (svm.c l. 3625-3628; SVM_EXIT_ERR is -1),
+      never 7. So only Intel runners show it, and neither of shards' x86-64 hosts can:
+      adacachy and jupiter are AMD.
+    - The refused controls are KVM's own. On a runner KVM runs nested, so its VMLAUNCH and
+      VMRESUME are checked by Hyper-V, through Hyper-V's enlightened VMCS where Hyper-V
+      recommends it (vmx.c l. 643-676).
+  - What the logs show.
+    - Each failure came 5-10 s after its boot.rs binary started, before the guest said
+      anything: early in a bring-up that took about 60 s where the test passed.
+    - It is the host's, not one guest's. Other guests failed the same way only at the moment
+      a 255-vCPU guest failed:
+      - `brings_up_every_vcpu`'s 2-vCPU guest: vCPU 1, 230 ms in, reported 0.06 s before the
+        255-vCPU guest's failure (job 133067614182).
+      - `a_snapshot_keeps_the_memory_its_guest_plugged`'s guest: vCPU 0, 1.04 s in, the same
+        second (job 133508844000).
+      - Both passed in every other job.
+    - It is not the later "smp: Brought up". Where the test passed, it took about as long
+      from its binary's start as it did on the UART: 61 and 65 s (jobs 132841794040,
+      133283300062) against 71 and 57 s at d7ff8a094 (132510702288, 132510702350). The
+      failures came 50 s before that. hvc0's
+      replay does not keep a KVM guest up materially longer, so the leading hypothesis of
+      lanes ci-read and ci-read-2 is refuted for KVM.
+    - No code a KVM boot's vCPUs run changed in d7ff8a094..ec7de3568.
+      - hv/kvm gained typed errors and `went_on` (KVM_KVMCLOCK_CTRL), which runs only after a
+        hold or snapshot wait (vm/runtime.rs).
+      - vm/x86_64 gained the console, pvpanic and the ACPI power device. Its CPUID, MSR, LAPIC
+        and register setup did not change.
+    - What changed is what the guest does while its APs come up.
+      - Up to 35e2de91e its console was the 16550, so every byte the kernel printed was a trap
+        (above). That included the BSP announcing each AP as it kicks it (Linux v6.18
+        arch/x86/kernel/smpboot.c l. 842-866, `announce_cpu`).
+      - Since then nothing reaches a console before hvc0, so the BSP kicks its 254 APs with
+        no exit between them: a burst of first entries on 4 nested CPUs.
+      - That is the leading hypothesis, not reproduced.
+    - The Linux jobs log no CPU, so whether the passes up to d7ff8a094 ran on Intel is
+      unknown. The Windows jobs ran on Intel Xeon Platinum 8370C and AMD EPYC 7763, 9V45 and
+      9V74.
+  - WHP's hang has a separate cause: what the test now waits through.
+    - WHP's guests bring their APs up one at a time (`cpuhp.parallel=0`). Up to d7ff8a094 the
+      test saw the 16550's "smp: Brought up" within about 60 s and stopped its guest.
+    - Since 35e2de91e the line comes only at virtio_console's probe, so the test watches the
+      rest of the boot. The test's own record put the rest of a 64-vCPU boot on such a host at
+      40 s and more.
+    - The 255-vCPU guest did not reach hvc0 in 3170 s. Its VM process ran throughout and its
+      first line never came, so the cold wait followed its liveness alone (D209) until the
+      step's limit.
+    - On bare-metal WHP with 32 CPUs the same boot reached hvc0 in 11 s (r542). Whether a
+      nested host of 4 CPUs is only that slow, or stalls, is unmeasured.
+    - It is not the 0x7: the windows-2025 job that hung ran on an AMD EPYC 9V45.
+  - Landed (boot-x86).
+    - The Linux test jobs, glibc's and musl's, log the runner's CPU and KVM's parameters and
+      set `kvm_intel.dump_invalid_vmcs` (scripts/ci/kvm-host). Their failure steps print
+      KVM's kernel log, so the next 0x7 shows the VMCS that was refused (vmx.c `dump_vmcs`).
+    - The test's comment says what it now waits through.
+    - No VMM change and no change to the test's code: neither cause is reproduced (R09).
+  - Owed (ROOT).
+    1. The next ci.yml run on main, jobs x86_64-unknown-linux-gnu and
+       x86_64-unknown-linux-musl. Read their "Host virtualization" step (Vendor ID, Model
+       name, `enlightened_vmcs`) and, where one fails, its failure step's `kvm_intel:` dump.
+    2. On a runner whose `kvm-host` line says GenuineIntel, compare n=10 runs of `shards run
+       --kernel <pinned> --cpus 255 --memory 1024 --cmdline "console=hvc0 panic=-1"` against
+       n=10 with `cpuhp.parallel=0` added. If only the parallel runs fail, the burst is the
+       trigger. The remedy is then this entry's to decide (R02).
+    3. On a nested WHP of 4 CPUs (a windows-2022 or windows-2025 runner), the same boot with
+       SHARDS_JUDGE_TRACE=1: whether hvc0's first line comes, and when. Then decide the
+       test's readiness signal (R02). VMCOREINFO is filled at subsys_initcall, so the ring
+       could show "smp: Brought up" before device_initcall, but that would need a reader of
+       a running guest's ring, which this entry has not got.
 
 **Alternatives rejected.**
 - A write-only debug port (x86's 0xe9 debugcon): mainline x86 early_printk has no 0xe9
