@@ -61,9 +61,14 @@ jobs:
       - name: Install pinned Rust
         if: ${{ !matrix.musl }}
         shell: bash
-        # The guest binaries shards carries build for the host architecture's musl target.
+        # The guests shards carries, and on Linux its VM and network processes, build for the
+        # target architecture's musl target (crates/shards/build.rs). Retried, with every
+        # component rust-toolchain.toml names, as ci.yml installs it: static.rust-lang.org cut
+        # runners' downloads off past rustup's own retries (d8c960214), and the first cargo of a
+        # later step, installing those components itself, failed once on a file already there
+        # (ba81af327).
         run: |
-          rustup toolchain install "$TOOLCHAIN" --profile minimal \
+          scripts/retry 5 30 rustup toolchain install "$TOOLCHAIN" --profile minimal --component clippy --component rustfmt \
             --target "$TARGET" --target x86_64-unknown-linux-musl --target aarch64-unknown-linux-musl
       - name: zig
         if: ${{ !matrix.musl }}

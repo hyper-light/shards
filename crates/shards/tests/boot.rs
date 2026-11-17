@@ -297,9 +297,11 @@ fn two_vcpus_boot_to_their_end_in_this_process() {
 }
 
 /// The host's most vCPUs: the guest brings up as many as its kernel was built for, and is
-/// shown the rest, which its kernel names as it refuses them. Watched until its CPUs are
-/// up, then stopped: the rest of a boot of 64 vCPUs on a host of 4 took a CI runner's
-/// nested WHP 40 s and more.
+/// shown the rest, which its kernel names as it refuses them. Watched until its kernel says
+/// its CPUs are up, then stopped. hvc0 says so only as it registers and replays the log
+/// (device_initcall, D261), so the boot is watched that far: on a CI runner's nested WHP of
+/// 4 CPUs a 255-vCPU guest did not get there in 53 minutes (D261), where the rest of a boot
+/// of 64 vCPUs past their bring-up had taken 40 s and more.
 #[test]
 fn boots_the_hosts_maximum_vcpu_count() {
     if cannot_run_vms() {

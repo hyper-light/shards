@@ -176,10 +176,12 @@ jobs:
         shell: bash
         run: |
           case "$RUNNER_OS" in
+            # Its CPU and KVM's parameters, a failed VM entry's VMCS kept (scripts/ci/kvm-host).
             # And what VFIO may pass through: IOMMU groups, the VFIO and mediated-device
             # (mdev) modules and the kernel's config of them, for a test device.
             Linux)
               ls -l /dev/kvm 2>&1 || true
+              scripts/ci/kvm-host
               ls /sys/kernel/iommu_groups 2>&1 | head -5 || true
               ls /sys/class/mdev_bus 2>&1 || true
               for m in vfio vfio_pci vfio_iommu_type1 mdev mtty mbochs mdpy; do modinfo -F filename "$m" 2>&1 || true; done
@@ -306,11 +308,13 @@ jobs:
         run: cargo test --locked --release -p shards-rego --test builtins --test deep --test depth --target ${{ matrix.target }}
       # A process the seccomp filter ended with its SIGSYS blocked says nothing; the kernel
       # logs the syscall it refused (the filter's SECCOMP_FILTER_FLAG_LOG). Nor does one the
-      # host's OOM killer ended: the kernel logs which it chose, and the memory it had.
-      - name: What the kernel logged of seccomp refusals and OOM kills
+      # host's OOM killer ended: the kernel logs which it chose, and the memory it had. Nor
+      # does a VM whose entry failed: KVM logs the VMCS it was refused (scripts/ci/kvm-host).
+      - name: What the kernel logged of seccomp refusals, OOM kills and failed VM entries
         if: failure() && runner.os == 'Linux'
         run: |
           sudo dmesg | grep -iE 'seccomp|type=1326|out of memory|oom-kill|killed process' | tail -60 || true
+          sudo dmesg | grep -E 'kvm' || true
           free -m || true
 
   # shards against Firecracker on one KVM host: the same kernel, initrd and command line,
@@ -406,8 +410,11 @@ jobs:
       MUSL_CI: ${{ matrix.part }}
     steps:
       - uses: actions/checkout@v7.0.1
+      # Its CPU and KVM's parameters, a failed VM entry's VMCS kept (scripts/ci/kvm-host).
       - name: Host virtualization (what this runner offers each backend)
-        run: ls -l /dev/kvm 2>&1 || true
+        run: |
+          ls -l /dev/kvm 2>&1 || true
+          scripts/ci/kvm-host
       # What a hung test's processes are doing, kept as it hangs (scripts/ci/hang-watch.sh),
       # read from the runner: gdb for their backtraces, where the runner boots microVMs, its
       # package index read afresh first, as the glibc job's is.
@@ -435,11 +442,13 @@ jobs:
           done
       # A process the seccomp filter ended with its SIGSYS blocked says nothing; the kernel
       # logs the syscall it refused (the filter's SECCOMP_FILTER_FLAG_LOG). Nor does one the
-      # host's OOM killer ended: the kernel logs which it chose, and the memory it had.
-      - name: What the kernel logged of seccomp refusals and OOM kills
+      # host's OOM killer ended: the kernel logs which it chose, and the memory it had. Nor
+      # does a VM whose entry failed: KVM logs the VMCS it was refused (scripts/ci/kvm-host).
+      - name: What the kernel logged of seccomp refusals, OOM kills and failed VM entries
         if: failure()
         run: |
           sudo dmesg | grep -iE 'seccomp|type=1326|out of memory|oom-kill|killed process' | tail -60 || true
+          sudo dmesg | grep -E 'kvm' || true
           free -m || true
       - name: The executable is static
         if: matrix.part == 'release'

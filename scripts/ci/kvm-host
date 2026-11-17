@@ -1,0 +1,19 @@
+#!/bin/bash
+# CI on Linux, before the tests: which CPU and which KVM this runner has, and KVM told to
+# keep a failed VM entry's VMCS in the kernel's log, which the jobs' failure steps print.
+# GitHub's x86_64 runners are Hyper-V guests on Intel or AMD hosts, so KVM runs nested.
+# Only Intel's VMX fails an entry with a VM-instruction error, which KVM_RUN returns as
+# KVM_EXIT_FAIL_ENTRY's hardware_entry_failure_reason (Linux v7.0 arch/x86/kvm/vmx/vmx.c
+# l. 6862-6869). KVM dumps the VMCS of the refused entry only with dump_invalid_vmcs set
+# (l. 135-136 and 6585-6588), and only that dump names the refused control. Without it,
+# the 0x7 failures of D261's x86_64 CI runs said neither which control was refused nor on
+# which CPU. Usage: scripts/ci/kvm-host
+set -u
+lscpu | grep -E '^(Vendor ID|Model name|Hypervisor vendor|Virtualization):' || true
+for module in kvm_intel kvm_amd; do
+    [ -d "/sys/module/$module/parameters" ] || continue
+    grep -H . "/sys/module/$module/parameters/"* 2>/dev/null || true
+done
+if [ -e /sys/module/kvm_intel/parameters/dump_invalid_vmcs ]; then
+    echo Y | sudo tee /sys/module/kvm_intel/parameters/dump_invalid_vmcs
+fi
