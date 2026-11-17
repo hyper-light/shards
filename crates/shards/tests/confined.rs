@@ -213,10 +213,7 @@ fn the_vm_process_is_confined() {
     // The killed spawner left its profile and its record; the next spawner sweeps both,
     // whatever its own VM does.
     let name = format!("shards.vm.{cli}.0");
-    let record = std::path::PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap())
-        .join("shards")
-        .join("containers")
-        .join(&name);
+    let record = shards_ipc::app_container_records().unwrap().join(&name);
     assert!(record.exists(), "{} left", record.display());
     let next = vm_run(&["--kernel", "nonexistent-kernel"]);
     assert_ne!(next.status, Some(0), "{next}");
@@ -240,6 +237,128 @@ fn the_vm_process_is_confined() {
         DeleteAppContainerProfile(profile.as_ptr());
         FreeSid(sid);
     }
+}
+
+/// An AppContainer profile deleted by name as this drops, whatever became of it: a red run of
+/// a test that leaves one behind leaves none on its host.
+struct Leftover(Vec<u16>);
+
+impl Drop for Leftover {
+    fn drop(&mut self) {
+        // SAFETY: a NUL-terminated name; a profile already gone is no matter here.
+        unsafe { DeleteAppContainerProfile(self.0.as_ptr()) };
+    }
+}
+
+/// A spawner killed after making its VM's profile, under a home since removed, leaves nothing
+/// in the user's own LocalAppData or registry once the next run starts, from another home: the
+/// profile's record is kept per user, beside the profiles (D141). A record kept in the killed
+/// spawner's home went with the home, and its profile's folder and registry entries stayed
+/// for good.
+#[test]
+fn a_killed_spawners_profile_under_a_removed_home_is_swept_from_another() {
+    use windows_sys::Win32::System::Threading::INFINITE;
+    if cannot_run_vms() {
+        return;
+    }
+    let (k, g) = (kernel(), test_guest());
+    let first = TempDir::new("home-gone");
+    let local = first.join("AppData").join("Local");
+    std::fs::create_dir_all(&local).unwrap();
+    let mut vm = Vm::spawn_env(
+        &[
+            "run".as_ref(),
+            "--kernel".as_ref(),
+            k.as_os_str(),
+            "--init".as_ref(),
+            g.as_os_str(),
+            "--memory".as_ref(),
+            "256".as_ref(),
+            "--cmdline".as_ref(),
+            "console=hvc0 quiet shards_test=idle".as_ref(),
+        ],
+        &[("LOCALAPPDATA", local.to_str().unwrap())],
+    );
+    vm.wait_for("SHARDS-TEST READY");
+    let cli = vm.id();
+    let process = open(vm_process(cli));
+    vm.kill();
+    // SAFETY: the process's handle; its Job ends it with its spawner.
+    let waited = unsafe { WaitForSingleObject(process.0, INFINITE) };
+    assert_eq!(waited, WAIT_OBJECT_0, "the VM process outlived its spawner");
+    let name = format!("shards.vm.{cli}.0");
+    let _leftover = Leftover(wide(&name));
+    // The profiles are in the user's own LocalAppData: this test's own LOCALAPPDATA.
+    let folder = std::path::PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap())
+        .join("Packages")
+        .join(&name);
+    assert!(folder.is_dir(), "{} left by its killed spawner", folder.display());
+    drop(first);
+
+    let second = TempDir::new("home-next");
+    let local = second.join("AppData").join("Local");
+    std::fs::create_dir_all(&local).unwrap();
+    let next = run_shards_env(
+        &["run"],
+        &["--kernel", "nonexistent-kernel"],
+        &[("LOCALAPPDATA", local.as_os_str())],
+    );
+    assert_ne!(next.status, Some(0), "{next}");
+    assert!(!folder.exists(), "{} left: {next}", folder.display());
+    let profile = wide(&name);
+    let mut sid: PSID = std::ptr::null_mut();
+    // SAFETY: names we own; the profile made is deleted as `_leftover` drops, its SID freed below.
+    let hr = unsafe {
+        CreateAppContainerProfile(
+            profile.as_ptr(),
+            profile.as_ptr(),
+            profile.as_ptr(),
+            std::ptr::null(),
+            0,
+            &raw mut sid,
+        )
+    };
+    assert!(
+        hr >= 0,
+        "{name} is gone from the registry, and made again: {hr:#010x}"
+    );
+    // SAFETY: the SID just made.
+    unsafe { FreeSid(sid) };
+}
+
+/// A VM boots where its spawner's LOCALAPPDATA is a stand-in, as kiln's vm-homes set it. Its
+/// VM process is given the user's own, beneath which Windows made its profile (PM M615): given
+/// the stand-in, its Temp, which Windows puts beneath the LOCALAPPDATA a confined child is
+/// given (PM M208), was not there, and its first socket pair was refused WSAENETDOWN (10050)
+/// before its guest ran (ROOT's r769).
+#[test]
+fn a_vm_boots_under_a_stand_in_local_app_data() {
+    if cannot_run_vms() {
+        return;
+    }
+    let stand_in = TempDir::new("stand-in");
+    let local = stand_in.join("AppData").join("Local");
+    std::fs::create_dir_all(&local).unwrap();
+    let k = kernel().to_str().unwrap();
+    let r = run_shards_env(
+        &["run"],
+        &[
+            "--kernel",
+            k,
+            "--memory",
+            "256",
+            "--cmdline",
+            "console=hvc0 panic=-1",
+        ],
+        &[("LOCALAPPDATA", local.as_os_str())],
+    );
+    assert!(
+        r.stdout
+            .contains("Kernel panic - not syncing: VFS: Unable to mount root fs"),
+        "{r}"
+    );
+    // Its guest reset at its panic, as boot.rs's does (EXIT_RESET).
+    assert_eq!(r.status, Some(3), "{r}");
 }
 
 /// The network process beside VM process `vm`, and their spawner, the daemon, which starts
@@ -319,9 +438,7 @@ fn the_network_process_is_confined() {
         assert!(patience.holds(), "the network process outlived its VM");
     }
     patience.done();
-    let records = std::path::PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap())
-        .join("shards")
-        .join("containers");
+    let records = shards_ipc::app_container_records().unwrap();
     let prefix = format!("shards.net.{spawner}.");
     let left = || -> Vec<String> {
         std::fs::read_dir(&records)

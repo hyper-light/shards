@@ -208,31 +208,27 @@ impl NativeStartup<'_> {
 }
 
 /// Deletes the AppContainer profiles a managed VM's `shards` made on Windows, and their
-/// records in its cache's `containers` (D141), once its native owner has ended the VM's whole
-/// scope: `end` its positive [`TerminalScope::Released`] fact. A `shards` that ends as it
-/// should deletes them itself, and one killed (its job ended) leaves them for the next VM's
-/// spawner to sweep; this deletes them now, so that a killed VM leaves none. `vm` is the
-/// identity its launch recorded, whose pid named the profiles (`shards.<role>.<pid>.<n>`):
-/// only profiles recorded in `paths`' cache under that pid are deleted, never another
-/// cache's. The answer is how many were deleted: none where a sweep took them first, or the
-/// VM made none.
+/// records, kept per user beside the profiles (`app_container_records`, D141), once its
+/// native owner has ended the VM's whole scope: `end` its positive [`TerminalScope::Released`]
+/// fact. A `shards` that ends as it should deletes them itself, and one killed (its job ended)
+/// leaves them for the next VM's spawner to sweep, from any home; this deletes them now, so
+/// that a killed VM leaves none. `vm` is the identity its launch recorded, whose pid named the
+/// profiles (`shards.<role>.<pid>.<n>`): only profiles recorded under that pid are deleted,
+/// never another maker's. The answer is how many were deleted: none where a sweep took them
+/// first, or the VM made none.
 ///
 /// Refused, nothing deleted: [`ReleaseRefusal::ScopeLive`] for an end short of Released, as
 /// a process of the VM's may still run in a profile; [`ReleaseRefusal::Held`] where a record
 /// is held, which only a live process does. An I/O failure is [`Refusal::ManagedIo`]; a
 /// profile whose deletion failed keeps its record, for a later sweep. On macOS and Linux a VM
 /// has no AppContainer: none is deleted, after the same check of `end`.
-pub fn release_app_containers(
-    paths: &RuntimePaths,
-    vm: &Identity,
-    end: ManagedEnd,
-) -> Result<usize, Refusal> {
+pub fn release_app_containers(vm: &Identity, end: ManagedEnd) -> Result<usize, Refusal> {
     if end.scope != TerminalScope::Released {
         return Err(Refusal::Release(ReleaseRefusal::ScopeLive));
     }
     #[cfg(windows)]
     {
-        match shards_ipc::release(&paths.cache().join("containers"), vm.pid)
+        match shards_ipc::release(&app_container_records()?, vm.pid)
             .map_err(|why| io("releasing AppContainers", why))?
         {
             shards_ipc::Released::Deleted(n) => Ok(n),
@@ -241,9 +237,18 @@ pub fn release_app_containers(
     }
     #[cfg(not(windows))]
     {
-        let _ = (paths, vm);
+        let _ = vm;
         Ok(0)
     }
+}
+
+/// Where this user's AppContainer profiles are recorded as their VMs live, on Windows: beside
+/// the profiles, in the user's own LocalAppData, whatever this process's `LOCALAPPDATA` says,
+/// so that the next VM's spawner, from any home, sweeps a killed one's (D141). Not a VM's
+/// cache: a record kept with a home went with the home.
+#[cfg(windows)]
+pub fn app_container_records() -> Result<std::path::PathBuf, Refusal> {
+    shards_ipc::app_container_records().map_err(|why| io("finding the AppContainer records", why))
 }
 
 fn io(operation: &'static str, why: std::io::Error) -> Refusal {

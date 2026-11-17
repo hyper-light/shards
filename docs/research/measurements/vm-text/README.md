@@ -99,3 +99,30 @@ Firecracker 489 of 617.
 - *Its A/B* (owed, ROOT's): `gh workflow run vm-text.yml --ref main -f run='ab 2 REV'`, REV the
   main before the cure, whose arm B is A without it.
 
+
+**The cure's A/B** (run 44138427198, A at 8247e14 with the cure, B at ba502bc before it,
+Intel Xeon 6975P-C, Linux 7.0.0-1014-aws, 2026-11-17, 2 rounds an arm; `ab-44138427198.txt`).
+A's boot kept 806,912 bytes of shards-vm's file to B's 2,539,520 and Firecracker's 2,338,816:
+`rss_file` -375 pages a pair to B's +48, `pss_file` -374 to +49, `overhead` -397 to +27 and
++28. `to_ready`, paired, read -75.3 and -77.8 ms in A, -79.1 and -77.5 in B; `to_beat` 8,165
+and 8,402 us in A, 8,270 and 8,323 in B.
+- *What the cure adds to a restored VM: nothing.* CI's run 44138098584 (8247e14, AMD EPYC
+  9V74) read `fleet_private` +6 pages and the restore's `rss_anon` +2. `within.py OUT` takes
+  each run's snapshot out: shards-vm's own anonymous pages (a restore's `rss_anon` less its
+  guest's private copies) were 35 in every run of both arms, 36 in at most 8 of 30 restores,
+  and a VM of the fleet held 1 page more than a restore in every run. The layout moved a
+  page from data to relro: the text grew 1,216 bytes and the read-only segment 240, so the
+  relro, 0x6798 bytes in both, begins 0x898 into its first page rather than 0x2e8 and spans 8
+  pages, every one copied by the start's relocation, and the data and bss 7 rather than 8.
+- *What moves those two rows: each run's snapshot.* Each restore copies ahead what its working
+  set says its guest wrote (vmm `mapped::copy_written`), recorded once a run over a restore's
+  first second, so a run's guest copies are one number: 229 and 231 pages in A, 227 and 222
+  in B, Firecracker's guest's 129 to 145; Firecracker's process held 114 to 131 pages of its
+  own. A run's restores alike, its interval is a point: `rss_anon` +4 and +2 pages in A, +2
+  and -2 in B; `fleet_private` +4 and +2, +2 and -0.5. One binary run four times on one AMD
+  EPYC 9V74 (run 44076339609) read `rss_anon` +11, -9, +2 and -1 and `fleet_private` +12,
+  -5.5, +2 and 0, its copies 231, 218, 227 and 223 (its own pages 36). CI's +2 and +6 lie
+  within them.
+- *Since* (ROOT's ruling, R14; PM M616): the comparison takes six pairs of snapshots, each
+  restore's and fleet's row judged by its pairs (D36), and `within.py` reads such a run pair
+  by pair.

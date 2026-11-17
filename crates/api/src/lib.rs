@@ -63,7 +63,9 @@ pub use client::{
     prepare_boot, prepare_native_boot, recorded_console_bytes, recorded_console_bytes_at, vm_process_file,
 };
 pub use host::{CheckRefusal, HostCheck, Unusable, host_check};
-pub use judge::{Found, Judge, Rate, Rated, Record, Seen, Span, Stall};
+pub use judge::{Found, Judge, LOOKS_TO_REFUSE, Rate, Rated, Record, Seen, Span, Stall};
+#[cfg(windows)]
+pub use native::app_container_records;
 pub use native::{
     ImageIdentity, NativeBoot, NativeImages, NativeStartup, release_app_containers, verify_native_image,
 };

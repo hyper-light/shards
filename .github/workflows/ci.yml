@@ -136,7 +136,14 @@ jobs:
   # it builds them in a step of its own, as the musl job does (M560): 42 minutes, a third
   # above that 30.8. Running them keeps the 35 (M423's, when its step built them too, its
   # slowest 26.2): they ran 12.1 at most, and no run has run them through since. Its job has
-  # 102, those two and a third above its other steps' slowest, 18.3.
+  # 102, those two and a third above its other steps' slowest, 18.3. x86_64 Linux's build of
+  # its tests outgrew the tests' step too on Azure's AMD EPYC 7763 runners: 25.4 minutes of
+  # its 56 in CI 44138098584 (at 8247e14), where EC2's Intel Xeon 6975P-C took 19.2 in
+  # 44076016255, and the tests after it, 31.6 there, were cut 30.7 minutes in, run.rs on. So
+  # it builds them in a step of its own as well: 34 minutes, a third above 25.4. Running them
+  # keeps the 56. Its job has 116, those two and a third above its other steps' slowest, 19.1:
+  # 8.0 before its tests, and its stack guards' release build, cut 11.1 minutes in by that
+  # run's 75 (unmeasured past it).
   native:
     name: ${{ matrix.name || matrix.target }}
     timeout-minutes: ${{ matrix.job_minutes || 75 }}
@@ -145,7 +152,7 @@ jobs:
       matrix:
         include:
           - { target: aarch64-apple-darwin, runner: macos-15, test: true }
-          - { target: x86_64-unknown-linux-gnu, runner: ubuntu-24.04, test: true }
+          - { target: x86_64-unknown-linux-gnu, runner: ubuntu-24.04, test: true, build_minutes: 34, job_minutes: 116 }
           - { target: aarch64-unknown-linux-gnu, runner: ubuntu-24.04-arm, test: true }
           - { target: x86_64-pc-windows-msvc, runner: windows-2025, test: true, tests_minutes: 122, job_minutes: 145 }
           - { target: x86_64-pc-windows-msvc, runner: windows-2022, test: true, tests_minutes: 122, job_minutes: 144, name: x86_64-pc-windows-msvc (windows-2022) }

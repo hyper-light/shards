@@ -180,6 +180,14 @@ pub struct Rated {
 /// one with its answer already printed).
 const SPREAD: u64 = 2;
 
+/// The due looks within which a wait whose party is still throughout is refused, its judge
+/// unheld: its first may find its party's baseline or its caller's own first run
+/// ([`Found::Based`], [`Found::Progressed`]), a look that ends a moment past its due time, and
+/// the stillness counted from that end ([`Judge::found_over`]) is less than a window at the
+/// next due look and a whole one at the one after. A derivation of the rule, not a tuning, as
+/// `SPREAD` is: what bounds a test's wait on a still party ([`Judge::refused_within`]).
+pub const LOOKS_TO_REFUSE: u32 = 3;
+
 /// [`Seen::Learned`]'s, together.
 #[derive(Debug, Clone, Copy)]
 struct Learned {
@@ -463,6 +471,14 @@ impl<'a> Judge<'a> {
     /// the least its looks can resolve ([`Judge::floor`]) where that is longer.
     fn window(&self, slowest: Duration) -> Duration {
         slowest.max(self.floor)
+    }
+
+    /// How long a wait whose party is still throughout takes at most to be refused over
+    /// `window`, its kind's W*, its judge unheld: its [`LOOKS_TO_REFUSE`] due looks, a window
+    /// apart, and the last one's own span, less than a window, as a window is never less than
+    /// the longest look (its floor).
+    pub fn refused_within(window: Duration) -> Duration {
+        window.saturating_mul(LOOKS_TO_REFUSE.saturating_add(1))
     }
 
     /// What a look at its party found since the look before, made now: refused where the

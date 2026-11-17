@@ -1188,6 +1188,21 @@ is `crates/shards/src/run.rs` and `crates/shards/src/guest.rs`.
     records (D151's free page reports; `GuestMemory::keep_given_back`): the pages its
     host maps when it ends no longer show one given back, and the set would leave it
     out. It sends none where it could not see a range given back.
+  - *What its written pages, copied ahead, hold at a first beat* (measured, open; PM M616).
+    A restore copies ahead every page its working set says the guest wrote
+    (`mapped::copy_written`), so in the Firecracker comparison each restore of one snapshot
+    held the same private copies of its guest's memory by its guest's first beat: 218 to
+    231 pages over four snapshots on an AMD EPYC 9V74 and 222 to 231 over four on an Intel
+    Xeon 6975P-C, where Firecracker's guest, copying only as it writes, held 124 to 145, and
+    shards-vm's own anonymous pages were 35 to 37 to Firecracker's process's 114 to 132.
+    The comparison's guest runs no command, so its working set is recorded over a
+    restore's first second, where a run's ends as its command answers. How many of those
+    pages its guest writes before its first beat, with nothing copied ahead, is
+    unmeasured: a restore of the comparison's snapshot without its `working-set`, its
+    `written_pages`. Copying ahead only those would hold the rest uncopied until its guest
+    writes them, each then copied on its first write, as Firecracker's are; the cost to
+    `to_beat` and a command's first second is unmeasured too. Not taken for 0.8.0 (ROOT,
+    2026-11-17).
 - **Where it applies.** Builds that can snapshot (HVF on arm64, KVM on x86_64,
   `vm::SNAPSHOTS`, and so `vm::WORKING_SETS`); elsewhere every run boots. `--kernel`
   and `--init`, or `SHARDS_KERNEL` and `SHARDS_INIT`, name files by path, so those runs
@@ -3419,8 +3434,63 @@ one CLI.
         let-go would undo. Not macOS's, which the Envelope does not read, and whose mapping
         of a program's code is unread here. Not Windows'.
       - *Its cost.* Each page of its code it touches first faults on its own, where one fault
-        mapped up to 16. How many faults that is, and their time, are unmeasured (R14): the
-        A/B's `to_ready` and `to_beat`.
+        mapped up to 16. Their time, in its A/B (below): a boot's `to_ready`, paired with
+        Firecracker's, -75.3 and -77.8 ms with the hold and -79.1 and -77.5 without, the 1.8
+        ms between the arms within each arm's own runs (2.5 and 1.6 ms); a restore's
+        `to_beat` 8,165 and 8,402 us with it, 8,270 and 8,323 without.
+    - *The cure's A/B* (run 44138427198, A at 8247e14 with the hold, B at ba502bc before it,
+      Intel Xeon 6975P-C, 2 rounds an arm; vm-text's `ab-44138427198.txt`). A's boot kept
+      806,912 bytes of shards-vm's file to B's 2,539,520 and Firecracker's 2,338,816:
+      `rss_file` -375 pages a pair to B's +48, `pss_file` -374 to +49, `overhead` -397 to
+      +27. CI's run 44138098584 (8247e14, AMD EPYC 9V74) then read the fleet's
+      `fleet_private` +6 pages and the restore's `rss_anon` +2, worse. The hold adds neither.
+      - *No page of a VM's.* Registering write-protects nothing, and MADV_DONTNEED drops clean
+        ptes of the file, which refault read-only from it, uncopied, leaving no marker where
+        nothing was write-protected (Linux 7.2-rc4 include/linux/mm_inline.h
+        `pte_install_uffd_wp_if_needed`). Each run's snapshot taken out (vm-text's
+        `within.py`), shards-vm's own anonymous pages, a restore's `rss_anon` less its
+        guest's private copies, were 35 in every run of both arms (36 in at most 8 of 30
+        restores), and a VM of the fleet held 1 page more than a restore in every run: the
+        code each maps a page at a time, the fleet maps alike. The layout moved a page from
+        data to relro: the text grew 1,216 bytes and the read-only segment 240, so the
+        relro, 0x6798 bytes in both, begins 0x898 into its first page rather than 0x2e8 and
+        spans 8 pages, each copied by the start's relocation, and the data and bss 7, not 8.
+      - *Each run's snapshot moves them.* Each restore copies ahead what its working set says
+        its guest wrote (vmm `mapped::copy_written`, D25), recorded once a run over a
+        restore's first second, so a run's guest copies are one number: 229 and 231 pages in
+        A, 227 and 222 in B, to Firecracker's guest's 129 to 145, while Firecracker's process
+        held 114 to 131 pages of its own. A run's restores alike, its interval is a point,
+        its sign that run's draw: `rss_anon` +4 and +2 pages in A, +2 and -2 in B;
+        `fleet_private` +4 and +2, +2 and -0.5. One binary run four times on one AMD EPYC
+        9V74 (vm-text's run 44076339609) read `rss_anon` +11, -9, +2 and -1 and
+        `fleet_private` +12, -5.5, +2 and 0.
+      - *What holds them: a replicate per snapshot* (ROOT's ruling, R14, 2026-11-17; PM
+        M616). The comparison takes k pairs of snapshots, each a fresh shards snapshot with
+        its working set recorded and a fresh Firecracker snapshot; each pair is restored
+        `--runs` times of each VMM after its warm-up, logged, and held in one fleet of each,
+        shards' first in an even pair (benches/firecracker.rs, `Snapshots`, `density`). Each
+        sample of the restores' and fleets' rows names its pair (benches/support
+        `stats_by_snapshot`), and scripts/bench-envelope takes one difference a pair, the
+        median of its paired differences, and bounds their median by the sign test's
+        interval: the r-th least and greatest of k hold it with 1 - 2 P(Binomial(k, 1/2) < r)
+        (Hollander, Wolfe and Chicken, *Nonparametric Statistical Methods*, ch. 3). k is the
+        fewest whose least and greatest hold it with the Envelope's 95%, computed from it
+        (`snapshot_pairs`): 6, at 96.9%; the Envelope refuses a row of pairs too few for it.
+        The boot's rows, each sample a fresh boot, keep the bootstrap. The evidence is the
+        cure's A/B and the four runs of one binary above (PM M616's table). The CI time the
+        six pairs add is unmeasured until a run shows it. Fewer copies than the draw, the
+        other way, stays measured and open in D25.
+      - *The boot's `rss_anon`* (PM M617; ROOT's ruling, R14, 2026-11-17). Above
+        Firecracker's on both CPU vendors, not Intel's alone: median gaps of +0.14 to +0.64
+        MiB on an Intel Xeon 6975P-C and -0.43 to +0.47 on AMD EPYC, worse in 2 of 4 runs and
+        3 of 8. THP's boot advice holds 0.1 to 0.2 MiB of it at p50 for a boot 46 to 50 ms
+        faster; the rest is unattributed. Each boot now records its guest memory (smaps'
+        `Rss`, `AnonHugePages` and `Private_Dirty` over its mappings, and the pages held in
+        each huge page's span: benches/firecracker.rs `guest_memory`), which
+        docs/research/measurements/boot-anon's `attribute.py` takes apart into the VMMs' own
+        memory, huge pages' rounding and pages touched. Until it has, the row is allowed up
+        to 654 KiB, the largest median gap measured, lapsing on 2026-12-01: one CI cycle on
+        the reading and ROOT's runs of it (docs/benchmarks-envelope.toml).
 - A daemon's build is its binary's identity, which includes what it carries; one given
   another VM binary (`SHARDS_VM_BINARY`, for VMM work and tests) is another build.
 - **Tests:** `helpers::tests` (written whole once, found after, a cut copy replaced);
@@ -20375,7 +20445,9 @@ its network the network process's (D142).
   no child in an AppContainer, and points it at the container's own folder, the child's
   `TEMP` at the `Temp` there; without `SystemRoot` Winsock makes no socket
   (WSAEPROVIDERFAILEDINIT). A Windows child had its spawner's whole environment until now
-  (D141).
+  (D141). A confined child's `LOCALAPPDATA` is the one its profile's folder is beneath:
+  this process's where it is there, else the user's own, which a caller may have set this
+  process's apart from (D141's amendment of 2026-11-17, PM M615).
 
 ### D142. The network process on Windows
 
@@ -20437,8 +20509,8 @@ on Windows as on Linux and macOS.
   (`shards_netring::socket_doorbell`), its control and a peer's link are AF_UNIX, made by
   `shards_afunix`, and every socket bound or connected by path is told its directory by
   afunix.h's parent-path controls, as D141's amendment says: the directory as UTF-8, the
-  address its file name alone, so that no directory's length refuses one, an AppContainer's
-  Temp beneath a long `LOCALAPPDATA` among them. ProcessSocketNotifications, which it waits
+  address its file name alone, so that a directory past `sun_path` is taken, up to the 256
+  bytes the controls take (PM M615; D141). ProcessSocketNotifications, which it waits
   on, is documented from "Windows 10 Build 20348" (Microsoft's sdk-api,
   `nf-winsock2-processsocketnotifications.md`, 8f2547f96c), the build of the controls' oldest
   host measured, Windows Server 2022's 20348.5870: shards' Windows floor (D141). What the
@@ -20496,21 +20568,31 @@ was built on [PM M200-M203]:
   its share process, which ends as its streams close with the VM, before the job closes.
   The daemon's runs are untouched: their processes are the daemon's, in its groups' jobs
   (D195, D183).
-- **No profile left behind.** Each lives with a record its spawner holds open
-  (`%LOCALAPPDATA%\shards\containers`); the next spawner deletes the profile of each record
-  no process holds.
+- **No profile left behind.** Each lives with a record its spawner holds open, kept per user
+  beside the profiles: `shards\containers` in the user's own LocalAppData
+  (`shards_ipc::app_container_records`), whatever the spawner's `LOCALAPPDATA` or
+  `SHARDS_CACHE` says. The next spawner, from any home, deletes the profile of each record no
+  process holds. Windows keeps every profile's folder in the user's own LocalAppData and its
+  registry entries in the user's hive (PM M615), so records kept with a home (`<cache>\containers`
+  until 2026-11-17, its `SHARDS_CACHE`'s or its `LOCALAPPDATA`'s) went with a removed home, and a
+  spawner killed under it left its profile for no sweep to find (r769's review; a stand-in home is
+  kiln's runners' and the tests'). Those records were not carried over: there were no users.
   - **A managed VM's, at once (2026-11-14, Hex's ask).** A managed VM whose native owner
     ends it by killing its job (D215's `ManagedProcess`) leaves its `shards`' profiles, their
     registry entries, their `%LOCALAPPDATA%\Packages` folders and their records, until
     some VM's spawner next sweeps. So the owner calls
-    `shards_api::release_app_containers(&paths, &identity, end)` once it has ended the
-    scope: `paths` its `RuntimePaths`, whose cache is the VM's `SHARDS_CACHE`, so the
-    records are `<cache>\containers`; `identity` the VM's recorded `Identity`, whose pid
-    names its profiles (`shards.<role>.<pid>.<n>`); `end` its `ManagedEnd`. It deletes each
-    profile recorded there under that pid, then its record (`shards_ipc::release`, the
-    sweep's own open-and-delete for one maker), and answers how many: none where a sweep
-    took them first or none was made. Profiles of another cache, or of no record, are never
-    touched.
+    `shards_api::release_app_containers(&identity, end)` once it has ended the scope:
+    `identity` the VM's recorded `Identity`, whose pid names its profiles
+    (`shards.<role>.<pid>.<n>`); `end` its `ManagedEnd`. It deletes each profile recorded
+    under that pid in the user's records (`shards_api::app_container_records`, above), then
+    its record (`shards_ipc::release`, the sweep's own open-and-delete for one maker), and
+    answers how many: none where a sweep took them first or none was made. Profiles of
+    another maker, or of no record, are never touched. Amended 2026-11-17: the call took the
+    VM's `RuntimePaths` too, whose cache held its records, and a controller taken back after
+    its node's end, which has none, left its profiles to a sweep; it now releases them as any
+    owner does. Hex's caller (`crates/hex-runtime/src/windows/managed.rs`) and its guest_cost
+    smoke's look for records left (`crates/hex-cli/examples/guest_cost/managed.rs`) change
+    with it on Hex's p/v080-vendor, building once that vendors Shards at this amendment.
   - Refusals, nothing deleted (R04): `Refusal::Release(ReleaseRefusal::ScopeLive)` for an
     end short of `TerminalScope::Released`, as a process of the VM's may still run in a
     profile; `ReleaseRefusal::Held` where a record is held open, which only a live process
@@ -20528,7 +20610,13 @@ was built on [PM M200-M203]:
       makes and records its profile as a VM's `shards` does, and is killed. The call is
       refused while the child lives (Held) and for an end of `Process` (ScopeLive). Then,
       Released, the profile's Packages folder and its record are gone, and a second call
-      answers 0.
+      answers 0. Since 2026-11-17 its records are the user's, its own found among them by
+      its child's pid (unrun since).
+    - `confined.rs` `a_killed_spawners_profile_under_a_removed_home_is_swept_from_another`
+      (2026-11-17, unrun in its lane): a VM booted under a stand-in home, its spawner killed,
+      the home removed, then a run from another home; its profile's folder must be gone and
+      its name free in the registry (CreateAppContainerProfile makes it again). Red where
+      records were kept per home, the folder left; green with them per user.
     - `shards_ipc` `windows::tests::release_deletes_one_ended_makers_profiles_and_records`:
       only the named maker's profiles go, each name then makes a new profile where it said
       ERROR_ALREADY_EXISTS; a record whose profile had gone is released; a held record is
@@ -20547,7 +20635,8 @@ was built on [PM M200-M203]:
   parent-path control before its bind (`SIO_AF_UNIX_SETBINDPARENTPATH`) or its connect
   (`SIO_AF_UNIX_SETCONNPARENTPATH`), the directory absolute and as UTF-8 with its NUL, its
   address the file name alone (`shards_afunix`'s `Place`). Only a file name past 107 bytes is
-  refused, naming its path; a pair's directory may be as long as Windows' paths are.
+  refused, naming its path; a pair's directory may be as long as the controls take one, 256
+  bytes measured (below).
   - *Sources.* Microsoft's "AF_UNIX comes to Windows" (the WSL team, 2017-12-19): AF_UNIX from
     Insider build 17063, `sun_path` "a Win32 UTF-8 file system path", no socketpair; it names
     no parent-path control. The Windows SDK 10.0.26100's `shared/afunix.h`
@@ -20590,7 +20679,48 @@ was built on [PM M200-M203]:
     file in the long directory fails. With it, a WHP boot under a long `LOCALAPPDATA`
     (`api_image`), as r735's: the probe ran outside any AppContainer, so the controls inside
     one are first exercised there, and by every Windows VM test, each of whose pairs now goes
-    this way.
+    this way. Run on jupiter (ROOT's r769, r777): the unit test green, red as above, its
+    mutation failing as above; the boot under the user's own `LOCALAPPDATA` passed, and under
+    the long one failed for its Temp (below).
+- **Its Temp where `LOCALAPPDATA` is set apart** (2026-11-17; ROOT's r769 and r777, PM M615).
+  r769 booted a VM at 0e7773c19c (`api_image`) with its spawner's `LOCALAPPDATA` a stand-in
+  (`C:\Users\corph\.cache\w1-long\`, 40 a's, 40 b's, `AppData\Local`), as kiln's runner homes set
+  one (kiln's `tests/vm_e2e/mod.rs` and `tests/common/mod.rs`, with `USERPROFILE` and `APPDATA`):
+  its VM process ended at its first socket pair, refused WSAENETDOWN (10050); r777, the same
+  boot under the user's own, passed. Windows makes an AppContainer's profile folder beneath the
+  user's own LocalAppData whatever the spawner's `LOCALAPPDATA` says (M615: GetAppContainerFolderPath
+  named it there under each stand-in; Microsoft: CreateAppContainerProfile's folders "can be
+  accessed by calling SHGetKnownFolderPath", and GetAppContainerFolderPath's path is "the same
+  path that you would get by calling the SHGetKnownFolderPath function with
+  FOLDERID_LocalAppData"), while it points the child's `TEMP` at
+  `<LOCALAPPDATA>\Packages\<profile>\AC\Temp` of the `LOCALAPPDATA` it is given (M208): beneath a
+  stand-in, a Temp that is not there, where a bind is refused 10050, as one where no directory
+  is (M615). Now a confined child is given the `LOCALAPPDATA` its profile's folder is beneath
+  (`shards_ipc`'s `profile_local_app_data`): this process's where the folder is there (every
+  host whose `LOCALAPPDATA` is the user's own, unchanged), else the user's own as Windows makes
+  the user's environment (CreateEnvironmentBlock for the spawner's token, none of its
+  variables), else refused, naming both. kiln's homes set `USERPROFILE` with `LOCALAPPDATA`;
+  where Windows then makes the folder is unmeasured, and the child is given whichever holds it.
+  An unconfined child keeps the spawner's `LOCALAPPDATA`, and one a caller gives explicitly
+  wins. And a bind or connect `shards_afunix` is refused says its path and its call, which
+  r769's did not ("A socket operation encountered a dead network").
+  - *The controls' length* (M615, confined and not): a directory of 100 to 256 bytes was taken,
+    and bound, connected and accepted; one of 260, 280 or 300 bytes was refused at the control,
+    WSAENOBUFS (10055); 257 to 259 unmeasured. `shards_afunix` sets no bound of its own: a
+    directory the controls refuse is said with its length beside the 256 bytes measured taken.
+    A confined child's Temp beneath the user's own was 70 bytes on CI's runners.
+  - *Profiles left behind.* A profile's folder is beneath the user's own LocalAppData, wherever
+    the spawner's `LOCALAPPDATA` points, and goes with the profile: deleted as its VM ends
+    (`AppContainer`'s drop), under a stand-in too (M615). A spawner killed leaves its profile to
+    the next spawner's sweep, from any home, of the records kept per user beside the profiles,
+    or to Hex's release ("No profile left behind", above).
+  - *Tests.* `shards_ipc` `a_child_is_given_its_variables_and_what_windows_needs_alone` and
+    `a_confined_child_is_given_the_local_app_data_its_profile_is_beneath`; `shards_afunix`
+    `a_refused_bind_or_connect_says_its_path`; `confined.rs`
+    `a_vm_boots_under_a_stand_in_local_app_data`, a direct boot to its kernel's panic with its
+    spawner's `LOCALAPPDATA` a stand-in: red at 0e7773c19c, as r769, green here. Unrun in its
+    lane, owed on jupiter with r769's boot, kiln's shape and a look for profiles left behind.
+    What CreateEnvironmentBlock costs a spawn that asks it is unmeasured.
 
 Tested on real VMs (`the_vm_process_is_confined`): the VM process's token is an
 AppContainer's, it is in a Job, each mitigation is on, dynamic code forbidden once its guest
@@ -38189,14 +38319,33 @@ post-mortem read of the printk ring through VMCOREINFO, not a debug port.
     | 8 | windows-2025 | AMD EPYC 9V74 | 0.88 s |
     | 8 | windows-2022 | AMD EPYC 9V74 | 1.28 s |
     | 15 | windows-2025 | AMD EPYC 9V74 | 26.3 s |
+    | 15 | windows-2022 | AMD EPYC 7763 | 4550 s (9,504 guest lines) |
     | 30 | windows-2025 | Intel Xeon Platinum 8573C | 2500 s (21,266 guest lines) |
 
     - No CPU failed to come online in these four (the record's stuck-vCPU column empty). They
       failed only their wait for the kernel's power-off line, cured by f455a80c97 (*The test
       boots as the product boots*, above).
     - Every arm from 60 vCPUs up on both images (60, 120, 240, 240 `cpuhp.parallel=0`, 240
-      with the guest idle register), and 15 and 30 on windows-2022, were still running past
-      1.5 hours, against their 122-minute bound.
+      with the guest idle register), and 30 on windows-2022, were still running past 1.5
+      hours, against their 122-minute bound.
+    - Each CPU's online, by the guest's uptime at its `smpboot: Booting Node 0 Processor N`
+      (the arms' records, `arm.log`). Every arm took its first 7 to 9 CPUs within 0.7 to
+      2.4 s; after that each next CPU took longer than all before it:
+      - 15 vCPUs, EPYC 9V74: CPU 12 at 3.4 s, 13 at 4.8 s, 14 at 14.7 s; init up at 26.3 s.
+      - 15 vCPUs, EPYC 7763: CPU 10 at 9.5 s, 12 at 186 s, 14 at 1683 s; init up at 4550 s.
+      - 30 vCPUs, Intel 8573C: CPU 13 at 4.0 s, 14 at 16 s, 17 at 334 s, 29 at 2259 s; init
+        up at 2500 s.
+    - What it waits on, plain in the records: soft lockups. 488 such lines in the EPYC 7763's
+      15-vCPU guest and 1,306 in the 30-vCPU guest ("watchdog: BUG: soft lockup - CPU#N stuck
+      for Ns! [migration/N]"), none in the 8-vCPU guests or the EPYC 9V74's 15. Every one of
+      them sits in `multi_cpu_stop`, called from `stop_machine_from_inactive_cpu`.
+      - That function has one caller, x86's `cache_ap_online` (arch/x86/kernel/cpu/
+        cacheinfo.c). For each CPU coming online it holds a MTRR/PAT rendezvous in which
+        every online CPU spins at once with its interrupts off. A boot skips it: smpboot.c's
+        `set_cache_aps_delayed_init(true)` leaves one rendezvous after `smp_init`.
+      - So each CPU brought online late needs every online vCPU running at the same time.
+        On 4 logical processors it cannot, past 4, until the hosts above time-slice them
+        through it. A cap at the host's logical processors is exactly where that ends.
     - So bringing CPUs online took about 0.1 s for 3 (M379), 1 s for 7, 26 s for 14 and
       41 minutes for 29: far faster growth than the count. M379's mechanism fits: each
       cross-CPU call (`smp_call_function_many_cond`, text patches' syncs, grace periods as the
@@ -38231,8 +38380,25 @@ post-mortem read of the printk ring through VMCOREINFO, not a debug port.
     under the rule it replaces, the partition's most alone, which admitted 5 to 240 on the
     runners' description); `vm::tests::guests_are_brought_up_late_on_a_nested_hyperv_alone`
     (the documented signal; an interface other than "Hv#1" is not one).
-  - **Owed.** The 30-vCPU arm's lines and the 60+ arms' outcomes, read from their artifacts
-    when they come. ci.yml's x86_64 Windows jobs (`boots_the_hosts_maximum_vcpu_count` at 4
+  - **The arms past 30 vCPUs** (the same run, its records read once its arms ended): every
+    one was cut at its 122-minute bound, its guest's boot CPU alone up, its init still bringing
+    the rest online, none to its line, each with hundreds of soft lockups (292 to 1,398). The
+    last CPU each brought online, and when (guest uptime):
+
+    | arm | windows-2025 | windows-2022 |
+    |---|---|---|
+    | 30 | (above: up at 2500 s, Intel) | CPU 15 at 5699 s (EPYC 7763) |
+    | 60 | CPU 49 at 7101 s (EPYC 9V74) | CPU 16 at 6167 s (EPYC 9V74) |
+    | 120 | CPU 37 at 7293 s (Intel 8573C) | CPU 14 at 6862 s (Intel 8573C) |
+    | 240 | CPU 46 at 6065 s (EPYC 9V74) | CPU 13 at 6481 s (EPYC 7763) |
+    | 240, `cpuhp.parallel=0` | CPU 49 at 6239 s | CPU 13 at 1836 s |
+    | 240, the guest idle register offered (PV spinlocks) | CPU 47 at 6753 s | CPU 14 at 5549 s |
+
+    - A serial bring-up changes nothing here: the late path brings CPUs up one at a time
+      anyway. Neither do paravirtual spinlocks: what waits is the rendezvous, not a lock.
+    - A nested KVM host brings every CPU up at boot and so holds one rendezvous. CI 44138098584's
+      x86_64 gnu runner (AMD EPYC 7763 in Azure, 4 CPUs) brought a guest's 255 CPUs up by
+      26.9 s and its init up at 34.0 s. The cap stays WHP's. ci.yml's x86_64 Windows jobs (`boots_the_hosts_maximum_vcpu_count` at 4
     vCPUs, the storms sized so). The 8 lint targets.
 - **CI's judge learns across runs** (2026-11-17, kiln goal b2124227, lane ci-judge-cache).
   ROOT's answer to the question above: CI keeps the judge's records. Until now every CI job

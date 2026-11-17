@@ -209,34 +209,33 @@ fn ended(scope: crate::TerminalScope) -> crate::ManagedEnd {
 #[test]
 fn app_containers_are_released_only_for_a_released_scope() {
     let root = shards_testdir::TempDir::new("release-scope").unwrap();
-    let paths = RuntimePaths::new(root.path().into(), root.path().join("home")).unwrap();
     let vm = crate::Identity {
         pid: std::process::id(),
         started: 0,
         vsock: root.path().join("v"),
     };
     assert_eq!(
-        super::release_app_containers(&paths, &vm, ended(crate::TerminalScope::Process)),
+        super::release_app_containers(&vm, ended(crate::TerminalScope::Process)),
         Err(Refusal::Release(crate::ReleaseRefusal::ScopeLive))
     );
     #[cfg(not(windows))]
     assert_eq!(
-        super::release_app_containers(&paths, &vm, ended(crate::TerminalScope::Released)),
+        super::release_app_containers(&vm, ended(crate::TerminalScope::Released)),
         Ok(0)
     );
 }
 
-/// Set in the child [`a_killed_managed_vms_app_containers_are_released`] runs: the records
-/// directory its AppContainer is recorded in.
+/// Set in the child [`a_killed_managed_vms_app_containers_are_released`] runs, whose
+/// AppContainer is made and recorded as every spawner's is ([`super::app_container_records`]).
 #[cfg(windows)]
 const CONTAINER_CHILD: &str = "SHARDS_API_CONTAINER_CHILD";
 
 /// Do: a child of this test binary stands as a managed VM's `shards` does while its VM runs,
-/// its AppContainer profile made and recorded in its cache (D141); then it is killed, as its
-/// native owner kills its job. Expect its profile and record refused while it lives (Held)
-/// and for an end short of Released (ScopeLive), nothing deleted; once it is killed and the
-/// end is Released, both deleted: its folder under `%LOCALAPPDATA%\Packages` gone, its
-/// record gone, and a second call deleting none.
+/// its AppContainer profile made and recorded per user, beside the profiles (D141); then it is
+/// killed, as its native owner kills its job. Expect its profile and record refused while it
+/// lives (Held) and for an end short of Released (ScopeLive), nothing deleted; once it is
+/// killed and the end is Released, both deleted: its folder beneath the user's own `Packages`
+/// gone, its record gone, and a second call deleting none.
 #[cfg(windows)]
 #[test]
 fn a_killed_managed_vms_app_containers_are_released() {
@@ -244,54 +243,56 @@ fn a_killed_managed_vms_app_containers_are_released() {
     const NAME: &str = "native::tests::a_killed_managed_vms_app_containers_are_released";
     // libtest prints a test's name and then, on the same line, what it prints.
     const MADE: &str = "an AppContainer made and recorded";
-    if let Some(records) = std::env::var_os(CONTAINER_CHILD) {
-        let _made = shards_ipc::AppContainer::new("vm", Path::new(&records)).unwrap();
+    let records = super::app_container_records().unwrap();
+    if std::env::var_os(CONTAINER_CHILD).is_some() {
+        let _made = shards_ipc::AppContainer::new("vm", &records).unwrap();
         println!("{MADE}");
         // Held until killed; or, where its parent ends first, until its input closes.
         let _ = std::io::copy(&mut std::io::stdin(), &mut std::io::sink());
         return;
     }
-    let cache = shards_testdir::TempDir::new("release-killed").unwrap();
-    let records = cache.path().join("containers");
-    std::fs::create_dir(&records).unwrap();
+    let scratch = shards_testdir::TempDir::new("release-killed").unwrap();
     let mut child = std::process::Command::new(std::env::current_exe().unwrap())
         .args(["--exact", NAME, "--test-threads=1", "--nocapture"])
-        .env(CONTAINER_CHILD, &records)
+        .env(CONTAINER_CHILD, "1")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .spawn()
         .unwrap();
     let said = std::io::BufReader::new(child.stdout.take().unwrap());
     assert!(said.lines().map(Result::unwrap).any(|line| line.ends_with(MADE)));
+    // Its record, beside any other spawner's.
+    let ours = format!("shards.vm.{}.", child.id());
     let recorded: Vec<String> = std::fs::read_dir(&records)
         .unwrap()
         .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .filter(|name| name.starts_with(&ours))
         .collect();
     assert_eq!(recorded.len(), 1, "{recorded:?}");
-    assert!(
-        recorded[0].starts_with(&format!("shards.vm.{}.", child.id())),
-        "{recorded:?}"
-    );
-    let folder = PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap())
+    // The records are `shards\containers` in the user's own LocalAppData, the profiles its
+    // `Packages`.
+    let folder = records
+        .ancestors()
+        .nth(2)
+        .unwrap()
         .join("Packages")
         .join(&recorded[0]);
     assert!(folder.is_dir(), "{}", folder.display());
 
-    let paths = RuntimePaths::new(cache.path().into(), cache.path().join("home")).unwrap();
     let vm = crate::Identity {
         pid: child.id(),
         started: 0,
-        vsock: cache.path().join("v"),
+        vsock: scratch.path().join("v"),
     };
     let released = ended(crate::TerminalScope::Released);
     assert_eq!(
-        super::release_app_containers(&paths, &vm, released),
+        super::release_app_containers(&vm, released),
         Err(Refusal::Release(crate::ReleaseRefusal::Held))
     );
     child.kill().unwrap();
     child.wait().unwrap();
     assert_eq!(
-        super::release_app_containers(&paths, &vm, ended(crate::TerminalScope::Process)),
+        super::release_app_containers(&vm, ended(crate::TerminalScope::Process)),
         Err(Refusal::Release(crate::ReleaseRefusal::ScopeLive))
     );
     assert!(
@@ -299,8 +300,8 @@ fn a_killed_managed_vms_app_containers_are_released() {
         "refused: nothing deleted"
     );
 
-    assert_eq!(super::release_app_containers(&paths, &vm, released), Ok(1));
+    assert_eq!(super::release_app_containers(&vm, released), Ok(1));
     assert!(!folder.exists(), "{}", folder.display());
-    assert!(std::fs::read_dir(&records).unwrap().next().is_none());
-    assert_eq!(super::release_app_containers(&paths, &vm, released), Ok(0));
+    assert!(!records.join(&recorded[0]).exists());
+    assert_eq!(super::release_app_containers(&vm, released), Ok(0));
 }
