@@ -22342,6 +22342,28 @@ to 13.8 ms a read, PM M606), the cost the paragraph above left unchanged.
   hold tests above (the still half now refused about one W* later), and the daemon's bin tests
   on macOS and Linux.
 
+Amended again 2026-11-17 (own-36, kiln goal fb3528f9): a token's answer cut by its path's wait
+is asked again at once, as an overdue head is. `auth::read_token` made its body read's error
+anew (`Error::new`), its kind `Other` and its cut lost, and `Bearer::fetch` asks again only a
+transient failure: a token Docker Hub's server was slow to finish, past auth.docker.io:443's
+slowest silence, ended a build (CI 44164945050, x86_64 gnu, build.rs
+`policies_check_the_frontend_and_the_default_policy`: "fetching a token from
+https://auth.docker.io/token: reading the token: Resource temporarily unavailable (os error
+11)", Linux's EAGAIN as SO_RCVTIMEO ends a blocking socket's read).
+- *Decided:* `read_token` keeps its read's kind (`Error::from`: a timeout or a cut is
+  transient) and marks it overdue where its path's wait cut the body (`Response::overdue`,
+  `Overdue::Silence`), and `Bearer::fetch` asks such a failure again at once, no pause and no
+  trouble, as `send_now` asks an overdue head: a cut teaches its path nothing, and the next
+  asking's silences follow its connection's liveness (`Bounded::RanOut`). No literal.
+- *Not changed:* the other bodies read after `follow` (registry.rs `manifest_accepting`,
+  `tags`, `resolve`, `fetch_document`, `referrers`, `small_blob`) give a cut to their caller
+  unasked again; `Response::overdue` would serve them, ROOT's to rule.
+- *Test* (written, not built or run: the lane's no-test rule): auth.rs
+  `a_token_answer_silent_past_its_paths_slowest_is_asked_again_at_once` (its first connection
+  sends its head and then nothing; the path has shown a 100 ms silence): red at db18e86021,
+  refused "reading the token"; green here, the token at the second asking, no pause, no
+  trouble.
+
 ### The `crates/shards` figures of the picked-constants audit (2026-11-09): each from its source
 
 **Found.** The audit of 2026-11-09 (docs/audit/2026-11-09_picked-constants.md, "crates/shards")

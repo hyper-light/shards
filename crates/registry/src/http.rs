@@ -457,6 +457,15 @@ impl Response<'_> {
         }
         Ok(&a.bytes)
     }
+
+    /// Whether its body's last read was cut by its path's wait, past the slowest silence
+    /// its path has shown (D222): overdue, for its caller to ask again at once.
+    pub(crate) fn overdue(&self) -> bool {
+        self.body
+            .paced
+            .as_ref()
+            .is_some_and(|p| p.body.last == Last::RanOut)
+    }
 }
 
 impl Read for Response<'_> {

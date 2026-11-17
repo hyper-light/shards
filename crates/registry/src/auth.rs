@@ -37,7 +37,7 @@ use serde::Deserialize;
 use crate::credentials::{Asked, Found};
 use crate::http::{Client, Redirects, Request, Response};
 use crate::url::{Scheme as UrlScheme, Url};
-use crate::{Error, ErrorKind, printable};
+use crate::{Error, ErrorKind, Overdue, printable};
 
 /// What shards names itself to token servers (`client_id`; distribution's oauth.md asks
 /// for "a meaningful value").
@@ -731,6 +731,14 @@ impl Bearer {
                 }
                 Err(failed) => failed,
             };
+            // Its answer cut by its path's wait: asked again at once, as an overdue head is
+            // (http.rs `send_now`), the next asking's silences following its connection's
+            // liveness until one ends (`Bounded::RanOut`); a cut teaches its path nothing,
+            // so it is no trouble (D222). Taken for a failure, a token Docker Hub's server was
+            // slow to finish ended a build (CI 44164945050, x86_64 gnu).
+            if failed.error.overdue_by().is_some() {
+                continue;
+            }
             // Past a run-out, a re-ask its far end refuses or ends unanswered is its end
             // (D222).
             let gone = failed.status.is_none() && trouble.gone(http, &self.realm, &failed.error);
@@ -903,10 +911,20 @@ fn read_token(response: &mut Response, oauth: bool) -> Result<Token, Error> {
             .map(SystemTime::from)
     });
     let mut body = Vec::new();
-    response
+    // Its kind kept (a timeout or a cut is transient), and overdue where its path's wait cut
+    // it, for `Bearer::fetch` to ask again at once (D222).
+    let read = response
+        .by_ref()
         .take(MAX_TOKEN_RESPONSE + 1)
-        .read_to_end(&mut body)
-        .map_err(|e| Error::new(format!("reading the token: {e}")))?;
+        .read_to_end(&mut body);
+    if let Err(e) = read {
+        let e = Error::from(e).context("reading the token");
+        return Err(if response.overdue() {
+            e.overdue(Overdue::Silence)
+        } else {
+            e
+        });
+    }
     if body.len() as u64 > MAX_TOKEN_RESPONSE {
         return Err(Error::new(format!(
             "the token response passes {MAX_TOKEN_RESPONSE} bytes, more than its fields can hold"
@@ -1262,6 +1280,55 @@ mod tests {
         // Tokens end at separators, so an unquoted URL is cut at its colon.
         let c = challenges(["Bearer realm=https://auth.example/token,service=s"]);
         assert_eq!(c[0].params, params(&[("realm", "https")]));
+    }
+
+    /// A token answer silent past its path's slowest silence, cut there by its path's wait
+    /// (D222), is asked again at once: no pause, no trouble, as a cut teaches its path nothing.
+    /// Taken for a failure, Docker Hub's token, slow to finish, ended a build (CI 44164945050,
+    /// x86_64 gnu, build.rs `policies_check_the_frontend_and_the_default_policy`: "reading the
+    /// token: Resource temporarily unavailable (os error 11)"). Red where the read's error is
+    /// made anew, its kind and its cut lost: refused so. Its first connection never sends its
+    /// body, so the cut is certain.
+    #[test]
+    fn a_token_answer_silent_past_its_paths_slowest_is_asked_again_at_once() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let body = r#"{"token":"t1"}"#;
+        let asked = AtomicUsize::new(0);
+        // The first: its head, then silence while its connection lives; the next, whole.
+        let tokens = route(None, move |_| {
+            let head = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len());
+            let whole = asked.fetch_add(1, Ordering::SeqCst) > 0;
+            Some(((if whole { head + body } else { head }).into_bytes(), After::Keep))
+        });
+        let auth = Authorizer::new(&registry(), Credentials::Anonymous);
+        let challenge = format!(
+            r#"Bearer realm="http://127.0.0.1:{}/token",service="svc""#,
+            tokens.port
+        );
+        assert!(
+            auth.challenged(&registry(), &refusal(&plain(), &challenge), false)
+                .unwrap()
+        );
+        let shown = crate::patience::Shown {
+            slowest_answer_us: Some(60_000_000),
+            slowest_silence_us: Some(100_000),
+            ..crate::patience::Shown::default()
+        };
+        let client = Client::new(
+            Box::new(|_| crate::tls::client_config(Vec::new(), None)),
+            "shards-test",
+        )
+        .asking_again()
+        .showing("127.0.0.1", tokens.port, shown);
+        let got = auth.authorization(&client, &registry(), &pull("a/b"));
+        assert_eq!(got.unwrap().as_deref(), Some("Bearer t1"));
+        assert_eq!(tokens.requests().len(), 2, "cut once, asked again once");
+        assert_eq!(client.paused(), Duration::ZERO, "not asked again at once");
+        assert_eq!(
+            client.shown("127.0.0.1", tokens.port).troubles,
+            0,
+            "its cut taken for a trouble"
+        );
     }
 
     #[test]
