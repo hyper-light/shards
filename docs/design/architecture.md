@@ -39771,6 +39771,19 @@ crates/shards `build/git.rs`):
 - **A resolver failure is now a registry's trouble too**: before, it failed a pull at once
   (D222's "a name that does not resolve"); now its first is ridden and a re-ask that fails so
   while the trouble follows liveness is the far end's end (`Trouble::gone`), as a refusal is.
+- **A connection's liveness is TCP's own keep-alive** (amended 2026-11-17, kiln's r707 on
+  HVF): "as long as its connection lives" had nothing to tell a dead connection by, since a
+  read on an idle socket sees no peer gone and no path cut. r707's build of a stand-in image
+  held in its git fetch from GitHub for 158 s and on, in a TLS read at 0.38 s of CPU, its
+  session's start with it and every later start behind it. Every connection the client makes
+  now has SO_KEEPALIVE (`keep_alive`, where it sets TCP_NODELAY): a dead one's read fails
+  (ETIMEDOUT), and the fetch asks again as for any cut (`ridden`). The probes' pace is the
+  system's own and set nowhere here (RFC 1122 §4.2.3.6: an interval that "MUST default to no
+  less than two hours"; Linux's tcp(7) 7200 s, 75 s, 9 probes; XNU's `net.inet.tcp.keepidle`,
+  `keepintvl`, `keepcnt`, 7200 s, 75 s, 8; Windows' `KeepAliveTime` and `KeepAliveInterval`,
+  2 hours and 1 s, 10 probes), so a dead connection ends in about two hours. A pace of the
+  path's own (its probes at its RTO, D222's `Pace`) needs per-OS options (TCP_KEEPIDLE,
+  TCP_KEEPALIVE, SIO_KEEPALIVE_VALS) and live data first: owed (R02).
 
 **Every value, and where it comes from:**
 
@@ -39780,6 +39793,7 @@ crates/shards `build/git.rs`):
 | a connect: its path's pace, doubled at each of its own timeouts, made again | `Client::dial` | RFC 6298 §2, §5.5 (D222's `Pace`) |
 | an answer: its first byte's gap alone; past it, silences | `read_head`, `HeadWait` | a stall is a gap with no progress (the person, 2026-11-13; D222) |
 | a non-lookup's body before its first bytes: its connection's liveness | `Paced::working` | its server's work with the request, as its answer's first byte (PM M607) |
+| a connection's liveness: TCP keep-alive at the system's pace | `keep_alive` | RFC 1122 §4.2.3.6; tcp(7); XNU's sysctls; Winsock's SO_KEEPALIVE |
 | a lookup cut: asked again at once, each kind once while none ends | `Client::send_now` | RFC 9110 §9.2.1 (a safe method); D222's run-out clause |
 | an answer, a silence, a handshake cut by its path's only where its caller asks again | `Client::asking_again`, `Paced`, `Client::handshake` | a cut fails a caller that does not; records break with chance 1/k (Glick 1978) |
 | a caller's bound: none by default | `Patience` | the caller's protocol (D168's AWS SDK figures stay theirs) |
