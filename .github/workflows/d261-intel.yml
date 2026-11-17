@@ -1,0 +1,163 @@
+name: D261 Intel
+
+# D261's experiment on Intel's VMX (R09: evidence before its remedy is decided). Every x86_64
+# CI job that lands on an Intel host fails three VM tests with "VM entry failed (hardware
+# reason 0x7)": VM-instruction error 7, "VM entry with invalid control field(s)" (Intel SDM
+# Vol. 3C, VM-instruction error numbers), on GitHub's ubuntu-24.04 runners, Hyper-V guests in
+# which KVM runs nested. What CI showed (run 44007524337, Intel Xeon 6975P-C): D261's A/B
+# failed both its arms, the parallel bring-up and one CPU at a time, so serial bring-up is no
+# remedy; KVM's 22 dumps of refused VMCSs came in three clusters, each while a 255-vCPU guest
+# ran, all with the same controls, each after an exit for an external interrupt (L1's local
+# timer, 0xec, or a call-function IPI, 0xfb), one of them taking a 7-vCPU guest down beside it.
+#
+# The design. Each copy of the job lands on whatever host the pool gives it. One on an AMD
+# host, whose SVM never fails an entry with 7, records its CPU and runs no arm. One on an
+# Intel host builds the boot test once and runs these arms, each the max-vCPU test's boot
+# (boot.rs `a_d261_arm_boots_the_vcpus_its_experiment_asks`), each alone, never beside
+# another, as the failure is host-wide:
+# - 255, 128, 64, 32, 16 and 8 vCPUs, KVM as scripts/ci/kvm-host leaves it. 255 is the
+#   max-vCPU test's count on these runners, every cluster's; halving brackets the count at
+#   which 0x7 begins within a factor of two in five steps; 8 is the first power of two past
+#   brings_up_every_vcpu's 7, which failed only beside a 255-vCPU guest.
+# - 255 vCPUs with kvm_intel reloaded with enable_apicv=0: whether the controls of APIC
+#   virtualization, set in every dump (virtual-interrupt delivery, posted interrupts), are
+#   what the host refuses.
+# Eight copies, as budget-e2e.yml runs them: of CI's x86_64 Linux jobs in runs 43968984258,
+# 43990298220 and 44007524337, 2 of 8 landed on Intel, so all eight copies miss Intel about
+# one time in ten ((6/8)^8); dispatch again where none landed there.
+#
+# Each arm's record: its outcome (brought up; 0x7 and the vCPU whose entry failed first, the
+# machine ending at its first; or another failure, its log), its time from its start, KVM's
+# dump_invalid_vmcs lines from the kernel's log since it began, and kvm_intel's parameters
+# as it ran. Each copy's: its CPU's vendor, model, flags and VMX flags (/proc/cpuinfo: vmx in
+# its flags, and apicv, vid and posted_intr among the VMX capabilities its kernel read),
+# whether the runner is itself a virtual machine, so that KVM in it runs nested (CPUID's
+# hypervisor bit, systemd-detect-virt, lscpu's hypervisor vendor), its kernel, and kvm-host's
+# output. One artifact per copy, summary.tsv a line per arm. Dispatched alone; nothing runs
+# it on a push.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  TOOLCHAIN: 1.98.1 # keep in sync with rust-toolchain.toml
+
+jobs:
+  d261:
+    name: D261 Intel (${{ matrix.copy }})
+    runs-on: ubuntu-24.04
+    # CI's own job limit on this runner (ci.yml `native`), whose Tests step holds these boots.
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        copy: [a, b, c, d, e, f, g, h]
+    env:
+      RECORDS: ${{ github.workspace }}/d261-records
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: The host, and kvm-host's setup
+        id: host
+        run: |
+          mkdir -p "$RECORDS"
+          {
+            echo "copy ${{ matrix.copy }}, run ${{ github.run_id }}, revision $GITHUB_SHA, image $ImageOS-$ImageVersion"
+            uname -r
+            nproc
+            free -m
+            lscpu
+            echo "--- /proc/cpuinfo, its first processor"
+            awk '/^$/ {exit} {print}' /proc/cpuinfo
+            echo "--- nested: CPUID's hypervisor bit, then systemd-detect-virt"
+            if grep -m1 '^flags' /proc/cpuinfo | grep -qw hypervisor; then
+              echo "hypervisor bit set: this runner is a virtual machine, and KVM in it runs nested"
+            else
+              echo "hypervisor bit clear: bare metal"
+            fi
+            systemd-detect-virt || true
+            echo "--- scripts/ci/kvm-host"
+            scripts/ci/kvm-host
+          } > "$RECORDS/host.txt" 2>&1
+          cat "$RECORDS/host.txt"
+          vendor=$(awk -F': *' '/^vendor_id/ {print $2; exit}' /proc/cpuinfo)
+          if [ "$vendor" = GenuineIntel ]; then
+            echo "intel=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "intel=false" >> "$GITHUB_OUTPUT"
+            echo "$vendor: no VM-instruction error here, so no arm ran" | tee -a "$RECORDS/host.txt"
+          fi
+      - name: Install pinned Rust
+        if: steps.host.outputs.intel == 'true'
+        run: scripts/retry 5 30 rustup toolchain install "$TOOLCHAIN" --profile minimal --target x86_64-unknown-linux-musl
+      - name: zig
+        if: steps.host.outputs.intel == 'true'
+        run: scripts/install-zig
+      - name: Build the boot test
+        if: steps.host.outputs.intel == 'true'
+        run: cargo test --locked --profile test-release -p shards --test boot --no-run
+      # As ci.yml's: a rule of udev's, so that /dev/kvm keeps its mode as kvm_intel's reload
+      # below makes it anew.
+      - name: KVM access
+        if: steps.host.outputs.intel == 'true'
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          sudo chmod 666 /dev/kvm
+      - name: The arms, each alone
+        if: steps.host.outputs.intel == 'true'
+        # CI's Tests step limit on this runner (ci.yml `native`), which its max-vCPU boots fit.
+        timeout-minutes: 56
+        run: |
+          set -u
+          model=$(awk -F': *' '/^model name/ {print $2; exit}' /proc/cpuinfo)
+          printf 'copy\tmodel\tarm\tvcpus\tenable_apicv\toutcome\tfirst_vcpu\ttime\n' > "$RECORDS/summary.tsv"
+          arm() {
+            local name="$1" vcpus="$2" log="$RECORDS/arm-$1.log" status=0
+            local before
+            before=$(sudo dmesg | wc -l)
+            SHARDS_REQUIRE_VMS=1 SHARDS_D261_VCPUS="$vcpus" SHARDS_D261_ARM="$name" \
+              cargo test --locked --profile test-release -p shards --test boot -- \
+              --ignored --exact a_d261_arm_boots_the_vcpus_its_experiment_asks --nocapture \
+              > "$log" 2>&1 || status=$?
+            sudo dmesg | tail -n +"$((before + 1))" | grep -a kvm_intel > "$RECORDS/dmesg-$name.txt" || true
+            grep -H . /sys/module/kvm_intel/parameters/* > "$RECORDS/params-$name.txt" 2>&1 || true
+            local said outcome first="" took
+            said=$(grep -a -m1 'D261 A/B arm' "$log" || true)
+            case "$said" in
+              *": brought up;"*) outcome=pass ;;
+              *"hardware reason 0x7"*)
+                outcome=0x7
+                first=$(sed -E 's/.*vCPU ([0-9]+): VM entry failed.*/\1/' <<<"$said")
+                ;;
+              "") outcome="no outcome line, status $status (arm-$name.log)" ;;
+              *) outcome="failed otherwise, status $status (arm-$name.log)" ;;
+            esac
+            took=$(sed -nE 's/.*; (.*) from its start$/\1/p' <<<"$said")
+            printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${{ matrix.copy }}" "$model" "$name" "$vcpus" \
+              "$(cat /sys/module/kvm_intel/parameters/enable_apicv)" "$outcome" "$first" "$took" \
+              >> "$RECORDS/summary.tsv"
+            echo "arm $name: $outcome${first:+, vCPU $first}, $took"
+          }
+          for n in 255 128 64 32 16 8; do
+            arm "$n" "$n"
+          done
+          # kvm_intel alone reloaded (rmmod: modprobe -r would take kvm with it), its failed
+          # entries' VMCSs dumped as kvm-host has them.
+          if sudo rmmod kvm_intel && sudo modprobe kvm_intel enable_apicv=0 dump_invalid_vmcs=1; then
+            sudo udevadm settle
+            [ -w /dev/kvm ] || sudo chmod 666 /dev/kvm
+            arm 255-apicv-off 255
+          else
+            printf '%s\t%s\t255-apicv-off\t255\t-\tkvm_intel not reloaded\t\t\n' "${{ matrix.copy }}" "$model" >> "$RECORDS/summary.tsv"
+          fi
+          cat "$RECORDS/summary.tsv" | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7.0.1
+        if: always()
+        with:
+          name: d261-intel-${{ matrix.copy }}
+          path: d261-records/
+          if-no-files-found: error
