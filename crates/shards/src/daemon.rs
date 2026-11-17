@@ -701,6 +701,8 @@ mod party {
     /// kernel; and (Linux) each one's wait for a CPU so far, in nanoseconds, by its key.
     #[derive(Debug, Default)]
     pub(super) struct Hold {
+        /// Read where threads' states are read alone: Windows reads none ([`hold`]).
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         pub(super) read: usize,
         pub(super) runnable: usize,
         pub(super) in_kernel: usize,
@@ -726,6 +728,7 @@ mod party {
         /// A stand-in's members as its test says they are: `runnable` of them runnable.
         pub(super) fn standing(runnable: usize) -> Hold {
             Hold {
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
                 read: runnable,
                 runnable,
                 ..Hold::default()
