@@ -138,8 +138,9 @@ pub(super) const fn stray_rsts_bound(rx_ring: u16, tx_ring: u16) -> usize {
 }
 
 /// The descriptors a connection holds at most: its host socket; on Windows a host program's
-/// two pipes, its way down's and its way up's (D272), a served port's one socket fewer.
-const HELD_PER_CONNECTION: u64 = if cfg!(windows) { 2 } else { 1 };
+/// two pipes, its way down's and its way up's, and the event each way's calls name (D272,
+/// `platform::Pipes`), a served port's one socket fewer.
+const HELD_PER_CONNECTION: u64 = if cfg!(windows) { 4 } else { 1 };
 
 /// A muxer's slots ([`Muxer::slots`]): what this process's descriptor limit, raised as far
 /// as it may go as a share process raises its own, leaves past the descriptors it holds,
@@ -319,7 +320,7 @@ fn listen(path: &Path) -> io::Result<Listener> {
     let ((down, up), maker) = crate::platform::listen_pipes(path)?;
     Ok(PipeListener {
         maker,
-        pair: Some(Listening::new(down, up)),
+        pair: Some(Listening::new(down, up)?),
     })
 }
 
@@ -413,8 +414,12 @@ impl Muxer {
         if listener.pair.is_some() {
             return;
         }
-        let mut pair = match listener.maker.next() {
-            Ok((down, up)) => Listening::new(down, up),
+        let mut pair = match listener
+            .maker
+            .next()
+            .and_then(|(down, up)| Listening::new(down, up))
+        {
+            Ok(pair) => pair,
             Err(e) => {
                 debug!("vsock: {}: its next pair: {e}", path.display());
                 return;
@@ -2768,7 +2773,7 @@ mod tests {
     #[cfg(windows)]
     fn host_port(path: &std::path::Path) -> Listening {
         let (_, down, up) = shards_ipc::vsock_listen(path).unwrap();
-        Listening::new(down, up)
+        Listening::new(down, up).unwrap()
     }
 
     /// Whether a guest's dial reached `host`.

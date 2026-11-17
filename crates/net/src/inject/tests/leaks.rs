@@ -9,7 +9,7 @@ use std::time::Duration;
 
 impl Bench {
     /// The HTTP/1.1 test host's answer, written as it is (`H1Answers::Quiet`).
-    fn answer(&mut self, bytes: &[u8]) {
+    pub(super) fn answer(&mut self, bytes: &[u8]) {
         match &mut self.wire {
             Wire::H1(host) => host.tls.writer().write_all(bytes).unwrap(),
             Wire::H2(_) => panic!("the bench's host speaks HTTP/2"),

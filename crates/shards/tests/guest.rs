@@ -114,7 +114,8 @@ fn a_download_that_is_not_the_pinned_kernel_is_kept_nowhere() {
 }
 
 /// An init built for another shards announces another contract, and gets no workload:
-/// the run fails as `docker run` fails a command that never ran.
+/// the run fails as `docker run` fails a command that never ran, in `workload::OtherInit`'s
+/// words.
 #[test]
 fn an_init_built_for_another_shards_gets_no_workload() {
     if cannot_run_vms() {
@@ -131,7 +132,8 @@ fn an_init_built_for_another_shards_gets_no_workload() {
     let shown = format!("--- stdout\n{}\n--- stderr\n{}", run.stdout, run.stderr);
     assert_eq!(run.status, Some(125), "{shown}");
     let why = format!(
-        "speaks another shards' protocol (0000000000000001, where this shards speaks {:016x})",
+        "this microVM's shards-init (contract 0000000000000001) cannot run in this shards \
+         (contract {:016x}): boot the shards-init this shards carries",
         shards_abi::IDENTITY
     );
     assert!(run.stderr.contains(&why), "{shown}");

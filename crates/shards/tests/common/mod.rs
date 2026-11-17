@@ -294,6 +294,102 @@ pub fn snapshot_file(dir: &Path, name: &str) -> PathBuf {
     generation.join(newest)
 }
 
+/// Plan step 33's leak scan (docs/research/measurements/s33-leak-scan), on what it scans:
+/// what `ImageGuest::save` writes, which is its owner's alone (D259).
+/// Python 3 runs it: `python3`, on Windows `python`.
+fn leak_scan(secrets: &Path, paths: &[&Path]) -> (Option<i32>, String) {
+    let script =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/research/measurements/s33-leak-scan/scan.py");
+    let python = if cfg!(windows) { "python" } else { "python3" };
+    let out = Command::new(python)
+        .arg("-I")
+        .arg(script)
+        .arg("--secrets")
+        .arg(secrets)
+        .args(paths)
+        .output()
+        .unwrap();
+    let said = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    (out.status.code(), said)
+}
+
+/// api_image's leak-scan test judged (D259): `saved`, a run's save, scanned with its harness's
+/// environment as given (`keys/env`), first for the values the harness was given
+/// (`keys/given.json`), then for one never given (`keys/never.json`). Both values given are
+/// found in the save's memory, each by its name, and the environment's in its file (exit 3);
+/// the one never given nowhere. Where the test runs, or on L1's outer host
+/// ([`leave_leak_scan`]).
+pub fn leak_scan_judged(saved: &Path, keys: &Path) {
+    let memory = snapshot_file(saved, "memory").display().to_string();
+    let env = keys.join("env");
+    let (code, said) = leak_scan(&keys.join("given.json"), &[saved, &env]);
+    assert_eq!(code, Some(3), "{said}");
+    for name in ["given.json:env_token", "given.json:file_token"] {
+        assert!(
+            said.lines()
+                .any(|l| l.starts_with(&format!("FOUND {memory} offset ")) && l.ends_with(name)),
+            "{name} in the save's memory: {said}"
+        );
+    }
+    assert!(
+        said.contains("harness-codex offset 19 length 64: a run of given.json:env_token"),
+        "{said}"
+    );
+    // Never given, never found: what else credential-shaped its memory holds is listed (exit 4)
+    // and is no secret's.
+    let (code, said) = leak_scan(&keys.join("never.json"), &[saved, &env]);
+    assert!(matches!(code, Some(0 | 4)), "{said}");
+    assert!(said.contains(" 0 secret runs found"), "{said}");
+}
+
+/// Where in the outer host's share a test under L1 leaves a run's save to scan.
+const LEAK_SCAN_LEFT: &str = "leak-scan";
+
+/// `saved`, a run's save, and `keys`, what its scan is given ([`leak_scan_judged`]), left in
+/// `out`, the outer host's share under L1 (SHARDS_L1_OUT, boot.rs), for that host to scan
+/// once the guest is gone ([`judge_left_leak_scan`]): an L1 guest has no Python.
+pub fn leave_leak_scan(out: &Path, saved: &Path, keys: &Path) {
+    let left = out.join(LEAK_SCAN_LEFT);
+    copy_used_tree(saved, &left.join("saved"));
+    copy_used_tree(keys, &left.join("keys"));
+}
+
+/// The save a test under L1 left in `out`, this host's side of its share
+/// ([`leave_leak_scan`]), judged as the test judges one in place; nothing where none was left.
+pub fn judge_left_leak_scan(out: &Path) {
+    let left = out.join(LEAK_SCAN_LEFT);
+    if left.exists() {
+        leak_scan_judged(&left.join("saved"), &left.join("keys"));
+    }
+}
+
+/// Directory `from` copied to `to`: its directories, and its regular files, each with only
+/// what its file system says holds data and is not all zeros (`platform::copy_used`), so that a
+/// save's sparse files take no more of `to`'s disk than they did of `from`'s, and synced, as `to`
+/// may be a share whose host reads it once this guest is gone. No link is copied: the scan
+/// follows none.
+fn copy_used_tree(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let (path, copy) = (entry.path(), to.join(entry.file_name()));
+        let kind = entry.file_type().unwrap();
+        if kind.is_dir() {
+            copy_used_tree(&path, &copy);
+        } else if kind.is_file() {
+            let source = std::fs::File::open(&path).unwrap();
+            let len = source.metadata().unwrap().len();
+            let made = std::fs::File::create(&copy).unwrap();
+            shards_vmm::platform::copy_used(&source, &made, len).unwrap();
+            made.sync_all().unwrap();
+        }
+    }
+}
+
 /// shards' guest kernel for the host architecture: Linux 6.18.48 with Firecracker's
 /// microVM config and ours (resources/kernel), built reproducibly by CI.
 pub fn kernel_artifact() -> Artifact {
@@ -2482,6 +2578,13 @@ impl Patience {
         }
     }
 
+    /// It as a wait on the delivery of a run's log to `to` ([`Wait::delivery_to`]): a log
+    /// server's wait for a run's lines.
+    pub fn delivery_to(mut self, to: &str) -> Patience {
+        self.wait.party.delivery = Some(to.to_string());
+        self
+    }
+
     /// Whether to look again: while its judge holds it and its party lives; once either
     /// refuses it, once more, the look after this one, and then no more, its account said on
     /// stderr. Ask it after each look that found the state not yet come, as often as they
@@ -3522,6 +3625,9 @@ pub struct Party {
     /// for its account: which of them a refusal's last progress was (b24: a run's VM
     /// process, its daemon's spawner's child, told from the client's by its name alone).
     kin: std::collections::BTreeMap<u32, (u32, String)>,
+    /// The destination of the delivery of a run's log its wait reads, as the run's options
+    /// name it ([`Wait::delivery_to`]); none for a wait on anything else.
+    delivery: Option<String>,
 }
 
 /// Process `pid`'s status as its OS gives it: Linux its `/proc/<pid>/stat` state (field 3,
@@ -3642,7 +3748,9 @@ pub struct Looked {
     pub daemon_ran: Option<String>,
     /// Whether it saw its party's own processes run or rest unheld: none of them held from
     /// running, stopped, starved of a CPU (`shards_api::Watch::starved`), ending or found
-    /// anew, no run of its home in its stop grace, its daemon saying nothing (words are
+    /// anew, its daemon within no deadline of its own that holds it ([`Party::graced`]: a
+    /// run's stop grace, a log's next try to the destination it reads), its daemon saying
+    /// nothing (words are
     /// progress its CPU does not show), and no progress of this process's servers', which it
     /// may be waiting on. Only such looks' windows are its judge's rate's
     /// (`shards_api::Span::work`, D215).
@@ -3694,6 +3802,7 @@ impl Party {
             beside: None,
             served: None,
             kin: std::collections::BTreeMap::new(),
+            delivery: None,
         }
     }
 
@@ -3775,8 +3884,10 @@ impl Party {
     /// stalled on its memory, and so running nothing), or stopped or suspended one, which
     /// D215's look finds `Still` on Linux and a test's wait counts as its host's hold: a kiln
     /// runner's headroom guard suspends a run's processes as it paces them (ROOT,
-    /// 2026-11-13); or, a process of it live, held where a run of its home is in its stop
-    /// grace ([`graced`](Self::graced)), the daemon's own deadline; else still; and gone where no process of it runs and its daemon said
+    /// 2026-11-13); or, a process of it live, held where its daemon is within a deadline of
+    /// its own that holds it, a run of its home in its stop grace or, for a wait on the
+    /// delivery of a run's log, that run's shipper paused until its next try there
+    /// ([`graced`](Self::graced)); else still; and gone where no process of it runs and its daemon said
     /// nothing, its liveness ended. A process found anew is judged from the look after. A
     /// machine of this process's is never gone: its liveness is its caller's. Its daemon's own
     /// run is said apart ([`Looked::daemon_ran`]), its waiter's to weigh. A look that found
@@ -3950,11 +4061,11 @@ impl Party {
             looked.found = Found::Held;
             looked.what = format!("its VM process {pid} in its launch, the host's to admit (PM M166)");
         }
-        if live && let Some((run, left)) = self.graced() {
+        if live && let Some((run, what, left)) = self.graced() {
             looked.vouched = false;
             if looked.found == Found::Still {
                 looked.found = Found::Held;
-                looked.what = format!("its daemon in run {run}'s stop grace, {left:?} more");
+                looked.what = format!("its daemon in run {run}'s {what}, {left:?} more");
             }
         }
         if !live && looked.found == Found::Still && !matches!(self.members, Members::Machine) {
@@ -3967,20 +4078,36 @@ impl Party {
         looked
     }
 
-    /// The run of its home whose stop grace has longest to go, and how long (`shards_ipc::
-    /// GRACE`): the daemon's own deadline, its SIGKILL, before which it and that run may run
-    /// nothing at all, as a command that ignores its stop signal keeps them, and are not
-    /// stalled (D209). None past every grace, nor where none is kept.
-    fn graced(&self) -> Option<(String, Duration)> {
+    /// The deadline of its home's daemon that holds it and has longest to go: the run it is
+    /// of, what it is, and how long. The daemon keeps each in its run's directory while it
+    /// holds, and before it nothing need run, so none is a stall (D209): a run's stop grace
+    /// (`shards_ipc::GRACE`), its SIGKILL, before which the daemon and that run may run
+    /// nothing at all, as a command that ignores its stop signal keeps them, which holds
+    /// every wait on the daemon; and a run's log's shipper's next try (`shards_ipc::RETRY`),
+    /// before which the shipper sleeps, its receiver having failed it, as a server not yet
+    /// up does, which holds up the delivery to the destination it names alone, and so holds
+    /// only a wait on that delivery ([`delivery`](Self::delivery), Part 10). None past every
+    /// one, nor where none is kept.
+    fn graced(&self) -> Option<(String, String, Duration)> {
         let now = std::time::SystemTime::now();
         std::fs::read_dir(self.home.as_ref()?.join("containers"))
             .ok()?
-            .filter_map(|run| {
-                let run = run.ok()?;
-                let left = shards_ipc::grace_until(&run.path())?.duration_since(now).ok()?;
-                Some((run.file_name().to_string_lossy().into_owned(), left))
+            .filter_map(Result::ok)
+            .flat_map(|run| {
+                let dir = run.path();
+                let grace = shards_ipc::deadline_in(&dir, shards_ipc::GRACE)
+                    .map(|(due, _)| (due, "stop grace".to_string()));
+                let retry = shards_ipc::deadline_in(&dir, shards_ipc::RETRY).and_then(|(due, to)| {
+                    let to = to.filter(|to| self.delivery.as_ref() == Some(to))?;
+                    Some((due, format!("log's pause before its next try to {to}")))
+                });
+                let name = run.file_name().to_string_lossy().into_owned();
+                [grace, retry]
+                    .into_iter()
+                    .flatten()
+                    .filter_map(move |(due, what)| Some((name.clone(), what, due.duration_since(now).ok()?)))
             })
-            .max_by_key(|(_, left)| *left)
+            .max_by_key(|(_, _, left)| *left)
     }
 
     /// What each process it follows is doing now, as its OS gives it, for a wait's account of
@@ -4697,6 +4824,15 @@ impl Wait {
         let mut wait = Wait::on(kind, Party::client(client, home), asked);
         wait.command = true;
         wait
+    }
+
+    /// It as a wait on the delivery of a run's log to `to`, the destination as the run's
+    /// options name it (`logging::destination`: `syslog-address=tcp://127.0.0.1:514`): a
+    /// pause of that run's shipper before its next try there holds it, and holds no other
+    /// wait (`shards_ipc::RETRY`, D209 Part 10).
+    pub fn delivery_to(mut self, to: &str) -> Wait {
+        self.party.delivery = Some(to.to_string());
+        self
     }
 
     /// A wait beginning now on `party`, `asked` naming what it waits for.
@@ -6305,6 +6441,17 @@ pub fn judged_there<T: Send>(
     judging(wait, Stage::Begun, asked, stop, call)
 }
 
+/// Where a judged call's own thread is ([`judging`]).
+enum Calling {
+    /// Spawned, not yet at its first line: its OS has it runnable, and it has run none of
+    /// its call.
+    Spawned,
+    /// Running its call, followed by its own clock.
+    Calls(ServerThread),
+    /// Past its call, its clock let go of; its answer on its way.
+    Called,
+}
+
 /// [`judged`]'s wait, its looks saying its answer missing where `stage` is
 /// [`Stage::Awaited`], and never where it is [`Stage::Begun`]. `call` runs on a thread of
 /// this process, shards-api's client, whose work (a spec's checks, an image's reads, a
@@ -6314,7 +6461,7 @@ pub fn judged_there<T: Send>(
 /// 206 µs on HVF and one in 28.6 ms on KVM at 0 ns of the started processes' CPU, taught
 /// their call sites a W* that refused the next call as it worked). The thread names itself
 /// as it starts and is let go of before it returns, under one lock, so its clock is read
-/// only while it lives.
+/// only while it lives ([`Calling`]).
 fn judging<T: Send>(
     mut wait: Wait,
     stage: Stage,
@@ -6322,14 +6469,14 @@ fn judging<T: Send>(
     stop: impl FnOnce(),
     call: impl FnOnce() -> T + Send,
 ) -> Result<T, String> {
-    let calling: std::sync::Mutex<Option<ServerThread>> = std::sync::Mutex::new(None);
+    let calling = std::sync::Mutex::new(Calling::Spawned);
     let thread = || calling.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     std::thread::scope(|scope| {
         let (tx, rx) = std::sync::mpsc::channel();
         let worker = scope.spawn(move || {
-            *thread() = Some(ServerThread::this());
+            *thread() = Calling::Calls(ServerThread::this());
             let answer = call();
-            *thread() = None;
+            *thread() = Calling::Called;
             let _ = tx.send(answer);
         });
         let refused = loop {
@@ -6345,9 +6492,18 @@ fn judging<T: Send>(
                 },
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
             }
-            if let Some(thread) = thread().as_mut() {
-                let before = thread.last;
-                wait.call_looked(thread.ran() > before, thread.runnable());
+            match &mut *thread() {
+                // Runnable and none of its call run: its host's hold, as a thread of its
+                // that is runnable and not running is (CI 43968984258, aarch64 musl: a call
+                // spinning for 200 ms, its thread not yet named 2.06 ms into its wait beside
+                // the busy stand-ins of the tests around it, refused as idle, "its last
+                // progress its start").
+                Calling::Spawned => wait.call_looked(false, true),
+                Calling::Calls(thread) => {
+                    let before = thread.last;
+                    wait.call_looked(thread.ran() > before, thread.runnable());
+                }
+                Calling::Called => {}
             }
             let looked = if stage == Stage::Awaited {
                 wait.look(false)
@@ -6836,6 +6992,7 @@ pub fn host_port_accept(port: &mut HostPort) -> io::Result<VsockStream> {
 /// it; its writes as `std` writes a file, each waited for to its end, a refused one's error
 /// the OS's own (ERROR_NO_DATA, 232, once its reader has closed its end).
 #[cfg(windows)]
+#[derive(Debug)]
 pub struct PipeStream {
     reads: shards_ipc::Pipe,
     /// None once its writes are shut down, which its peer reads as their end.
@@ -8483,15 +8640,27 @@ impl Told {
 
     /// Its host's word that it is short of memory, once.
     pub fn say(&mut self) {
+        self.word(b"\n");
+    }
+
+    /// Its host's word that it has `bytes` of memory available, in place of its kernel's
+    /// count (D252): every charge its daemon makes of a run's buffers is held to it once its
+    /// daemon has heard it, which it says in its log (`told the host has N bytes`), as a
+    /// microVM runs (D188: its watcher listens then alone).
+    pub fn available(&mut self, bytes: u64) {
+        self.word(format!("available {bytes}\n").as_bytes());
+    }
+
+    fn word(&mut self, line: &[u8]) {
         #[cfg(unix)]
         std::fs::OpenOptions::new()
             .write(true)
             .open(&self.path)
             .unwrap()
-            .write_all(b"\n")
+            .write_all(line)
             .unwrap();
         #[cfg(windows)]
-        self.server.write_all(b"\n").unwrap();
+        self.server.write_all(line).unwrap();
     }
 }
 

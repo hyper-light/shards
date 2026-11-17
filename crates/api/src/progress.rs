@@ -147,9 +147,21 @@ struct Hold {
     /// host's own work for it, a disk's flush or a page-in, which no rate of its own runs at
     /// (PM M600: `shards guest use` spent 52 to 172 ms of its 69 to 192 ms so on a loaded
     /// Mac, F_FULLFSYNC's waits, at 14 to 16 ms of CPU). Its look vouches for no window of
-    /// its rate ([`vouches`]). Windows' wait reasons for a flush are unread here.
+    /// its rate ([`vouches`]), and one that ran nothing is held where its host's block
+    /// devices completed I/O meanwhile ([`disks`](Self::disks)). Windows' wait reasons for a
+    /// flush are unread here.
     #[cfg(unix)]
     uninterruptible: bool,
+    /// The I/O its host's block devices had completed, every device's summed, read where a
+    /// thread of it waited in its kernel as it was looked at (Linux `/proc/diskstats`, macOS
+    /// IOKit's `IOBlockStorageDriver` statistics: `os::disks`), none elsewhere or where
+    /// unread. Its growth since the look before says its host's disks were working
+    /// meanwhile: a transaction commit another task runs, whose waiters wait in their
+    /// kernels doing no I/O of their own (D215, 2026-11-16: two daemons' stops refused at
+    /// once on adacachy2's btrfs, each in `D` on one commit), as against a wait no device is
+    /// serving, a dead NFS mount's, which is still.
+    #[cfg(unix)]
+    disks: Option<u64>,
     /// The scheduler's own count of its threads' wait for a CPU.
     #[cfg(unix)]
     queued: Queued,
@@ -218,10 +230,14 @@ enum Queued {
 
 impl Hold {
     /// Whether its host held it since the look that saw `before`: a thread of it runnable,
-    /// or waiting on its host's memory, now (macOS: a thread waiting uninterruptibly in its
-    /// kernel, of which macOS keeps no pressure record); or its threads' wait for a CPU grown
-    /// since; or (Linux) its own cgroup's pressure; or its host's storage's work for it
-    /// ([`Io`]).
+    /// or waiting on its host's memory, now; or (Unix) a thread of it waiting uninterruptibly
+    /// in its kernel now, its host's block devices having completed I/O since the look before
+    /// ([`disks`](Self::disks)); or its threads' wait for a CPU grown since; or (Linux) its
+    /// own cgroup's pressure; or its host's storage's work for it ([`Io`]).
+    ///
+    /// A party that ran nothing over a window and waits in its kernel at its end waited there
+    /// at its start too, as it runs to enter a wait: so the look before, which found it so,
+    /// read its host's disks then. One whose look before read none is not held by them.
     ///
     /// The kernel adds a thread's wait to its `run_delay` as it reaches a CPU or leaves the
     /// queue (kernel/sched/stats.h `sched_info_arrive`, `sched_info_dequeue`): a thread that
@@ -242,9 +258,10 @@ impl Hold {
         let pressed = matches!((before.pressure, self.pressure), (Some(b), Some(n)) if n > b);
         #[cfg(not(target_os = "linux"))]
         let pressed = false;
-        #[cfg(target_os = "macos")]
-        let in_kernel = self.uninterruptible;
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(unix)]
+        let in_kernel =
+            self.uninterruptible && matches!((before.disks, self.disks), (Some(b), Some(n)) if n > b);
+        #[cfg(windows)]
         let in_kernel = false;
         self.runnable || in_kernel || queued || pressed || self.io.grown_since(&before.io)
     }
@@ -826,8 +843,9 @@ mod os {
 
     /// What its host is doing to process `pid` ([`Hold`]), from its own evidence alone: a
     /// thread of it runnable, its state `R` (`/proc/<pid>/task/<tid>/stat` field 3, proc(5)),
-    /// or waiting uninterruptibly in its kernel, `D`, which vouches for no window of its rate;
-    /// it stopped, its leader's state `T` or `t`, or its cgroup frozen (`cgroup.events`'
+    /// or waiting uninterruptibly in its kernel, `D`, which vouches for no window of its rate,
+    /// and then its host's block devices' completed I/O ([`disks`]); it stopped, its leader's
+    /// state `T` or `t`, or its cgroup frozen (`cgroup.events`'
     /// `frozen 1`, Documentation/admin-guide/cgroup-v2.rst); its threads' run-queue wait
     /// ([`Queued`]); where its cgroup holds it alone, that cgroup's pressure
     /// (Documentation/accounting/psi.rst), whose `some` totals grow while any of its tasks
@@ -865,6 +883,9 @@ mod os {
                 let leader = task.file_name().to_str().and_then(|tid| tid.parse::<u32>().ok()) == Some(pid);
                 hold.stopped |= leader && matches!(state, b'T' | b't');
             }
+        }
+        if hold.uninterruptible {
+            hold.disks = disks();
         }
         if let Some((dir, root)) = cgroup(pid) {
             hold.stopped |= frozen(&dir);
@@ -910,6 +931,32 @@ mod os {
     /// `/proc/<pid>/task/<tid>/stat`'s field 42, `delayacct_blkio_ticks`: the task's block I/O
     /// delays, in clock ticks (proc(5)).
     const BLKIO_TICKS: usize = 42;
+
+    /// The I/O the host's block devices have completed ([`Hold::disks`](super::Hold)), from
+    /// `/proc/diskstats`; none where it cannot be read.
+    pub(super) fn disks() -> Option<u64> {
+        std::fs::read_to_string("/proc/diskstats")
+            .ok()
+            .map(|text| disks_completed(&text))
+    }
+
+    /// Of `/proc/diskstats`' `text`, each line's reads, writes, discards (since 4.18) and
+    /// flushes (since 5.5) completed, as many of them as its kernel lists, summed over every
+    /// line (Documentation/admin-guide/iostats.rst: after a line's major, minor and name, its
+    /// fields 1, 5, 12 and 16). A partition's are its disk's too, and a mapped device's its
+    /// disks': only the sum's growth is read, which any of them shows.
+    pub(super) fn disks_completed(text: &str) -> u64 {
+        const COMPLETED: [usize; 4] = [0, 4, 11, 15];
+        text.lines()
+            .flat_map(|line| {
+                line.split_ascii_whitespace()
+                    .skip(3)
+                    .enumerate()
+                    .filter(|(i, _)| COMPLETED.contains(i))
+                    .filter_map(|(_, n)| n.parse::<u64>().ok())
+            })
+            .fold(0, u64::saturating_add)
+    }
 
     /// Field `n` of a stat file (proc(5)'s numbering, from 1), a number, where `n` is past the
     /// state (field 3): counted after the command's last `)`, which may hold any byte.
@@ -1144,10 +1191,12 @@ mod os {
     /// `TH_STATE_RUNNING` (running, or waiting for a CPU), and one waiting in its kernel where
     /// it is `TH_STATE_UNINTERRUPTIBLE` (a page-in, a disk's flush, PM M600, of which macOS
     /// keeps no pressure record), as `PROC_PIDTHREADINFO` reports each (sys/proc_info.h,
-    /// mach/thread_info.h); its threads' time runnable ([`Queued`]), which grows over a time
-    /// it ran no CPU only while one waited for a CPU, as a thread its host holds through a
-    /// look's sample does; and its storage's work for it ([`Io::done`](super::Io)), none of
-    /// it a time waited, which macOS keeps no count of. What it cannot read shows nothing.
+    /// mach/thread_info.h), and then its host's block storage's completed I/O
+    /// (`shards_apple::storage::completed`); its threads' time runnable ([`Queued`]), which
+    /// grows over a time it ran no CPU only while one waited for a CPU, as a thread its host
+    /// holds through a look's sample does; and its storage's work for it
+    /// ([`Io::done`](super::Io)), none of it a time waited, which macOS keeps no count of.
+    /// What it cannot read shows nothing.
     pub(super) fn hold(pid: u32) -> Hold {
         let Ok(id) = libc::c_int::try_from(pid) else {
             return Hold::default();
@@ -1158,10 +1207,12 @@ mod os {
             .filter_map(|handle| run_state(id, handle))
             .collect();
         let usage = rusage_v4(id);
+        let uninterruptible = states.contains(&libc::TH_STATE_UNINTERRUPTIBLE);
         Hold {
             queued: usage.map_or(Queued::Unread, |u| Queued::Waited(u.ri_runnable_time)),
             runnable: states.contains(&libc::TH_STATE_RUNNING),
-            uninterruptible: states.contains(&libc::TH_STATE_UNINTERRUPTIBLE),
+            uninterruptible,
+            disks: uninterruptible.then(shards_apple::storage::completed).flatten(),
             stopped: status(id) == Some(libc::SSTOP),
             io: super::Io {
                 done: usage.map(|u| {
@@ -2193,6 +2244,8 @@ mod tests {
             #[cfg(unix)]
             uninterruptible: false,
             #[cfg(unix)]
+            disks: None,
+            #[cfg(unix)]
             queued: Queued::Unread,
             #[cfg(target_os = "linux")]
             pressure: None,
@@ -2334,12 +2387,72 @@ mod tests {
         assert!(refused.rate().is_some(), "{refused:?}");
     }
 
+    /// A look that finds a party that ran nothing with a thread waiting in its kernel finds it
+    /// held only where its host's block devices completed I/O since the look before (D215,
+    /// 2026-11-16): a transaction commit another task runs, which its waiters share with no
+    /// I/O of their own (two daemons' stops refused at once on adacachy2's btrfs, each in `D`
+    /// on one commit, Linux's look reading `D` as still). Still where no device completed any
+    /// (a dead NFS mount's waiter), where the look before read no count, where the count fell
+    /// (a device gone), and where no thread waits in its kernel, whatever the disks did. Its
+    /// rate's windows are its host's either way.
+    #[cfg(unix)]
+    #[test]
+    fn a_party_in_its_kernel_is_held_only_while_its_hosts_disks_complete_io() {
+        let hold = |uninterruptible, disks| Hold {
+            uninterruptible,
+            disks,
+            ..Hold::default()
+        };
+        let (from, busy) = (hold(true, Some(10)), hold(true, Some(11)));
+        assert_eq!(found(false, false, &from, &busy), Found::Held);
+        assert_eq!(
+            found(false, false, &from, &hold(true, Some(10))),
+            Found::Still,
+            "no device completed any I/O"
+        );
+        assert_eq!(
+            found(false, false, &hold(true, None), &busy),
+            Found::Still,
+            "none read before"
+        );
+        assert_eq!(
+            found(false, false, &busy, &from),
+            Found::Still,
+            "a count that fell"
+        );
+        assert_eq!(
+            found(false, false, &hold(false, Some(10)), &hold(false, Some(11))),
+            Found::Still,
+            "no thread in its kernel"
+        );
+        assert_eq!(found(true, false, &from, &from), Found::Progressed);
+        assert!(!vouches(Found::Still, false, &hold(true, Some(10)), false, false));
+        assert!(!vouches(Found::Still, false, &hold(true, None), false, false));
+    }
+
+    /// `/proc/diskstats`' completed reads, writes, discards and flushes are summed over its
+    /// lines, as many of those fields as each line's kernel lists (iostats.rst: 11 fields
+    /// before 4.18, 15 since, 17 since 5.5), its other fields left out.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_hosts_completed_io_is_summed_from_every_diskstats_line() {
+        let text = concat!(
+            "   8       0 sda 10 1 2 3 20 1 2 3 0 4 5 30 1 2 3 40 1\n",
+            " 259       1 nvme0n1p1 100 7 7 7 200 7 7 7 7 7 7 300 7 7 7\n",
+            "   7       0 loop0 1000 9 9 9 2000 9 9 9 9 9 9\n",
+        );
+        assert_eq!(os::disks_completed(text), 3700);
+        assert_eq!(os::disks_completed(""), 0);
+    }
+
     /// A process whose thread writes a file and flushes it to its disk again and again
     /// (macOS F_FULLFSYNC; Linux fdatasync(2) on a disk, never a tmpfs, whose flush waits on
     /// nothing) is seen waiting uninterruptibly in its kernel (`TH_STATE_UNINTERRUPTIBLE`,
     /// `D`), its look then vouching for no window of its rate, though it ran; and its
-    /// storage's counts grow between two looks ([`Io`]: PM M600, M601). Each looked at until
-    /// seen so, a wait for that fact, with no clock.
+    /// storage's counts grow between two looks ([`Io`]: PM M600, M601). A look that finds it
+    /// in its kernel reads its host's disks, and a later one finds them grown, its flushes
+    /// being their writes: held, had it run nothing between (D215, 2026-11-16). Each looked
+    /// at until seen so, a wait for that fact, with no clock.
     #[cfg(unix)]
     #[test]
     fn a_process_flushing_to_its_disk_is_seen_waiting_in_its_kernel() {
@@ -2352,8 +2465,17 @@ mod tests {
             }
             std::thread::yield_now();
         };
+        assert!(hold.disks.is_some(), "its host's disks unread: {hold:?}");
         assert!(!vouches(Found::Progressed, false, &hold, false, false));
         while !followed.hold().io.grown_since(&hold.io) {
+            std::thread::yield_now();
+        }
+        loop {
+            let later = followed.hold();
+            if later.uninterruptible && matches!((hold.disks, later.disks), (Some(b), Some(n)) if n > b) {
+                assert_eq!(found(false, false, &hold, &later), Found::Held, "{later:?}");
+                break;
+            }
             std::thread::yield_now();
         }
         drop(child.stdin.take());

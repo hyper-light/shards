@@ -60,8 +60,9 @@ fn networks_now() -> MutexGuard<'static, Vec<abi::Shared>> {
 /// order: every member's gate first, so that no new flow opens on what one lost; each member's
 /// open TCP flows to what it lost reset, their RSTs crossing the rules still there; then the
 /// switch's tables and init's; then eth0's second address, given once those keep the run's own
-/// processes off it, or taken back once nothing names it; then each member's resolver. Told
-/// again, it is done again whole, so that a host that lost an answer asks again safely.
+/// processes off it and the ports' chooser its holders' answers out of their zones, or taken
+/// back once nothing names it; then each member's resolver. Told again, it is done again
+/// whole, so that a host that lost an answer asks again safely.
 pub fn change(args: &[Vec<u8>]) -> io::Result<()> {
     let told =
         abi::parse_args(args).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e.to_string()))?;
@@ -104,9 +105,22 @@ pub fn change(args: &[Vec<u8>]) -> io::Result<()> {
         }
     }
     switch.retable()?;
+    // The ports' chooser keeps its holders' answers to the network out of their zones before
+    // eth0 takes the run's address there, and lets it go once eth0 has given it back (D122).
+    let chooser = crate::domains::CHOOSER.get();
     match (&was, &now) {
-        (None, Some(s)) => crate::net::shared_address(s.address, s.prefix, true)?,
-        (Some(s), None) => crate::net::shared_address(s.address, s.prefix, false)?,
+        (None, Some(s)) => {
+            if let Some(c) = chooser {
+                c.share(abi::subnet(s.address, s.prefix), true)?;
+            }
+            crate::net::shared_address(s.address, s.prefix, true)?;
+        }
+        (Some(s), None) => {
+            crate::net::shared_address(s.address, s.prefix, false)?;
+            if let Some(c) = chooser {
+                c.share(abi::subnet(s.address, s.prefix), false)?;
+            }
+        }
         _ => {}
     }
     let on_it = |s: &Option<abi::Shared>, member: u32| {
@@ -435,6 +449,7 @@ mod tests {
             ingress: ingress.to_vec(),
             accepted: ingress.to_vec(),
             names: Vec::new(),
+            resolves: true,
         }
     }
 

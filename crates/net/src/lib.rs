@@ -420,7 +420,8 @@ pub struct Config {
     /// One current, expiring answer per granted name and address question type.
     learned: Vec<Learned>,
     /// Whether any name may be asked past the microVM (`NETWORK --dns`); else only the
-    /// named's, and every other question is REFUSED.
+    /// named's, and every other question is answered at once, NXDOMAIN (`dns::denied`,
+    /// D46).
     pub dns_all: bool,
 }
 
@@ -2344,7 +2345,7 @@ impl<'r> Stack<'r> {
                     .set(peer.sock.raw_sock(), token, poll::Interest::READ, both);
             }
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
-            Err(_) => self.drop_peer(i),
+            Err(_) => self.peer_gone(i),
         }
     }
 
@@ -2419,7 +2420,7 @@ impl<'r> Stack<'r> {
                 self.frame_from_link(i, frame);
             }
             if gone {
-                self.drop_peer(i);
+                self.peer_gone(i);
             }
             return;
         }
@@ -2456,11 +2457,25 @@ impl<'r> Stack<'r> {
             self.out().send(&[&frame]);
         }
         if gone {
-            self.drop_peer(i);
+            self.peer_gone(i);
         }
     }
 
-    /// Forgets peer `i`, whose VM has gone.
+    /// Forgets peer `i`, whose far end has gone: a VM of the guest's network (D46), or a run
+    /// linked on a network shared by runs that has ended or left it (D285 slice 6). The
+    /// closed link is the evidence: that run's names and aliases there are answered no more,
+    /// at once, never left to the network's next change.
+    fn peer_gone(&mut self, i: usize) {
+        if let Some(Some(peer)) = self.peers.get(i)
+            && let Some(link) = &peer.link
+        {
+            let (id, ip) = (link.network, peer.ip);
+            self.joined.unlinked(&id, ip);
+        }
+        self.drop_peer(i);
+    }
+
+    /// Forgets peer `i`.
     fn drop_peer(&mut self, i: usize) {
         if let Some(slot) = self.peers.get_mut(i)
             && let Some(peer) = slot.take()
@@ -2658,6 +2673,9 @@ impl<'r> Stack<'r> {
             Some(slot) => *slot = Some(peer),
             None => self.peers.push(Some(peer)),
         }
+        // A link there again: its run's names answered again, where an older link's end had
+        // withdrawn them.
+        self.joined.linked(&id, ip);
         Ok(Ok(()))
     }
 
@@ -2684,7 +2702,7 @@ impl<'r> Stack<'r> {
             let answer = if network.names.holds(q.payload) {
                 network.names.answer(q.payload)
             } else {
-                dns::refused(q.payload)
+                dns::denied(q.payload)
             };
             let gateway = IpAddr::V4(network.gateway);
             if let Some(answer) = answer {
@@ -2791,17 +2809,18 @@ impl<'r> Stack<'r> {
                 let granted = asked.as_deref().map_or(self.cfg.dns_all, |q| self.cfg.asks(q));
                 if granted {
                     self.flow((u.src_port, ip.dst, 53), (IpAddr::V4(up.0), up.1), u.payload);
-                } else if let Some(no) = dns::refused(u.payload) {
+                } else if let Some(no) = dns::denied(u.payload) {
                     self.out().datagram((gateway, 53), u.src_port, &no);
                 }
                 return;
             }
             // Any other question of a network's member names nothing a grant reaches:
-            // refused at once, by policy (RFC 1035 §4.1.1), which a resolver takes as final,
-            // where a server's failure would be asked again.
+            // answered at once, NXDOMAIN (`dns::denied`, D46), which every stub resolver
+            // takes as final, where a server's failure would be asked again and musl's drops
+            // a refusal.
             if u.dst_port == 53
                 && self.names.is_some()
-                && let Some(no) = dns::refused(u.payload)
+                && let Some(no) = dns::denied(u.payload)
             {
                 self.out().datagram((gateway, 53), u.src_port, &no);
                 return;
@@ -4308,7 +4327,83 @@ mod tests {
         assert_eq!(take(), None, "its address there no longer the guest's");
     }
 
+    /// D285 slice 6. Do: join a shared network beside db, grant out to db, link db; close the
+    /// link's far end and tell the stack its socket ended; link db again. Expect: db's name
+    /// answered while its link lives; once its far end has gone, the link forgotten and db's
+    /// name answered no more, at once, the closed link the evidence; answered again with a
+    /// link there again.
+    #[cfg(unix)]
+    #[test]
+    fn a_runs_names_are_withdrawn_as_its_link_ends() {
+        use crate::shared::{Change, Grant, Way};
+        use std::os::unix::net::UnixStream;
+        let region = Region::map(shards_netring::memory().unwrap()).unwrap();
+        let (cw, pr) = shards_netring::doorbell().unwrap();
+        let (_, cr) = shards_netring::doorbell().unwrap();
+        let _consumer = region.consumer(1, cr, cw);
+        let bridge = bridge::Bridge::elect(&[]).unwrap();
+        let cfg = Config::on_bridge(Policy::DenyAll, [2, 0, 0, 0, 0, 1], &bridge);
+        let mut stack = stack(cfg, region.producer(1, pr));
+        let id = shared::NetworkId([b'b'; shared::ID_LEN]);
+        let (ours, db) = (Ipv4Addr::new(10, 89, 0, 2), Ipv4Addr::new(10, 89, 0, 3));
+        let join = shared::Join {
+            network: id,
+            address: ours,
+            prefix: 24,
+            gateway: Ipv4Addr::new(10, 89, 0, 1),
+            name: "team".into(),
+            members: vec![("harness".into(), ours), ("db".into(), db)],
+        };
+        let (control, _held) = UnixStream::pair().unwrap();
+        assert_eq!(stack.join(&join.encode().unwrap(), &control).unwrap(), Ok(()));
+        let to_db = Grant {
+            member: "harness".into(),
+            peer: "db".into(),
+            proto: Proto::Tcp,
+            first: 5432,
+            last: 5432,
+            way: Way::Out,
+        };
+        assert_eq!(
+            stack.grant(&stack_grant(&id, Change::Add(to_db))).unwrap(),
+            Ok(())
+        );
+        let q = [
+            0x12, 0x34, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 2, b'd', b'b', 0, 0, 1, 0, 1,
+        ];
+        let answered = |stack: &Stack<'_>| stack.joined.get(&id).is_some_and(|n| n.names.holds(&q));
+        let (far, end) = UnixStream::pair().unwrap();
+        assert_eq!(
+            stack
+                .link(&shared::encode_link(&id, db), vec![end.into()])
+                .unwrap(),
+            Ok(())
+        );
+        assert!(answered(&stack), "db's name, its link alive");
+        drop(far);
+        let slot = stack.link_of(&id, db).unwrap();
+        let generation = stack.peers[slot].as_ref().unwrap().generation;
+        let ended = poll::Event {
+            token: token::of(token::PEER, generation, u32::try_from(slot).unwrap()),
+            read: true,
+            write: false,
+            ended: true,
+        };
+        stack.on_peer(slot, &ended);
+        assert!(stack.link_of(&id, db).is_none(), "its link forgotten");
+        assert!(!answered(&stack), "db's name withdrawn at once");
+        let (_far, end) = UnixStream::pair().unwrap();
+        assert_eq!(
+            stack
+                .link(&shared::encode_link(&id, db), vec![end.into()])
+                .unwrap(),
+            Ok(())
+        );
+        assert!(answered(&stack), "answered again, a link there again");
+    }
+
     /// `NET_PEER_GRANT`'s payload for `change` of network `id`'s grants.
+    #[cfg(unix)]
     fn stack_grant(id: &shared::NetworkId, change: shared::Change) -> Vec<u8> {
         shared::encode_grant(id, &change).unwrap()
     }

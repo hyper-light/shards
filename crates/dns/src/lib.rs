@@ -5,7 +5,7 @@
 //! name an address's PTR answers, so that a reverse answer resolves forward and names
 //! the network the address is on; and SERVFAIL for a name the table does not hold, which
 //! its asker never sends ([`Names::holds`] first): it passes the question on where a grant
-//! reaches past the network, and refuses it where none does. Every answer's TTL is 0
+//! reaches past the network, and answers it [`denied`] where none does. Every answer's TTL is 0
 //! (RFC 1035 §3.2.1: used for the transaction in progress, not cached), since a network's
 //! names change as its members come and go, and one kept past its member could name the
 //! next member given its address.
@@ -26,7 +26,9 @@ const CLASS_IN: u16 = 1;
 const NOERROR: u8 = 0;
 const FORMERR: u8 = 1;
 const SERVFAIL: u8 = 2;
+const NXDOMAIN: u8 = 3;
 const NOTIMP: u8 = 4;
+const REFUSED: u8 = 5;
 
 /// The names a network's members answer to, and the network's name.
 #[derive(Debug, Default, Clone)]
@@ -273,14 +275,25 @@ pub fn query_name(q: &[u8]) -> Option<String> {
     Some(labels.join(".").to_ascii_lowercase())
 }
 
-/// REFUSED (RFC 1035 §4.1.1, RCODE 5) for query `q`, its question kept: a name no grant
-/// lets the guest ask past the microVM (default deny), said at once, so that no resolver
-/// waits out its timeouts.
-pub fn refused(q: &[u8]) -> Option<Vec<u8>> {
+/// The answer to query `q` where no table here holds its name and no grant lets the guest
+/// ask it past the microVM (default deny, D46, D59), said at once, its question kept: for a
+/// query of one question NXDOMAIN (RFC 1035 §4.1.1, RCODE 3), a name that is none for its
+/// asker, which every stub resolver takes as final at once, where musl's drops REFUSED and
+/// waits out its timeout ("ignore all other codes such as refusal", src/network/res_msend.c),
+/// its lookup then ending EAI_AGAIN (lookup_name.c `name_from_dns`); with no SOA, so that no
+/// cache keeps it past a grant that names the name (RFC 2308 §5). REFUSED (RCODE 5) for what
+/// is no query of one question, as the agents' resolver answers one (D278). None where no
+/// question can be read to keep.
+pub fn denied(q: &[u8]) -> Option<Vec<u8>> {
+    let rcode = if query_name(q).is_some() {
+        NXDOMAIN
+    } else {
+        REFUSED
+    };
     let (&[id0, id1, f0, _], _) = q.split_first_chunk::<4>()?;
     let (_, end) = qname(q.get(12..)?)?;
     let question = q.get(12..12 + end + 4)?;
-    let mut out = vec![id0, id1, 0x80 | (f0 & 0x79), 0x80 | 5, 0, 1, 0, 0, 0, 0, 0, 0];
+    let mut out = vec![id0, id1, 0x80 | (f0 & 0x79), 0x80 | rcode, 0, 1, 0, 0, 0, 0, 0, 0];
     out.extend_from_slice(question);
     Some(out)
 }
@@ -483,9 +496,10 @@ fn ptr_addr(name: &str) -> Option<IpAddr> {
 
 /// One DNS-over-TCP connection between the guest and the host's resolver (RFC 7766), as
 /// a guest's UDP questions are (D59): each whole question (RFC 1035 §4.2.2, its length's
-/// two bytes first) goes to the host's resolver only if a grant names it, and is REFUSED
-/// otherwise; each answer goes to the guest once it is whole, its A records learned. A
-/// refusal goes where no answer is part way, as RFC 7766 §7 lets answers come in any order.
+/// two bytes first) goes to the host's resolver only if a grant names it, and is answered
+/// [`denied`] otherwise; each answer goes to the guest once it is whole, its A records
+/// learned. A refusal goes where no answer is part way, as RFC 7766 §7 lets answers come in
+/// any order.
 #[derive(Debug)]
 pub struct Stream {
     /// Whether any name may be asked; else these alone, lowered.
@@ -534,7 +548,7 @@ impl Stream {
             let granted = self.any || query_name(q).is_some_and(|n| self.names.contains(&n));
             if granted {
                 out.extend_from_slice(&m);
-            } else if let Some(no) = refused(q)
+            } else if let Some(no) = denied(q)
                 && let Ok(len) = u16::try_from(no.len())
             {
                 self.refusals.extend_from_slice(&len.to_be_bytes());
@@ -736,16 +750,20 @@ mod tests {
                 ttl: 60,
             })
         );
-        // The query asked it, and is refused with its question kept.
+        // The query asked it, and is answered at once where no grant names it: NXDOMAIN, its
+        // question kept (D46); what is no query of one question, REFUSED.
         let mut q = vec![0x12, 0x34, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0];
         q.extend_from_slice(b"\x03MCP\x07example\x00\x00\x01\x00\x01");
         assert_eq!(query_name(&q).as_deref(), Some("mcp.example"));
-        let no = refused(&q).unwrap();
+        let no = denied(&q).unwrap();
         assert_eq!(
             (&no[..2], no[2] & 0x80, no[3] & 0x0f),
-            (&[0x12, 0x34][..], 0x80, 5)
+            (&[0x12, 0x34][..], 0x80, 3)
         );
         assert_eq!(&no[12..], &q[12..]);
+        let mut two = q.clone();
+        two[5] = 2;
+        assert_eq!(denied(&two).unwrap()[3] & 0x0f, 5);
         // A query is no answer; a cut one is nothing.
         let mut q = m.clone();
         q[2] = 0x01;
@@ -942,11 +960,11 @@ mod tests {
         // A question split across segments goes on once it is whole.
         assert!(s.from_guest(&granted[..5]).is_empty());
         assert_eq!(s.from_guest(&granted[5..]), granted);
-        // Another name: not to the host; REFUSED, at once, with nothing part way.
+        // Another name: not to the host; NXDOMAIN, at once, with nothing part way (D46).
         assert!(s.from_guest(&other).is_empty());
         let no = s.refusals();
-        assert_eq!(no, framed_msg(&refused(&query("api.example", TYPE_A)).unwrap()));
-        assert_eq!(no[2 + 3] & 0x0f, 5);
+        assert_eq!(no, framed_msg(&denied(&query("api.example", TYPE_A)).unwrap()));
+        assert_eq!(no[2 + 3] & 0x0f, 3);
         assert!(s.refusals().is_empty());
         // Any name, granted any.
         let mut any = Stream::new(true, Vec::new());
@@ -966,7 +984,7 @@ mod tests {
         s.from_guest(&framed_msg(&query("api.example", TYPE_A)));
         assert!(s.refusals().is_empty());
         let out = s.from_host(&answer[10..]);
-        let no = framed_msg(&refused(&query("api.example", TYPE_A)).unwrap());
+        let no = framed_msg(&denied(&query("api.example", TYPE_A)).unwrap());
         assert_eq!(out, [answer.clone(), no].concat());
         assert_eq!(s.held(), 0);
         assert_eq!(

@@ -305,6 +305,23 @@ fn host(answers: &Answers) -> Result<(), No> {
     };
     step(format_args!("its request read"));
     input.shed();
+    // What its host has available where a test tells it (D188's told pipe, D252): the first
+    // line of what `SHARDS_PRESSURE` names, read before its run is made, so that every charge
+    // its run makes as it starts is held to it in place of its kernel's count.
+    match crate::pressure::first(crate::pressure::TOLD) {
+        Ok(Some(crate::pressure::Word::Available(bytes))) => {
+            say(format_args!(
+                "told its host has {bytes} bytes of memory available"
+            ));
+        }
+        Ok(_) => {}
+        Err(e) => {
+            return Err(No(
+                Cause::Boot,
+                format!("its host's word ({}): {e}", crate::pressure::TOLD),
+            ));
+        }
+    }
     // A warm host's exemplar (D253's pools): its run comes once its microVM is ready.
     if kind == wire::to_host::WARM {
         return hosted::warm(answers, &request, input);
@@ -3215,7 +3232,7 @@ mod hosted {
     use super::{Answers, No, no};
     use crate::daemon::ends::Ends;
     use crate::daemon::managed::{
-        Charge, execs, input_bytes, link_bytes, mcp, members, output_bytes, storage_excess,
+        Charge, endpoint_bytes, execs, input_bytes, mcp, members, output_bytes, storage_excess,
     };
     use crate::daemon::publish;
 
@@ -5593,7 +5610,7 @@ mod hosted {
 
     /// The run on a network shared by runs (D285): its members there, its address and the
     /// network's pairing, held by this host from its first member's join to its last's leaving
-    /// (its members' names first as they drop, then its address); the network's record, ID and
+    /// (its members' names first, [`Names`], then its address); the network's record, ID and
     /// pool.
     struct OnShared {
         members: Vec<OnMember>,
@@ -5611,12 +5628,77 @@ mod hosted {
         }
     }
 
-    /// A member on a shared network: its declared index, its name's lease there, and its
-    /// grants, each lowercased.
+    /// A member on a shared network: its declared index, its name there (its lease the run's
+    /// [`Names`]'), and its grants, each lowercased.
     struct OnMember {
         index: u32,
-        name: crate::networks::leases::Name,
+        name: String,
         grants: Vec<wire::NetworkGrant>,
+    }
+
+    /// The leases of the run's members' names and aliases on networks shared by runs (D285),
+    /// each by its network and member (R04): **held** while its VM runs, each taken and let go
+    /// with its member's place there; **withdrawn** as its VM ends, every one let go first of
+    /// all that goes with it ([`withdraw_names`]) and none taken again, so that no change of
+    /// another run's, reading the leases, tells them from then on, while its address and the
+    /// network's pairing stay its host's until it ends. Apart from [`Joined`], which a change
+    /// holds across its guest's and its network process's answers, so that no change in
+    /// flight holds the withdrawal up; under a lock no answer is waited for under.
+    enum Names {
+        Held(Vec<HeldName>),
+        Withdrawn,
+    }
+
+    /// A member's name, or alias, on a shared network, its lease held by the run's host.
+    struct HeldName {
+        network: shards_net::shared::NetworkId,
+        member: u32,
+        _lease: crate::networks::leases::Name,
+    }
+
+    /// How a change of a shared network is refused once the run's VM has ended and its names
+    /// were withdrawn: no lease is taken for it again.
+    fn names_withdrawn() -> (wire::NetRefusal, String) {
+        (
+            wire::NetRefusal::Network,
+            "its microVM has ended, and with it its members' names".into(),
+        )
+    }
+
+    /// The lease `take` makes (under the home's lock) held as member `member`'s name on shared
+    /// network `network`, with what else `take` made: refused, nothing taken, once the run's
+    /// names were withdrawn. Taken under [`Names`]' lock, so that none is made after the
+    /// withdrawal, which waits at most for the home's lock's few file operations.
+    fn hold_name<T>(
+        live: &Live<'_>,
+        network: shards_net::shared::NetworkId,
+        member: u32,
+        take: impl FnOnce() -> Result<(T, crate::networks::leases::Name), (wire::NetRefusal, String)>,
+    ) -> Result<T, (wire::NetRefusal, String)> {
+        let mut names = lock(&live.names);
+        let Names::Held(held) = &mut *names else {
+            return Err(names_withdrawn());
+        };
+        let (made, lease) = take()?;
+        held.push(HeldName {
+            network,
+            member,
+            _lease: lease,
+        });
+        Ok(made)
+    }
+
+    /// Member `member`'s name on shared network `network` let go: its lease's file removed.
+    fn let_name_go(live: &Live<'_>, network: shards_net::shared::NetworkId, member: u32) {
+        if let Names::Held(held) = &mut *lock(&live.names) {
+            held.retain(|n| !(n.network == network && n.member == member));
+        }
+    }
+
+    /// The run's VM has ended: every name and alias its members hold on shared networks let go
+    /// now, before anything else of it goes (D285), and none taken again.
+    fn withdraw_names(live: &Live<'_>) {
+        *lock(&live.names) = Names::Withdrawn;
     }
 
     /// `on` as its owner is told it.
@@ -5630,7 +5712,7 @@ mod hosted {
                 .iter()
                 .map(|m| wire::OnNetworkMember {
                     member: m.index,
-                    name: m.name.name().to_string(),
+                    name: m.name.clone(),
                     grants: m.grants.clone(),
                 })
                 .collect(),
@@ -5837,7 +5919,7 @@ mod hosted {
                     .collect();
                 (!grants.is_empty()).then(|| shared::Member {
                     index: m.index,
-                    name: m.name.name().to_string(),
+                    name: m.name.clone(),
                     grants,
                 })
             })
@@ -5864,7 +5946,7 @@ mod hosted {
                 .members
                 .iter()
                 .filter(|m| !members.iter().any(|s| s.index == m.index))
-                .map(|m| m.name.name())
+                .map(|m| m.name.as_str())
                 .collect();
             let (names, aliases) = on_now(live.home, on, &leaving)?;
             shared::args(&shared::Shared {
@@ -5931,11 +6013,21 @@ mod hosted {
             on.push(place);
             return Ok(());
         };
+        if let Some(other) = port_taken(&place.members, member, &grant) {
+            return Err((
+                R::Unheld,
+                format!(
+                    "{other} is granted those ports coming in on network {} already: the run's \
+                     address there has one member for each port",
+                    place.network.name
+                ),
+            ));
+        }
         let held = place
             .members
             .iter()
             .find(|m| m.index == member)
-            .map(|m| (m.name.name().to_string(), m.grants.contains(&grant)));
+            .map(|m| (m.name.clone(), m.grants.contains(&grant)));
         match held {
             Some((name, _)) if name != grant.name => Err((
                 R::Grant,
@@ -5948,6 +6040,23 @@ mod hosted {
             Some((_, false)) => grant_more(live, net, place, member, &grant),
             None => member_joins(live, net, place, member, &grant),
         }
+    }
+
+    /// The name of another of `members` granted in on a port grant `grant` of member `member`
+    /// would be granted in on too, where it is a grant in: the run's address on a shared network
+    /// has one member for each port (D285 item 5), and the guest's `shared-in` translates each
+    /// new flow by the first grant that takes it, so a second would take none of them.
+    fn port_taken<'m>(members: &'m [OnMember], member: u32, grant: &wire::NetworkGrant) -> Option<&'m str> {
+        let takes = |g: &wire::NetworkGrant| {
+            g.way == wire::Way::In && g.proto == grant.proto && g.first <= grant.last && grant.first <= g.last
+        };
+        if grant.way != wire::Way::In {
+            return None;
+        }
+        members
+            .iter()
+            .find(|m| m.index != member && m.grants.iter().any(takes))
+            .map(|m| m.name.as_str())
     }
 
     /// Member `member`, on shared network `on` already, given `grant` more: its network process
@@ -5984,12 +6093,13 @@ mod hosted {
         member: u32,
         grant: &wire::NetworkGrant,
     ) -> Result<(), (wire::NetRefusal, String)> {
-        let name = {
+        let name = hold_name(live, on.id, member, || {
             let held = crate::networks::leases::hold(live.home).map_err(lease_refused)?;
-            crate::networks::leases::Leases::of(live.home, &on.network.id)
+            let lease = crate::networks::leases::Leases::of(live.home, &on.network.id)
                 .and_then(|ledger| ledger.name(&held, &on.lease, &grant.name))
-                .map_err(lease_refused)?
-        };
+                .map_err(lease_refused)?;
+            Ok((lease.name().to_string(), lease))
+        })?;
         on.members.push(OnMember {
             index: member,
             name,
@@ -6004,6 +6114,7 @@ mod hosted {
         })();
         if told.is_err() {
             on.members.retain(|m| m.index != member);
+            let_name_go(live, on.id, member);
             let _ = tell_join(live.home, net, on, &[]);
         }
         told
@@ -6039,14 +6150,14 @@ mod hosted {
                 format!("network {}: its ID is no network's", record.name),
             )
         })?;
-        let (pairing, lease, name) = {
+        let (pairing, lease, name) = hold_name(live, id, member, || {
             let held = crate::networks::leases::hold(live.home).map_err(lease_refused)?;
             let ledger = crate::networks::leases::Leases::of(live.home, &record.id).map_err(lease_refused)?;
             let pairing = ledger.pair_as(&held, pairer, &holder).map_err(lease_refused)?;
             let lease = ledger.take(&held, &pool, None, &holder).map_err(lease_refused)?;
             let name = ledger.name(&held, &lease, &grant.name).map_err(lease_refused)?;
-            (pairing, lease, name)
-        };
+            Ok(((pairing, lease, name.name().to_string()), name))
+        })?;
         let place = OnShared {
             members: vec![OnMember {
                 index: member,
@@ -6059,14 +6170,21 @@ mod hosted {
             id,
             pool,
         };
-        tell_join(live.home, net, &place, &[])?;
-        let told = tell_grant(net, &place.id, grant, true).and_then(|()| {
-            tell_guest(live, &place, guest_members(&place, None)).inspect_err(|_| {
-                let _ = tell_grant(net, &place.id, grant, false);
-            })
+        let told = tell_join(live.home, net, &place, &[]).and_then(|()| {
+            tell_grant(net, &place.id, grant, true)
+                .and_then(|()| {
+                    tell_guest(live, &place, guest_members(&place, None)).inspect_err(|_| {
+                        let _ = tell_grant(net, &place.id, grant, false);
+                    })
+                })
+                .inspect_err(|_| {
+                    let _ = shared_ask(net, kind::NET_LEAVE, &place.id.0, &[]);
+                })
         });
+        // Refused: the member's name let go before its run's address and pairing, as `place`
+        // drops.
         if let Err(refused) = told {
-            let _ = shared_ask(net, kind::NET_LEAVE, &place.id.0, &[]);
+            let_name_go(live, id, member);
             return Err(refused);
         }
         Ok(place)
@@ -6098,7 +6216,7 @@ mod hosted {
             .members
             .iter()
             .find(|m| m.index == member && m.grants.contains(&grant))
-            .map(|m| m.name.name().to_string())
+            .map(|m| m.name.clone())
         else {
             return Ok(());
         };
@@ -6112,13 +6230,15 @@ mod hosted {
         if !last {
             return Ok(());
         }
+        let id = place.id;
         if place.members.len() > 1 {
             let told = tell_join(live.home, net, place, &[name.as_str()]);
             place.members.retain(|m| m.index != member);
+            let_name_go(live, id, member);
             return told;
         }
-        let id = place.id;
         let left = shared_ask(net, kind::NET_LEAVE, &id.0, &[]);
+        let_name_go(live, id, member);
         joined.on.retain(|n| n.id != id);
         left
     }
@@ -6433,6 +6553,8 @@ mod hosted {
         /// The networks shared by runs its members are on (D285 slice 4). Held under its ports'
         /// lock's turn, as every change of its network is.
         joined: Mutex<Joined>,
+        /// Its members' names and aliases there, withdrawn first as its VM ends (D285).
+        names: Mutex<Names>,
         /// Its links socket (D285 slice 4, Unix), where its starter gave it one.
         #[cfg(unix)]
         links: Option<&'a super::Links>,
@@ -6597,30 +6719,51 @@ mod hosted {
         }
     }
 
+    /// Output `key`, made as `producer`, charged to `charge` as the daemon charges its runs'
+    /// owned outputs (D252): `output_bytes` of what its endpoint admits it, its host's record of
+    /// it its entry in [`Stdio`], and `storage_excess`; none where its budget has no room.
+    fn output_charge(
+        charge: &std::sync::Arc<Charge>,
+        key: Key,
+        producer: &shards_remote::managed::Producer,
+    ) -> Charged {
+        let (_, admitted) = shards_api::control::member_output(key.0, key.1, key.2);
+        let bytes = output_bytes(&admitted, size_of::<(Key, LaneOutput)>())
+            .zip(storage_excess(producer, admitted.record_bytes).ok())
+            .and_then(|(lane, excess)| lane.checked_add(excess));
+        charge_stream(
+            charge,
+            bytes,
+            format_args!("member {}'s generation {} output lane", key.0, key.1),
+        )
+    }
+
+    /// Member `key.0`'s generation `key.1`'s stdin charged to `charge` as the daemon charges its
+    /// runs' inputs (D252): `input_bytes`, its host's record of it its entry in [`Stdio`]; none
+    /// where its budget has no room.
+    fn input_charge(charge: &std::sync::Arc<Charge>, key: (u32, u32)) -> Charged {
+        let (_, admitted) = shards_api::control::member_input(key.0, key.1);
+        charge_stream(
+            charge,
+            input_bytes(&admitted, size_of::<((u32, u32), LaneInput)>()),
+            format_args!("member {}'s generation {} stdin lane", key.0, key.1),
+        )
+    }
+
     impl Stdio {
-        /// Serves output `key` from now on: charged to its budget as the daemon charges its
-        /// runs' owned outputs (`output_bytes` of what its endpoint admits it, its host's record
-        /// of it its entry here, and `storage_excess`), its control held, its thread started.
-        /// One its budget has no room for is let go (`no_room`), each lane to it refused
-        /// `Capacity`; one that has no thread is revoked, which its lane is told. Whether its
-        /// budget had room for it.
+        /// Serves output `key` from now on, holding `charged`, what it holds of its budget
+        /// ([`output_charge`]): its control held, its thread started. One its budget had no room
+        /// for is let go (`no_room`), each lane to it refused `Capacity`; one that has no thread
+        /// is revoked, which its lane is told. Whether its budget had room for it.
         fn output<'scope, 'env>(
             &'env self,
             live: &'env Live<'env>,
             key: Key,
             producer: shards_remote::managed::Producer,
             control: shards_remote::managed::Control,
+            charged: Charged,
             scope: &'scope std::thread::Scope<'scope, 'env>,
         ) -> bool {
-            let (_, admitted) = shards_api::control::member_output(key.0, key.1, key.2);
-            let bytes = output_bytes(&admitted, size_of::<(Key, LaneOutput)>())
-                .zip(storage_excess(&producer, admitted.record_bytes).ok())
-                .and_then(|(lane, excess)| lane.checked_add(excess));
-            let charged = charge_stream(
-                &self.charge,
-                bytes,
-                format_args!("member {}'s generation {} output lane", key.0, key.1),
-            );
             if charged.is_none() {
                 control.no_room();
                 lock(&self.outputs).insert(
@@ -6652,26 +6795,21 @@ mod hosted {
             true
         }
 
-        /// Serves member `key.0`'s generation `key.1`'s stdin from now on: charged to its budget
-        /// as the daemon charges its runs' inputs (`input_bytes`, its host's record of it its
-        /// entry here), its control held, its relay's thread started ([`lane_input`]). One its
-        /// budget has no room for is let go (`no_room`), each lane to it refused `Capacity` and
-        /// its member's input connection ended by its relay, which finds it gone; one that has
-        /// no thread is revoked. Whether its budget had room for it.
+        /// Serves member `key.0`'s generation `key.1`'s stdin from now on, holding `charged`,
+        /// what it holds of its budget ([`input_charge`]): its control held, its relay's thread
+        /// started ([`lane_input`]). One its budget had no room for is let go (`no_room`), each
+        /// lane to it refused `Capacity` and its member's input connection ended by its relay,
+        /// which finds it gone; one that has no thread is revoked. Whether its budget had room
+        /// for it.
         fn input<'scope, 'env>(
             &'env self,
             live: &'env Live<'env>,
             key: (u32, u32),
             relay: shards_remote::managed::input::Relay,
             control: shards_remote::managed::input::Control,
+            charged: Charged,
             scope: &'scope std::thread::Scope<'scope, 'env>,
         ) -> bool {
-            let (_, admitted) = shards_api::control::member_input(key.0, key.1);
-            let charged = charge_stream(
-                &self.charge,
-                input_bytes(&admitted, size_of::<((u32, u32), LaneInput)>()),
-                format_args!("member {}'s generation {} stdin lane", key.0, key.1),
-            );
             let room = charged.is_some();
             if !room {
                 control.no_room();
@@ -6739,12 +6877,14 @@ mod hosted {
             self.give_back(member, generation);
             let mut room = true;
             for channel in [Channel::Stdout, Channel::Stderr] {
+                let key = (member, generation, channel);
                 let (named, _) = shards_api::control::member_output(member, generation, channel);
                 let (producer, control) = self
                     .generations
                     .output(named)
                     .map_err(|e| failed(format!("its generation {generation}'s output lane: {e}")))?;
-                room &= self.output(live, (member, generation, channel), producer, control, scope);
+                let charged = output_charge(&self.charge, key, &producer);
+                room &= self.output(live, key, producer, control, charged, scope);
             }
             if stdin {
                 let (named, _) = shards_api::control::member_input(member, generation);
@@ -6752,7 +6892,8 @@ mod hosted {
                     .generations
                     .input(named)
                     .map_err(|e| failed(format!("its generation {generation}'s stdin lane: {e}")))?;
-                room &= self.input(live, (member, generation), relay, control, scope);
+                let charged = input_charge(&self.charge, (member, generation));
+                room &= self.input(live, (member, generation), relay, control, charged, scope);
             }
             if !room {
                 return Err((
@@ -6916,12 +7057,60 @@ mod hosted {
         live.fed.notify_all();
     }
 
+    /// Its members' first generation's stdio streams (D252), each by its key in the order its
+    /// endpoint was bound with them ([`first_streams`]), with what it holds of its run host's
+    /// budget ([`charge_first`]).
+    struct First {
+        outputs: Vec<(Key, Charged)>,
+        inputs: Vec<(u32, Charged)>,
+    }
+
+    /// Its members' first generation's stdio streams, `outputs` and `inputs` ([`first_streams`]),
+    /// as its endpoint `served` them, charged to `agent`'s budget as a restart charges its next
+    /// generation's ([`Stdio::join`]): before its members start, so that none starts whose
+    /// output no lane would credit. Refused where its budget has no room for one of them, what
+    /// the others held given back.
+    fn charge_first(
+        agent: &Agent,
+        outputs: &[Key],
+        inputs: &[u32],
+        served: &shards_remote::control::Served,
+    ) -> Result<First, String> {
+        let room = |e: std::collections::TryReserveError| format!("its members' lanes: {e}");
+        let mut first = First {
+            outputs: Vec::new(),
+            inputs: Vec::new(),
+        };
+        first.outputs.try_reserve_exact(outputs.len()).map_err(room)?;
+        for (&key, (producer, _)) in outputs.iter().zip(&served.outputs) {
+            let charged = output_charge(&agent.charge, key, producer);
+            if charged.is_none() {
+                return Err(format!(
+                    "its run host's budget has no room for member {}'s first {:?} lane",
+                    key.0, key.2
+                ));
+            }
+            first.outputs.push((key, charged));
+        }
+        first.inputs.try_reserve_exact(inputs.len()).map_err(room)?;
+        for &member in inputs {
+            let charged = input_charge(&agent.charge, (member, 0));
+            if charged.is_none() {
+                return Err(format!(
+                    "its run host's budget has no room for member {member}'s first stdin lane"
+                ));
+            }
+            first.inputs.push((member, charged));
+        }
+        Ok(first)
+    }
+
     /// Serves its members' stdio on its endpoint's lanes from now on (D252), where its
     /// orchestrator asked for it: `outputs` and `inputs`, the streams its endpoint was bound
-    /// with ([`first_streams`]' order), held in [`Live::stdio`] with `generations`, where each
-    /// next generation's join it, each one charged to `agent`'s budget, or let go where it has
-    /// no room, and each one's thread started. Called before its endpoint's driver serves a
-    /// lane, so that no lane finds a stream its budget has no room for before it is let go.
+    /// with, each with its key and what it holds of `agent`'s budget in `first`, held in
+    /// [`Live::stdio`] with `generations`, where each next generation's join it, and each one's
+    /// thread started. Called before its endpoint's driver serves a lane, so that no lane finds
+    /// a stream its budget has no room for before it is let go.
     fn serve_stdio<'scope, 'env>(
         live: &'env Live<'env>,
         agent: &Agent,
@@ -6931,16 +7120,10 @@ mod hosted {
             shards_remote::managed::input::Relay,
             shards_remote::managed::input::Control,
         )>,
+        first: First,
         scope: &'scope std::thread::Scope<'scope, 'env>,
     ) {
-        let (keys, members) = match first_streams(agent) {
-            Ok(streams) => streams,
-            Err(why) => {
-                super::say(format_args!("its members' stdio is served none: {why}"));
-                return;
-            }
-        };
-        if keys.is_empty() && members.is_empty() {
+        if first.outputs.is_empty() && first.inputs.is_empty() {
             return;
         }
         let stdio = Stdio {
@@ -6955,11 +7138,11 @@ mod hosted {
         let Some(stdio) = live.stdio.get() else {
             return;
         };
-        for (key, (producer, control)) in keys.into_iter().zip(outputs) {
-            stdio.output(live, key, producer, control, scope);
+        for ((key, charged), (producer, control)) in first.outputs.into_iter().zip(outputs) {
+            stdio.output(live, key, producer, control, charged, scope);
         }
-        for (member, (relay, control)) in members.into_iter().zip(inputs) {
-            stdio.input(live, (member, 0), relay, control, scope);
+        for ((member, charged), (relay, control)) in first.inputs.into_iter().zip(inputs) {
+            stdio.input(live, (member, 0), relay, control, charged, scope);
         }
     }
 
@@ -7576,6 +7759,35 @@ mod hosted {
                     trust = super::trust(der, grants, &plan.signing).map_err(boot)?;
                 }
             }
+            // Its agent-control endpoint (D252), its key made past its VM's start (`ControlKey`),
+            // held by the endpoint alone once bound: no template, and no other run, has it; and
+            // what its own lanes are served with. Bound before its members start, its link, its
+            // sockets' queues and its members' first stdio streams charged to its budget, as a
+            // restart charges its next generation's ([`Stdio::join`]): a run its budget has no
+            // room for is refused, typed, with none of its members started.
+            let agent = plan
+                .control
+                .as_ref()
+                .map(|_| Agent::of(&plan))
+                .transpose()
+                .map_err(boot)?;
+            let control = match (plan.control.as_ref(), agent.as_ref()) {
+                (Some(ask), Some(agent)) => {
+                    let key = control_key(premade.take()).map_err(boot)?;
+                    let (outputs, inputs) = first_streams(agent).map_err(boot)?;
+                    let (endpoint, served) =
+                        bind_control(key, ask, agent.admissions, &outputs, &inputs, &plan.mcps)
+                            .map_err(boot)?;
+                    let charged = charge_link(agent, &endpoint)?;
+                    let first =
+                        charge_first(agent, &outputs, &inputs, &served).map_err(no(Cause::Capacity))?;
+                    super::step(format_args!("its agent-control endpoint bound"));
+                    Some(((endpoint, served, first), charged))
+                }
+                _ => None,
+            };
+            // Its link's charge, held while the run is served.
+            let (control, _link_charge) = control.unzip();
             let (client, client_theirs) =
                 handed_pair().map_err(|e| boot(format!("the run's client: {e}")))?;
             let capture = match plan.capture {
@@ -7592,33 +7804,10 @@ mod hosted {
                 capture.as_ref().map(|(_, theirs)| theirs),
             )
             .map_err(boot)?;
-            // Its agent-control endpoint (D252), its key made past its VM's start (`ControlKey`),
-            // held by the endpoint alone once bound: no template, and no other run, has it; and
-            // what its own lanes are served with.
-            let agent = plan
-                .control
-                .as_ref()
-                .map(|_| Agent::of(&plan))
-                .transpose()
-                .map_err(boot)?;
-            let control = match (plan.control.as_ref(), agent.as_ref()) {
-                (Some(ask), Some(agent)) => {
-                    let key = control_key(premade.take()).map_err(boot)?;
-                    let (outputs, inputs) = first_streams(agent).map_err(boot)?;
-                    let bound = bind_control(key, ask, agent.admissions, &outputs, &inputs, &plan.mcps)
-                        .map_err(boot)?;
-                    let charged = charge_link(agent, &bound.0).map_err(boot)?;
-                    super::step(format_args!("its agent-control endpoint bound"));
-                    Some((bound, charged))
-                }
-                _ => None,
-            };
-            // Its link's charge, held while the run is served.
-            let (control, _link_charge) = control.unzip();
             let started = wire::Started {
                 members: plan.members.clone(),
                 published: ports.published(),
-                control: control.as_ref().map(|(endpoint, _)| control_at(endpoint)),
+                control: control.as_ref().map(|(endpoint, ..)| control_at(endpoint)),
                 from: launched.from,
                 egress: plan.narrowing.clone(),
             }
@@ -7684,6 +7873,7 @@ mod hosted {
                 given: Mutex::new(HashMap::new()),
                 ceilings: plan.member_ceilings.clone(),
                 joined: Mutex::new(Joined::default()),
+                names: Mutex::new(Names::Held(Vec::new())),
                 #[cfg(unix)]
                 links: super::LINKS.get(),
                 components: Mutex::new(Components::default()),
@@ -7735,7 +7925,11 @@ mod hosted {
         input: super::Input,
         launched: &Launched,
         client: Stream,
-        control: Option<(shards_remote::control::Endpoint, shards_remote::control::Served)>,
+        control: Option<(
+            shards_remote::control::Endpoint,
+            shards_remote::control::Served,
+            First,
+        )>,
     ) {
         if super::timed() {
             timing_line(&client);
@@ -7743,9 +7937,9 @@ mod hosted {
         std::thread::scope(|scope| {
             // Its agent-control endpoint's driver, and its socket lanes, each opened through the
             // VM (D251, D252); revoked as the run's asks end, which ends both.
-            let revoke = control.map(|(endpoint, served)| {
+            let revoke = control.map(|(endpoint, served, first)| {
                 // Its members' stdio, where its orchestrator asked for it (D252): each stream
-                // charged to its budget, or let go, before the driver serves a lane of it.
+                // held with its charge before the driver serves a lane of it.
                 if let Some(agent) = &live.agent {
                     serve_stdio(
                         live,
@@ -7753,6 +7947,7 @@ mod hosted {
                         served.generations,
                         served.outputs,
                         served.inputs,
+                        first,
                         scope,
                     );
                 }
@@ -7838,7 +8033,10 @@ mod hosted {
                     let link = lock(&live.link).try_clone();
                     let (end, said, used) = match link {
                         Ok(link) => follow(live, &link, scope),
-                        Err(e) => (RunEnd::Failed(format!("the VM's link: {e}")), false, None),
+                        Err(e) => {
+                            withdraw_names(live);
+                            (RunEnd::Failed(format!("the VM's link: {e}")), false, None)
+                        }
                     };
                     let _ = launched.vm.kill(shards_ipc::signal::SIGKILL);
                     let asks = lock(&live.asks_end).clone();
@@ -7854,6 +8052,7 @@ mod hosted {
                 });
             if following.is_err() {
                 // Nothing would say its end: the run is ended now, and said so.
+                withdraw_names(live);
                 let _ = launched.vm.kill(shards_ipc::signal::SIGKILL);
                 lock(&live.held).take();
                 if let Some(agent) = &live.agent {
@@ -7993,18 +8192,32 @@ mod hosted {
         .map_err(|e| format!("its agent-control endpoint: {e}"))
     }
 
-    /// `endpoint`'s link charged to `agent`'s budget once, whatever lanes it carries, as the
-    /// daemon charges its runs' (`link_bytes`, D252): a handshake's crypto for each connection
-    /// it holds at once, and a datagram each way; before its driver makes any connection. Its
-    /// endpoint could not be made where its budget has no room for it.
+    /// `endpoint` charged to `agent`'s budget once, whatever lanes it carries, as the daemon
+    /// charges its runs' (`endpoint_bytes`, D252): a handshake's crypto for each connection it
+    /// holds at once, a datagram each way, and the kernel's queues of each socket it holds, as
+    /// its OS reports them; before its driver makes any connection and before its members start.
+    /// Refused `Capacity` where its budget has no room for it; `Boot` where its sockets' queues
+    /// could not be read, or its charge overflows.
     fn charge_link(
         agent: &Agent,
         endpoint: &shards_remote::control::Endpoint,
-    ) -> Result<execs::Held<std::sync::Arc<Charge>>, String> {
-        let bytes = link_bytes(&endpoint.link(), shards_remote::control::CONNECTIONS)
-            .ok_or_else(|| "its agent-control link: its charge overflows".to_owned())?;
-        execs::Held::new(std::sync::Arc::clone(&agent.charge), bytes)
-            .map_err(|e| format!("its agent-control link: its budget has no room for {bytes} bytes: {e:?}"))
+    ) -> Result<execs::Held<std::sync::Arc<Charge>>, No> {
+        let bytes = endpoint_bytes(endpoint)
+            .map_err(|e| No(Cause::Boot, format!("its agent-control endpoint's queues: {e}")))?
+            .ok_or_else(|| {
+                No(
+                    Cause::Boot,
+                    "its agent-control link: its charge overflows".to_owned(),
+                )
+            })?;
+        execs::Held::new(std::sync::Arc::clone(&agent.charge), bytes).map_err(|e| {
+            No(
+                Cause::Capacity,
+                format!(
+                    "its run host's budget has no room for its agent-control link and its sockets' queues, {bytes} bytes: {e:?}"
+                ),
+            )
+        })
     }
 
     /// The member streams a run's endpoint serves where its orchestrator asked for its members'
@@ -8416,6 +8629,9 @@ mod hosted {
                 }
             }
         };
+        // First of all that goes with its VM: no change of another run's tells its members'
+        // names from here (D285).
+        withdraw_names(live);
         // No VM takes an exec now: their clients' ends go, and each waiting for its exit
         // hears its end.
         lock(&live.held).take();
@@ -9599,6 +9815,10 @@ mod hosted {
         Ok(())
     }
 
+    /// A bounded volume's bound, in bytes, and its count file (D281), as its hold counts it
+    /// ([`crate::volumes::Holds::count`]).
+    type PlugBound = (u64, PathBuf);
+
     /// The host directory a plug gives (D271): the one named, absolute; or the data of the
     /// home's volume named, made where it is not there, as a run's `-v NAME:PATH` makes one,
     /// and refused where its store refuses a run's own mount of it at `at` (D109's scoped
@@ -9609,7 +9829,7 @@ mod hosted {
         live: &Live<'_>,
         from: &wire::PlugFrom,
         at: &str,
-    ) -> Result<(PathBuf, Option<(u64, PathBuf)>), (wire::PlugRefusal, String)> {
+    ) -> Result<(PathBuf, Option<PlugBound>), (wire::PlugRefusal, String)> {
         use wire::PlugRefusal as R;
         match from {
             wire::PlugFrom::Host(host) => {
@@ -9662,7 +9882,7 @@ mod hosted {
         live: &Live<'_>,
         member: u32,
         host: &Path,
-        bound: Option<&(u64, PathBuf)>,
+        bound: Option<&PlugBound>,
         at: &str,
         read_only: bool,
         exec: bool,
@@ -10110,6 +10330,7 @@ mod hosted {
                 given: Mutex::new(HashMap::new()),
                 ceilings: Vec::new(),
                 joined: Mutex::new(Joined::default()),
+                names: Mutex::new(Names::Held(Vec::new())),
                 #[cfg(unix)]
                 links: None,
                 components: Mutex::new(Components::default()),
@@ -10420,6 +10641,124 @@ mod hosted {
             let ledger = crate::networks::leases::Leases::of(dir.path(), &network.id).unwrap();
             assert!(ledger.addresses(&held).unwrap().is_empty());
             assert!(ledger.names(&held).unwrap().is_empty());
+        }
+
+        /// Do ask, of a run whose member 1 (`web`) is granted in on UDP 7600 to 7610 on a shared
+        /// network and out on TCP 5432, whether a grant of member 2 (`api`) takes a port another
+        /// member is granted in on: in on UDP 7610 alone, on 7590 to 7600, on 7611, on TCP 7600;
+        /// out on UDP 7600; member 1's own in on 7605. Expect (D285 item 5): `web` for the first
+        /// two, which meet member 1's ports coming in; none for the rest: past its range, another
+        /// protocol, a grant out, or the member's own.
+        #[test]
+        fn a_port_coming_in_to_a_runs_address_on_a_shared_network_is_one_members() {
+            let grant = |proto, first, last, way| wire::NetworkGrant {
+                name: "api".into(),
+                peer: "a".into(),
+                proto,
+                first,
+                last,
+                way,
+            };
+            let (udp, tcp, inward, out) = (wire::Proto::Udp, wire::Proto::Tcp, wire::Way::In, wire::Way::Out);
+            let members = [OnMember {
+                index: 1,
+                name: "web".into(),
+                grants: vec![grant(udp, 7600, 7610, inward), grant(tcp, 5432, 5432, out)],
+            }];
+            let taken = |member, g: &wire::NetworkGrant| port_taken(&members, member, g);
+            assert_eq!(taken(2, &grant(udp, 7610, 7610, inward)), Some("web"));
+            assert_eq!(taken(2, &grant(udp, 7590, 7600, inward)), Some("web"));
+            assert_eq!(taken(2, &grant(udp, 7611, 7611, inward)), None);
+            assert_eq!(taken(2, &grant(tcp, 7600, 7600, inward)), None);
+            assert_eq!(taken(2, &grant(udp, 7600, 7600, out)), None);
+            assert_eq!(taken(1, &grant(udp, 7605, 7605, inward)), None);
+        }
+
+        /// Do, on a run whose member 1 is on network `shared` as `web` (its name's lease, its
+        /// run's address and the network's pairing held), while a change holds the run's
+        /// networks as one waiting on its guest's answer does: end its VM, and follow its link
+        /// to its end; then take a name for it again; then let its places go, as its host's
+        /// end does.
+        /// Expect (D285): `web` withdrawn by the time its VM's end is followed, before the run's
+        /// end is said, though the change still holds its networks; its address and the
+        /// network's pairing held still; the name taken after refused `Network`, with no lease
+        /// made; its address and pairing let go with its host's state.
+        #[test]
+        fn a_runs_names_are_withdrawn_first_as_its_vm_ends() {
+            use crate::networks::leases::{Leases, Refused, hold};
+            let dir = shards_testdir::TempDir::new("api-names").unwrap();
+            let network = shared_record(dir.path());
+            let answers = super::super::Answers(Mutex::new(Box::new(Vec::<u8>::new())));
+            let (link, vm) = Stream::pair().unwrap();
+            let live = live(&answers, dir.path(), link, None);
+            let id = shards_net::shared::NetworkId::of(network.id.as_bytes()).unwrap();
+            let ledger = Leases::of(dir.path(), &network.id).unwrap();
+            let holder = "a".repeat(64);
+            let held = hold(dir.path()).unwrap();
+            let pairing = ledger.pair_as(&held, &"1".repeat(64), &holder).unwrap();
+            let lease = ledger.take(&held, &network.pools[0], None, &holder).unwrap();
+            let web = ledger.name(&held, &lease, "web").unwrap();
+            drop(held);
+            lock(&live.joined).on.push(OnShared {
+                members: vec![OnMember {
+                    index: 1,
+                    name: "web".into(),
+                    grants: Vec::new(),
+                }],
+                lease,
+                _pairing: pairing,
+                network: network.clone(),
+                id,
+                pool: network.pools[0].clone(),
+            });
+            {
+                let mut names = lock(&live.names);
+                let Names::Held(held) = &mut *names else {
+                    panic!("its names withdrawn at its start");
+                };
+                held.push(HeldName {
+                    network: id,
+                    member: 1,
+                    _lease: web,
+                });
+            }
+            // Names, addresses, and whether a process pairs the network.
+            let leases = || {
+                let held = hold(dir.path()).unwrap();
+                let paired = matches!(ledger.pair(&held), Err(Refused::PairedElsewhere));
+                (
+                    ledger.names(&held).unwrap().len(),
+                    ledger.addresses(&held).unwrap().len(),
+                    paired,
+                )
+            };
+            assert_eq!(leases(), (1, 1, true));
+            let changing = lock(&live.joined);
+            drop(vm);
+            std::thread::scope(|scope| {
+                let link = lock(&live.link).try_clone().unwrap();
+                follow(&live, &link, scope)
+            });
+            assert_eq!(
+                leases(),
+                (0, 1, true),
+                "its name withdrawn as its VM ended, its address and pairing held"
+            );
+            drop(changing);
+            let again = hold_name::<()>(&live, id, 1, || {
+                panic!("a lease made once its names were withdrawn")
+            });
+            assert!(
+                matches!(again, Err((wire::NetRefusal::Network, _))),
+                "{:?}",
+                again.err()
+            );
+            lock(&live.joined).on.clear();
+            assert_eq!(
+                leases(),
+                (0, 0, false),
+                "its address and pairing let go with its host's state"
+            );
         }
 
         /// Do, on a run with a command of its own and a stand-in network process (D269):
@@ -12116,6 +12455,8 @@ mod hosted {
                 &[],
             )
             .unwrap();
+            // Charged before its members start, as its run host charges them (D252).
+            let charged = charge_first(agent, &outputs, &inputs, &served).unwrap();
             let (key, address) = (endpoint.fingerprint, endpoint.address);
             let (stdout0, admitted) = shards_api::control::member_output(1, 0, Channel::Stdout);
             let (files_alone, _) = shards_api::control::member_output(0, 0, Channel::Stdout);
@@ -12140,6 +12481,7 @@ mod hosted {
                     served.generations,
                     served.outputs,
                     served.inputs,
+                    charged,
                     scope,
                 );
                 let capturing = scope.spawn(move || {
@@ -12275,12 +12617,14 @@ mod hosted {
         /// D252: each member stream an orchestrator's run's endpoint serves is charged to its run
         /// host's budget as the daemon charges its runs' streams (daemon/managed.rs
         /// `output_bytes`, `input_bytes`, `storage_excess`), and one its budget has no room for
-        /// is let go and refused typed. Do: serve member 1's first generation (its stdout,
-        /// stderr and stdin) with its budget full; dial its stdout and its stdin; have its VM
-        /// hand over its input connection; give the budget room and join its next generation's
-        /// outputs; read that one's stdout to its end and let its stderr go, as a restart seals
-        /// a channel no credit went to; join the generation after; end the run. Expect: the
-        /// first generation's lanes refused `Capacity` and nothing charged for them, its stdin's
+        /// is let go and refused typed. Do: charge member 1's first generation (its stdout,
+        /// stderr and stdin) with its budget full; serve those streams as ones its budget has no
+        /// room for, as a next generation's may be (`Stdio::join`); dial its stdout and its
+        /// stdin; have its VM hand over its input connection; give the budget room and join its
+        /// next generation's outputs; read that one's stdout to its end and let its stderr go, as
+        /// a restart seals a channel no credit went to; join the generation after; end the run.
+        /// Expect: the first generation's charge refused, as its run is before its members start,
+        /// and nothing charged; the lanes of streams with no room refused `Capacity`, its stdin's
         /// relay ending its member's input connection, which reads its end; each next
         /// generation's two outputs charged exactly the daemon's bytes for them while served;
         /// the generation past given back as the next joins, its streams over; and the budget
@@ -12344,20 +12688,35 @@ mod hosted {
                     &[],
                 )
                 .unwrap();
+                // Its budget full as its first generation is charged: refused, nothing held.
+                *lock(&budget) = Some(u64::MAX);
+                let refused = charge_first(agent, &outputs, &inputs, &served)
+                    .map(|_| ())
+                    .unwrap_err();
+                assert!(refused.contains("has no room for member 1's first"), "{refused}");
+                assert_eq!(
+                    *lock(&budget),
+                    Some(u64::MAX),
+                    "a refused generation held its charge"
+                );
+                *lock(&budget) = Some(0);
                 let (key, address) = (endpoint.fingerprint, endpoint.address);
                 let revoke = served.revoke;
                 std::thread::scope(|scope| {
-                    // Its budget full as its first generation is served: no stream has room.
-                    *lock(&budget) = Some(u64::MAX);
+                    // Its streams served with no room, as a next generation's may be: each let go.
+                    let none = First {
+                        outputs: outputs.iter().map(|&key| (key, None)).collect(),
+                        inputs: inputs.iter().map(|&member| (member, None)).collect(),
+                    };
                     serve_stdio(
                         live,
                         agent,
                         served.generations,
                         served.outputs,
                         served.inputs,
+                        none,
                         scope,
                     );
-                    *lock(&budget) = Some(0);
                     let serving = scope.spawn(move || endpoint.run());
                     let capturing = scope.spawn(move || {
                         let read = read_records(live, reading);
@@ -12455,13 +12814,14 @@ mod hosted {
             assert_eq!(*lock(&budget), Some(0), "its streams' charge outlived its run");
         }
 
-        /// D252: an orchestrator's run host charges its endpoint's link once, as it binds it, as
-        /// the daemon charges its runs' (`link_bytes`): TLS 1.3's largest handshake message for
-        /// each connection it holds at once (`control::CONNECTIONS`) and a datagram each way,
-        /// whatever lanes it carries; each lane is charged its own buffers alone. Do: bind an
-        /// endpoint serving member 1's stdout, stderr and stdin, and one serving no member
-        /// stream; charge each its link, then let it go. Expect: the same charge for both, given
-        /// back whole.
+        /// D252: an orchestrator's run host charges its endpoint once, as it binds it, as the
+        /// daemon charges its runs' (`endpoint_bytes`): TLS 1.3's largest handshake message for
+        /// each connection it holds at once (`control::CONNECTIONS`), a datagram each way, and
+        /// its sockets' kernel queues as its OS reports them, whatever lanes it carries; each lane
+        /// is charged its own buffers alone. Do: bind an endpoint serving member 1's stdout,
+        /// stderr and stdin, and one serving no member stream; charge each, then let it go.
+        /// Expect: each charged its link and its own sockets' queues, the link the same for
+        /// both and the queues more than none; given back whole.
         #[test]
         fn an_orchestrators_endpoint_is_charged_its_link_once_whatever_lanes_it_carries() {
             let admissions = shards_api::control::exec_admissions();
@@ -12498,10 +12858,12 @@ mod hosted {
                     &[],
                 )
                 .unwrap();
+                let queues = endpoint.kernel_buffer_bytes().unwrap();
+                assert!(queues > 0);
                 let charged = charge_link(&agent, &endpoint).unwrap();
                 assert_eq!(
                     *lock(&budget),
-                    Some(link),
+                    Some(link + queues),
                     "{} member streams",
                     outputs.len() + inputs.len()
                 );
@@ -12571,6 +12933,7 @@ mod hosted {
                     &[],
                 )
                 .unwrap();
+                let charged = charge_first(agent, &outputs, &inputs, &served).unwrap();
                 let revoke = served.revoke;
                 std::thread::scope(|scope| {
                     let serving = scope.spawn(move || endpoint.run());
@@ -12580,6 +12943,7 @@ mod hosted {
                         served.generations,
                         served.outputs,
                         served.inputs,
+                        charged,
                         scope,
                     );
                     assert_eq!(*lock(&budget), Some(2 * output), "its first generation's charge");

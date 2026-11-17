@@ -520,17 +520,11 @@ pub fn read(setup: &[Vec<u8>]) -> Result<Read, String> {
         }
     }
     for (d, link) in out.iter_mut().zip(plan.links) {
-        // A resolver only where a grant names one (`--dns`, a remote MCP server): the
-        // agents' resolver, at the switch's end of its gate's link (D61), which holds it to
-        // what it may ask.
-        // A ceiling that names hosts or any name takes it too, its gate holding its questions
-        // until a grant opens them (D278); so does one of ports, within which a grant on a
-        // network shared by runs gives it its peers' names there (D285).
-        let ceiling = link.as_ref().map(|l| &l.granted.ceiling);
+        // A resolver only where a grant names one (`--dns`, a remote MCP server) or a ceiling
+        // may (D278, D285): the agents' resolver, at the switch's end of its gate's link
+        // (D61), which holds it to what it may ask and answers each question at once.
         if let Some(l) = &link
-            && (l.dns
-                || !l.named.is_empty()
-                || ceiling.is_some_and(|c| c.dns || !c.named.is_empty() || !c.ports.is_empty()))
+            && crate::egress::resolves(l)
             && !l.addresses.is_empty()
         {
             d.resolv =
@@ -1598,12 +1592,12 @@ pub type Filter = (u32, Vec<libc::sock_filter>);
 pub(crate) static SWITCH: std::sync::OnceLock<crate::links::Switch> = std::sync::OnceLock::new();
 
 /// The chooser of the ports several domains are given (D122), for the run's life.
-static CHOOSER: std::sync::OnceLock<crate::chooser::Chooser> = std::sync::OnceLock::new();
+pub(crate) static CHOOSER: std::sync::OnceLock<crate::chooser::Chooser> = std::sync::OnceLock::new();
 
 /// What the `i`-th domain's gate lets through (D61): its addresses; to each peer a pair
 /// lets it open flows to, at the peer's addresses, the ports granted; from each that may
 /// open flows to it, likewise; its ports past the microVM; and the agents' resolver where
-/// a grant gives it names.
+/// its resolv.conf names it (`egress::resolves`).
 fn gate_of(
     domains: &[Domain],
     pairs: &[(usize, usize, Vec<crate::netplan::Egress>)],
@@ -1639,7 +1633,7 @@ fn gate_of(
         egress: link.egress.clone(),
         // Past the uplink's translation, at the domain's own ports (D122).
         ingress: link.ingress.iter().map(|&(_, at)| at).collect(),
-        dns: link.dns || !link.named.is_empty(),
+        dns: crate::egress::resolves(link),
         own6: link.addresses6.iter().map(|a| a.addr).collect(),
         opens6: pairs
             .iter()
@@ -1726,6 +1720,14 @@ fn switch(
         .iter()
         .enumerate()
         .filter(|(_, d)| d.link.as_ref().is_some_and(|l| l.dns || !l.named.is_empty()))
+        .map(|(i, _)| i)
+        .collect();
+    // Each whose resolv.conf names the agents' resolver, which answers it at once whatever it
+    // is granted (D278): those `dns` names, and those a ceiling may give names.
+    let asking: Vec<usize> = domains
+        .iter()
+        .enumerate()
+        .filter(|(_, d)| d.link.as_ref().is_some_and(crate::egress::resolves))
         .map(|(i, _)| i)
         .collect();
     // A member that may be given a way past the microVM as the run goes has the uplink from
@@ -1844,14 +1846,15 @@ fn switch(
         &egress,
         &ingress_at,
         &dns,
+        &asking,
         uplink,
         ipv6,
         domains.len(),
         &subnets,
     )?;
-    // The agents' resolver, for those granted names.
+    // The agents' resolver, for those that ask it, each held to the names it is granted.
     let mut askers: Vec<crate::agentdns::Asker> = Vec::new();
-    for &i in &dns {
+    for &i in &asking {
         let Some(l) = domains.get(i).and_then(|d| d.link.as_ref()) else {
             continue;
         };
@@ -2161,7 +2164,11 @@ pub fn start(
         .flat_map(|c| c.candidates.iter().map(|(a, _)| *a))
         .collect();
     if !contests.is_empty() && CHOOSER.get().is_none() {
-        let chooser = crate::chooser::start(contests).map_err(|e| format!("the ports' chooser: {e}"))?;
+        // eth0's own address, whose flows alone it chooses among (D285): the run's, set before
+        // its domains (`address=`).
+        let (own, _, _) =
+            crate::net::current().ok_or("the ports' chooser: the microVM has no address of its own")?;
+        let chooser = crate::chooser::start(contests, own).map_err(|e| format!("the ports' chooser: {e}"))?;
         let _ = CHOOSER.set(chooser);
     }
     let notify_ops = crate::chooser::filter();

@@ -537,6 +537,48 @@ harness's row are D242's "Built: the other eight harnesses' sign-ins surveyed".
   R08/R14: no performance claim. R09/R10: no defect claimed; the evidence and its scripts are committed. R11: no
   platform code. R15: implementer scope, tests owed to ROOT. R16: nothing written to this Mac's disk by the scans.
 
+## Codex's sign-in through the injector (lane s33-signin-2, kiln goal 95c7271b)
+
+Role: implementer for ROOT. Policy read at origin/main 88f74a6a3: docs/development-rules.md df2acf47…, AGENTS.md and
+docs/development-evidence.md in full. The injector's tests drove Claude Code's token host alone; Codex's shapes were
+held at the profile level only (`signin::tests`).
+
+- **Method.** Codex rust-v0.167.2's own sources at the pin above (commit ce21072c9), fetched from GitHub and read,
+  never run (sha256): login/src/device_code_auth.rs 075c3f83…, oauth/client.rs f79cdda5…, auth/revoke.rs db4490da…,
+  auth/manager.rs 584348a4…, server.rs 2f66d1c0…, cli/src/login.rs 7c887f1f…. The device flow is three POSTs to
+  `auth.openai.com`: `/api/accounts/deviceauth/usercode` (JSON `client_id`), `/api/accounts/deviceauth/token`
+  (JSON `device_auth_id`, `user_code`; 403 or 404 while the person has yet to sign in, device_code_auth.rs:131-140),
+  then the code it gives exchanged at `/oauth/token` in form encoding (server.rs:818, oauth/client.rs:79-95). `codex
+  logout` revokes (cli/src/login.rs:610), and so does `codex login --device-auth` before it signs in again
+  (`clear_existing_auth_before_login`, 127-141, called at 387-393).
+- **Change** (`crates/net/src/inject.rs` and `inject/tests/`, tests alone). `inject/tests/codex.rs`:
+  `a_device_sign_in_is_taken_outside_and_its_json_refreshes_answered_there_once` (the device flow's two answers that
+  name no token passed as they came, the exchange's tokens kept outside, its ID token inert to the guest and to the
+  run host, the access token filled toward `chatgpt.com`, a JSON refresh from two connections at once one ask and
+  one provider call) and `a_relogin_and_a_logout_revoke_outside_and_the_hosts_sign_in_survives` (both revocations
+  answered here, the kept tokens as they were, the re-login's tokens captured, the kept token still filled after the
+  VM's logout). The tests' broker and run builder now take the sign-in they keep (`Account`; Claude Code's where
+  none is named), so both CLIs share one `Broker`; its capture also checks that an ID token reaches it inert.
+  `Bench::answer` (leaks.rs) is shared.
+- **Checks run.** None (the person's rule of 2026-11-16: no builds or tests in lanes). `rustfmt --edition 2024` with
+  the repository's rustfmt.toml: applied; leaks.rs, expectations.rs and ab.rs unchanged by it.
+- **Owed (ROOT), on macOS arm64 and Linux.** `cargo test --locked -p shards-net --profile test-release --lib` (the
+  whole library: the shared broker and run builder serve 20 other tests, 13 in inject.rs, 2 in expectations.rs and
+  5 in leaks.rs), and `SHARDS_HELPERS=skip cargo clippy --locked -p
+  shards-net --all-targets -- -D warnings`. Guard-removal mutations, each with `cargo test --locked -p shards-net
+  --profile test-release --lib -- inject::tests::codex`, the file restored and touched after; each must fail:
+  `signin.rs` `edits.push((t.at.clone(), quoted(&inert(&t.value)?)));` made `edits.push((t.at.clone(),
+  quoted(&t.value)));` (the real ID token to the guest); `id_token: tokens.id.as_ref().map(|t|
+  inert(&t.value)).transpose()?,` made `id_token: tokens.id.as_ref().map(|t| Ok::<_,
+  Refusal>(Zeroizing::new(t.value.to_vec()))).transpose()?,` (the real ID token to the run host); `path:
+  "/oauth/revoke",` made `path: "/oauth/revoke-not",` (Codex's revocation sent on); `path: "/oauth/token",` made
+  `path: "/oauth/token-not",` (Codex's refresh sent on).
+- **R01-R16.** R01: test code alone. R02: each shape cited to Codex's pinned source by line. R03: no production
+  literal; the tokens are none real. R04/R05/R06: no production change; one broker for both CLIs, no parallel
+  fixture. R07: comments cite sources. R08/R14: no performance claim. R09/R10: no defect claimed; the mutations above
+  are the tests' reds, owed. R11: platform-independent tests, owed on macOS and Linux. R12/R13: the Claude Code
+  fixtures generalized rather than copied. R15: implementer scope; no run started. R16: a sparse worktree here.
+
 ## Owed
 
 - Slice 3 (kiln), built on kiln main bd2565641 (D242's "step 8's third slice"): `RunLessor` answering capture,

@@ -98,7 +98,9 @@ Each command runs from a checkout at or after this harness's landing.
 
 **1. The harness's own check, on real microVMs** (KVM x86_64, HVF arm64, WHP x86_64).
 
-    cargo test --profile test-release -p shards --test api_image -- --exact a_saved_runs_memory_holds_what_its_harness_was_given_and_the_scan_finds_it
+    SHARDS_REQUIRE_VMS=1 cargo test -p shards --profile test-release --test api_image -- --test-threads=1 a_saved_runs_memory_holds_what_its_harness_was_given_and_the_scan_finds_it
+
+  `SHARDS_REQUIRE_VMS=1` makes a host that cannot run VMs fail the test rather than skip it.
 
 - **What it does.** It boots the test image through shards-api. Its harness echoes its stdin
   and is given two fresh values: one in its environment, one in a staged file.
@@ -111,14 +113,15 @@ Each command runs from a checkout at or after this harness's landing.
     with both found in the save's `memory` file by their names and the environment's value
     found in its file.
   - It scans again for a value never given. Expected: 0 secret runs found.
-- Python 3 runs scan.py: `python3`, or `python` on Windows (jupiter has it).
+- Python 3 runs scan.py: `python3`, or `python` on Windows. jupiter's `python` is the Store's
+  alias: put uv's first on the test's PATH,
+  `C:\Users\corph\AppData\Roaming\uv\python\cpython-3.14.8-windows-x86_64-none`.
 - **Where to run it.**
   - HVF: adalundhe-macbook-pro or adas-mac-studio.local.
-  - KVM x86_64: adacachy2.
+  - KVM x86_64: a Linux x86_64 runner with /dev/kvm (kiln: `linux/amd64`), adacachy.
   - WHP: jupiter.
-  - KVM arm64: through L1, `SHARDS_L1_TESTS=api_image:a_saved_runs_memory_holds_what_its_harness_was_given_and_the_scan_finds_it`
-    with boot.rs's `snapshot_tests_pass_on_a_kvm_host_of_this_architecture`, run through
-    `launchd-run.sh` (CLAUDE.md).
+  - KVM arm64: through L1 on an M3 or later Mac, the save scanned on the outer host (below,
+    "KVM arm64 through L1").
 - **Evidence.** The test's output. Its home and diagnostics show if it fails (`common::TempDir`).
 
 **2. Step 33's acceptance: real sessions** (after step 8 lands, the sign-in profiles, and Hex's
@@ -263,17 +266,148 @@ check spent 28.6 minutes in the scan's two passes, reading holes byte for byte.
   zero bytes a window or a short secret starts or ends with (one, for a UTF-16LE window of
   ASCII). Holes are whole blocks, so two widened ranges never meet.
 - **When it reads holes.** Where a window or short secret is all zeros, so a finding could
-  lie in a hole, and where the system cannot say where holes are (Windows).
+  lie in a hole, and where the file system cannot say where they are. On Windows it asks
+  for the file's allocated ranges instead (step 33.10, below).
 - **Its summary** says the bytes it read beside the files' length: `(N bytes, M read)`.
 - **Tests:** `scan_test.py` 11 passed (two new), `credentials_test.py` 15 passed, on
   adas-macbook-pro-2 (Python 3.9.6). The new tests were red on the old scan. Guard removals:
   3 of 3 failed. A 512 MiB hole took one pass 153.8 s on the old scan and 0.68 s on the new.
 
+## Windows' holes, and a run's last byte (step 33.10)
+
+**The defect** (R09). On WHP the harness's own check never ended: CI run 43876891053's
+x86_64 Windows job on windows-2025 (job 133389461163, main 1b8d1cddd, a 16 GiB runner) started
+it at 17:08:46Z, and it was still running when the tests' 122-minute step ended at 17:24:03Z,
+with no judged wait under way (the scan is a plain child process). Python has no `os.SEEK_DATA`
+on Windows, so scan.py read every byte of a save there, holes too. A WHP save (jupiter, below)
+held a 10995367936-byte sparse `layer`, a 536870912-byte `memory` and an empty `swap`, about
+10.8 GiB in all, which the check's two scans each read whole, at 93 s a GiB of a sparse file
+there (below). A hole is one long UTF-16LE run (its units admit NUL), which the walk takes a
+Python step per `stride` bytes.
+
+**The fix.** On Windows scan.py asks for each file's allocated ranges
+(FSCTL_QUERY_ALLOCATED_RANGES), the call the VMM's `platform::allocated_ranges` makes for a
+file's data, and reads only those, widened as on Unix (`data`, `allocated`).
+- It asks one range at a time, each ask starting where the last answer ended, while the call
+  says more remain (ERROR_MORE_DATA). No buffer size is chosen.
+- A file system that refuses the call, or an answer that would ask the same again, has the
+  file read whole.
+- The call is not said to give touching ranges joined, and a window across where two touch lies
+  in neither. So widened ranges that meet are joined (`extents`), on every OS.
+
+**A run's last byte.** The new tests found a second gap, which predates them.
+- A UTF-16LE run is walked two bytes at a time from where it starts. A range read beside a hole
+  and clipped at its file's end can pair the run from the parity that leaves its last byte
+  alone, so the window ending at the file's end was never looked up.
+- Seen on macOS (Adas-MacBook-Pro-3, Python 3.9.6, at 8541a9b33): REFRESH's UTF-16LE, planted to
+  end at its file's end, was found 184 bytes long where a read of the whole file found 185.
+- A run that reaches the end of what is read with less than a unit left now takes that byte too
+  (`Runs.regions`).
+
+**Sparse test files on Windows.** A file lengthened by CPython's `truncate` on Windows holds
+all of its length, sparse or not. On jupiter (Python 3.14.8) a sparse 64 MiB file lengthened by
+`truncate` took 4.64 s and held all 67108864 bytes; one lengthened by a write past its end held
+65536, NTFS's unit for a sparse file's data. So the tests and `measure.py sparse` take a
+file's length from its last write, and make it sparse first (FSCTL_SET_SPARSE). The sparse test
+now bounds what is read by what the file system holds allocated (`held`: st_blocks, or
+GetCompressedFileSizeW), not by a page: NTFS gives 64 KiB. Each file holds two data ranges, so
+that both ways of asking are held to ask past the first.
+
+**Tests**, at 1dfaafff0's s33-leak-scan:
+
+| Host | `scan_test.py -v` | `credentials_test.py` | Guard removals (`guards.py`), each failing |
+|---|---|---|---|
+| jupiter, Windows 11 Pro 26200 x86_64, NTFS, Python 3.14.8 | 12 passed | 2 passed, 13 errors: its `copy` refuses a private directory whose POSIX mode is not 0700, which Windows' ACLs do not say | 6 of 6: windows-ranges, whole-always, no-join, first-range, more-refused, cut-unit |
+| Adas-Mac-Studio, macOS arm64, APFS, Python 3.9.6 | 12 passed | 15 passed | 4 of 4: whole-always, no-join, first-data, cut-unit |
+| Linux x86_64 | owed (queued behind adacachy's load) | owed | owed: whole-always, no-join, first-data, cut-unit |
+
+`guards.py` makes each removal on a copy of this directory and harness-bringup-v2, then runs
+every test there:
+
+    python3 -I docs/research/measurements/s33-leak-scan/guards.py docs/research/measurements NAME...
+
+**Before and after** on jupiter (Windows 11 Pro 26200, x86_64, NTFS, Python 3.14.8, at 1dfaafff0's
+scan.py; the old one main's), one scan per process, each file sparse with two values planted,
+131072 bytes held (two of NTFS's 64 KiB units):
+
+    python -I measure.py sparse PATH SIZE
+    python -I measure.py scan SCAN_PY PATH time
+
+| File | Old: time, bytes read | New: time, bytes read | Findings |
+|---|---|---|---|
+| 1 GiB | 93.05 s, 1073741824 | 0.05 s, 131075 | 2 secret runs each, the same lines (digest 003d59f1f0bd8cd6) |
+| 2 GiB | 191.10 s, 2147483648 | 0.23 s, 131075 | 2 each, the same (a73fb1319b8a1390) |
+
+The old time grows with the file's length; the new reads what NTFS holds and the 3 bytes a
+finding can take beside it.
+
+**On WHP** (jupiter, Windows 11 Pro 26200, x86_64, 32 CPUs; uv's Python 3.14.8, as jupiter's
+`python` is the Store's alias): the harness's own check passed in 22.49 s, `SHARDS_REQUIRE_VMS=1`,
+built in the shared target `~/.cache/whp-pipes/target`.
+- Its revision: 41d6ea3c2, the commit lane whp-verify's checkout of that target was at (main
+  3d91d54f1 and its D272 commit, a Windows vsock pipe's events, on main since fe83503c2), with
+  1dfaafff0's s33-leak-scan over it. Building the same commit kept that lane's `shards.exe` in the shared
+  target its own while its own tests ran.
+- At main 3d91d54f1 itself, an earlier run got through the VM's part (the save refused outside
+  the home, the save, the echo after) and failed at the scan alone: `python` was the Store's
+  alias (exit 9009).
+- The save's files, as their directory said them during the run: `layer` 10995367936,
+  `layer-head` 10485760, `memory` 536870912, `state` 10893, `swap` 0, `window-heads` 4194304.
+
+**On KVM x86-64:** owed (below). The scan's Unix path changed only in joining ranges that meet
+and keeping a run's last byte; macOS's tests above hold both.
+
+## KVM arm64 through L1 (step 33.10)
+
+No arm64 Linux host here has KVM. So on KVM arm64 the harness's own check runs in L1: boot.rs's
+`snapshot_tests_pass_on_a_kvm_host_of_this_architecture` boots a nested guest on an M3 or later
+Mac and runs the test binary in it (D154). That guest has no Python and no checkout for scan.py
+and credentials.py, so the test cannot scan there. The outer host scans instead (ROOT,
+2026-11-16; D259):
+- **In L1.** The test saves as on every host. `SHARDS_L1_OUT` in its environment names the
+  outer host's share, so it leaves the save and what the scan is given there (`given.json`,
+  `never.json`, `env/`), and scans nothing (`common::leave_leak_scan`). The copy keeps only what
+  holds data (`platform::copy_used`), so the sparse layer takes no more of the outer host's disk
+  than it holds.
+- **The share.** boot.rs gives the outer run `--share` on a directory of its own (D38). The
+  test guest's e2e mode mounts it (`shards0`) at `/e2e/out`, where /e2e/env's `SHARDS_L1_OUT`
+  says.
+- **On the outer host.** Once the guest is gone, boot.rs judges what was left with the
+  function the test judges with in place (`common::leak_scan_judged`): this scan.py, the same
+  assertions, the same bytes.
+- **Elsewhere.** HVF, WHP and KVM x86_64 scan in place, as before.
+
+**The command** (ROOT's), from the checkout's root, on an M3 or later Mac with `python3` on
+`PATH`, through `launchd-run.sh`, as the session's QoS clamp starves the nested guests:
+
+    docs/research/measurements/macos-sched/launchd-run.sh <OUT> env SHARDS_REQUIRE_VMS=1 SHARDS_L1_TESTS=api_image:a_saved_runs_memory_holds_what_its_harness_was_given_and_the_scan_finds_it SHARDS_L1_CONSOLE=<OUT>-console.txt cargo test --locked --profile test-release -p shards --test boot -- snapshot_tests_pass_on_a_kvm_host_of_this_architecture --nocapture
+
+- **It passes when:**
+  - `<OUT>.exit` holds 0;
+  - `<OUT>.log` says the test is ok, with no `SKIP: this host gives a guest no EL2`;
+  - the console file holds `E2E: test a_saved_runs_memory_holds_what_its_harness_was_given_and_the_scan_finds_it ... ok`
+    and `E2E STATUS /e2e/tests/api_image exit status: 0`.
+- **Not yet built or run.** Lane l1-scan landed it under the person's rule of 2026-11-16 (no
+  builds or tests in lanes). This run is its first; `scripts/lint` is owed with it, the test
+  guest's musl targets among them.
+
 ## Owed
 
-- **Run 1, the harness's own check,** on KVM x86_64, HVF arm64, WHP x86_64 and KVM arm64
-  (L1). Not run here: no VM is booted in this lane. Since #74 step 10, a rerun on WHP (where
-  the old scan ran out of memory) and on KVM (2092 s) shows the linear scan on a real save.
+- **Run 1, the harness's own check.** Passed on WHP x86_64 (step 33.10, above), and on HVF
+  with main's scan (ROOT's run r83 at 4999d113a). Owed:
+  - KVM x86_64 with step 33.10's scan (it passed with main's before, PM M605). adacachy was
+    under strain past this lane's bound. adacachy's HTTP/2 to GitHub resets, so clone with
+    `git -c http.version=HTTP/1.1` and keep it in the clone's config, or carry the revision as
+    a bundle:
+
+        SHARDS_REQUIRE_VMS=1 cargo test -p shards --profile test-release --test api_image -- --test-threads=1 a_saved_runs_memory_holds_what_its_harness_was_given_and_the_scan_finds_it
+
+  - `scan_test.py -v` and the Unix guard removals on Linux:
+
+        python3 -I docs/research/measurements/s33-leak-scan/scan_test.py -v
+        python3 -I docs/research/measurements/s33-leak-scan/guards.py docs/research/measurements whole-always no-join first-data cut-unit
+
+  - KVM arm64, through L1: the command under "KVM arm64 through L1" (above).
 - **Run 2, the real sessions.** It waits on step 8, on Hex's half of step 6, and on a save hook
   in Hex.
 - **Step 10's second part,** the injector's A/B latency harness, is built:

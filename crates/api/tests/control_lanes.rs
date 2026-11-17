@@ -81,6 +81,9 @@ fn reported(linked: &mut Linked) -> Result<(Link, Vec<String>), Fault> {
     Ok((*link, lanes.iter().map(Granted::name).collect()))
 }
 
+/// How an orchestrator reports a run's agent-control link: the link, and its lanes by name.
+type ReportLink = fn(&mut Linked) -> Result<(Link, Vec<String>), Fault>;
+
 #[test]
 fn a_members_lane_is_steered_through_shards_api_alone() {
     let admissions: Admissions = exec_admissions();
@@ -97,6 +100,6 @@ fn a_members_lane_is_steered_through_shards_api_alone() {
     let _: fn(&Execs, u32) -> Result<Vec<u8>, Fault> = first_said;
     assert!(killed_by(exec::End::Signaled(15), 15));
     assert!(!killed_by(exec::End::Exited(143), 15));
-    let _: fn(&mut Linked) -> Result<(Link, Vec<String>), Fault> = reported;
+    let _: ReportLink = reported;
     assert_eq!(Granted::Mcp(1).name(), "mcp:1");
 }

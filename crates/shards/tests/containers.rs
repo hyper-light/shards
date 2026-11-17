@@ -15059,14 +15059,15 @@ fn a_networks_options_are_what_its_microvms_do() {
         &["serve", "7000", "1"],
     );
     // Nothing reaches it, and so its name answers no other member (default deny, D46):
-    // refused at once, as a name past the network is; a member's own name answers it.
+    // none, for it, at once (NXDOMAIN, which musl's stub takes where it drops REFUSED), as a
+    // name past the network is; a member's own name answers it.
     let r = run_in(
         &home,
         &image,
         &["--rm", "--network", "apart"],
         &["dnsttl", "lone"],
     );
-    assert_eq!(r.stdout, "dnsttl rcode 5\n", "{r}");
+    assert_eq!(r.stdout, "dnsttl rcode 3\n", "{r}");
     let r = run_in(
         &home,
         &image,
@@ -15195,11 +15196,11 @@ fn microvms_on_a_network_reach_one_another_by_name() {
         assert!(!r.stdout.contains("10.77.0.50\n"), "{to}: {r}");
     }
     // Kept by no cache; the name an address gives back resolving forward; and a name past
-    // the network, which no grant reaches, refused at once.
+    // the network, which no grant reaches, none at once (NXDOMAIN, D46).
     for (name, said) in [
         ("web", "dnsttl 0 10.77.0.50\n"),
         ("srv.lan", "dnsttl 0 10.77.0.50\n"),
-        ("example.com", "dnsttl rcode 5\n"),
+        ("example.com", "dnsttl rcode 3\n"),
     ] {
         let r = run_in(&home, &image, &["--rm", "--network", "lan"], &["dnsttl", name]);
         assert_eq!(r.stdout, said, "{name}: {r}");
@@ -17599,13 +17600,15 @@ fn a_runs_log_is_compressed_and_queued_as_its_options_say() {
     }
 }
 
-/// `listener`'s first connection, from `home`'s daemon, waited for while that daemon and its
-/// microVMs go on ([`Patience`], its kind its caller's call site): none where its wait is
-/// refused, which a test then fails on, not waits for ever.
+/// `listener`'s first connection, from `home`'s daemon as it delivers a run's log to `to`
+/// (the run's `--log-opt` that addresses it), waited for while that daemon and its microVMs
+/// go on ([`Patience`], its kind its caller's call site), and while that run's shipper
+/// sleeps before its next try there (D209 Part 10): none where its wait is refused, which a
+/// test then fails on, not waits for ever.
 #[track_caller]
-fn accept_within(listener: &std::net::TcpListener, home: &Path) -> Option<std::net::TcpStream> {
+fn accept_within(listener: &std::net::TcpListener, home: &Path, to: &str) -> Option<std::net::TcpStream> {
     listener.set_nonblocking(true).unwrap();
-    let mut patience = Patience::of(home);
+    let mut patience = Patience::of(home).delivery_to(to);
     loop {
         match listener.accept() {
             Ok((conn, _)) => {
@@ -17681,16 +17684,18 @@ fn syslog_parts(parts: &[usize]) {
     assert!((8000..8192).contains(&whole[0]), "{parts:?}");
 }
 
-/// What a syslog server reads on `listener`'s first connection: its lines until `lines`
-/// have come, or all it gets until the connection ends; none where none comes.
+/// What a syslog server reads on `listener`'s first connection, a run's log delivered to
+/// `to` ([`accept_within`]): its lines until `lines` have come, or all it gets until the
+/// connection ends; none where none comes.
 fn syslog_lines(
     listener: std::net::TcpListener,
     lines: usize,
     home: &Path,
+    to: &str,
 ) -> std::thread::JoinHandle<Vec<String>> {
-    let home = home.to_path_buf();
+    let (home, to) = (home.to_path_buf(), to.to_string());
     std::thread::spawn(move || {
-        let Some(conn) = accept_within(&listener, &home) else {
+        let Some(conn) = accept_within(&listener, &home, &to) else {
             return Vec::new();
         };
         let mut read = BufReader::new(common::Following::of_home(&conn, &home));
@@ -17785,7 +17790,7 @@ fn a_runs_log_is_sent_to_syslog_as_its_options_say() {
     // its time its output's.
     let tcp = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let address = format!("syslog-address=tcp://{}", tcp.local_addr().unwrap());
-    let reading = syslog_lines(tcp, 2, &home);
+    let reading = syslog_lines(tcp, 2, &home, &address);
     syslog(
         "tcp",
         &[&address, "syslog-format=rfc5424micro", "syslog-facility=local0"],
@@ -17872,9 +17877,10 @@ fn a_runs_log_is_sent_to_syslog_as_its_options_say() {
     );
     let tls = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = crate::common::minted_port(tls.local_addr().unwrap().port());
-    let at = home.to_path_buf();
+    let address = format!("syslog-address=tcp+tls://localhost:{port}");
+    let (at, to) = (home.to_path_buf(), address.clone());
     let reading = std::thread::spawn(move || {
-        let Some(conn) = accept_within(&tls, &at) else {
+        let Some(conn) = accept_within(&tls, &at, &to) else {
             return (String::new(), Err(std::io::ErrorKind::NotConnected));
         };
         let mut session = rustls::ServerConnection::new(server).unwrap();
@@ -17891,7 +17897,7 @@ fn a_runs_log_is_sent_to_syslog_as_its_options_say() {
     syslog(
         "tls",
         &[
-            &format!("syslog-address=tcp+tls://localhost:{port}"),
+            &address,
             &format!("syslog-tls-ca-cert={}", ca_file.display()),
             "syslog-format=rfc5424",
             "tag=tls",
@@ -18020,15 +18026,13 @@ fn a_runs_log_is_sent_to_syslog_as_its_options_say() {
 
     // A server that comes up only after the run: its log waits in the store, and goes.
     let port = free_port();
-    syslog(
-        "later",
-        &[&format!("syslog-address=tcp://127.0.0.1:{port}"), "tag=later"],
-        &["streams", "out", "err"],
-    );
+    let address = format!("syslog-address=tcp://127.0.0.1:{port}");
+    syslog("later", &[&address, "tag=later"], &["streams", "out", "err"]);
     let reading = syslog_lines(
         std::net::TcpListener::bind(("127.0.0.1", port)).unwrap(),
         2,
         &home,
+        &address,
     );
     let got = reading.join().unwrap();
     assert!(
@@ -18038,9 +18042,10 @@ fn a_runs_log_is_sent_to_syslog_as_its_options_say() {
 
     // One whose daemon stops before its server comes up: the next daemon sends it.
     let port = free_port();
+    let address = format!("syslog-address=tcp://127.0.0.1:{port}");
     syslog(
         "restarted",
-        &[&format!("syslog-address=tcp://127.0.0.1:{port}"), "tag=restarted"],
+        &[&address, "tag=restarted"],
         &["streams", "out", "err"],
     );
     let stopped = without_vms(&home, &["daemon", "stop"]);
@@ -18051,7 +18056,7 @@ fn a_runs_log_is_sent_to_syslog_as_its_options_say() {
     // `ps` had started one (CI run 43876891053).
     let server = std::net::TcpListener::bind(("127.0.0.1", port)).unwrap();
     assert_eq!(shards(&["ps", "-a", "-q"]).status, Some(0));
-    let reading = syslog_lines(server, 2, &home);
+    let reading = syslog_lines(server, 2, &home, &address);
     let got = reading.join().unwrap();
     assert!(
         got.len() == 2 && got[0].ends_with(": err\n") && got[1].ends_with(": out\n"),
@@ -18279,9 +18284,9 @@ fn a_runs_log_is_sent_to_gelf_as_its_options_say() {
     // TCP: each message followed by a NUL.
     let tcp = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let address = format!("gelf-address=tcp://{}", tcp.local_addr().unwrap());
-    let at = home.to_path_buf();
+    let (at, to) = (home.to_path_buf(), address.clone());
     let reading = std::thread::spawn(move || {
-        let conn = accept_within(&tcp, &at).unwrap();
+        let conn = accept_within(&tcp, &at, &to).unwrap();
         let mut read = BufReader::new(common::Following::of_home(&conn, &at));
         let mut got = Vec::new();
         while got.len() < 2 {
@@ -18444,9 +18449,9 @@ fn a_runs_log_is_sent_to_fluentd_as_its_options_say() {
     // TCP, to the nanosecond, an ack asked for each.
     let tcp = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let address = format!("fluentd-address={}", tcp.local_addr().unwrap());
-    let at = home.to_path_buf();
+    let (at, to) = (home.to_path_buf(), address.clone());
     let reading = std::thread::spawn(move || {
-        let conn = accept_within(&tcp, &at).unwrap();
+        let conn = accept_within(&tcp, &at, &to).unwrap();
         fluentd_events(&mut Answering::of_home(&conn, &at), 2)
     });
     fluentd(

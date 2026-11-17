@@ -278,6 +278,28 @@ pub fn remote(run: &Run) -> Result<Option<Remote>, String> {
     remote_config(driver(run), &options(run))
 }
 
+/// Where `run`'s driver sends its log, as its options name it: the option that addresses
+/// its receiver, `KEY=VALUE` as given (moby's drivers' `syslog-address`, `gelf-address`,
+/// `fluentd-address`, `splunk-url`, `awslogs-endpoint`, `gcp-endpoint`); else its driver's
+/// name, whose receiver is its default or the host's own (journald, etwlogs, oslog). What a
+/// shipper's pause before its next try holds up (`shards_ipc::RETRY`, D209 Part 10).
+pub fn destination(run: &Run) -> String {
+    let name = driver(run);
+    let key = match name {
+        "syslog" => "syslog-address",
+        "gelf" => "gelf-address",
+        "fluentd" => "fluentd-address",
+        "splunk" => "splunk-url",
+        "awslogs" => "awslogs-endpoint",
+        "gcplogs" => "gcp-endpoint",
+        _ => return name.to_string(),
+    };
+    match options(run).get(key) {
+        Some(to) => format!("{key}={to}"),
+        None => name.to_string(),
+    }
+}
+
 /// Driver `name`'s, as `opts` ask for it, if it sends a log elsewhere.
 fn remote_config(name: &str, opts: &BTreeMap<String, String>) -> Result<Option<Remote>, String> {
     match name {
@@ -796,5 +818,23 @@ mod tests {
                 "{journald:?}"
             );
         }
+    }
+
+    /// A run's log's destination, which its shipper's pause names and a wait on its delivery
+    /// names alike (D209 Part 10): the option that addresses its receiver as given, the last
+    /// of its key's as every option is read; else its driver's name.
+    #[test]
+    fn a_runs_log_goes_where_its_address_option_says() {
+        let to = |driver: &str, opts: &[&str]| destination(&run(driver, opts));
+        assert_eq!(
+            to("syslog", &["tag=x", "syslog-address=tcp://127.0.0.1:514"]),
+            "syslog-address=tcp://127.0.0.1:514"
+        );
+        assert_eq!(
+            to("fluentd", &["fluentd-address=a:1", "fluentd-address=b:2"]),
+            "fluentd-address=b:2"
+        );
+        assert_eq!(to("syslog", &["tag=x"]), "syslog");
+        assert_eq!(to("journald", &[]), "journald");
     }
 }

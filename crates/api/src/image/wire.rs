@@ -138,8 +138,11 @@ pub use shards_abi::run::nesting::Ready;
 /// members told again ([`NetChange::Link`], [`NetChange::Rejoin`]), the run's places on such
 /// networks with each answer ([`NetChanged::networks`]) and their refusals, so that a side
 /// that switches no shared network refuses the run as it is asked, rather than a grant its
-/// orchestrator made holding nowhere.
-pub const VERSION: u8 = 50;
+/// orchestrator made holding nowhere; 51, a run whose agent-control endpoint, or its members'
+/// first stdio lanes, its run host's budget has no room for refused typed before its members
+/// start ([`Cause::Capacity`], D252), so that a side that reads no such cause refuses the run as
+/// it is asked, rather than its refusal breaking the channel.
+pub const VERSION: u8 = 51;
 
 /// The run host's links socket's descriptor on Unix (version 50, D285 slice 4): the first past
 /// its standard streams, given it as it starts with [`LINKS_ARG`] on its command line, on which
@@ -885,6 +888,11 @@ pub enum Cause {
     /// `entering its working directory`): none of the run's members runs. Told after
     /// [`to_client::STARTED`], before [`to_client::ENDED`]. Appended in version 42.
     Workdir = 6,
+    /// Its run host's budget has no room for its agent-control endpoint (its link and its
+    /// sockets' queues) or its members' first stdio lanes (D252), charged before its members
+    /// start, as a restart's next generation's are ([`RestartRefusal::Capacity`]): none of its
+    /// members ran. Appended in version 51.
+    Capacity = 7,
 }
 
 /// A member's bytes.
@@ -1375,7 +1383,8 @@ pub enum NetRefusal {
     /// The image's own declaration of it: a port it gives a member that is none of the run's.
     Image = 5,
     /// Members whose reach, so changed, the microVM cannot hold apart (D278, D236's `held`):
-    /// on a TCP port one reaches by name, another by other names or a port grant.
+    /// on a TCP port one reaches by name, another by other names or a port grant; or two
+    /// granted in on one port of the run's address on a network shared by runs (D285).
     Unheld = 6,
     /// No network of that name or ID in the run's home (version 50, D285): one is made
     /// beforehand, never by a join.
@@ -4118,6 +4127,7 @@ impl Refused {
             4 => Cause::Unsupported,
             5 => Cause::Unfit,
             6 => Cause::Workdir,
+            7 => Cause::Capacity,
             tag => {
                 return Err(WireError::Tag {
                     what: "a refusal's cause",
@@ -5645,6 +5655,10 @@ mod tests {
                 Cause::Workdir,
                 "Harness codex: /Users/ada/proj: errno 2: its guest could not enter it as it started",
             ),
+            (
+                Cause::Capacity,
+                "its run host's budget has no room for member 1's first Stdout lane",
+            ),
         ] {
             let refused = Refused {
                 cause,
@@ -5653,8 +5667,8 @@ mod tests {
             assert_eq!(Refused::decode(&refused.encode().unwrap()).unwrap(), refused);
         }
         assert!(matches!(
-            Refused::decode(&[7, 0, 0, 0, 0]),
-            Err(WireError::Tag { tag: 7, .. })
+            Refused::decode(&[8, 0, 0, 0, 0]),
+            Err(WireError::Tag { tag: 8, .. })
         ));
         let mut out = Output::head(3, 2, Channel::Stderr).to_vec();
         out.extend_from_slice(b"\xff\x00no newline");

@@ -622,11 +622,83 @@ fn serving() {
 /// `stop daemon` refused 259 ms into its wait, "no progress for 45.3 ms" past a W* of 36.0
 /// ms, as its daemon waited out the 10 s grace of a `sleep` that ignores SIGTERM as its PID
 /// namespace's init, its log's next line 10.02 s after "stepping aside", the run `Exited
-/// (137)`. Do: teach a kind its W* by a quick stand-in's end; name a sleeping stand-in its
-/// home's daemon, a run of that home in its grace for 20 W*, and wait on a sleeping client.
-/// Expect: no refusal within the grace; a refusal once it is past.
+/// (137)`. Do as [`refused_beside_a_deadline`] says: the deadline a run's grace, 20 W* away;
+/// a wait on no delivery. Expect: no refusal within the grace; a refusal once it is past.
 #[test]
 fn a_runs_stop_grace_is_its_daemons_and_not_refused() {
+    let (at, until, said) =
+        refused_beside_a_deadline(shards_ipc::GRACE, None, None, |w| w.saturating_mul(20));
+    assert!(at >= until, "refused within its grace: {said}");
+}
+
+/// Where a run's log goes, as its options name it: inert, nothing listens there.
+const LOG_SERVER: &str = "syslog-address=tcp://127.0.0.1:514";
+
+/// A run's log's next try, which its home's daemon keeps while its shipper sleeps before it,
+/// naming where the log goes (`shards_ipc::RETRY`), is the daemon's own deadline for a wait
+/// on that delivery (D209 Part 10). HVF at 6f5755ae1 (adas-mac-studio.local-2, the
+/// shards-green lane): containers.rs' `a_runs_log_is_sent_to_syslog_as_its_options_say`
+/// refused 763 ms into its wait for a server that comes up only after its run, "no progress
+/// for 399 ms" past a W* of 241 ms, its daemon asleep in its shipper's first pause (ship.rs
+/// `RETRY_FIRST`). Do as [`refused_beside_a_deadline`] says: the deadline a log's next try to
+/// a server, 20 W* away; a wait on the delivery to that server. Expect: no refusal before the
+/// deadline; a refusal once it is past.
+#[test]
+fn a_logs_next_try_holds_a_wait_on_its_delivery() {
+    let (at, until, said) =
+        refused_beside_a_deadline(shards_ipc::RETRY, Some(LOG_SERVER), Some(LOG_SERVER), |w| {
+            w.saturating_mul(20)
+        });
+    assert!(at >= until, "refused before its log's next try: {said}");
+}
+
+/// A run's log's next try holds up that log's delivery alone, so it holds no other wait on
+/// its daemon (ROOT's ruling of 2026-11-16, D209 Part 10): one is judged on its own evidence,
+/// as before 03c0b8603, and a stall elsewhere in a daemon whose shipper retries for ever is
+/// still refused. Do as [`refused_beside_a_deadline`] says: the deadline a log's next try to a
+/// server, as far away as a refusal past a deadline is waited for ([`refusal_bound`]); a wait
+/// on no delivery, then one on the delivery to another server. Expect: each refused before
+/// the deadline.
+#[test]
+fn a_logs_next_try_holds_no_other_wait_on_its_daemon() {
+    let (at, until, said) =
+        refused_beside_a_deadline(shards_ipc::RETRY, Some(LOG_SERVER), None, refusal_bound);
+    assert!(
+        at < until,
+        "a wait on no delivery held by a log's next try: {said}"
+    );
+    let elsewhere = "syslog-address=tcp://127.0.0.1:601";
+    let (at, until, said) = refused_beside_a_deadline(
+        shards_ipc::RETRY,
+        Some(LOG_SERVER),
+        Some(elsewhere),
+        refusal_bound,
+    );
+    assert!(
+        at < until,
+        "a wait on another delivery held by a log's next try: {said}"
+    );
+}
+
+/// How long past a deadline a wait not yet refused is taken for one never refused: past its
+/// deadline, a whole W* still is refused well within this.
+fn refusal_bound(slowest: Duration) -> Duration {
+    slowest.saturating_mul(100).max(Duration::from_secs(10))
+}
+
+/// Do: teach a kind of its caller's its W* by a quick stand-in's end; name a sleeping
+/// stand-in its home's daemon, and a run of that home holding the deadline `name`, `away(W*)`
+/// from now, of `of` where it names what it holds up; wait on a sleeping client, a wait on the
+/// delivery to `reads` where it names one, until it is refused. Its refusal's time, the
+/// deadline, and what the refusal said; a failure where it is never refused, though
+/// [`refusal_bound`] past the deadline.
+#[track_caller]
+fn refused_beside_a_deadline(
+    name: &str,
+    of: Option<&str>,
+    reads: Option<&str>,
+    away: fn(Duration) -> Duration,
+) -> (std::time::SystemTime, std::time::SystemTime, String) {
     let kind = cold_kind();
     let mut quick = stand_in_doing("exit")
         .stdout(std::process::Stdio::null())
@@ -652,20 +724,22 @@ fn a_runs_stop_grace_is_its_daemons_and_not_refused() {
     name_daemon(&home, daemon.id());
     let run = home.join("containers").join("graced");
     std::fs::create_dir_all(&run).unwrap();
-    let grace = slowest.saturating_mul(20);
-    let until = std::time::SystemTime::now() + grace;
-    std::fs::write(
-        run.join(shards_ipc::GRACE),
-        shards_ipc::grace_text(until).unwrap(),
-    )
-    .unwrap();
-    let mut wait = common::Wait::begin(kind, client.id(), Some(&home), "a stop in its grace");
+    let until = std::time::SystemTime::now() + away(slowest);
+    std::fs::write(run.join(name), shards_ipc::deadline_text(until, of).unwrap()).unwrap();
+    let mut wait = common::Wait::begin(
+        kind,
+        client.id(),
+        Some(&home),
+        "a wait beside its daemon's deadline",
+    );
+    if let Some(to) = reads {
+        wait = wait.delivery_to(to);
+    }
     let refused = loop {
         if let Err(stall) = wait.look(false) {
             break Some((std::time::SystemTime::now(), wait.refused(&stall)));
         }
-        // Past its grace, a whole W* still is refused well within this.
-        if std::time::SystemTime::now() > until + slowest.saturating_mul(100).max(Duration::from_secs(10)) {
+        if std::time::SystemTime::now() > until + refusal_bound(slowest) {
             break None;
         }
         std::thread::sleep(Duration::from_millis(1));
@@ -675,12 +749,9 @@ fn a_runs_stop_grace_is_its_daemons_and_not_refused() {
         let _ = party.wait();
     }
     let Some((at, said)) = refused else {
-        panic!("never refused past its grace: {}", wait.account());
+        panic!("never refused past its {name}: {}", wait.account());
     };
-    assert!(
-        at >= until,
-        "refused within its grace, {grace:?} from its start: {said}"
-    );
+    (at, until, said)
 }
 
 /// A test's wait on a state its home's daemon comes to (`Patience`) goes on while its party

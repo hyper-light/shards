@@ -403,8 +403,6 @@ pub trait Recipient {
     fn give(&self, handle: std::os::windows::io::BorrowedHandle<'_>) -> std::io::Result<usize>;
     /// Its handle `value`, duplicated into this process.
     fn take(&self, value: usize) -> std::io::Result<std::os::windows::io::OwnedHandle>;
-    /// Its process ID, which a socket is shared with.
-    fn id(&self) -> u32;
 }
 
 #[cfg(windows)]
@@ -416,10 +414,6 @@ impl Recipient for shards_ipc::Child {
     fn take(&self, value: usize) -> std::io::Result<std::os::windows::io::OwnedHandle> {
         shards_ipc::Child::take(self, value)
     }
-
-    fn id(&self) -> u32 {
-        shards_ipc::Child::id(self)
-    }
 }
 
 #[cfg(windows)]
@@ -430,10 +424,6 @@ impl Recipient for shards_ipc::Process {
 
     fn take(&self, value: usize) -> std::io::Result<std::os::windows::io::OwnedHandle> {
         shards_ipc::Process::take(self, value)
-    }
-
-    fn id(&self) -> u32 {
-        shards_ipc::Process::id(self)
     }
 }
 
@@ -790,10 +780,6 @@ mod windows_tests {
             // SAFETY: a value this test's own process gave, open while it asks.
             unsafe { BorrowedHandle::borrow_raw(value as RawHandle) }.try_clone_to_owned()
         }
-
-        fn id(&self) -> u32 {
-            std::process::id()
-        }
     }
 
     /// A spawner's end and a VM's, over two pipes.
@@ -1135,7 +1121,7 @@ mod windows_tests {
         let (gone, down, up) = shards_ipc::vsock_listen(&vsock).unwrap();
         drop((down, up));
         let (_, port_down, port_up) = shards_ipc::vsock_listen(&dir.join("v_5000")).unwrap();
-        let mut host = Listening::new(port_down, port_up);
+        let mut host = Listening::new(port_down, port_up).unwrap();
         let (spawner, vm) = link();
         std::thread::scope(|scope| {
             let serving = scope.spawn(|| serve(&spawner, &Here));
@@ -1151,12 +1137,12 @@ mod windows_tests {
             let names = shards_ipc::VsockNames::read(&vsock).unwrap();
             assert_ne!(names, gone, "an earlier VM's names taken");
             let ((down, up), _) = listen_pipes(&vsock).unwrap();
-            let mut first = Listening::new(down, up);
+            let mut first = Listening::new(down, up).unwrap();
             let theirs = shards_ipc::vsock_open(&vsock, None).unwrap();
             whole(&mut first, "the granted pair, the path's");
             drop((first, theirs));
             let (down, up) = crate::grant_ask::next_pair(&vm).unwrap();
-            let mut next = Listening::new(down, up);
+            let mut next = Listening::new(down, up).unwrap();
             let _theirs = shards_ipc::vsock_open(&vsock, None).unwrap();
             whole(&mut next, "the next pair, the first's names'");
             assert_eq!(shards_ipc::VsockNames::read(&vsock).unwrap(), names);

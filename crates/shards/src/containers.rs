@@ -311,7 +311,9 @@ impl Disk for Real {
 ///   it is not.
 /// - Records are written and renamed into place, not synced: syncing one costs 8.5 ms on
 ///   macOS (PM M46). A removal is synced before its name is let go, so that a power loss
-///   cannot bring back a microVM whose name another has taken.
+///   cannot bring back a microVM whose name another has taken. A `--rm` one's is not, its
+///   record saying `--rm`: one a power loss brings back goes as the next start opens,
+///   before it sees any name ([`Removal::needs_sync`]).
 #[derive(Debug)]
 pub struct Registry {
     root: PathBuf,
@@ -330,6 +332,10 @@ pub struct Registry {
     /// Containers reserved, by ID, whose records are being written: their names held,
     /// and not yet seen.
     arriving: BTreeMap<String, Container>,
+    /// Those in sight whose `--rm` was set after their record was last written (D181: a
+    /// microVM its provider's own engine made goes with its provider), whose record may not
+    /// say it: their removals are synced as any other's ([`Removal::needs_sync`]).
+    rm_unrecorded: BTreeSet<String>,
 }
 
 impl Registry {
@@ -361,6 +367,7 @@ impl Registry {
             leaving: BTreeMap::new(),
             setting_aside: BTreeSet::new(),
             arriving: BTreeMap::new(),
+            rm_unrecorded: BTreeSet::new(),
         };
         let mut removed = false;
         let names = disk.list(&registry.root)?;
@@ -623,7 +630,11 @@ impl Registry {
             .by_id
             .get_mut(id)
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no record of the container"))?;
+        let rm_was = c.auto_remove;
         f(c);
+        if c.auto_remove && !rm_was {
+            self.rm_unrecorded.insert(id.to_string());
+        }
         self.behind.insert(id.to_string());
         Ok(())
     }
@@ -650,6 +661,9 @@ impl Registry {
             return Ok(());
         };
         write(disk, &self.root, c)?;
+        if c.auto_remove {
+            self.rm_unrecorded.remove(id);
+        }
         self.behind.remove(id);
         Ok(())
     }
@@ -667,6 +681,9 @@ impl Registry {
     /// The microVM with `id` had its record written as `written`: it is behind no more,
     /// unless it has changed since, to be written again.
     pub fn written(&mut self, id: &str, written: &Container) {
+        if written.auto_remove {
+            self.rm_unrecorded.remove(id);
+        }
         if self.by_id.get(id).is_none_or(|c| c == written) {
             self.behind.remove(id);
         }
@@ -683,14 +700,15 @@ impl Registry {
     /// ([`Removal::set_aside`], then [`aside`](Self::aside), or
     /// [`bring_back`](Self::bring_back) where that fails).
     pub fn take_out(&mut self, id: &str) -> Option<Removal> {
-        let c = match self.by_id.remove(id) {
+        let (c, recorded) = match self.by_id.remove(id) {
             Some(c) => {
                 self.by_name.remove(&c.name);
-                c
+                (c, true)
             }
-            None => self.arriving.remove(id)?,
+            None => (self.arriving.remove(id)?, false),
         };
         self.behind.remove(id);
+        let rm_unrecorded = self.rm_unrecorded.remove(id);
         if !c.auto_remove {
             self.setting_aside.insert(id.to_string());
         }
@@ -698,6 +716,7 @@ impl Registry {
         Some(Removal {
             aside: self.root.join(format!(".{id}.removing")),
             root: self.root.clone(),
+            rm_recorded: recorded && c.auto_remove && !rm_unrecorded,
             container: c,
         })
     }
@@ -829,6 +848,10 @@ pub struct Removal {
     root: PathBuf,
     /// Where its directory goes, `.ID.removing`, on Unix; on Windows a mark of that name.
     aside: PathBuf,
+    /// Its record says `--rm`: it was in sight with `--rm` written, set as it was made or
+    /// written since ([`Registry::rm_unrecorded`]); not one taken out of its reservation,
+    /// whose record may be unwritten.
+    rm_recorded: bool,
 }
 
 impl Removal {
@@ -853,10 +876,29 @@ impl Removal {
         }
     }
 
-    /// Makes the removal durable: the microVMs' directory is synced, so that no crash
-    /// brings the microVM back. Slow (PM M46), so done outside the registry's lock.
+    /// Whether its removal is synced before its name goes, so that no power loss brings it
+    /// back beside another that took its name. One whose record says `--rm` needs none:
+    /// brought back, it goes as the next start opens its registry, before that start sees
+    /// any name ([`Registry::open_on`]), whatever of its directory a power loss kept (D27;
+    /// D215's amendment of 2026-11-16: a daemon's stop waited on that sync, on btrfs a whole
+    /// transaction's commit, for each of its runs that ended with `--rm`).
+    fn needs_sync(&self) -> bool {
+        !self.rm_recorded
+    }
+
+    /// Makes `removals`, of one registry, durable: their directory synced once where any
+    /// needs it ([`needs_sync`](Self::needs_sync)). Slow (PM M46), so done outside the
+    /// registry's lock.
+    pub fn sync_all(removals: &[&Removal], disk: &dyn Disk) -> io::Result<()> {
+        match removals.iter().find(|r| r.needs_sync()) {
+            Some(r) => disk.sync_dir(&r.root),
+            None => Ok(()),
+        }
+    }
+
+    /// [`sync_all`](Self::sync_all) of this one alone.
     pub fn sync(&self, disk: &dyn Disk) -> io::Result<()> {
-        disk.sync_dir(&self.root)
+        Self::sync_all(&[self], disk)
     }
 
     /// [`delete_all`](Self::delete_all) of this one alone.
@@ -870,7 +912,8 @@ impl Removal {
     /// them where they are open (std's `remove_dir_all`), then, once that is durable, its
     /// mark: a power loss that kept the mark's deletion but not the directory's would bring
     /// the microVM back. One sync makes all their deletions durable, a sync's tail being
-    /// milliseconds (PM M348). What a failure leaves, the next start deletes.
+    /// milliseconds (PM M348), where any needs it ([`needs_sync`](Self::needs_sync)). What a
+    /// failure leaves, the next start deletes.
     pub fn delete_all(removals: &[&Removal], disk: &dyn Disk) -> Vec<io::Result<()>> {
         let gone = |done: io::Result<()>| match done {
             Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
@@ -887,9 +930,13 @@ impl Removal {
                 .iter()
                 .map(|r| gone(disk.remove_dir_all(&r.root.join(&r.container.id))))
                 .collect();
-            let synced = match removals.first() {
-                Some(r) if deleted.iter().any(Result::is_ok) => disk.sync_dir(&r.root),
-                _ => Ok(()),
+            let synced = match removals
+                .iter()
+                .zip(&deleted)
+                .find(|(r, d)| d.is_ok() && r.needs_sync())
+            {
+                Some((r, _)) => disk.sync_dir(&r.root),
+                None => Ok(()),
             };
             for (r, d) in removals.iter().zip(&mut deleted) {
                 if d.is_ok() {
@@ -1419,6 +1466,51 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
+    /// A `--rm` microVM's removal needs no sync, its record saying `--rm` (D215's amendment
+    /// of 2026-11-16): one a power loss brings back goes as the next start opens. One whose
+    /// `--rm` was set after its record was written (D181's, going with its provider) needs
+    /// one until a record saying it is written; so does one taken out of its reservation,
+    /// whose record may be unwritten, and any other. A batch is synced once where any of it
+    /// needs it, and not at all where none does.
+    #[test]
+    fn a_rm_removal_needs_no_sync_unless_its_record_may_lack_its_rm() {
+        let home = temp_home("rm-sync");
+        let mut r = open(&home);
+        let rm = |id: &str, name: &str| Container {
+            auto_remove: true,
+            ..container(id, name, State::Exited)
+        };
+        made(&mut r, rm("aa", "one"));
+        made(&mut r, container("bb", "two", State::Exited));
+        made(&mut r, container("cc", "three", State::Exited));
+        r.change("cc", |c| c.auto_remove = true).unwrap();
+        made(&mut r, container("dd", "four", State::Exited));
+        r.change("dd", |c| c.auto_remove = true).unwrap();
+        let (recorder, written) = r.snapshot("dd").unwrap();
+        recorder.write(&Real, &written).unwrap();
+        r.written("dd", &written);
+        r.reserve(rm("ee", "five"));
+        let mut out = |id: &str| r.take_out(id).unwrap();
+        let (aa, bb, cc, dd, ee) = (out("aa"), out("bb"), out("cc"), out("dd"), out("ee"));
+        assert!(!aa.needs_sync(), "made with --rm");
+        assert!(bb.needs_sync(), "no --rm");
+        assert!(cc.needs_sync(), "--rm set after its record was written");
+        assert!(!dd.needs_sync(), "--rm written since it was set");
+        assert!(ee.needs_sync(), "taken out of its reservation");
+        let disk = Faulty::default();
+        let syncs = |batch: &[&Removal]| {
+            let before = disk.log.lock().unwrap().len();
+            Removal::sync_all(batch, &disk).unwrap();
+            disk.log.lock().unwrap()[before..]
+                .iter()
+                .filter(|op| op.starts_with("sync_dir"))
+                .count()
+        };
+        assert_eq!(syncs(&[&aa, &dd]), 0);
+        assert_eq!(syncs(&[&aa, &bb, &cc]), 1);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
     /// The next start reconciles what a crash or a power loss may leave: a removal and a
     /// write cut short, a spare, a record torn or empty, one in another's directory, and a
     /// record torn whose next version is whole.
@@ -1944,6 +2036,70 @@ mod tests {
                 for note in &notes {
                     assert!(note.contains("cannot be read"), "{what}: {note}");
                 }
+            });
+        }
+        assert!(states > 1000, "{states} states");
+    }
+
+    /// A `--rm` microVM's removal is not synced, and its name goes at once (D215's
+    /// amendment of 2026-11-16). A power loss anywhere in its life and in the life of the
+    /// next microVM to take its name, in every state the model allows, leaves what the next
+    /// start reconciles: the start succeeds, the `--rm` one is never seen, so no two microVMs
+    /// share a name, and nothing set aside is left over.
+    #[test]
+    fn a_power_loss_after_an_unsynced_rm_removal_shares_no_name() {
+        let root = PathBuf::from("/model/containers");
+        let mut base = Tree::new();
+        base.insert(PathBuf::from("/model"), None);
+        // Its directory on stable storage, as an earlier start left it.
+        let setup = Lossy::with(base);
+        Registry::open_on(root.clone(), &setup, &mut |n| panic!("{n}")).unwrap();
+        let stable = setup.model.lock().unwrap().seen.clone();
+
+        let disk = Lossy::with(stable);
+        let mut r = Registry::open_on(root.clone(), &disk, &mut |n| panic!("{n}")).unwrap();
+        let life = |id: &str, auto_remove| Container {
+            auto_remove,
+            started: None,
+            ..container(id, "life", State::Created)
+        };
+        disk.create_dir(&r.dir("one")).unwrap();
+        create(&mut r, &disk, life("one", true)).unwrap();
+        r.update(&disk, "one", |c| c.state = State::Running).unwrap();
+        let removal = remove(&mut r, &disk, "one").unwrap().unwrap();
+        removal.sync(&disk).unwrap();
+        r.release("one");
+        removal.delete(&disk).unwrap();
+        disk.create_dir(&r.dir("two")).unwrap();
+        create(&mut r, &disk, life("two", false)).unwrap();
+        let ops = disk.model.lock().unwrap().ops.clone();
+        assert!(
+            !ops.iter().any(|op| matches!(op, Op::SyncDir(_))),
+            "a --rm removal synced: {ops:?}"
+        );
+
+        let mut states = 0;
+        for k in 0..=ops.len() {
+            disk.after_power_loss(k, &mut |tree| {
+                states += 1;
+                let what = format!("a power loss after {k} of {ops:?}\nleaving {tree:?}");
+                let lossy = Lossy::with(tree.clone());
+                let mut notes = Vec::new();
+                let again = Registry::open_on(root.clone(), &lossy, &mut |n| notes.push(n))
+                    .unwrap_or_else(|e| panic!("{what}: {e}"));
+                assert!(again.get("one").is_none(), "{what}: the --rm one came back");
+                assert!(
+                    again.all().filter(|c| c.name == "life").count() <= 1,
+                    "{what}: names shared"
+                );
+                for note in &notes {
+                    assert!(note.contains("cannot be read"), "{what}: {note}");
+                }
+                let left = lossy.model.lock().unwrap().seen.clone();
+                assert!(
+                    !left.keys().any(|p| p.to_string_lossy().ends_with(".removing")),
+                    "{what}: left over"
+                );
             });
         }
         assert!(states > 1000, "{states} states");

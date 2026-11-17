@@ -492,7 +492,12 @@ struct Carried {
     pairs: Vec<(usize, usize, Vec<crate::netplan::Egress>)>,
     egress: Vec<(usize, Vec<crate::netplan::Egress>)>,
     ingress: Vec<(usize, Vec<crate::netplan::Egress>)>,
+    /// The domains granted names past the microVM, which the agents' resolver asks the
+    /// microVM's resolver for.
     dns: Vec<usize>,
+    /// The domains whose resolv.conf names the agents' resolver (`egress::resolves`), whose
+    /// questions it takes whatever they are granted, so that each is answered at once (D278).
+    asking: Vec<usize>,
     uplink: Option<Uplink>,
     /// The uplink's IPv6 part, where it carries IPv6 (D99): programmed again with the rest
     /// as a member's grants change (D278).
@@ -572,6 +577,14 @@ fn sharing(
     }
 }
 
+/// The domains whose questions the switch takes to the agents' resolver, each once: `dns`,
+/// granted names past the microVM, and `asking`, whose resolv.conf names it (D278).
+fn questions(dns: &[usize], asking: &[usize]) -> Vec<usize> {
+    let mut all = dns.to_vec();
+    all.extend(asking.iter().filter(|&n| !dns.contains(n)));
+    all
+}
+
 /// How far past the microVM a member its engine made reaches (D181): nowhere (on an
 /// internal network alone), where the run's command reaches, or within one subnet alone,
 /// eth0's, where the command is kept to it (`confine_eth0`).
@@ -636,14 +649,15 @@ impl Gate {
 impl Switch {
     /// Makes the switch: forwarding on, and nf_tables that drop all but the answers to
     /// what is allowed, `pairs`, each `(from, to)` by the domains' indices on the ports the
-    /// receiver accepts, each of `dns` asking the microVM's resolver, and each
-    /// domain's `egress` past the microVM, through `uplink`.
+    /// receiver accepts, each of `dns` asking the microVM's resolver, each of `asking` the
+    /// agents' resolver, and each domain's `egress` past the microVM, through `uplink`.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         pairs: &[(usize, usize, Vec<crate::netplan::Egress>)],
         egress: &[(usize, Vec<crate::netplan::Egress>)],
         ingress: &[(usize, Vec<crate::netplan::Egress>)],
         dns: &[usize],
+        asking: &[usize],
         uplink: Option<Uplink>,
         ipv6: bool,
         domains: usize,
@@ -667,7 +681,7 @@ impl Switch {
             }
             Ok((ns, route, nftables))
         })?;
-        policy(&nftables, pairs, egress, ingress, dns)?;
+        policy(&nftables, pairs, egress, ingress, &questions(dns, asking))?;
         // IPv6 between domains (D99): its tables first, then forwarding, so that a kernel
         // without nf_tables' ip6 family fails the run rather than forward unfiltered.
         let uplink6 = uplink.as_ref().is_some_and(|u| u.ipv6.is_some());
@@ -692,6 +706,7 @@ impl Switch {
                 egress: egress.to_vec(),
                 ingress: ingress.to_vec(),
                 dns: dns.to_vec(),
+                asking: asking.to_vec(),
                 uplink: None,
                 uplink6: None,
                 domains,
@@ -840,7 +855,7 @@ impl Switch {
         pairs.extend(c.member_pairs.iter().cloned());
         let mut egress = c.egress.clone();
         let mut ingress = c.ingress.clone();
-        let mut dns = c.dns.clone();
+        let mut dns = questions(&c.dns, &c.asking);
         for m in &c.members {
             if m.reach != Reach::Nowhere {
                 egress.push((m.index, EVERY_PORT.to_vec()));
@@ -1694,7 +1709,7 @@ impl Batch {
 }
 
 /// The chain of the ports several domains are given (D122), each to the domain the
-/// chooser finds listening on it, before `pre` (crate::chooser).
+/// chooser finds listening on it, at eth0's own address, before `pre` (crate::chooser).
 const CHOSEN: &[u8] = b"chosen\0";
 
 /// The chain that puts a chosen UDP port's flows in its choice's conntrack zone, before
@@ -1724,11 +1739,26 @@ pub(crate) type Chosen = (
 /// nf_conntrack_proto_udp.c), and a guest kernel without ctnetlink (shards' has none) has
 /// no other way to let one go.
 ///
+/// The choices are eth0's own address's alone, `own`: what comes in to it, and the holders'
+/// answers to anywhere but `shared`, the subnets of the networks shared by runs the run is
+/// on (D285). Their flows come in to eth0's second address on each, which `shared-in` gives
+/// its members before `chosen` sees them, and are tracked in zone 0 both ways: a member's
+/// answer to one, put in its zone as a holder, would meet no flow there and go untranslated.
+///
 /// On `nft`, a netfilter socket its caller keeps for its life: closing one that has
 /// committed waits out a grace period (nft_rcv_nl_event flushes the transactions' destroy
 /// work, which waits in synchronize_rcu, nf_tables_api.c; PM M513).
-pub(crate) fn program_chosen(nft: &OwnedFd, chosen: &[Chosen]) -> io::Result<()> {
-    let eth0 = interface_index("eth0")?;
+pub(crate) fn program_chosen(
+    nft: &OwnedFd,
+    own: Ipv4Addr,
+    shared: &[(Ipv4Addr, u8)],
+    chosen: &[Chosen],
+) -> io::Result<()> {
+    chosen_batch(interface_index("eth0")?, own, shared, chosen).commit(nft)
+}
+
+/// [`program_chosen`]'s transaction, made, eth0 at index `eth0`.
+fn chosen_batch(eth0: u32, own: Ipv4Addr, shared: &[(Ipv4Addr, u8)], chosen: &[Chosen]) -> Batch {
     let mut b = Batch::new();
     b.chain(
         CHOSEN_ZONE,
@@ -1745,12 +1775,15 @@ pub(crate) fn program_chosen(nft: &OwnedFd, chosen: &[Chosen]) -> io::Result<()>
             be32(d, nft::NFTA_CT_SREG, nft::NFT_REG_1);
         });
     };
+    // Each address matched after its ports, so that a datagram of no chosen port pays for
+    // no more than it did: this chain sees every packet.
     for &(from, to, at, z) in chosen {
         let Some(z) = z else { continue };
         let mut e = Vec::new();
         meta(&mut e, nft::NFT_META_IIF);
         compare(&mut e, nft::NFT_CMP_EQ, &eth0.to_ne_bytes());
         ports(&mut e, from);
+        address(&mut e, DESTINATION, own);
         zone(&mut e, z);
         b.rule(CHOSEN_ZONE, e);
         let mut e = Vec::new();
@@ -1758,6 +1791,9 @@ pub(crate) fn program_chosen(nft: &OwnedFd, chosen: &[Chosen]) -> io::Result<()>
         compare(&mut e, nft::NFT_CMP_EQ, &(UPLINK_IFINDEX as u32).to_ne_bytes());
         address(&mut e, SOURCE, to);
         source_ports(&mut e, at);
+        for &subnet in shared {
+            not_within(&mut e, DESTINATION, subnet);
+        }
         zone(&mut e, z);
         b.rule(CHOSEN_ZONE, e);
     }
@@ -1774,6 +1810,7 @@ pub(crate) fn program_chosen(nft: &OwnedFd, chosen: &[Chosen]) -> io::Result<()>
         meta(&mut e, nft::NFT_META_IIF);
         compare(&mut e, nft::NFT_CMP_EQ, &eth0.to_ne_bytes());
         ports(&mut e, from);
+        address(&mut e, DESTINATION, own);
         load(&mut e, &to.octets());
         let mapped = from != at;
         if mapped {
@@ -1789,7 +1826,7 @@ pub(crate) fn program_chosen(nft: &OwnedFd, chosen: &[Chosen]) -> io::Result<()>
         });
         b.rule(CHOSEN, e);
     }
-    b.commit(nft)
+    b
 }
 
 /// On the host's network (D124): what the run's processes send IPv6's loopback (`::1`)
@@ -2059,7 +2096,7 @@ pub(crate) fn on(list: &mut Vec<u8>, key: u32, index: u32) {
 
 /// The switch's nf_tables, in one transaction, and none of them tracking anything
 /// (D61): chain `input`, which drops all but the agents' questions to its resolver, from
-/// each domain granted names, and its resolver's answers from the microVM's; chain
+/// each domain of `dns`, and its resolver's answers from the microVM's; chain
 /// `forward`, which drops all but, for each grant, its flows one way on its ports and
 /// their answers the other: each pair's, from the first's link to the second's; each
 /// domain's past the microVM, up to the microVM's link; and what comes in to each, down.
@@ -2531,8 +2568,9 @@ fn own_batch(family: u8, eth0: u32, members: &[Member], shared: &[Shared]) -> Ba
 }
 
 /// The chain that gives what a grant in on a network shared by runs lets in its member's
-/// address (D285): at NAT's priority less two, so that the chooser's chain ([`CHOSEN`]) and
-/// `pre`, which take a port whatever address it came to (D122), see none of it.
+/// address (D285): at NAT's priority less two, so that `pre`, which takes a port whatever
+/// address it came to (D122), sees none of it, nor the chooser's chain ([`CHOSEN`]), which
+/// takes eth0's own address alone ([`program_chosen`]).
 const SHARED_IN: &[u8] = b"shared-in\0";
 
 /// [`outside`]'s chains of family ip but `own`, made.
@@ -3087,6 +3125,70 @@ mod tests {
         assert_eq!(egress, vec![(1, vec![(6, 443, 443)]), (1, vec![(6, 5432, 5432)])]);
         assert_eq!(ingress, vec![(1, vec![(6, 8080, 8080)])]);
         assert_eq!(dns, vec![1], "asked once");
+    }
+
+    /// The ports' chooser takes eth0's own address alone (D122, D285): what comes in to it, put
+    /// in a UDP holder's zone and given to the holder, and the holder's answers to anywhere but
+    /// a network shared by runs, whose flows come in to eth0's second address and keep zone 0
+    /// both ways; with no such network, its answers everywhere, as before.
+    #[test]
+    fn the_chooser_takes_eth0s_own_address_alone() {
+        let (eth0, own) = (2u32, Ipv4Addr::new(172, 17, 0, 5));
+        let holder = Ipv4Addr::new(172, 30, 0, 2);
+        let subnet = (Ipv4Addr::new(10, 89, 0, 0), 24);
+        let chosen: Vec<Chosen> = vec![
+            ((17, 9000, 9000), holder, (17, 9000, 9000), Some(1)),
+            ((6, 7000, 7000), holder, (6, 7000, 7000), None),
+        ];
+        let zoned = |b: &Batch| -> Vec<Vec<u8>> {
+            rules(b)
+                .into_iter()
+                .filter(|r| of_chain(r, CHOSEN_ZONE))
+                .collect()
+        };
+        let alone = zoned(&chosen_batch(eth0, own, &[], &chosen));
+        let shared = zoned(&chosen_batch(eth0, own, &[subnet], &chosen));
+        assert_eq!((alone.len(), shared.len()), (2, 2), "the UDP choice's, each way");
+        let (coming, answers): (Vec<&Vec<u8>>, Vec<&Vec<u8>>) =
+            shared.iter().partition(|r| !holds(r, &holder.octets()));
+        assert_eq!((coming.len(), answers.len()), (1, 1));
+        assert!(
+            holds(coming[0], &own.octets()),
+            "what comes in to eth0's own address"
+        );
+        assert!(
+            holds(answers[0], &subnet.0.octets()),
+            "its answers kept off the network"
+        );
+        assert!(alone.iter().all(|r| !holds(r, &subnet.0.octets())));
+        assert!(
+            alone.contains(coming[0]),
+            "what comes in, whatever networks it is on"
+        );
+        let dnat: Vec<Vec<u8>> = rules(&chosen_batch(eth0, own, &[subnet], &chosen))
+            .into_iter()
+            .filter(|r| of_chain(r, CHOSEN))
+            .collect();
+        assert_eq!(dnat.len(), 2);
+        assert!(
+            dnat.iter()
+                .all(|r| holds(r, &own.octets()) && holds(r, &holder.octets()))
+        );
+    }
+
+    /// A domain whose resolv.conf names the agents' resolver has its questions taken whatever
+    /// it is granted (D278), once each beside those granted names: by UDP and by TCP, on its
+    /// link alone.
+    #[test]
+    fn a_domain_that_asks_the_resolver_is_taken_whatever_it_is_granted() {
+        assert_eq!(questions(&[1], &[1, 2]), vec![1, 2]);
+        assert_eq!(questions(&[], &[]), Vec::<usize>::new());
+        let shut = rules(&policy_batch(&[], &[], &[], &[]).unwrap());
+        let asking = rules(&policy_batch(&[], &[], &[], &questions(&[], &[2])).unwrap());
+        let link = link_index(2).unwrap().to_ne_bytes();
+        let new: Vec<&Vec<u8>> = asking.iter().filter(|r| !shut.contains(r)).collect();
+        assert_eq!(new.len(), 2, "its questions by UDP and by TCP");
+        assert!(new.iter().all(|r| holds(r, &link)));
     }
 
     /// A netlink acknowledgment: an nlmsghdr, the error (0 for none), and the request's

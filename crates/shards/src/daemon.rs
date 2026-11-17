@@ -1296,26 +1296,28 @@ struct Stop {
     /// Its command's teardown once it is sent SIGKILL.
     killed: Option<ends::Followed>,
     /// Its grace, kept while it runs.
-    grace: Option<Grace>,
+    grace: Option<Deadline>,
 }
 
-/// A run's stop grace, kept in its directory (`shards_ipc::GRACE`) from its stop signal
-/// until its SIGKILL or its end, which drop it: so that a wait on the daemon can tell the
-/// grace from a stall, as nothing need run in it (D209).
-struct Grace(PathBuf);
+/// A deadline of the daemon's own, kept in a run's directory until it is dropped: the run's
+/// stop grace (`shards_ipc::GRACE`), from its stop signal until its SIGKILL or its end; and
+/// its log's shipper's next try (`shards_ipc::RETRY`), through the pause before it, naming
+/// the destination it holds up. So a wait on the daemon, or on that delivery, can tell the
+/// deadline from a stall, as nothing need run before it (D209).
+struct Deadline(PathBuf);
 
-impl Grace {
-    /// The grace of the run whose directory is `dir`, `grace` from now; none where it
-    /// cannot be kept, which the log says.
-    fn begin(dir: &Path, grace: Duration) -> Option<Grace> {
-        let file = dir.join(shards_ipc::GRACE);
+impl Deadline {
+    /// The deadline `name` of the run whose directory is `dir`, `after` from now, of `of`
+    /// where it names what it holds up; none where it cannot be kept, which the log says.
+    fn begin(dir: &Path, name: &str, after: Duration, of: Option<&str>) -> Option<Deadline> {
+        let file = dir.join(name);
         let kept = std::time::SystemTime::now()
-            .checked_add(grace)
-            .and_then(shards_ipc::grace_text)
+            .checked_add(after)
+            .and_then(|until| shards_ipc::deadline_text(until, of))
             .ok_or_else(|| io::Error::other("its end past the system clock's reach"))
             .and_then(|text| keep_whole(&file, text.as_bytes()));
         match kept {
-            Ok(()) => Some(Grace(file)),
+            Ok(()) => Some(Deadline(file)),
             Err(e) => {
                 log(format!("{}: {e}", file.display()));
                 None
@@ -1324,7 +1326,7 @@ impl Grace {
     }
 }
 
-impl Drop for Grace {
+impl Drop for Deadline {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.0);
     }
@@ -5878,12 +5880,13 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// [`set_aside`](Self::set_aside), then [`complete`](Self::complete), of a batch: one
-    /// sync of their directory makes every removal set aside before it durable.
+    /// sync of their directory makes every removal set aside before it durable, and a batch
+    /// of `--rm` ones alone needs none (`Removal::sync_all`).
     fn complete_batch(&self, batch: &[Removal]) {
         let aside: Vec<&Removal> = batch.iter().filter(|r| self.set_aside(r).is_ok()).collect();
-        let Some(first) = aside.first() else {
+        if aside.is_empty() {
             return;
-        };
+        }
         let ids = || {
             aside
                 .iter()
@@ -5892,8 +5895,11 @@ impl<D: Disk> Daemon<D> {
                 .join(" ")
         };
         shards_vmm::stage!("the removal of {}: set aside", ids());
-        let synced = first.sync(&self.disk);
-        shards_vmm::stage!("the removal of {}: their directory synced: {synced:?}", ids());
+        let synced = Removal::sync_all(&aside, &self.disk);
+        shards_vmm::stage!(
+            "the removal of {}: their directory synced where needed: {synced:?}",
+            ids()
+        );
         for removal in &aside {
             let id = &removal.container.id;
             match &synced {
@@ -7664,7 +7670,7 @@ impl<D: Disk> Daemon<D> {
                         let dir = lock(&self.containers).dir(&id);
                         (
                             grace.and_then(|grace| now.checked_add(grace)),
-                            grace.and_then(|grace| Grace::begin(&dir, grace)),
+                            grace.and_then(|grace| Deadline::begin(&dir, shards_ipc::GRACE, grace, None)),
                         )
                     }
                     // A signal Linux has no number for cannot be sent: SIGKILL at once.
@@ -14007,7 +14013,7 @@ mod tests {
             let (_stop, stopped) = UnixStream::pair().unwrap();
             // Its run ended once it has answered or follows: one that followed it ends Ok.
             let (shipped, _) = asked_while_running(t, &id, &vm, starting, || {
-                t.daemon.ship(&id, &dir, &mut Taking, true, &stopped)
+                t.daemon.ship(&id, &dir, "taking", &mut Taking, true, &stopped)
             });
             let Err(e) = shipped else {
                 panic!("a shipper followed its log unwatched");

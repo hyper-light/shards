@@ -338,7 +338,8 @@ impl RunEnd {
 }
 
 /// What a run holds of its budget: the daemon's, shared by its runs, or an orchestrator's run
-/// host's own (api_run.rs), each held to the host's available memory.
+/// host's own (api_run.rs), each held to the host's available memory (`pressure::available`:
+/// its kernel's count, or what a test told it, D188, D252).
 pub(crate) struct Charge {
     budget: Arc<Mutex<Option<u64>>>,
     bytes: Mutex<u64>,
@@ -355,7 +356,7 @@ impl Charge {
     }
 
     fn grow(&self, extra: u64) -> Result<(), Admission> {
-        let available = crate::build::host_available().ok_or(Admission::UnknownHeadroom)?;
+        let available = crate::pressure::available().ok_or(Admission::UnknownHeadroom)?;
         let mut held = lock(&self.bytes);
         let mut budget = lock(&self.budget);
         let used = budget.ok_or(Admission::Unavailable)?;
@@ -485,6 +486,19 @@ pub(crate) fn link_bytes(admitted: &Admitted, connections: usize) -> Option<u64>
     [handshakes, admitted.datagram_bytes, admitted.datagram_bytes]
         .into_iter()
         .try_fold(0u64, |sum, n| sum.checked_add(u64::try_from(n).ok()?))
+}
+
+/// What a run's host is charged for an agent-control endpoint itself, once as it binds it,
+/// whatever lanes it carries (D252): its link ([`link_bytes`], for each of the
+/// `control::CONNECTIONS` it holds at once), and the kernel's queues of every socket it holds,
+/// its driver's, its wake's and its waker's, each one's buffers as its OS reports them
+/// (`control::Endpoint::kernel_buffer_bytes`). A daemon's run's endpoint and an orchestrator's
+/// run's (api_run.rs) alike. None where it overflows.
+pub(crate) fn endpoint_bytes(
+    endpoint: &control::Endpoint,
+) -> Result<Option<u64>, shards_remote::managed::Error> {
+    let queues = endpoint.kernel_buffer_bytes()?;
+    Ok(link_bytes(&endpoint.link(), control::CONNECTIONS).and_then(|link| link.checked_add(queues)))
 }
 
 /// What output `producer`'s record holds past the `record` bytes it was admitted, its
@@ -1710,16 +1724,9 @@ impl<D: Disk> Daemon<D> {
             }
             let exec_admitted = exec_admissions();
             let (endpoint, served) = bind_agent(key, &lanes, &input_lanes, exec_admitted, mcps)?;
-            // One driver's socket, and the waker every stream's control shares; and its link,
-            // each connection's handshake once, whatever lanes it carries (D252).
-            let mut kernel = endpoint.kernel_buffer_bytes().map_err(Failure::Endpoint)?;
-            if let Some((_, control)) = served.outputs.first() {
-                kernel = kernel
-                    .checked_add(control.kernel_buffer_bytes().map_err(Failure::Endpoint)?)
-                    .ok_or_else(|| io::Error::other("agent control kernel queue overflow"))?;
-            }
-            let held = link_bytes(&endpoint.link(), control::CONNECTIONS)
-                .and_then(|link| link.checked_add(kernel))
+            // Its link and its sockets' queues, once whatever lanes it carries (D252).
+            let held = endpoint_bytes(&endpoint)
+                .map_err(Failure::Endpoint)?
                 .ok_or_else(|| io::Error::other("agent control link overflow"))?;
             charge.grow(held)?;
             let control::Served {

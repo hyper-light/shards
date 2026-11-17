@@ -2063,7 +2063,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
             /// When it was sent SIGKILL, or its VM killed: how long its end took.
             since: Instant,
             /// Its grace, kept while it is signalled.
-            grace: Option<super::Grace>,
+            grace: Option<super::Deadline>,
         }
         let after = |d: Duration| Instant::now().checked_add(d);
         let mut going = Vec::with_capacity(targets.len());
@@ -2089,7 +2089,8 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 (Phase::Killed, wait.and_then(after), teardown, None)
             } else if self.signal(&id, linux) {
                 let dir = lock(&self.containers).dir(&id);
-                let kept = grace.and_then(|grace| super::Grace::begin(&dir, grace));
+                let kept =
+                    grace.and_then(|grace| super::Deadline::begin(&dir, shards_ipc::GRACE, grace, None));
                 (Phase::Signalled, grace.and_then(after), Followed::of(None), kept)
             } else {
                 (Phase::Killed, after(Duration::ZERO), Followed::of(None), None)
