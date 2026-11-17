@@ -6696,7 +6696,7 @@ pub fn judged<T: Send>(
     call: impl FnOnce() -> T + Send,
 ) -> Result<T, String> {
     let wait = Wait::on(WaitKind::at(std::panic::Location::caller()), party, asked);
-    judging(wait, Stage::Awaited, asked, stop, call).0
+    judging(wait, Stage::Awaited, asked, stop, call, None).0
 }
 
 /// [`judged`], and its wait's account as it ended, before its answer taught its kind: what
@@ -6711,7 +6711,32 @@ pub fn judged_accounted<T: Send>(
     call: impl FnOnce() -> T + Send,
 ) -> (Result<T, String>, String) {
     let wait = Wait::on(WaitKind::at(std::panic::Location::caller()), party, asked);
-    judging(wait, Stage::Awaited, asked, stop, call)
+    judging(wait, Stage::Awaited, asked, stop, call, None)
+}
+
+/// [`judged_accounted`], its call told what its wait's account says of its judge's looks as
+/// it goes: on the channel its call takes, the due looks that found its party still since it
+/// last progressed, held or based, each as far into the wait as it came, each time they
+/// change, the channel closing as its wait ends, refused or not. What a test that bounds a
+/// wait on a still party by its judge's own looks reads, where a span of time would be cut
+/// short by a host that holds the looks late (harness.rs
+/// `a_judged_calls_own_work_is_its_progress`).
+#[track_caller]
+pub fn judged_watching<T: Send>(
+    party: Party,
+    asked: &str,
+    call: impl FnOnce(std::sync::mpsc::Receiver<Vec<Duration>>) -> T + Send,
+) -> (Result<T, String>, String) {
+    let wait = Wait::on(WaitKind::at(std::panic::Location::caller()), party, asked);
+    let (still, looks) = std::sync::mpsc::channel();
+    judging(
+        wait,
+        Stage::Awaited,
+        asked,
+        || {},
+        move || call(looks),
+        Some(still),
+    )
 }
 
 /// [`judged`], of a call whose caller knows its answer is there already (what a member that
@@ -6727,7 +6752,7 @@ pub fn judged_there<T: Send>(
     call: impl FnOnce() -> T + Send,
 ) -> Result<T, String> {
     let wait = Wait::on(WaitKind::at(std::panic::Location::caller()), party, asked);
-    judging(wait, Stage::Begun, asked, stop, call).0
+    judging(wait, Stage::Begun, asked, stop, call, None).0
 }
 
 /// Where a judged call's own thread is ([`judging`]).
@@ -6757,6 +6782,7 @@ fn judging<T: Send>(
     asked: &str,
     stop: impl FnOnce(),
     call: impl FnOnce() -> T + Send,
+    mut watch: Option<std::sync::mpsc::Sender<Vec<Duration>>>,
 ) -> (Result<T, String>, String) {
     let calling = std::sync::Mutex::new(Calling::Spawned);
     let thread = || calling.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -6768,6 +6794,7 @@ fn judging<T: Send>(
             *thread() = Calling::Called;
             let _ = tx.send(answer);
         });
+        let mut heard = 0;
         let refused = loop {
             match rx.recv_timeout(wait.next_look()) {
                 Ok(answer) => {
@@ -6803,7 +6830,16 @@ fn judging<T: Send>(
             if let Err(stall) = looked {
                 break wait.refused(&stall);
             }
+            // Its watcher hears each change in the due looks that found its party still.
+            if let Some(still) = &watch
+                && heard != wait.still.len()
+            {
+                heard = wait.still.len();
+                let _ = still.send(wait.still.clone());
+            }
         };
+        // Its watcher hears its wait end, refused, before its call is stopped.
+        drop(watch.take());
         stop();
         let _ = worker.join();
         (Err(refused), wait.account())
