@@ -10483,7 +10483,7 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
     (D215, 2026-11-17: a `make`'s answers had judged a `connect`). Each keeps W*, the slowest answer seen from a
     wait's start to its exec's end, and R*, the least CPU rate a microVM still answered at
     (`shards_api::Record`). Only an exec's own end teaches: one the daemon ended teaches
-    nothing. Each wait begins before its exec is asked (amended below), so every answer of
+    nothing. Each wait takes its clock before its exec is asked (amended below), so every answer of
     the microVM's came within it and teaches.
   - *Amended (ci-fixes, 2026-11-16, kiln goal fb3528f9): the wait begins before its ask.*
     - *Before.* `exec_followed` began its wait (`await_exit`) after `send_exec` and after
@@ -10517,6 +10517,33 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
       the daemon's `a_microvm_that_does_not_give_back_keeps_no_other_waiting` (one answered
       give-back teaches, where it looped until one did). Owed (ROOT): the daemon's bin tests on
       Linux and macOS, and that test on Windows arm64 (CI's windows-11-arm), red at fe83503c2.
+  - *Amended (own-35-ci-green, 2026-11-17, kiln goal fb3528f9; ROOT's ruling): the clock
+    alone before the ask.*
+    - *Before.* `Begun::now` followed the microVM's process before `send_exec`
+      (shards-api `Follow::begin`), and every exec's ask waited for that read. On Windows it
+      is a ToolHelp snapshot of every process (progress.rs `grow`) and the system's records
+      of every process and thread (`records`), each read of which took 13.1 to 13.8 ms on
+      jupiter (PM M606); on Linux and macOS, the process's own files and records.
+    - *Decided.* `Begun::now` takes the time alone, a clock read, before `exec_followed` and
+      `exec_on` ask (health.rs): no read of the microVM's process before the ask, on any OS.
+      `await_exit` follows the process from its first look that finds nothing to read, once
+      asked, as it did before 2026-11-16, and ends the exec there where it cannot be read
+      (`Cut::Unread`). Each answer teaches its kind its time from the ask (`teach_answer`,
+      `Record::teach_unrated`), so W* runs from the ask as the amendment above decided; where
+      a look followed the process before the answer, the answer also teaches the work read
+      from then, with its rate (D215: only work read through an answer teaches R* and C*). An
+      answer there at the first look teaches its slowest alone, as a visit's hold does (D222,
+      amended 2026-11-17). The read's cost is gone from before the ask; a process read after
+      it runs while the microVM runs its exec, and an answer that comes during the read is
+      taken once the read ends.
+    - No literal; no cache touched.
+    - *Tests* (written, not built or run: the lane's no-test rule). health.rs
+      `an_answer_there_before_its_waiter_reads_teaches_from_its_ask` now also asks that such
+      an answer teach no rate (its process read before its waiter first looked: red at
+      0c54ac6239, where this busy test process's CPU was read from before the ask);
+      `a_cold_wait_follows_its_microvm_while_it_lives` keeps its W* of the answer's whole
+      0.8 s from the ask; the daemon's `a_microvm_that_does_not_give_back_keeps_no_other_waiting`
+      learns from one pass. Owed (ROOT): those tests on Linux, macOS and Windows.
   - *Cold start*: before its kind's first answer, a wait follows its microVM's liveness
     alone, to its exec's end or its microVM's.
   - *The judge*: past W* from its start, the wait looks at the microVM's process once each

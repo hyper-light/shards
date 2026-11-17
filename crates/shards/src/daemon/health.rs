@@ -790,8 +790,8 @@ pub(super) enum Wait<'a> {
     /// since the look before ([`Cut::Stalled`]), or where it could not be read
     /// ([`Cut::Unread`]). A microVM its host holds at a `memory.high` is slowed there for as
     /// long as it is over it, and the answer of one asked to give back what would bring it
-    /// under comes as its host lets it run (D188; PM M467). It begins before its exec is
-    /// asked ([`Begun`]), so its answer, however soon, teaches from the ask.
+    /// under comes as its host lets it run (D188; PM M467). Its clock is taken before its
+    /// exec is asked ([`Begun`]), so its answer, however soon, teaches its time from the ask.
     WhileRuns(u32, &'a Record),
     /// A group member's word, judged as WhileRuns, with its refusal told immediately:
     /// the group must not invent an elapsed-time verdict while this wait still progresses,
@@ -800,59 +800,85 @@ pub(super) enum Wait<'a> {
     GroupWord(u32, &'a Record, &'a (dyn Fn(&Cut) + Sync)),
 }
 
-/// A wait for an exec's end, begun before its exec is asked (D188, amended by ci-fixes): its
-/// microVM's process followed from then, or why it could not be, so that no answer can come
-/// before the wait and each one teaches its kind its whole time from the ask. Begun after its
-/// ask, an answer there first taught nothing, and on Windows arm64 its output reader's spawn
+/// A wait for an exec's end, its clock taken before its exec is asked (D188, amended by
+/// ci-fixes and by own-35-ci-green): each answer teaches its kind its time from the ask
+/// ([`teach_answer`]), and its microVM's process is read first at the wait's first look that
+/// finds nothing to read, once asked ([`await_exit`]). Its process read before the ask, as it
+/// was from 2026-11-16, held every ask for that read: on Windows a ToolHelp snapshot of every
+/// process and the system's records of every process and thread, each read of which took
+/// 13.1 to 13.8 ms on jupiter (PM M606). Read after its ask with no clock before it, as before
+/// that, an answer there first taught nothing, and on Windows arm64 its output reader's spawn
 /// outlasted a stand-in's answer every time (CI 43968984258: no give-back learned in ~24k
 /// passes).
 struct Begun<'a> {
     wait: Wait<'a>,
-    follow: Option<Follow<'a>>,
-    cut: Option<Cut>,
+    /// When its exec was asked, near enough: taken before the ask.
+    asked: Instant,
 }
 
 impl<'a> Begun<'a> {
     fn now(wait: Wait<'a>) -> Begun<'a> {
-        let (follow, cut) = match wait {
-            Wait::WhileRuns(vm, record) | Wait::GroupWord(vm, record, _) => match following(vm, record) {
-                Ok(follow) => (follow, None),
-                Err(cut) => (None, Some(cut)),
-            },
-            Wait::Ending | Wait::For(_) => (None, None),
-        };
-        Begun { wait, follow, cut }
+        Begun {
+            wait,
+            asked: Instant::now(),
+        }
     }
 }
 
-/// Waits on `ours` for an exec's end, ending it (SIGKILL) as its wait, `begun`, says, and
-/// waiting on for its end then, so that none outlives its asker.
-fn await_exit(ours: &shards_ipc::Stream, begun: Begun<'_>) -> Ended {
-    let Begun {
-        wait,
-        mut follow,
-        mut cut,
-    } = begun;
-    if let Some(cut) = &cut {
-        if let Wait::GroupWord(_, _, refused) = wait {
-            refused(cut);
-        }
-        kill(ours);
+/// What an exec's answer to an ask made at `asked` teaches its kind, `record` (D188, amended
+/// 2026-11-17): its time from the ask, its slowest, however it was waited for; and, where its
+/// microVM's process was followed from a look before the answer (`follow`), the work read from
+/// then, with its rate (D215: only work read through an answer teaches R* and C*). An answer
+/// there before its waiter first looked teaches its slowest alone.
+fn teach_answer(record: &Record, asked: Instant, follow: Option<&mut Follow<'_>>) {
+    if let Some(follow) = follow {
+        follow.answered();
     }
+    record.teach_unrated(asked.elapsed());
+}
+
+/// Waits on `ours` for an exec's end, ending it (SIGKILL) as its wait, `begun`, says, and
+/// waiting on for its end then, so that none outlives its asker. A wait that follows its
+/// microVM begins to at its first look that finds nothing to read; an answer read before
+/// then teaches its time from the ask alone ([`teach_answer`]).
+fn await_exit(ours: &shards_ipc::Stream, begun: Begun<'_>) -> Ended {
+    let Begun { wait, asked } = begun;
+    // Its microVM's process, followed from its first look that finds nothing to read (within:
+    // none where its process had gone); none before that look.
+    let mut follow: Option<Option<Follow<'_>>> = None;
+    let mut cut: Option<Cut> = None;
     let status = loop {
         let read_for = match (&cut, wait) {
             // Ended, or with no clock: until its end.
             (Some(_), _) | (None, Wait::Ending) => None,
             (None, Wait::For(timeout)) => Some(timeout),
-            // Until the judge's next look, made first where it is due now: none while the
-            // wait follows liveness alone (its kind cold, or its process gone).
-            (None, Wait::WhileRuns(..) | Wait::GroupWord(..)) => {
+            (None, Wait::WhileRuns(vm, record) | Wait::GroupWord(vm, record, _)) => {
+                // Its first look that finds nothing to read follows its process from then, or
+                // ends the exec where its process cannot be read; one that finds something
+                // reads it first.
+                if follow.is_none() && !super::readable_within(ours, Some(Duration::ZERO)) {
+                    match following(vm, record) {
+                        Ok(followed) => follow = Some(followed),
+                        Err(why) => {
+                            if let Wait::GroupWord(_, _, refused) = wait {
+                                refused(&why);
+                            }
+                            cut = Some(why);
+                            kill(ours);
+                            continue;
+                        }
+                    }
+                }
+                // Until the judge's next look, made first where it is due now: none while the
+                // wait follows liveness alone (its kind cold, or its process gone), or has yet
+                // to read what is there.
                 let left = follow
                     .as_ref()
+                    .and_then(Option::as_ref)
                     .and_then(Follow::due)
                     .map(|due| due.saturating_duration_since(Instant::now()));
                 if left.is_some_and(|left| left.is_zero()) {
-                    if let Some(Err(why)) = follow.as_mut().map(Follow::look) {
+                    if let Some(Err(why)) = follow.as_mut().and_then(Option::as_mut).map(Follow::look) {
                         cut = Some(Cut::from(why));
                         if let (Wait::GroupWord(_, _, refused), Some(cut)) = (wait, &cut) {
                             refused(cut);
@@ -869,9 +895,9 @@ fn await_exit(ours: &shards_ipc::Stream, begun: Begun<'_>) -> Ended {
             Ok(Some(m)) if m.kind == shards_ipc::kind::EXIT => {
                 // Its own answer, not an end the daemon made: its kind learns from it.
                 if cut.is_none()
-                    && let Some(follow) = follow.as_mut()
+                    && let Wait::WhileRuns(_, record) | Wait::GroupWord(_, record, _) = wait
                 {
-                    follow.answered();
+                    teach_answer(record, asked, follow.as_mut().and_then(Option::as_mut));
                 }
                 break m.payload.first().map(|&s| i64::from(s));
             }
@@ -1075,15 +1101,18 @@ mod tests {
         let shards_api::Seen::Learned { slowest, .. } = record.seen() else {
             panic!("its answer taught nothing");
         };
-        assert!(slowest >= after, "{slowest:?}, its wait begun before its ask");
+        assert!(slowest >= after, "{slowest:?}, its time not from its ask");
     }
 
-    /// An answer there before its waiter reads came within its wait, which begins before its
-    /// exec is asked (D188, amended by ci-fixes): it teaches its kind its time from the wait's
-    /// start. Before, a wait begun after its ask learned nothing from such an answer, and a
-    /// microVM that answered faster than its waiter's reader was spawned never taught its kind
-    /// (CI 43968984258, Windows arm64). Its microVM's process is this one, which lives
-    /// throughout.
+    /// An answer there before its waiter reads teaches its kind its time from the ask, whose
+    /// clock is taken before it (D188, amended by ci-fixes and by own-35-ci-green), and its
+    /// slowest alone: its microVM's process is read first at its waiter's first look that
+    /// finds nothing to read, and none did. Read before the ask, it held every ask for the
+    /// read, on Windows 13.1 to 13.8 ms of the system's records (PM M606), and taught this
+    /// answer the CPU this busy test process ran meanwhile. Waited for with no clock before the
+    /// ask, such an answer taught nothing, and a microVM that answered faster than its waiter's
+    /// reader was spawned never taught its kind (CI 43968984258, Windows arm64). Its microVM's
+    /// process is this one, which lives throughout.
     #[test]
     fn an_answer_there_before_its_waiter_reads_teaches_from_its_ask() {
         let record = Record::new();
@@ -1096,13 +1125,14 @@ mod tests {
         let answered = began.elapsed();
         let ended = await_exit(&ours, begun);
         assert_eq!((ended.status, ended.cut), (Some(7), None));
-        let shards_api::Seen::Learned { slowest, .. } = record.seen() else {
+        let shards_api::Seen::Learned { slowest, rated } = record.seen() else {
             panic!("an answer within its wait taught nothing");
         };
         assert!(
             slowest >= answered,
-            "{slowest:?} from its wait's start, its answer {answered:?} past it"
+            "{slowest:?} from its ask, its answer {answered:?} past it"
         );
+        assert_eq!(rated, None, "its process read before its waiter first looked");
     }
 
     /// Set in the child of `a_microvm_that_runs_at_any_rate_is_waited_for`: it runs a CPU a

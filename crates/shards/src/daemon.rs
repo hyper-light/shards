@@ -14641,9 +14641,11 @@ mod tests {
             };
             // What the daemon learns of a give-back's answer, from its own answers alone: one
             // pass teaches it, though this stand-in answers as it reads the ask, as the daemon's
-            // wait begins before it asks (D188, amended by ci-fixes: health.rs `Begun`). Begun
-            // after, a pass whose answer came first taught nothing: two left it cold (CI
-            // 43496145972), and on Windows arm64 ~24k passes in a row (CI 43968984258).
+            // wait takes its clock before it asks, and an answer there at its first look teaches
+            // its time from the ask (D188, amended by ci-fixes and by own-35-ci-green:
+            // health.rs `Begun`, `teach_answer`). With no clock before the ask, a pass whose
+            // answer came first taught nothing: two left it cold (CI 43496145972), and on
+            // Windows arm64 ~24k passes in a row (CI 43968984258).
             t.t.daemon.give_back_cold(t.threads);
             answered(t);
             let shards_api::Seen::Learned { slowest, .. } = t.t.daemon.answers.reclaim.seen() else {
