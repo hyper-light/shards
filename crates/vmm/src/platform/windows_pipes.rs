@@ -614,6 +614,9 @@ enum Connect {
     /// Its call failed with this error, its client among them coming and going first
     /// (ERROR_NO_DATA): no connection's.
     Failed(u32),
+    /// Its instance closed, its call ended first: a broken pair's way up, closed before its
+    /// replacement is made ([`Listening::close_up`]).
+    Closed,
 }
 
 /// What a listening pair's way down is watched by while its way up waits (R04): a read of no
@@ -763,7 +766,9 @@ impl Listening {
             self.watch = Watch::Ended;
         }
         match (self.down_at, self.up_at, self.watch) {
-            (Connect::Failed(_), _, _) | (_, Connect::Failed(_), _) | (_, _, Watch::Ended) => Paired::Broken,
+            (Connect::Failed(_), _, _)
+            | (_, Connect::Failed(_) | Connect::Closed, _)
+            | (_, _, Watch::Ended) => Paired::Broken,
             (Connect::Connected, Connect::Connected, _) => Paired::Connected,
             (Connect::Connected, Connect::UnderWay, Watch::Idle) => {
                 self.watch_down();
@@ -775,6 +780,21 @@ impl Listening {
             }
             _ => Paired::Waiting,
         }
+    }
+
+    /// Closes its way up, its connect under way cancelled and waited for first, and keeps its
+    /// way down: a broken pair's, before its replacement is made (`Muxer::accept`, D272). Its
+    /// way down keeps the name an instance for the clients waiting on it, which the
+    /// replacement's way down then lets in; this way up, left listening beside the
+    /// replacement's, could take such a client's open of the way up, and its connection was
+    /// then no pair's: the replacement waited on its way up for ever (CI 44077430171, arm64
+    /// Windows, `a_client_waiting_as_a_broken_pair_is_replaced_is_let_in`).
+    pub fn close_up(&mut self) {
+        if let (Connect::UnderWay, Some(up)) = (self.up_at, &self.up) {
+            settle(up, &self.calls.up);
+        }
+        self.up = None;
+        self.up_at = Connect::Closed;
     }
 
     /// Starts the way down's watch: a read of no bytes, which pends while its client is there

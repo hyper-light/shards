@@ -39389,7 +39389,15 @@ finds nothing.
   npfs, strucsup.c `NpDeleteFcb`, run once a name has no instance, cancels its waiters
   `STATUS_OBJECT_NAME_NOT_FOUND`; the client's os error 2) and refused:
   WHP's managed-guest rate test, 6 of 6 on windows-2022 and -2025. While a VM listens, its
-  name always has an instance; a dial is refused only once it has ended.
+  name always has an instance; a dial is refused only once it has ended. *Amended again
+  2026-11-17 (CI 44077430171):* the broken pair's way up is closed before its replacement is
+  made (`Listening::close_up`), its way down kept as the name's instance until then. Left
+  listening, its way up stood beside the replacement's as the waiting client, let in by the
+  replacement's way down, opened a way up, and could take it: its connection was no pair's,
+  and the replacement waited on its way up for ever, every later client waiting behind it
+  (the muxer's `a_client_waiting_as_a_broken_pair_is_replaced_is_let_in`, arm64 Windows: not
+  let in after 10 s). No client opens a way up but through a way down of its own pair; the
+  broken pair's own has gone, so no client finds the way up's name without an instance.
 - *Dials* go through the dialer as before (S3's spawner); with none, the muxer opens the
   host port's pair itself, waiting for nothing (`shards_ipc::vsock_open` to now): a taken pair
   refuses at once, as a socket's full backlog does, rather than stall the device.
