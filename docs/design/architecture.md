@@ -10503,9 +10503,11 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
       microseconds no longer has looks made each microsecond: a judge looks each W* or each
       least window its counters resolve, whichever is longer (shards-api `Judge::window`, b26,
       `a_wait_is_never_refused_within_what_its_reading_resolves`).
-      Not changed: the waits on what the daemon does not ask (a VM's READY and holds, a
-      client's requests) keep D222's wait of nothing, as their party may speak before they
-      begin.
+      Not changed: the waits on what the daemon does not ask (a VM's READY, a client's
+      requests) keep D222's wait of nothing, as their party may speak before they begin. A
+      visit's hold, which answers the daemon's RUN, was among them until D222's amendment of
+      2026-11-17: one there before its wait's first look now teaches its time from its RUN,
+      its slowest alone, with no read of its VM process before RUN.
     - No literal; no cache touched; the wait's start moved before its ask.
     - *Tests* (written, not run: the person's rule of 2026-11-16). health.rs
       `an_answer_there_before_its_waiter_reads_teaches_from_its_ask` (replaces
@@ -12529,7 +12531,8 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
     comes, and it is refused at once: "no warm VM of … was ready in …: none is starting for
     it". It was `READY_TIMEOUT`'s minute, which it waited out for nothing
     (`a_claim_none_can_start_for_is_refused_at_once`).
-  - *A visit's VM holding its files* (`visit::await_holding`, its STARTED after RUN) is
+  - *A visit's VM holding its files* (`visit::await_holding`, its STARTED after RUN; one there
+    before the wait's first look timed from its RUN: D222, amended 2026-11-17) is
     judged on `Answers::held`: "its VM ran nothing of its start for …, past the slowest hold
     seen (…), … after it began". It was `READY_STALL`'s 10 s looks and `READY_TIMEOUT`'s
     60 s (`a_visits_vm_is_waited_for_while_it_starts_and_refused_once_still_past_the_slowest_hold`:
@@ -22233,6 +22236,40 @@ unit test, macOS arm64: `a_judged_wait_looks_before_its_judge_is_asked_again` (a
 first due has passed and that refuses at its next ask) fails `TimedOut` with the early return
 put back. Linux's judged send writes before it waits, and Windows' `read_by` looks
 (`available`) before its deadline: neither met this.
+
+Amended 2026-11-17 (own-35-ci-green, kiln goal fb3528f9; ROOT's ruling, revised for its
+cost): a visit's hold there before its wait's first look teaches its time from its RUN.
+`await_holding` begins its wait (D215's judge on `Answers::held`) at its first look, once its
+run is registered after its VM's TAKEN, and a STARTED already there taught nothing: D188's
+amendment of 2026-11-16 left holds so, among the waits on what the daemon does not ask. But a
+hold answers the daemon's own ask, its RUN: a VM that held before that first look taught the
+record nothing, and a daemon whose VMs all held so kept it cold, following each visit's VM by
+its connection alone. Found curing CI 44138098584's x86_64 musl hang (e88b8077d5), whose test
+(`a_visits_vm_is_waited_for_while_it_starts_and_refused_once_still_past_the_slowest_hold`) had
+to say STARTED only once its run was registered for its hold to teach.
+- *Refused: the whole wait begun before RUN*, as an exec's is (D188, `health::Begun`). A begin
+  reads its VM process (shards-api `Follow::begin`): on Linux its own files (`/proc/<pid>/stat`
+  and `io`, each thread's `stat` and `schedstat`, its own cgroup's pressure and freeze); on macOS
+  its own records (`proc_pid_rusage`, `PROC_PIDTBSDINFO`, each thread's `PROC_PIDTHREADINFO`);
+  on Windows its tree, from a ToolHelp snapshot of every process (`grow`), and its threads'
+  states, from the system's records of every process and thread (`records`), each read of which
+  took 13.1 to 13.8 ms on jupiter (PM M606). Before RUN, that read delays every visit's VM by
+  its whole length; at the first look, as before, it runs while the VM starts.
+- *Decided:* only the time is taken as a warm VM is given the run, before `start_run` sends its
+  RUN (visit.rs, in its `acquire`; the next VM's time where one does not take it): a clock read,
+  no read of its process, on every OS. A hold there at the first look teaches its time from
+  then, its slowest alone, its work unread (`Record::teach_unrated`: D215 teaches R* and C* only
+  from work read through an answer); one that comes later is followed from the first look and
+  teaches as before. W* is the slowest of both, never shorter than before, so no wait looks
+  sooner for it; R* and C* are taught as before. Unchanged, on Windows: a hold not there at the
+  first look pays its begin there, and its answer (`Follow::answered`, whose look grows its
+  tree) another ToolHelp snapshot, whose cost is unmeasured.
+- *Tests* (written, not built or run: the lane's no-test rule):
+  `a_hold_said_with_its_taken_teaches_from_its_run` (a stand-in writes STARTED with its TAKEN,
+  in one write, so STARTED is there at the first look) keeps the record cold at 7fa002ba6e and
+  teaches it its slowest alone with this; the test above no longer waits for its run's
+  registration before its 1.5 s, as its hold teaches either way. Owed to ROOT: that test red at
+  7fa002ba6e and green here, and the daemon's bin tests on macOS and Linux.
 
 ### The `crates/shards` figures of the picked-constants audit (2026-11-09): each from its source
 

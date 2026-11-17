@@ -223,6 +223,9 @@ impl<D: crate::containers::Disk> Daemon<D> {
         prepared.spec.encode_into(&mut payload);
         // No network: nothing of the image's runs.
         let start = network::Start::Attach(network::Net::None);
+        // When a VM was given the run, before its RUN is sent: the time alone, no read of its
+        // process (D222, amended 2026-11-17).
+        let mut asked = None;
         let started = self.start_run(
             threads,
             id,
@@ -250,13 +253,17 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 engine: None,
                 volumes,
             },
-            || self.warm_for(threads, &prepared, &start, &|_| {}, &|_| {}),
+            || {
+                let ready = self.warm_for(threads, &prepared, &start, &|_| {}, &|_| {})?;
+                asked = Some(Instant::now());
+                Ok(ready)
+            },
         );
         drop(prepared.lease.take());
         drop(fds);
         drop((theirs, null, layer_in, layer_out, link));
         let inbox = started?;
-        let held = self.await_holding(id, &inbox);
+        let held = self.await_holding(id, &inbox, asked);
         self.follow(threads, id.to_string(), inbox);
         if let Err(e) = held {
             // Why, as its VM told its client: what it said on stderr, read until it ends.
@@ -283,9 +290,16 @@ impl<D: crate::containers::Disk> Daemon<D> {
     /// (`Answers::held`), as a warm VM's READY is (`ready`): before its first, the VM's
     /// liveness alone, its connection's end; then past W*, the slowest hold seen, looked at
     /// each W* and given up on where a whole W* shows its process ran no CPU, its host not the
-    /// reason. A hold there as its wait begins teaches nothing (D222's wait of nothing). It
-    /// was `READY_STALL`'s 10 s looks and `READY_TIMEOUT`'s 60 s, picked (ROOT's (3)).
-    pub(super) fn await_holding(&self, id: &str, inbox: &Arc<Mutex<Inbox>>) -> Result<(), String> {
+    /// reason. Its process is first read once its first look finds it not holding yet; a hold
+    /// there before that teaches its time since `asked`, when its RUN was sent, its slowest
+    /// alone, its work unread (D222, amended 2026-11-17). It was `READY_STALL`'s 10 s looks
+    /// and `READY_TIMEOUT`'s 60 s, picked (ROOT's (3)).
+    pub(super) fn await_holding(
+        &self,
+        id: &str,
+        inbox: &Arc<Mutex<Inbox>>,
+        asked: Option<Instant>,
+    ) -> Result<(), String> {
         // Its end, the inbox's still: what a wait for its messages polls.
         let stream = lock(inbox)
             .socket
@@ -303,6 +317,9 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 if held.started && !held.ended {
                     if let Some(Some(follow)) = follow.as_mut() {
                         follow.answered();
+                    } else if let Some(asked) = asked {
+                        // Its process unread: its time from its RUN alone (D215).
+                        self.answers.held.teach_unrated(asked.elapsed());
                     }
                     return Ok(());
                 }

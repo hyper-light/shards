@@ -15994,9 +15994,10 @@ mod tests {
         });
     }
 
-    /// Run `id` started on `vm`, on a daemon thread, as a visit's is: handed its VM, then
-    /// waited for until its VM holds (`await_holding`), then followed. The thread returns
-    /// what the wait for its hold found. Unix's, as its test's busy stand-in is.
+    /// Run `id` started on `vm`, on a daemon thread, as a visit's is: handed its VM, the time
+    /// taken before its RUN is sent, then waited for until its VM holds (`await_holding`),
+    /// then followed. The thread returns what the wait for its hold found. Unix's, as its
+    /// test's busy stand-in is.
     #[cfg(unix)]
     fn holding<'s>(
         t: &In<'s, '_, Real>,
@@ -16020,6 +16021,7 @@ mod tests {
         let run = party::spawn_in(threads, move || {
             let null = File::open(crate::os::NULL).unwrap();
             let mut ready = Some(ready);
+            let mut asked = None;
             let inbox = daemon.start_run(
                 threads,
                 &id,
@@ -16047,9 +16049,13 @@ mod tests {
                     engine: None,
                     volumes: Default::default(),
                 },
-                || ready.take().ok_or_else(|| "no warm VM".to_string()),
+                || {
+                    let ready = ready.take().ok_or_else(|| "no warm VM".to_string())?;
+                    asked = Some(Instant::now());
+                    Ok(ready)
+                },
             )?;
-            let held = daemon.await_holding(&id, &inbox);
+            let held = daemon.await_holding(&id, &inbox, asked);
             daemon.follow(threads, id.clone(), inbox);
             held
         });
@@ -16067,7 +16073,7 @@ mod tests {
 
     /// A visit's VM is waited for while it goes on with its start, judged by what the daemon
     /// has seen of holds (D215's judge): one whose process runs a CPU and says STARTED 1.5 s
-    /// after its run is registered, teaching the daemon the slowest hold; past it, one stopped
+    /// after its RUN is taken, teaching the daemon the slowest hold; past it, one stopped
     /// (SIGSTOP) as soon as its run is registered is refused once it has run nothing for a
     /// whole such window, said so, with how long. It was refused at READY_TIMEOUT's minute,
     /// judged each READY_STALL's 10 s, picked (ROOT's (3), R03).
@@ -16077,9 +16083,7 @@ mod tests {
     /// thread says its TAKEN: a sleep there was refused once this thread was slower than that
     /// judge allows, killed, and the wait for its hold then followed it unreaped, its end
     /// under way, its connection this test's, to the step's limit (CI 44138098584, x86_64
-    /// musl, 58 minutes). And the wait for a hold begins once its run is registered: a STARTED
-    /// there before it teaches nothing (D222's wait of nothing), and a still VM's wait on a
-    /// cold record ends only with its connection.
+    /// musl, 58 minutes).
     #[cfg(unix)]
     #[test]
     fn a_visits_vm_is_waited_for_while_it_starts_and_refused_once_still_past_the_slowest_hold() {
@@ -16101,13 +16105,12 @@ mod tests {
             let (run, vm) = holding(t, &id, busy());
             assert_eq!(heard(&vm).0, kind::RUN);
             say(&vm, kind::TAKEN, &[]);
-            until_registered(&t.t.daemon, &id);
             std::thread::sleep(late);
             say(&vm, kind::STARTED, &[]);
             assert_eq!(joined(run), Ok(()), "a slow hold with progress refused");
             assert!(
                 matches!(t.t.daemon.answers.held.seen(), Seen::Learned { .. }),
-                "its hold taught nothing: its STARTED was there as the wait for it began (D222)"
+                "its hold taught nothing"
             );
             say(&vm, kind::DONE, &[0]);
             until_ended(&t.t.daemon, &id);
@@ -16126,6 +16129,31 @@ mod tests {
                 refused.contains("ran nothing of its start for")
                     && refused.contains("past the slowest hold seen"),
                 "{refused}"
+            );
+            say(&vm, kind::DONE, &[0]);
+            until_ended(&t.t.daemon, &id);
+        });
+    }
+
+    /// A visit's VM that holds at once, its STARTED written with its TAKEN, teaches the daemon
+    /// its hold's time from its RUN, its slowest alone, as its process was not read (D222,
+    /// amended 2026-11-17; D215). Before, the wait found the STARTED there at its first look
+    /// and learned nothing (D222's wait of nothing): a daemon whose VMs all held by then kept
+    /// its record of holds cold, and followed each visit's VM by its connection alone.
+    #[cfg(unix)]
+    #[test]
+    fn a_hold_said_with_its_taken_teaches_from_its_run() {
+        let t = Test::new("held-now");
+        t.run(|t| {
+            let id = t.create("quick");
+            let (run, vm) = holding(t, &id, Arc::new(sleeper(600)));
+            assert_eq!(heard(&vm).0, kind::RUN);
+            say_together(&vm, &[(kind::TAKEN, &[]), (kind::STARTED, &[])]);
+            assert_eq!(joined(run), Ok(()));
+            assert!(
+                matches!(t.t.daemon.answers.held.seen(), Seen::Learned { rated: None, .. }),
+                "a hold said with its TAKEN taught nothing, or work it did not read (D222, D215): {:?}",
+                t.t.daemon.answers.held.seen()
             );
             say(&vm, kind::DONE, &[0]);
             until_ended(&t.t.daemon, &id);
