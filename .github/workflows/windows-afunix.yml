@@ -4,11 +4,18 @@ name: windows afunix
 # windows-afunix, PM M199): WSAPoll, half-close, scatter-gather, a pair's cost, inheritance,
 # throughput and latency beside loopback TCP; connects that do not wait (PM M205); a send while
 # another thread waits to read the same connection (PM M207); what a peer reads of a socket
-# closed holding its data unread (PM M358). Runs when the probe changes, or when asked.
+# closed holding its data unread (PM M358). And what AF_UNIX takes where a pair's directory is
+# past sun_path (docs/research/measurements/afunix-long-paths: a relative name, afunix.h's
+# parent-path controls as UTF-8 and UTF-16, an abstract address; kiln goal 3cd82843, r735),
+# on every Windows shards' CI tests, windows-11-arm's aarch64 among them: the 10.0.26100 SDK's
+# afunix.h defines SIO_AF_UNIX_SETBINDPARENTPATH and SIO_AF_UNIX_SETCONNPARENTPATH under no
+# NTDDI guard, so no header says which Windows has them. Runs when a probe changes, or when
+# asked.
 on:
   push:
     paths:
       - docs/research/measurements/windows-afunix/**
+      - docs/research/measurements/afunix-long-paths/**
       - .github/workflows/windows-afunix.yml
   workflow_dispatch:
 
@@ -23,14 +30,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner: [windows-2022, windows-2025]
+        include:
+          - { runner: windows-2022, target: x86_64-pc-windows-msvc }
+          - { runner: windows-2025, target: x86_64-pc-windows-msvc }
+          - { runner: windows-11-arm, target: aarch64-pc-windows-msvc }
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7.0.1
       - name: Install pinned Rust
         shell: bash
-        run: rustup toolchain install "$TOOLCHAIN" --profile minimal --target x86_64-pc-windows-msvc
+        run: rustup toolchain install "$TOOLCHAIN" --profile minimal --target ${{ matrix.target }}
       - name: Host
         shell: pwsh
         run: |
@@ -55,3 +65,8 @@ jobs:
         shell: bash
         working-directory: docs/research/measurements/windows-afunix
         run: cargo run --release -- m358
+      - name: AF_UNIX past sun_path
+        if: ${{ !cancelled() }}
+        shell: bash
+        working-directory: docs/research/measurements/afunix-long-paths
+        run: cargo run --release
