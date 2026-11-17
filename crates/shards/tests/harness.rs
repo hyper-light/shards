@@ -1516,7 +1516,7 @@ fn a_daemon_is_settled_once_its_threads_rest() {
             };
             let reader = open(true);
             let mut writer = open(false);
-            writer.write_all(&vec![0u8; OFFERED * RECORD]).unwrap();
+            writer.write_all(&[0u8; OFFERED * RECORD]).unwrap();
             (reader, writer)
         })
         .collect();
@@ -1540,12 +1540,10 @@ fn a_daemon_is_settled_once_its_threads_rest() {
         assert_ne!(read, 0, "the stand-in ended without spinning");
     }
     common::settled(&home);
-    let ended = daemon.try_wait().unwrap();
-    if ended.is_none() {
-        let _ = daemon.kill();
-        let _ = daemon.wait();
-    }
-    assert!(ended.is_some(), "settled while its daemon still ran");
+    let ended = daemon.try_wait().unwrap().is_some();
+    let _ = daemon.kill();
+    let _ = daemon.wait();
+    assert!(ended, "settled while its daemon still ran");
     drop(lists);
 }
 
