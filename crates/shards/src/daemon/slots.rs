@@ -5,7 +5,7 @@
 //! daemon, and the daemon's back to the client, without descriptors, each side's end the
 //! other's.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io;
 #[cfg(unix)]
 use std::os::fd::AsRawFd as _;
@@ -158,15 +158,16 @@ impl<D: Disk> Daemon<D> {
     /// client opened holds it. Once it has closed, each its client opened holds it until
     /// its serving ends, its answer's last word is its client's, or its client has taken
     /// nothing of its answer for longer than the slowest take seen (`Seen::answer_wait`),
-    /// its answer's writer waiting on it that long; before any take, until it ends. A client
-    /// reading its answer makes room as it reads, however slowly; one stopped, or held by a
-    /// pager that waits, takes nothing, and keeps no daemon from exiting nor the next from
-    /// starting past that wait. One whose request went on, with nothing of its answer to
-    /// take yet, takes nothing it could: it holds the daemon while the daemon has yet to
-    /// answer, as an attached run its stop ends after its timeout says nothing meanwhile (PM
-    /// M331). One whose request has not gone on holds it until its serving ends: its
-    /// request's wait is its own (`serve_slot`: the requests' record, and none once the
-    /// daemon has closed), never the answers'. A slot no client opened has no client.
+    /// its answer's writer waiting on it that long; before any take, until it ends, as the
+    /// daemon says ([`say_held_slots`](Self::say_held_slots)). A client reading its answer
+    /// makes room as it reads, however slowly; one stopped, or held by a pager that waits,
+    /// takes nothing, and keeps no daemon from exiting nor the next from starting past that
+    /// wait. One whose request went on, with nothing of its answer to take yet, takes nothing
+    /// it could: it holds the daemon while the daemon has yet to answer, as an attached run
+    /// its stop ends after its timeout says nothing meanwhile (PM M331). One whose request
+    /// has not gone on holds it until its serving ends: its request's wait is its own
+    /// (`serve_slot`: the requests' record, and none once the daemon has closed), never the
+    /// answers'. A slot no client opened has no client.
     pub(super) fn slots_hold(&self) -> (bool, Option<Instant>) {
         let closed = self.closed.load(Ordering::SeqCst);
         let wait = lock(&self.seen).answer_wait();
@@ -216,6 +217,23 @@ impl<D: Disk> Daemon<D> {
                 log(format!(
                     "request slot {n}: its client took no more of its answer in {:?}; exiting without it",
                     since.elapsed()
+                ));
+            }
+        }
+    }
+
+    /// Says, once each (`said`), which slots hold the closed daemon until their clients read
+    /// or end: those its answer's writer waits on before any take has been seen, which no
+    /// time lets go of ([`slots_hold`](Self::slots_hold)'s cold start). A stop held by a
+    /// client stopped, or by a pager that waits, names what holds it.
+    pub(super) fn say_held_slots(&self, said: &mut HashSet<u64>) {
+        if !self.closed.load(Ordering::SeqCst) || lock(&self.seen).answer_wait().is_some() {
+            return;
+        }
+        for (n, live) in lock(&self.live).iter() {
+            if live.waiting.is_some() && said.insert(*n) {
+                log(format!(
+                    "request slot {n}: its answer waits on its client, with no take seen yet: held until that client reads or ends"
                 ));
             }
         }
@@ -753,11 +771,19 @@ impl<'a, D: Disk> Living<'a, D> {
 
     /// Writes `kind` and `payload` to its client as its FIFO takes them, waiting on that
     /// client only where the FIFO takes none of what is left: until it makes room, a take
-    /// (`Seen`), each wait's start and end a step on.
+    /// (`Seen`), each wait's start and end a step on. A wait that begins once the daemon has
+    /// closed wakes its listener, which sleeps until the first slot holding it lets go
+    /// ([`Daemon::slots_hold`]): this one's time is set as it begins, and the listener's last
+    /// look may have found its slot with its answer still to come, held with no time at all.
     pub(super) fn answer(&self, to: &slots::Line, kind: u8, payload: &[u8]) -> io::Result<()> {
         let message = slots::frame(kind, payload)?;
         let written = slots::write_all_waiting(to, &message, |wait| match wait {
-            slots::Wait::Began(began) => self.step(|live| live.waiting = Some(began)),
+            slots::Wait::Began(began) => {
+                self.step(|live| live.waiting = Some(began));
+                if self.daemon.closed.load(Ordering::SeqCst) {
+                    self.daemon.listener_wake.wake();
+                }
+            }
             slots::Wait::Ended(took) => {
                 lock(&self.daemon.seen).taken(took);
                 self.step(|live| live.waiting = None);

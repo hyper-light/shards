@@ -2823,6 +2823,8 @@ impl<D: Disk> Daemon<D> {
         let mut spare = no_reserve();
         // What a closed daemon's exit last waited on, as its stages say it (`stage!`).
         let mut exit_waits: Option<String> = None;
+        // The slots said to hold the closed daemon until their clients read or end.
+        let mut held_said = HashSet::new();
         loop {
             let closing = self.closed.load(Ordering::SeqCst);
             // A daemon whose home is gone has nothing left to serve, and its runs' microVMs
@@ -2888,6 +2890,7 @@ impl<D: Disk> Daemon<D> {
             // it has: a close since, by another thread, is the next pass's.
             let closed = self.closed.load(Ordering::SeqCst);
             let (held, lets_go) = self.slots_hold();
+            self.say_held_slots(&mut held_said);
             let quiet = self.busy.load(Ordering::SeqCst) == 0
                 && !held
                 && lock(&self.runs).is_empty()
@@ -13295,8 +13298,13 @@ mod tests {
     /// said its microVM stopped before its command ended (125: budget E2E 40162744975's a,
     /// `a_daemon_ending_its_runs_is_waited_for`, PM M331). Its client leaving its answer
     /// untaken lets go of it once the slowest take seen has passed, no more: before, twice
-    /// the longest piece, at least TCP's R2, 100 s (PM M549). On every host, as the test
-    /// above.
+    /// the longest piece, at least TCP's R2, 100 s (PM M549). Held with no time to let go at
+    /// while its answer is still to come, it leaves the listener that looked then asleep
+    /// until woken: the wait its writer begins wakes it, which sets that time. Before,
+    /// nothing did, and the daemon held that client until it ended, as a stop whose look
+    /// came between the cut client's two messages would have held
+    /// `a_stopping_daemon_waits_for_no_client_that_reads_nothing` (tests/daemon.rs). On every
+    /// host, as the test above.
     #[test]
     fn a_closed_daemon_waits_for_what_a_slot_it_passed_on_has_yet_to_hear() {
         let t = Test::new("sp");
@@ -13306,19 +13314,32 @@ mod tests {
             living.passed();
             t.daemon.close();
             std::thread::sleep(lock(&t.daemon.seen).answer_wait().unwrap() * 3);
-            assert!(
-                t.daemon.slots_hold().0,
+            assert_eq!(
+                t.daemon.slots_hold(),
+                (true, None),
                 "a slot whose request went on let go of with its answer still to come"
             );
+            t.daemon.listener_wake.drain();
             // An answer its client leaves untaken lets go of it the slowest take in.
             let (client, ours) = shards_ipc::slots::joined().unwrap();
             let answer = vec![b'x'; 1 << 20];
             std::thread::scope(|s| {
                 let writer = party::spawn_in(s, || living.answer(&ours, kind::ERR, &answer));
-                // Its let-go's time set once its writer waits on its client.
-                t.until("its writer did not wait on its client", |d| {
-                    lock(&d.live).values().any(|l| l.waiting.is_some())
+                // Its let-go's time set once its writer waits on its client, and the
+                // listener woken to look at it.
+                t.until("the listener was not woken as its writer began to wait", |d| {
+                    d.listener_wake.pending()
                 });
+                assert!(lock(&t.daemon.live).values().any(|l| l.waiting.is_some()));
+                assert_ne!(
+                    t.daemon.slots_hold(),
+                    (true, None),
+                    "held with no time to let go at"
+                );
+                // Bounded by the take seen: no slot is said to hold it until its client ends.
+                let mut said = HashSet::new();
+                t.daemon.say_held_slots(&mut said);
+                assert!(said.is_empty(), "{said:?}");
                 until_let_go(t, "a client that takes nothing held its closed daemon");
                 drop(client);
                 assert!(writer.join().unwrap().is_err());
@@ -13330,7 +13351,8 @@ mod tests {
 
     /// Before any take has been seen, a closed daemon follows a client that takes nothing of
     /// its answer by its end alone (PM M549): held, with no time it lets go at, until the
-    /// client ends, and its writer's write fails then. On every host, as the tests above.
+    /// client ends, and its writer's write fails then. It says which slot holds it so, as a
+    /// stop held by such a client finds in its log. On every host, as the tests above.
     #[test]
     fn a_closed_daemon_with_no_take_seen_holds_a_client_until_it_ends() {
         let t = Test::new("cold");
@@ -13347,6 +13369,9 @@ mod tests {
                 });
                 assert_eq!(lock(&t.daemon.seen).answer_wait(), None);
                 assert_eq!(t.daemon.slots_hold(), (true, None), "let go of with no take seen");
+                let mut said = HashSet::new();
+                t.daemon.say_held_slots(&mut said);
+                assert_eq!(said, HashSet::from([0]), "the slot holding it unsaid");
                 drop(client);
                 assert!(writer.join().unwrap().is_err());
             });

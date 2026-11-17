@@ -1999,7 +1999,14 @@ fn lists_removed_by_hand_are_made_again_for_the_next_client() {
 /// there each answer's first message is a microVM made with 100 KiB of labels from a file,
 /// more than std's pipes take (64 KiB, its child pipes' quota), and for the one 4,500 names
 /// nothing has follow, their errors one message of 123 KiB, more than a slot's line takes
-/// (the system's default, ipc's `Window::System`, as a Linux FIFO's 64 KiB).
+/// (the system's default, ipc's `Window::System`, as a Linux FIFO's 64 KiB). Before any
+/// take, the daemon holds such a client until it reads or ends (D185's cold start), and
+/// says so: a take is a write that waited on its client, and clients reading their first
+/// messages as fast as the daemon wrote them may have made it wait on none, the FIFO taking
+/// the rest of each as its client read. Asked as it was, the stop held this test, which
+/// read its clients only after it, until the step's limit (CI 44138098584, aarch64 musl,
+/// 54 minutes). It is asked on a thread of its own, and the cut client read once the
+/// daemon says it holds it: then it takes its whole answer, and the stop ends.
 #[test]
 fn a_stopping_daemon_waits_for_no_client_that_reads_nothing() {
     let home = TempDir::new("daemon-unread");
@@ -2065,19 +2072,6 @@ fn a_stopping_daemon_waits_for_no_client_that_reads_nothing() {
         }
         patience.done();
     }
-    let stopped = run_shards_env(&["daemon"], &["stop"], &env);
-    assert_eq!(stopped.status, Some(0), "{stopped}");
-    // The slot whose write waited held the daemon its answer wait, and only it: unless
-    // the stop came before the daemon had the error to write, and cut it off with the rest.
-    // The slots no client opened, and the one whose answer is all written, are no clients
-    // it leaves. Before, it said it left two slots whose client "went no further", 3.1 ms
-    // after its close, its slowest take (an HVF host at dc7f45bc6).
-    let log = std::fs::read_to_string(home.join("daemon.log")).unwrap();
-    let without: Vec<&str> = log.lines().filter(|l| l.contains("exiting without it")).collect();
-    assert!(without.len() <= 1, "{log}");
-    for line in &without {
-        assert!(line.contains("took no more of its answer"), "{line}");
-    }
     // Each read at last: all of what is written is read.
     let read =
         |(mut child, mut out, mut err): (Child, std::process::ChildStdout, std::process::ChildStderr)| {
@@ -2091,6 +2085,34 @@ fn a_stopping_daemon_waits_for_no_client_that_reads_nothing() {
             let status = child.wait().unwrap();
             (status.code(), shown, said.join().unwrap())
         };
+    // The stop, the cut client unread (`Ok`) unless the daemon says it holds that client
+    // until it reads or ends, before any take: then it is read (`Err`, what it showed).
+    let held_until = "held until that client reads or ends";
+    let (stopped, cut) = std::thread::scope(|scope| {
+        let stopping = scope.spawn(|| run_shards_env(&["daemon"], &["stop"], &env));
+        while !stopping.is_finished() {
+            let log = std::fs::read_to_string(home.join("daemon.log")).unwrap();
+            if log.contains(held_until) {
+                let taken = read(cut);
+                return (stopping.join().unwrap(), Err(taken));
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        (stopping.join().unwrap(), Ok(cut))
+    });
+    assert_eq!(stopped.status, Some(0), "{stopped}");
+    // The slot whose write waited held the daemon its answer wait, and only it: unless
+    // the stop came before the daemon had the error to write, and cut it off with the rest.
+    // The slots no client opened, and the one whose answer is all written, are no clients
+    // it leaves. Before, it said it left two slots whose client "went no further", 3.1 ms
+    // after its close, its slowest take (an HVF host at dc7f45bc6).
+    let log = std::fs::read_to_string(home.join("daemon.log")).unwrap();
+    let without: Vec<&str> = log.lines().filter(|l| l.contains("exiting without it")).collect();
+    assert!(without.len() <= 1, "{log}");
+    for line in &without {
+        assert!(line.contains("took no more of its answer"), "{line}");
+    }
+    let held = log.lines().filter(|l| l.contains(held_until)).count();
     let (status, shown, said) = read(whole);
     assert_eq!(status, Some(0), "{said}");
     assert!(
@@ -2098,16 +2120,24 @@ fn a_stopping_daemon_waits_for_no_client_that_reads_nothing() {
         "{} bytes shown",
         shown.len()
     );
-    // The other's answer ends where its client took nothing.
-    let (status, _, said) = read(cut);
-    assert_eq!(
-        status,
-        Some(125),
-        "{}",
-        said.chars().take(300).collect::<String>()
-    );
-    if without.is_empty() {
-        eprintln!("the stop came before the daemon had the error to write");
+    let head = |said: &str| said.chars().take(300).collect::<String>();
+    match cut {
+        // The other's answer ends where its client took nothing.
+        Ok(cut) => {
+            assert_eq!(held, 0, "{log}");
+            let (status, _, said) = read(cut);
+            assert_eq!(status, Some(125), "{}", head(&said));
+            if without.is_empty() {
+                eprintln!("the stop came before the daemon had the error to write");
+            }
+        }
+        // Held until it read, it took its whole answer: the error of the names nothing has.
+        Err((status, _, said)) => {
+            assert_eq!((held, without.len()), (1, 0), "{log}");
+            assert_eq!(status, Some(1), "{}", head(&said));
+            assert!(said.contains("no such object"), "{}", head(&said));
+            eprintln!("no take was seen before the stop: the daemon held the cut client until it read");
+        }
     }
 }
 

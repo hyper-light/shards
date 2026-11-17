@@ -9625,8 +9625,20 @@ process.
     the Windows twin's write finished as its reader went is none (PM M553).
   - *Its bound*: a closed daemon lets go of a client whose writer has waited on it longer
     than the slowest take seen. One that reads, however slowly, ends each wait as it reads.
+    The listener sleeps until the first slot holding the daemon lets go, and a slot whose
+    answer is still to come holds it with no such time: a wait that begins once the daemon
+    has closed wakes it (`slots::Living::answer`), as that wait's time is set only then.
+    Before, nothing did, and a write that began to wait after the listener's last look held
+    the daemon until its client ended (`daemon::tests::a_closed_daemon_waits_for_what_a_slot_it_passed_on_has_yet_to_hear`;
+    found reading the stop that held CI 44138098584's aarch64 musl job, 2026-11-17).
   - *Its cold start*: before any take, a client holds a closed daemon until it ends (its
-    FIFO's end).
+    FIFO's end), and the daemon says so of each such slot once, "held until that client
+    reads or ends" (`say_held_slots`), so that a stop held by a stopped client or a pager
+    that waits names what holds it. A take is a write that waited: clients that read each
+    message as fast as the daemon writes it teach none, the FIFO taking each write's rest as
+    its client reads. `a_stopping_daemon_waits_for_no_client_that_reads_nothing` took one
+    for seen before its stop, and read its clients only after it, which held it until the
+    step's limit on that job; it reads the cut client once the daemon says it holds it.
   - *Windows*: a named pipe says nothing of its room before a write, and
     `NtQueryInformationFile`'s `FilePipeLocalInformation` is no room either: its
     `WriteQuotaAvailable` is the outbound quota less what is charged to it (ReactOS npfs,
