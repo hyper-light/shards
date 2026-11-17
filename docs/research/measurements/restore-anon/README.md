@@ -46,8 +46,9 @@ difference sits near 0 and its sign follows what the guest writes on each host.
   copies ahead what its working set says the guest wrote (vmm `mapped::copy_written`),
   recorded once a run. Four runs of one binary held 218 to 231 pages on an AMD EPYC 9V74,
   and four of two builds 222 to 231 on an Intel Xeon 6975P-C, shards-vm's own anonymous
-  pages 36 and 35 throughout. One run's verdict on this row is that run's draw (D36, the
-  cure's A/B).
+  pages 36 and 35 throughout. One run's verdict on this row was that run's draw (D36, the
+  cure's A/B); the comparison now takes six pairs of snapshots and judges the row by them
+  (PM M616).
 
 **What settles it** (ROOT's). Each restore writes the same pages every time, so one reading
 names them: the comparison's `pages.tsv` (benches/firecracker.rs `pages_to`, in each CI run's

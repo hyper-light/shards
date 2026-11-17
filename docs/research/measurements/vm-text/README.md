@@ -123,3 +123,6 @@ and 8,402 us in A, 8,270 and 8,323 in B.
   EPYC 9V74 (run 44076339609) read `rss_anon` +11, -9, +2 and -1 and `fleet_private` +12,
   -5.5, +2 and 0, its copies 231, 218, 227 and 223 (its own pages 36). CI's +2 and +6 lie
   within them.
+- *Since* (ROOT's ruling, R14; PM M616): the comparison takes six pairs of snapshots, each
+  restore's and fleet's row judged by its pairs (D36), and `within.py` reads such a run pair
+  by pair.

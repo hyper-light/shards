@@ -291,16 +291,39 @@ fn percentile(v: &[f64], p: f64) -> f64 {
 
 /// Every row's samples, in the order they were taken, for [`report`] to write when
 /// `SHARDS_BENCH_SAMPLES` names a directory: runs interleaved with another VMM's pair up by
-/// their index.
-static SAMPLES: std::sync::Mutex<Vec<(String, String, Vec<f64>)>> = std::sync::Mutex::new(Vec::new());
+/// their index, and a row's samples taken of several snapshots ([`stats_by_snapshot`]) name
+/// each one's.
+static SAMPLES: std::sync::Mutex<Vec<Kept>> = std::sync::Mutex::new(Vec::new());
+
+/// A row's name, unit and samples, and the snapshot each sample was taken of where it says.
+type Kept = (String, String, Vec<f64>, Option<Vec<usize>>);
 
 /// One result row: `(table line, JSON member)`.
 pub fn stats(name: &str, unit: &str, v: Vec<f64>) -> (String, String) {
+    keep((name.to_string(), unit.to_string(), v.clone(), None));
+    row(name, unit, v)
+}
+
+/// [`stats`] of a row whose samples were taken of several snapshots, sample `i` of
+/// `snapshots[i]`. One snapshot's samples are not independent of each other (each of its
+/// restores holds the same pages), so the envelope judges such a row by its snapshots
+/// (scripts/bench-envelope).
+pub fn stats_by_snapshot(name: &str, unit: &str, v: Vec<f64>, snapshots: &[usize]) -> (String, String) {
+    assert_eq!(v.len(), snapshots.len(), "{name}: a snapshot for each sample");
+    keep((
+        name.to_string(),
+        unit.to_string(),
+        v.clone(),
+        Some(snapshots.to_vec()),
+    ));
+    row(name, unit, v)
+}
+
+fn keep(kept: Kept) {
     SAMPLES
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .push((name.to_string(), unit.to_string(), v.clone()));
-    row(name, unit, v)
+        .push(kept);
 }
 
 /// The table line and JSON member of `v`: its p50, p90, p99 and max.
@@ -448,13 +471,17 @@ pub fn report(bench: &str, params: &[(&str, String)], rows: &[(String, String)])
     if let Some(dir) = std::env::var_os("SHARDS_BENCH_SAMPLES") {
         let rows: Vec<String> = samples
             .iter()
-            .map(|(name, unit, values)| {
+            .map(|(name, unit, values, snapshots)| {
                 // As measured, every digit: the envelope's verdicts are these samples'
                 // (scripts/bench-envelope), and a rounding of them, 0.1 MiB being 25.6 pages,
                 // would be a margin no measurement chose (R03).
                 let values: Vec<String> = values.iter().map(|v| format!("{v}")).collect();
+                let snapshots = snapshots.as_ref().map_or_else(String::new, |of| {
+                    let of: Vec<String> = of.iter().map(usize::to_string).collect();
+                    format!(",\"snapshots\":[{}]", of.join(","))
+                });
                 format!(
-                    "\"{name}\":{{\"unit\":\"{unit}\",\"values\":[{}]}}",
+                    "\"{name}\":{{\"unit\":\"{unit}\",\"values\":[{}]{snapshots}}}",
                     values.join(",")
                 )
             })

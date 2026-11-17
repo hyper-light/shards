@@ -11,6 +11,16 @@ Firecracker) with a bootstrap 95% interval, 10,000 resamples, seeded: shards is 
 the whole interval is above zero, better when it is below, and tied otherwise. Every
 metric is lower-is-better.
 
+A row whose samples name the snapshot each was taken of (`snapshots`, benches/support
+`stats_by_snapshot`) is judged by its snapshots: one snapshot's samples are alike, its
+restores holding the same pages, so the samples' spread is not the snapshots'. Each pair
+of snapshots gives one difference, the median of its samples' paired differences; their
+median is bounded by the r-th least and r-th greatest of the k differences, which hold it
+with 1 - 2 P(Binomial(k, 1/2) < r) confidence (the sign test's interval: Hollander, Wolfe
+and Chicken, Nonparametric Statistical Methods, ch. 3), r the greatest that holds it with
+95%. A row of too few pairs for that fails (benches/firecracker.rs takes as many as 95%
+needs, `snapshot_pairs`: 6, whose least and greatest hold it with 96.9%).
+
 A metric shards is worse on fails the check unless docs/benchmarks-envelope.toml allows
 it: each allowance names the metric (`bench/metric`), why, the most it allows (`at_most`,
 the median difference in the metric's unit), and the date it lapses. A difference past
@@ -20,7 +30,11 @@ Python 3.11 or later (tomllib).
 
     scripts/bench-envelope SAMPLES_DIR [ENVELOPE_TOML]
 """
-import datetime, glob, json, os, random, statistics, sys, tomllib
+import datetime, glob, json, math, os, random, statistics, sys, tomllib
+
+# The confidence every interval holds its median with.
+COVERAGE = 0.95
+RESAMPLES = 10_000
 
 samples_dir = sys.argv[1]
 envelope = sys.argv[2] if len(sys.argv) > 2 else os.path.join(
@@ -45,8 +59,34 @@ for a in allowances:
 
 
 def interval(diffs, rng):
-    medians = sorted(statistics.median(rng.choices(diffs, k=len(diffs))) for _ in range(10_000))
-    return medians[249], medians[9_749]
+    medians = sorted(statistics.median(rng.choices(diffs, k=len(diffs))) for _ in range(RESAMPLES))
+    tail = round(RESAMPLES * (1 - COVERAGE) / 2)
+    return medians[tail - 1], medians[RESAMPLES - tail - 1]
+
+
+def by_snapshot(ours, theirs, snapshots):
+    """Each snapshot's difference: the median of its samples' paired differences."""
+    each = {}
+    for a, b, snapshot in zip(ours, theirs, snapshots):
+        each.setdefault(snapshot, []).append(a - b)
+    return [statistics.median(d) for _, d in sorted(each.items())]
+
+
+def held(k, r):
+    """How surely the r-th least and r-th greatest of k independent differences hold their
+    median: each falls on either side of it alike."""
+    return 1 - 2 * sum(math.comb(k, i) for i in range(r)) / 2 ** k
+
+
+def sign_interval(diffs):
+    """The narrowest of the sign test's intervals that holds the median of `diffs` with
+    COVERAGE; None where none does."""
+    k = len(diffs)
+    r = max((r for r in range(1, k // 2 + 1) if held(k, r) >= COVERAGE), default=None)
+    if r is None:
+        return None
+    ordered = sorted(diffs)
+    return ordered[r - 1], ordered[k - r]
 
 
 rng = random.Random(20260929)
@@ -68,16 +108,30 @@ for path in files:
             print(f"  {metric}: {len(ours)} samples against {len(theirs)}: not paired")
             failed = True
             continue
-        diffs = [a - b for a, b in zip(ours, theirs)]
-        low, high = interval(diffs, rng)
+        snapshots = rows[name].get("snapshots")
+        if snapshots is not None or rows["fc_" + metric].get("snapshots") is not None:
+            if snapshots != rows["fc_" + metric].get("snapshots") or len(snapshots) != len(ours):
+                print(f"  {metric}: its samples' snapshots are not Firecracker's: not paired")
+                failed = True
+                continue
+            diffs = by_snapshot(ours, theirs, snapshots)
+            bounds = sign_interval(diffs)
+            if bounds is None:
+                print(f"  {metric}: {len(diffs)} snapshots hold no median with {COVERAGE:.0%} confidence")
+                failed = True
+                continue
+            (low, high), over = bounds, f", {len(diffs)} snapshots"
+        else:
+            diffs = [a - b for a, b in zip(ours, theirs)]
+            (low, high), over = interval(diffs, rng), ""
+        difference = statistics.median(diffs)
         verdict = "worse" if low > 0 else "better" if high < 0 else "tied"
         unit = rows[name]["unit"]
         line = (f"  {metric:<10} shards {statistics.median(ours):.1f} {unit}, Firecracker "
                 f"{statistics.median(theirs):.1f} {unit}: median difference "
-                f"{statistics.median(diffs):+.6g} [{low:+.6g}, {high:+.6g}], {verdict}")
+                f"{difference:+.6g} [{low:+.6g}, {high:+.6g}]{over}, {verdict}")
         key = f"{bench}/{metric}"
         if verdict == "worse":
-            difference = statistics.median(diffs)
             if key in allowed and difference <= allowed[key][1]:
                 line += f" (allowed up to {allowed[key][1]:+.6g}: {allowed[key][0]})"
             elif key in allowed:

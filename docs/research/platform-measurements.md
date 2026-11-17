@@ -26270,3 +26270,81 @@ the counts are a process's, not a thread's. n is one run of each child.
   its container's own Temp (GetAppContainerFolderPath's); then the profile is deleted and looked
   for again. This process sweeps the same lengths unconfined.
 - **Found.** Owed: the runs.
+
+### M616. The Firecracker comparison's restores and fleets: one snapshot a run is one draw (D36; vm-text 44076339609 and 44138427198)
+
+- **Question.** Main's CI run 44138098584 (8247e14, AMD EPYC 9V74) read the fleet's
+  `fleet_private` +6 pages and the restore's `rss_anon` +2, worse; run 44125576545 (86f5c7b86,
+  AMD EPYC 7763) +1, tied, and -2, better. Each run took one snapshot of each VMM, and all
+  its restores and fleets restored them. Is a verdict the code's, or the run's?
+- **Method.** `docs/research/measurements/vm-text/within.py` over vm-text.yml's `ab` runs:
+  44076339609 (fc9f30ccc, AMD EPYC 9V74, Linux 7.0.0-1017-azure), whose two arms built one
+  binary (D36), and 44138427198 (A at 8247e14, B at ba502bc, Intel Xeon 6975P-C, Linux
+  7.0.0-1014-aws), each four runs of the comparison, `--runs 30`. Within each run, a
+  restore's `rss_anon` less its guest's private copies (`written_pages`, its kvm table's,
+  paired by sample): the VMM's own anonymous pages; and the fleet's private pages a VM less
+  the restore's `rss_anon`.
+- **Found.** In 4 KiB pages, medians; the gaps are the Envelope's, shards less Firecracker.
+
+  | Run | shards' guest copies | its own | Firecracker's guest copies | its own | `rss_anon` gap | `fleet_private` gap |
+  |---|---|---|---|---|---|---|
+  | 44076339609 a-1 (9V74, fc9f30c) | 231 | 36 | 124 | 131 | +11 | +12 |
+  | a-2 | 218 | 36 | 134 | 129 | -9 | -5.5 |
+  | b-1 | 227 | 36 | 134 | 127 | +2 | +2 |
+  | b-2 | 223 | 36 | 127 | 132 | -1 | 0 |
+  | 44138427198 a-1 (6975P-C, 8247e14) | 229 | 35 | 145 | 115 | +4 | +4 |
+  | a-2 | 231 | 35 | 138 | 126 | +2 | +2 |
+  | b-1 (ba502bc) | 227 | 35 | 129 | 131 | +2 | +2 |
+  | b-2 | 222 | 35 | 145 | 114 | -2 | -0.5 |
+
+  Within a run, shards' guest copies were one number in each of its 30 restores: each copies
+  ahead what its working set says the guest wrote (vmm `mapped::copy_written`), recorded once
+  a run, over a restore's first second. shards-vm's own pages were 35 to 37 in every restore,
+  and a VM of shards' fleet held 1 page more than its restore in every run. So a run's paired
+  differences were alike, and the bootstrap's interval over them a point: each verdict was the
+  run's draw of its guest's copies (218 to 231 pages, one binary on one host) against
+  Firecracker's (124 to 145) and Firecracker's own (114 to 132). 44138427198's arms differed
+  in neither difference: the hold on shards-vm's own program (D36) added no page to a VM.
+- **Decided** (ROOT's ruling, R14, 2026-11-17; D36). The comparison takes its replicate from
+  snapshots. A run takes k pairs, each a fresh shards snapshot with its working set recorded
+  and a fresh Firecracker snapshot; each pair is restored `--runs` times of each VMM after
+  its warm-up, logged, and held in one fleet of each, shards' first in an even pair. Each
+  restore's and fleet's row gives one difference a pair, the median of its paired
+  differences, and the Envelope bounds their median by the sign test's interval: k
+  independent differences all fall on one side of their median with probability 2^(1-k),
+  so their least and greatest hold it with 1 - 2^(1-k) (Hollander, Wolfe and Chicken,
+  *Nonparametric Statistical Methods*, ch. 3). k is the fewest that reach the Envelope's
+  95%, computed from it (benches/firecracker.rs `snapshot_pairs`): 6, at 96.9%. The boot's
+  rows, each sample a fresh boot, keep the bootstrap. The CI time the pairs add is unmeasured
+  until a run shows it.
+
+### M617. The boot's anonymous memory against Firecracker's, on Intel and AMD (vm-text 44031672087, 44076339609 and 44138427198; CI 44138098584 and 44125576545)
+
+- **Question.** vm-text's run 44138427198 read the boot's `rss_anon` worse on an Intel Xeon
+  6975P-C in both arms, +0.64 and +0.52 MiB, where main's CI read it tied on an AMD EPYC 9V74
+  (-0.43, run 44138098584) and better on a 7763 (-0.21, run 44125576545). Is it Intel's?
+- **Method.** Each run's boot samples, 30 pairs of fresh boots of the `idle` guest, 1 vCPU,
+  128 MiB, and the Envelope's verdict on them; each run's first boot's guest mappings
+  (`describe_mappings`); main's CI's THP A/B (`--thp-ab all,unadvised`), shards alone with
+  its boot's huge-page advice and without.
+- **Found.** The median paired difference, shards less Firecracker, in MiB, and the
+  Envelope's verdict:
+  - Intel Xeon 6975P-C (44138427198): +0.639 worse, +0.229 tied (8247e14); +0.143 tied, +0.520
+    worse (ba502bc).
+  - AMD EPYC 9V74: +0.324 tied, +0.369 worse, +0.471 worse, +0.285 tied (44076339609,
+    fc9f30c); +0.002 tied with fault-around at one page; +0.428 worse at one page and +0.357
+    tied at the host's (44031672087, 2893961). CI: -0.426 tied (8247e14).
+  - AMD EPYC 7763, CI: -0.211 better (86f5c7b86).
+
+  Within a run the pairs' differences spread as far as -1.6 and +1.8 MiB (their tenth and
+  ninetieth percentiles): one boot's guest touches as much more or less than another's. shards' guest
+  memory is three mappings, its kernel's image region's 24 MiB on huge pages, every page of
+  it resident in every boot read (`AnonHugePages` 24 MiB); Firecracker's one, on base pages.
+  The THP A/B: `rss_anon` p50 54.5 MiB advised and 54.3 unadvised on the 9V74, 53.3 and 53.2
+  on the 7763; `to_ready` p50 178 and 225 ms, 209 and 259 ms. The command lines match
+  (`reboot=a pci=off` both, D153), as do the vCPUs and memory.
+- **Open.** Not Intel's: the gap's medians run +0.14 to +0.64 MiB on the Intel host and
+  -0.43 to +0.47 on AMD, worse in 2 of the Intel host's 4 runs and 3 of the 9V74's 8. Of it, the boot's huge
+  pages hold 0.1 to 0.2 MiB more at p50, for 46 to 50 ms less to `to_ready` (PM M157, M279).
+  What else shards' guest touches that Firecracker's does not is unmeasured: no reading keeps
+  a boot's guest memory by page (`pages.tsv` keeps files' mappings).

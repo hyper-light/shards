@@ -1188,6 +1188,21 @@ is `crates/shards/src/run.rs` and `crates/shards/src/guest.rs`.
     records (D151's free page reports; `GuestMemory::keep_given_back`): the pages its
     host maps when it ends no longer show one given back, and the set would leave it
     out. It sends none where it could not see a range given back.
+  - *What its written pages, copied ahead, hold at a first beat* (measured, open; PM M616).
+    A restore copies ahead every page its working set says the guest wrote
+    (`mapped::copy_written`), so in the Firecracker comparison each restore of one snapshot
+    held the same private copies of its guest's memory by its guest's first beat: 218 to
+    231 pages over four snapshots on an AMD EPYC 9V74 and 222 to 231 over four on an Intel
+    Xeon 6975P-C, where Firecracker's guest, copying only as it writes, held 124 to 145, and
+    shards-vm's own anonymous pages were 35 to 37 to Firecracker's process's 114 to 132.
+    The comparison's guest runs no command, so its working set is recorded over a
+    restore's first second, where a run's ends as its command answers. How many of those
+    pages its guest writes before its first beat, with nothing copied ahead, is
+    unmeasured: a restore of the comparison's snapshot without its `working-set`, its
+    `written_pages`. Copying ahead only those would hold the rest uncopied until its guest
+    writes them, each then copied on its first write, as Firecracker's are; the cost to
+    `to_beat` and a command's first second is unmeasured too. Not taken for 0.8.0 (ROOT,
+    2026-11-17).
 - **Where it applies.** Builds that can snapshot (HVF on arm64, KVM on x86_64,
   `vm::SNAPSHOTS`, and so `vm::WORKING_SETS`); elsewhere every run boots. `--kernel`
   and `--init`, or `SHARDS_KERNEL` and `SHARDS_INIT`, name files by path, so those runs
@@ -3449,16 +3464,22 @@ one CLI.
         `fleet_private` +4 and +2, +2 and -0.5. One binary run four times on one AMD EPYC
         9V74 (vm-text's run 44076339609) read `rss_anon` +11, -9, +2 and -1 and
         `fleet_private` +12, -5.5, +2 and 0.
-      - *What would hold them* (owed, ROOT's, R14). Either a replicate per snapshot: k pairs
-        of snapshots, each pair's restores one difference, their median bounded by the least
-        and the greatest, which hold it with 1 - 2^(1-k) confidence (the sign test's
-        interval: Hollander, Wolfe and Chicken, *Nonparametric Statistical Methods*, ch. 3),
-        so 6 pairs for the Envelope's 95% (96.9%), each a boot, a recording and
-        Firecracker's boot and snapshot more. Or fewer copies than the draw: what shards'
-        guest writes by its first beat with nothing copied ahead is unmeasured (a restore of
-        the comparison's snapshot without its `working-set`: its `written_pages`). The
-        comparison's guest has no command and is recorded for its first second, where D25
-        records a run until its command answers.
+      - *What holds them: a replicate per snapshot* (ROOT's ruling, R14, 2026-11-17; PM
+        M616). The comparison takes k pairs of snapshots, each a fresh shards snapshot with
+        its working set recorded and a fresh Firecracker snapshot; each pair is restored
+        `--runs` times of each VMM after its warm-up, logged, and held in one fleet of each,
+        shards' first in an even pair (benches/firecracker.rs, `Snapshots`, `density`). Each
+        sample of the restores' and fleets' rows names its pair (benches/support
+        `stats_by_snapshot`), and scripts/bench-envelope takes one difference a pair, the
+        median of its paired differences, and bounds their median by the sign test's
+        interval: the r-th least and greatest of k hold it with 1 - 2 P(Binomial(k, 1/2) < r)
+        (Hollander, Wolfe and Chicken, *Nonparametric Statistical Methods*, ch. 3). k is the
+        fewest whose least and greatest hold it with the Envelope's 95%, computed from it
+        (`snapshot_pairs`): 6, at 96.9%; the Envelope refuses a row of pairs too few for it.
+        The boot's rows, each sample a fresh boot, keep the bootstrap. The evidence is the
+        cure's A/B and the four runs of one binary above (PM M616's table). The CI time the
+        six pairs add is unmeasured until a run shows it. Fewer copies than the draw, the
+        other way, stays measured and open in D25.
 - A daemon's build is its binary's identity, which includes what it carries; one given
   another VM binary (`SHARDS_VM_BINARY`, for VMM work and tests) is another build.
 - **Tests:** `helpers::tests` (written whole once, found after, a cut copy replaced);

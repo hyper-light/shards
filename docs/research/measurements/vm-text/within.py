@@ -12,6 +12,9 @@ in 4 KiB pages:
 - `fleet+`: the density's private pages a VM (`fleet_private`, its fleet of restores of the
   same snapshot held) less the restore's `rss_anon`, medians: what a fleet adds to a VM.
 
+A run that takes several pairs of snapshots (its samples name each one's, `snapshots`) is
+read pair by pair.
+
 Usage, from the repository's root: python3 -I within.py OUT... (run.sh's output directories;
 a run is a directory beside its .stderr, holding the bench's samples).
 """
@@ -44,16 +47,24 @@ def main(outs):
             density = json.load(open(os.path.join(path, "firecracker_density-0.json")))["samples"]
             table = list(csv.DictReader(open(os.path.join(path, "firecracker_restore-kvm.tsv")), delimiter="\t"))
             for vmm, key in VMMS:
-                copies = [float(r["written_pages"]) for r in table if r["vmm"] == vmm]
-                anon = [v * PAGES for v in restore["samples"][f"{key}_rss_anon"]["values"]]
-                own = [round(a - c) for a, c in zip(anon, copies)]
-                private = statistics.median(v * PAGES for v in density[f"{key}_fleet_private"]["values"])
-                print(
-                    f"{name:8} {vmm:12} {restore['host'][:25]:25} {restore['revision']:9} "
-                    f"{statistics.median(copies):6.0f}  {statistics.median(anon):8.1f}  "
-                    f"{f'{statistics.median(own):.0f} [{min(own)}..{max(own)}]':>19}  "
-                    f"{private:13.1f}  {private - statistics.median(anon):+6.1f}"
-                )
+                anon = restore["samples"][f"{key}_rss_anon"]
+                private = density[f"{key}_fleet_private"]
+                # Each sample's pair of snapshots: all one where the run took one.
+                pairs = anon.get("snapshots") or [0] * len(anon["values"])
+                held = private.get("snapshots") or [0] * len(private["values"])
+                rows = [r for r in table if r["vmm"] == vmm]
+                for pair in sorted(set(pairs)):
+                    label = name if len(set(pairs)) == 1 else f"{name}/{pair}"
+                    copies = [float(r["written_pages"]) for r in rows if int(r.get("snapshot") or 0) == pair]
+                    mine = [v * PAGES for v, p in zip(anon["values"], pairs) if p == pair]
+                    own = [round(a - c) for a, c in zip(mine, copies)]
+                    fleet = statistics.median(v * PAGES for v, p in zip(private["values"], held) if p == pair)
+                    print(
+                        f"{label:8} {vmm:12} {restore['host'][:25]:25} {restore['revision']:9} "
+                        f"{statistics.median(copies):6.0f}  {statistics.median(mine):8.1f}  "
+                        f"{f'{statistics.median(own):.0f} [{min(own)}..{max(own)}]':>19}  "
+                        f"{fleet:13.1f}  {fleet - statistics.median(mine):+6.1f}"
+                    )
 
 
 if __name__ == "__main__":
