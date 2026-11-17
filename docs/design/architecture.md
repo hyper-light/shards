@@ -37083,6 +37083,91 @@ post-mortem read of the printk ring through VMCOREINFO, not a debug port.
          (`vm::late_cpus_cmdline`, M379), and check its count from init.
       3. Keep waiting through device_initcall.
       Option 1 restores the test's scope and every boot's early log, which the UART gave.
+- **The boot judged by its guest's own progress** (2026-11-17, kiln goal b2124227, lane
+  whp-boot-judge). ROOT's decision of option 1 above: "judge the boot by the guest's own
+  progress". The person's ruling stands: no fixed time limit (R03). No VMM change.
+  - **Where the ring is read.** `boots_the_hosts_maximum_vcpu_count` boots its guest in the
+    test's own process (`vm::start`), as `two_vcpus_boot_to_their_end_in_this_process` does.
+    - `Handle::console_said` is the one channel shards has to a running guest's ring: it reads
+      the ring while the console has carried nothing, and the tests' `machine_ended` already
+      reads it so.
+    - A VM process offers none. `run --kernel` quotes its ring only as its machine ends (a
+      reset or an error, `vm_run.rs` `supervise`).
+    - Tailing the ring in the VM process instead would be a production change with a polling
+      period of its own to justify, for one test.
+  - **What it sees.** The ring from subsys_initcall, when VMCOREINFO is published, until hvc0
+    registers at device_initcall; the console after.
+    - smp_init logs "smp: Brought up" before the first initcall level (Linux v6.18
+      init/main.c `kernel_init_freeable`: `smp_init`, then `do_basic_setup`). So the ring's
+      first read already holds it.
+    - The test's scope is then the UART's again, plus the core, postcore and arch initcall
+      levels. On nested WHP it ended at device_initcall, which the guest had not reached in
+      3170 s.
+  - **Its wait** (`common::guest_says`, D215's judge, tests' `Heard`). Each line the guest had
+    not said before is its progress.
+    - The party is this process's threads beside the waiter (`Party::machine`). For a guest of
+      more vCPUs than its host has CPUs, as every host's most vCPUs are, their CPU is liveness
+      alone (`Cpu::Liveness`), from the start. Before its first line too: otherwise a stall
+      before any line could never be refused, even on a host that has learned this wait.
+    - Its first line's wait is a kind of its own. Each line that comes begins a wait for the
+      next, of a second kind, whose W* is the slowest gap between two lines seen on that host.
+      Both are keyed by the call site and the arm's command-line addition.
+    - Only a pass teaches them. Once the bring-up line is found, the time to the first line
+      (where its wait found it missing first) and the slowest gap after it are taught and kept
+      (`target/judge-records`). A wait that stalls, ends or is refused teaches nothing: gaps
+      taught one by one in a host's first boot would let its early, quick gaps refuse a later,
+      slower phase of the same boot.
+    - Refused, its failure says each line the guest said, with when a read first found it,
+      from the wait's start; each kernel line carries the guest's own `[seconds]` too.
+    - The guest is read at Young's optimum of the read's own cost against the wait so far
+      (`shards_api::pause`, D215's pace), and before each look the judge makes.
+    - Its machine's end ends the wait, the guest's last lines read first. A guest that said
+      the bring-up and then reset (its root-mount panic, `panic=-1`) has said it.
+  - **The console's level.** The command line is `console=hvc0 panic=-1 loglevel=7`.
+    - A machine whose console no one reads is told `quiet` unless its line names a level
+      (`vm::kernel_cmdline`). `quiet` would keep the bring-up off hvc0, so a host whose ring is
+      not read would never see it.
+    - `loglevel=7` is CONFIG_CONSOLE_LOGLEVEL_DEFAULT in both pinned base configs
+      (resources/kernel/firecracker-*-6.18.config), which shards' configs leave. It is the
+      level `run --kernel` booted this guest at, its console on stdout.
+    - The arms' `D261 A/B arm` lines name it in their command line.
+  - **One machine a process.** Hypervisor.framework refuses a process's second VM
+    (`hv_vm_create`, HV_EXISTS, hv/hvf/sys.rs). boot.rs's two in-process tests take turns
+    (`MACHINE`), each holding its turn until its machine has ended: `machine_says` stops the
+    machine and waits for its end before it returns.
+  - **Replaced.** `common::Vm::spawn_timed` is removed. On Windows each line is said on stderr
+    as the reads find it: `D261 WHP boot <time from the wait's start>: <line>`.
+  - **What it cannot judge.** Before subsys_initcall the ring has no published place. Finding
+    it earlier needs the kernel's symbols, which an arm64 Image does not carry.
+    - A guest that never gets there says nothing, and its first line's wait follows its
+      liveness until its kind has a pass on that host.
+    - CI keeps no records (ci.yml caches no `target/judge-records`), so every CI job's wait is
+      cold. On CI "fails fast" needs that cache, which is ROOT's to decide (the person's
+      ruling of 2026-11-13: a record learned on the host is data, not a seed; `host_class`
+      already keys records by a runner image's OS, architecture and CPUs).
+  - **What the next ci.yml run's x86_64 Windows jobs should show** (grep `D261 WHP boot`):
+    - Expected: a burst of lines at the ring's first read, from "Linux version" through "smp:
+      Brought up 1 node, 240 CPUs" (WHP's 240 at most on GitHub's runners, NR_CPUS 255), each
+      with the guest's `[seconds]`, then `boots_the_hosts_maximum_vcpu_count ... ok`. The
+      `[seconds]` say how long the bring-up took and how long the core, postcore and arch
+      levels took after it.
+    - Or no such line, and the step's limit as before: the guest did not reach
+      subsys_initcall in the time left (cold, its first line's wait follows liveness). That
+      places the stall before subsys_initcall. The next decision is then D261's option 2 (late
+      CPUs on nested Hyper-V) or the records' cache.
+    - How long nested WHP takes to reach subsys_initcall with 240 vCPUs online is unmeasured.
+      Each text patch there waits for every online CPU (PM M379).
+  - **Tests** (written, not run; ROOT's):
+    - harness.rs, against stand-in consoles, no microVM:
+      - `a_guests_lines_are_its_progress_and_its_pass_teaches_their_slowest_gap`
+      - `a_guest_silent_past_its_slowest_gap_is_refused_and_its_stall_teaches_nothing`
+      - `a_guests_end_ends_its_wait_and_what_it_said_by_then_is_read`
+    - boot.rs `boots_the_hosts_maximum_vcpu_count` and
+      `two_vcpus_boot_to_their_end_in_this_process` on HVF, KVM (AMD, and Intel's A/B) and WHP.
+  - **Costs, owed to ROOT (R14).** Each ring read scans every page of guest RAM for
+    VMCOREINFO (printk.rs `infos`). In the test process that faults in a 1 GiB guest's
+    untouched pages (shared memory on Linux, committed memory on Windows). The pace bounds its
+    CPU; its resident memory is unmeasured.
 
 **Alternatives rejected.**
 - A write-only debug port (x86's 0xe9 debugcon): mainline x86 early_printk has no 0xe9

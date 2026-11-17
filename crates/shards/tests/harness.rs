@@ -922,6 +922,153 @@ fn a_streaming_guests_cpu_is_its_liveness_and_its_stop_its_hosts_hold() {
     let _ = stopped.wait();
 }
 
+/// Says each of `script`'s lines into `said` after its pause in milliseconds, each whole, as
+/// a console's lines come: a guest's console as [`common::guest_says`] reads one.
+fn console_says(said: &std::sync::Mutex<Vec<u8>>, script: &[(u64, &str)]) {
+    for (ms, line) in script {
+        std::thread::sleep(Duration::from_millis(*ms));
+        said.lock()
+            .unwrap()
+            .extend_from_slice(format!("{line}\n").as_bytes());
+    }
+}
+
+/// [`common::guest_says`] at its caller's call site, its two kinds made cold as
+/// [`cold_kind`]'s is, waiting for `done` from a guest of more vCPUs than any host has CPUs
+/// (its CPU its liveness alone); and those kinds, its first line's and its next lines'.
+#[track_caller]
+fn cold_lines(
+    said: &std::sync::Mutex<Vec<u8>>,
+    ended: &std::sync::mpsc::Receiver<()>,
+) -> (common::Saying<()>, common::Lines, [&'static common::WaitKind; 2]) {
+    let site = std::panic::Location::caller();
+    let kinds = [common::FIRST_LINE, common::NEXT_LINE].map(|words| {
+        let _ = std::fs::remove_file(common::WaitKind::kept_at(site, words, ""));
+        common::WaitKind::of(site, words, "")
+    });
+    let read = || said.lock().unwrap().clone();
+    let (saying, lines) = common::guest_says(read, ended, "done", "", u32::MAX, None);
+    (saying, lines, kinds)
+}
+
+/// A wait for a guest's line (`common::guest_says`: boot.rs' boot of its host's most vCPUs,
+/// read from its kernel's printk ring and then its console, D261) goes on while its guest says
+/// lines it had not said, and its pass teaches its kinds what its waits took: the time to its
+/// first line, and the slowest gap between two lines after it, not the last. Do: cold, a guest
+/// that says a line 50 ms in, another 200 ms later and the one awaited 50 ms after that.
+/// Expect: said; its first line's kind taught the time to its first line, and its next lines'
+/// the slowest gap between its lines, each as its reads first found them.
+#[test]
+fn a_guests_lines_are_its_progress_and_its_pass_teaches_their_slowest_gap() {
+    let (_end, ended) = std::sync::mpsc::channel::<()>();
+    let said = std::sync::Mutex::new(Vec::new());
+    let (saying, lines, [first, next]) = std::thread::scope(|s| {
+        s.spawn(|| console_says(&said, &[(50, "one"), (200, "two"), (50, "done")]));
+        cold_lines(&said, &ended)
+    });
+    assert!(
+        matches!(&saying, common::Saying::Said { line, ended: None } if line == "done"),
+        "{saying:?}\n{}",
+        lines.timed()
+    );
+    let times: Vec<Duration> = lines.seen().iter().map(|(at, _)| *at).collect();
+    let gap = times.windows(2).map(|w| w[1].saturating_sub(w[0])).max();
+    let learned = |kind: &common::WaitKind| match kind.record().seen() {
+        shards_api::Seen::Learned { slowest, .. } => Some(slowest),
+        shards_api::Seen::Cold => None,
+    };
+    assert_eq!(learned(first), times.first().copied(), "{}", lines.timed());
+    assert_eq!(learned(next), gap, "{}", lines.timed());
+}
+
+/// A guest of more vCPUs than its host has CPUs runs them for ever, its workload stopped or
+/// not: a wait for its next line is refused once it has said nothing new for longer than the
+/// slowest gap between lines its passes saw on this host, however this process's threads
+/// beside its waiter spin (`Cpu::Liveness`); what it said comes back with the refusal, each
+/// line with its time, and its stall teaches nothing (D261: boot.rs' 255-vCPU boot on a nested
+/// WHP runner, followed by its liveness alone to its step's 122 minutes). Do: a pass whose
+/// lines come 300 ms apart; then, through the same call site, a guest that says two lines
+/// 10 ms apart and then nothing, a thread spinning beside its wait. Expect: the pass said; the
+/// second refused within [`refusal_bound`] of the pass's slowest gap, both its lines among
+/// what it said; its kinds' records as the pass left them.
+#[test]
+fn a_guest_silent_past_its_slowest_gap_is_refused_and_its_stall_teaches_nothing() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let (_end, ended) = std::sync::mpsc::channel::<()>();
+    let guest = |script: &[(u64, &str)]| {
+        let said = std::sync::Mutex::new(Vec::new());
+        let spinning = AtomicBool::new(true);
+        std::thread::scope(|s| {
+            s.spawn(|| console_says(&said, script));
+            s.spawn(|| {
+                while spinning.load(Ordering::Relaxed) {
+                    std::hint::spin_loop();
+                }
+            });
+            let heard = cold_lines(&said, &ended);
+            spinning.store(false, Ordering::Relaxed);
+            heard
+        })
+    };
+    let (saying, lines, kinds) = guest(&[(300, "one"), (300, "two"), (300, "done")]);
+    assert!(
+        matches!(&saying, common::Saying::Said { line, .. } if line == "done"),
+        "{saying:?}\n{}",
+        lines.timed()
+    );
+    let taught = kinds.map(|kind| kind.record().seen());
+    let shards_api::Seen::Learned { slowest: gap, .. } = taught[1] else {
+        panic!("its pass taught its next lines' kind nothing\n{}", lines.timed());
+    };
+    let began = Instant::now();
+    let (saying, lines, kinds) = guest(&[(10, "one"), (10, "two")]);
+    let refused = began.elapsed();
+    assert!(
+        matches!(saying, common::Saying::Refused(_)),
+        "{saying:?}\n{}",
+        lines.timed()
+    );
+    assert!(refused < refusal_bound(gap), "refused {refused:?} in");
+    assert!(
+        lines.text().contains("one") && lines.text().contains("two"),
+        "{saying:?}\n{}",
+        lines.timed()
+    );
+    assert_eq!(kinds.map(|kind| kind.record().seen()), taught);
+}
+
+/// A guest's machine that ends ends a wait for its line, what its guest said by then read
+/// first (boot.rs: a vCPU's failed entry, D261's A/B; a guest that resets once it has said
+/// it). Do: a guest that says a line and then its machine ends; one that says the line
+/// awaited and then ends at once. Expect: the first ended, its line among what it said; the
+/// second said, whether its wait saw its line or its end first.
+#[test]
+fn a_guests_end_ends_its_wait_and_what_it_said_by_then_is_read() {
+    let ends = |script: &[(u64, &str)]| {
+        let (end, ended) = std::sync::mpsc::channel::<()>();
+        let said = std::sync::Mutex::new(Vec::new());
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                console_says(&said, script);
+                let _ = end.send(());
+            });
+            cold_lines(&said, &ended)
+        })
+    };
+    let (saying, lines, _) = ends(&[(10, "one")]);
+    assert!(
+        matches!(saying, common::Saying::Ended(Some(()))) && lines.text().contains("one"),
+        "{saying:?}\n{}",
+        lines.timed()
+    );
+    let (saying, lines, _) = ends(&[(10, "done")]);
+    assert!(
+        matches!(&saying, common::Saying::Said { line, .. } if line == "done"),
+        "{saying:?}\n{}",
+        lines.timed()
+    );
+}
+
 /// A call that blocks until its answer or its run's end (`common::judged`: shards-api's calls
 /// given no bound, `Duration::MAX`, in api_image.rs, member_exec.rs and nesting.rs, and their
 /// reads of a run's channels) goes on while what this test's process started works, as a
