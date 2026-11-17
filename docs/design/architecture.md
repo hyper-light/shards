@@ -3142,6 +3142,23 @@ build's, is refused, saying its path, its digest and why.
   below the file system (a disk's own fault) with no write through it; and on Windows a
   writer that sets a file's write and change times back by SetFileInformationByHandle,
   which only this user's own programs can, whose cache it is.
+- **Settled versions alone** (2026-11-17, kiln goal a8b1ce42, lane own-36-tag;
+  `helpers::settled`, `platform::FileIdentity::older_than`). A file's times come from a
+  clock that moves in ticks (the system time on Windows, the coarse clock on Linux), so a
+  write within the tick of a version's own may be given its times and, its length kept, be
+  that version: on CI's arm64 Windows runner `a_helper_is_read_again_only_once_its_file_changed`
+  rewrote its helper a few calls after its first write, and the rewrite read as the version
+  checked, its bytes unread (run 44007524337). A version is now kept only once a file made
+  beside it, with `create_new` and removed at once, is given later write and change times
+  than its own: its file system's clock has passed them, so any write since gives another
+  version. Until then each start reads its bytes. The established forms of this: Git keeps
+  an index entry whose times are not before its index file's own as racily clean and checks
+  its content (Documentation/technical/racy-git.txt); Mercurial reads its file system's
+  present from a file it makes (dirstate.py `_getfsnow`). A clock read instead would have to
+  be the one each file system stamps from on each OS; the file made asks the file system
+  itself. Where no file can be made there, nothing is kept: the bytes are read at each
+  start. Its cost, one file made and removed by each check that reads the bytes, is
+  unmeasured: owed (`a_helper_checks_cost`).
 - **Started as the file checked.** The checked file stays open until its process has
   started (`helpers::Program`). On Linux the start goes through it, `/proc/PID/fd/N` of
   the checking process, which the starting process (this one, or its spawner, PM M158,
@@ -21624,7 +21641,7 @@ download.
 | `MAX_TRAILER` (http.rs) | 4096, uncited | 4096, cited | go1.26.1 net/http/transfer.go l. 925-935, transport.go l. 326 |
 | `MAX_REDIRECTS` (http.rs) | 10, uncited | 10, cited | go1.26.1 net/http/client.go l. 834 |
 | `SLACK` (registry.rs tests) | 1.5 s | none: the waits the client chose (`Client::paused`) | the test's own record |
-| a scripted server's read (testing.rs `route`), and a test's read of the connection it held | 10 s, 5 s | none: its client's end, or the server's drop, which shuts its connections down (2026-11-13) | the person's rule: liveness alone where nothing is learned; `a_scripted_server_waits_for_its_client_as_long_as_it_lives` |
+| a scripted server's read (testing.rs `route`), and a test's read of the connection it held | 10 s, 5 s | none: its client's end, or the server's drop, which ends its connections (2026-11-13; since 2026-11-17 through `http::end`, as a shutdown alone left the read waiting on Windows until its host ended the half-closed connection, 120 s a drop in each token test on CI's arm64 Windows runner, run 44007524337) | the person's rule: liveness alone where nothing is learned; `a_scripted_server_waits_for_its_client_as_long_as_it_lives` |
 
 #### DNS/dial completion and cancellation are events (D222, continued)
 
@@ -28708,7 +28725,12 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
       there as its wait began waited on no party, as D185's answers already in a slot and
       D209's READY already said teach nothing. Waits that could find their answer there
       check first: `Following` reads its stream once without blocking until a read finds
-      nothing there; engine.rs' `Patient` reads what its daemon has sent before it waits;
+      nothing there, its end read as there where it is (2026-11-17, kiln goal a8b1ce42, lane
+      own-36-tag: on Windows, whose FIONREAD counts no end, a socket of no bytes is polled,
+      WSAPoll, and read where it has ended, and a pipe whose writers have gone reads its end;
+      an end read as absent taught `an_answer_already_there_teaches_nothing`'s stream a W* of
+      one look, 8.86 ms at 0 ns of its party's CPU, on CI's arm64 Windows runner, run
+      44007524337); engine.rs' `Patient` reads what its daemon has sent before it waits;
       `Vm::wait_lines` reads the lines already come before it waits; api_image.rs reads an
       ended member's channel through `judged_there`, judged should it stall but teaching
       nothing. Evidence: ROOT's KVM run at 18b2e0d60 (adacachy2), api_image.rs:2288's

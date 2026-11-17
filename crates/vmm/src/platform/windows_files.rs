@@ -530,6 +530,18 @@ pub struct FileIdentity {
     changed: i64,
 }
 
+impl FileIdentity {
+    /// Whether this version was last written and changed before `made` was made (unix.rs
+    /// `FileIdentity::older_than`): a write soon after this version's may be given its times,
+    /// and with its length kept is the same version. On CI's arm64 Windows runner a helper
+    /// rewritten in place, its length kept, a few calls after its first write read as that
+    /// version (run 44007524337), as a file's times there come from a system time that moves
+    /// in clock ticks (GetSystemTimeAdjustment's increment).
+    pub fn older_than(&self, made: &FileIdentity) -> bool {
+        self.written < made.changed && self.changed < made.changed
+    }
+}
+
 /// [`FileIdentity`] of the file `file` holds open.
 pub fn file_identity(file: &File) -> io::Result<FileIdentity> {
     use windows_sys::Win32::Storage::FileSystem::{

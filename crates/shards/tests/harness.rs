@@ -65,7 +65,8 @@ fn a_daemons_whole_lines_are_its_words() {
 /// PORT, busy for MS
 /// milliseconds, then its answer written there and its end; `fetch PORT`, a request
 /// written to loopback's PORT, its answer read to the connection's end; `idle`, nothing at all until
-/// its stdin closes; `pulse N MS`, N rounds of a moment's CPU then MS milliseconds of none,
+/// its stdin closes; `rests`, the same once it has said "resting" on its stdout, its start
+/// over; `pulse N MS`, N rounds of a moment's CPU then MS milliseconds of none,
 /// saying nothing, as a party that works between waits on a peer outside it; `falls MS`, a
 /// give-back ([`falls`]); `leaves MS`, a stand-in `pulse 1 MS` started on its stdout and
 /// stderr, "holder PID" said there, and its own end, the holder left holding them; `stages`
@@ -120,6 +121,11 @@ fn stand_in() {
             std::thread::sleep(Duration::from_millis(ms));
         }
     } else if asked == "idle" {
+        let _ = std::io::stdin().read(&mut [0u8; 1]);
+    } else if asked == "rests" {
+        let mut out = std::io::stdout();
+        out.write_all(b"resting\n").unwrap();
+        out.flush().unwrap();
         let _ = std::io::stdin().read(&mut [0u8; 1]);
     } else if let Some(ms) = asked.strip_prefix("falls ").and_then(|ms| ms.parse().ok()) {
         falls(ms, busy);
@@ -1221,7 +1227,8 @@ fn judged_end(party: &mut std::process::Child) -> Result<std::process::ExitStatu
 /// `common::booted`, whose shards-api client checks a spec on the call's thread; a refusal
 /// answered in 206 µs on HVF, and one of 28.6 ms on KVM, both at 0 ns of the started
 /// processes' CPU, taught their call site a W* that refused the next call 206 µs and 31 ms
-/// in as it worked). Do: a stand-in idle throughout, the party's one live process; from
+/// in as it worked). Do: a stand-in idle throughout, the party's one live process, its calls
+/// begun once it says it rests; from
 /// one call site, its kind's kept record removed, a call that answers at once, then one busy
 /// for 200 ms on its own thread, then one asleep there for 1 s, past the W* the busy one
 /// taught. Expect: the first two
@@ -1251,11 +1258,23 @@ fn a_judged_calls_own_work_is_its_progress() {
             },
         )
     }
-    let mut idle = stand_in_doing("idle")
+    let mut idle = stand_in_doing("rests")
         .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
         .spawn()
         .unwrap();
+    // Idle once it says so: before, its start is its threads running, or runnable on CPUs
+    // the tests beside it keep busy, which is its party's progress or its host's hold. Begun
+    // as it was spawned, a sleeper past the busy call's W* went unrefused on CI's arm64
+    // Windows runner (run 44007524337), no account kept. Its word comes among libtest's own
+    // lines ("test stand_in ... resting").
+    let mut out = std::io::BufReader::new(idle.stdout.take().unwrap());
+    let mut said = String::new();
+    while !said.contains("resting") {
+        said.clear();
+        let read = std::io::BufRead::read_line(&mut out, &mut said).unwrap();
+        assert_ne!(read, 0, "the stand-in ended without resting");
+    }
     // Its party the idle stand-in alone, not every process this binary started: the tests
     // beside it run their own (4 of 4 whole binaries on HVF, run with libtest's threads,
     // "a call idle on its own thread not refused" while they worked).

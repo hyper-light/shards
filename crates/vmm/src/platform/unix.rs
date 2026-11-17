@@ -1399,6 +1399,18 @@ pub struct FileIdentity {
     changed: (i64, i64),
 }
 
+impl FileIdentity {
+    /// Whether this version was last written and changed before `made` was made: `made` a
+    /// file made since on the same file system, whose change time is that file system's clock
+    /// then. A write after that clock has passed this version's times is given later ones,
+    /// and so is another version; one in the same tick of a clock that moves in ticks (Linux
+    /// stamps a file from its coarse clock, `current_time`) may be given the same, its length
+    /// kept the same version (helpers.rs `settled`).
+    pub fn older_than(&self, made: &FileIdentity) -> bool {
+        self.written < made.changed && self.changed < made.changed
+    }
+}
+
 /// [`FileIdentity`] of the file `file` holds open.
 pub fn file_identity(file: &File) -> io::Result<FileIdentity> {
     use std::os::unix::fs::MetadataExt as _;

@@ -7501,11 +7501,13 @@ impl Timed for PipeStream {
         PipeStream::set_read_timeout(self, timeout)
     }
 
-    /// What it holds, read without waiting: WouldBlock where nothing is, its end among them,
-    /// which the timed read after finds.
+    /// What it holds, read without waiting: its end where its writers have gone and it holds
+    /// nothing (`Pipe::peek`'s None), as a socket's is ([`recv_now`]); WouldBlock where nothing
+    /// is yet.
     fn read_now(&self, buf: &mut [u8]) -> io::Result<usize> {
         match self.reads.peek()? {
-            None | Some(0) => Err(io::ErrorKind::WouldBlock.into()),
+            None => Ok(0),
+            Some(0) => Err(io::ErrorKind::WouldBlock.into()),
             Some(there) => {
                 let len = buf.len().min(there);
                 match self.reads.read_by(&mut buf[..len], Some(Instant::now())) {
@@ -7643,8 +7645,13 @@ fn recv_now(fd: std::os::fd::RawFd, buf: &mut [u8]) -> io::Result<usize> {
 }
 
 /// [`Timed::read_now`] of socket `socket` on Windows, which has no `MSG_DONTWAIT`: as many
-/// bytes as are there (ioctlsocket `FIONREAD`), read by `read`, which cannot wait for them;
-/// WouldBlock where none are, its end among them, which the timed read after finds.
+/// bytes as are there (ioctlsocket `FIONREAD`), read by `read`, which cannot wait for them.
+/// Where none are, its end may be, which FIONREAD counts nothing of and WSAPoll sees (as
+/// afunix's reads see a peer's end): then `read`, which returns at once, its end or what came
+/// since, as Unix's recv(2) with `MSG_DONTWAIT` reads its end. An end there read as absent
+/// made its reader's wait one of a look, which taught its kind (CI's arm64 Windows runner,
+/// run 44007524337: harness.rs `an_answer_already_there_teaches_nothing`, W* 8.86 ms). Else
+/// WouldBlock.
 #[cfg(windows)]
 fn recv_now(
     socket: std::os::windows::io::BorrowedSocket<'_>,
@@ -7652,7 +7659,9 @@ fn recv_now(
     read: impl FnOnce(&mut [u8]) -> io::Result<usize>,
 ) -> io::Result<usize> {
     use std::os::windows::io::AsRawSocket as _;
-    use windows_sys::Win32::Networking::WinSock::{FIONREAD, SOCKET, ioctlsocket};
+    use windows_sys::Win32::Networking::WinSock::{
+        FIONREAD, POLLRDNORM, SOCKET, WSAPOLLFD, WSAPoll, ioctlsocket,
+    };
     let mut there: u32 = 0;
     // SAFETY: FIONREAD's count into a local, of a socket its caller holds open.
     if unsafe { ioctlsocket(socket.as_raw_socket() as SOCKET, FIONREAD, &raw mut there) } != 0 {
@@ -7660,7 +7669,17 @@ fn recv_now(
     }
     let there = usize::try_from(there).unwrap_or(usize::MAX);
     if there == 0 {
-        return Err(io::ErrorKind::WouldBlock.into());
+        let mut fd = WSAPOLLFD {
+            fd: socket.as_raw_socket() as SOCKET,
+            events: POLLRDNORM,
+            revents: 0,
+        };
+        // SAFETY: one entry, a socket its caller holds open, polled without waiting.
+        return match unsafe { WSAPoll(&raw mut fd, 1, 0) } {
+            n if n < 0 => Err(io::Error::last_os_error()),
+            0 => Err(io::ErrorKind::WouldBlock.into()),
+            _ => read(buf),
+        };
     }
     let len = buf.len().min(there);
     read(buf.get_mut(..len).unwrap_or_default())
