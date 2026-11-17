@@ -511,7 +511,10 @@ mod storm {
     /// Streams rounds of 4 MiB through the echo of the VM at `sock`, a guest of `size`
     /// ([`size`]), until `stop`, from when it answers, counting what comes back in
     /// `carried`; returns each round's result, a failed one saying when it began and ended
-    /// from `start` (its VM's).
+    /// from `start` (its VM's). Each round it says is said after `who`, its storm and VM:
+    /// both tests run storms of one size at once, and a stopping original's last round breaks
+    /// as its VM ends, as it should (CI 43968984258: that break, `sending: Broken pipe`, was
+    /// read as the resumed storm's).
     ///
     /// No wall clock bounds a storm: each round's reads are a wait judged by its kind's
     /// slowest round seen ([`common::Following`]), and each wait on its guest by its next new
@@ -527,6 +530,7 @@ mod storm {
     fn stream(
         sock: PathBuf,
         size: String,
+        who: String,
         stop: Arc<AtomicBool>,
         carried: Arc<AtomicU64>,
         start: Instant,
@@ -550,7 +554,7 @@ mod storm {
                 if round.as_ref().is_err_and(|e| !e.contains("refused")) || took > slowest {
                     let _ = writeln!(
                         std::io::stderr(),
-                        "{size}: round {salt}, {began:?} to {:?} in, {}: {}",
+                        "{who}: round {salt}, {began:?} to {:?} in, {}: {}",
                         start.elapsed(),
                         round.as_ref().map_or_else(|e| e.as_str(), |_| "whole"),
                         costs::since(&before, &costs::read(vm))
@@ -739,34 +743,84 @@ mod storm {
         );
     }
 
-    /// vCPU counts from two to as many as this host and the kernel take, or
-    /// `SHARDS_STORM_CPUS` alone. `SHARDS_STORM_MS` runs the storm that long before its
-    /// snapshot, for its report of the workers' longest gaps (platform-measurements M45).
-    /// The most a host takes is what it is held to, however slowly it runs them: 64 vCPUs
-    /// on the nested arm64 Windows host's 4 TCG CPUs left woken threads unrun for 15 s
+    /// What a storm's largest size shows past a machine whose every vCPU has a CPU (D14).
+    #[derive(Debug, Clone, Copy)]
+    enum Largest {
+        /// Every vCPU a machine may have: the bounds its snapshot and its hypervisor keep of
+        /// each vCPU, which only a restore reads back (D13: every 255-vCPU snapshot was
+        /// refused as it restored, "sequence of 255 (limit 254)", found by this storm).
+        Most,
+        /// One vCPU more than this host has CPUs: the least it cannot run at once, so the
+        /// barrier kicks a vCPU its host is not running.
+        Overcommitted,
+    }
+
+    /// A storm's sizes in vCPUs, each a regime its claim needs, none past `most`, the most a
+    /// machine may have here: two, the least whose CPUs wake one another (the guest's pairs);
+    /// this host's `host` CPUs, or `most` where it has more, the most it runs at once, every
+    /// vCPU on a CPU of its own; and `largest`.
+    fn sizes(host: u32, most: u32, largest: Largest) -> Vec<u32> {
+        let largest = match largest {
+            Largest::Most => most,
+            Largest::Overcommitted => host.saturating_add(1),
+        };
+        let mut cpus: Vec<u32> = [2, host.min(most), largest]
+            .into_iter()
+            .filter(|n| (2..=most).contains(n))
+            .collect();
+        cpus.sort_unstable();
+        cpus.dedup();
+        cpus
+    }
+
+    /// A storm's sizes on this host ([`sizes`]), or `SHARDS_STORM_CPUS` alone: the host's CPUs
+    /// those this test may run on, as its VM processes inherit them (its affinity, and on Linux
+    /// its cgroup's quota: `available_parallelism`), and the most vCPUs those its hypervisor
+    /// and the pinned kernel both take (D13).
+    /// `SHARDS_STORM_MS` runs the storm that long before its snapshot, for its report of the
+    /// workers' longest gaps (platform-measurements M45). However slowly a host runs a size,
+    /// its waits go on while the guest says something new or carries the stream (D209): 64
+    /// vCPUs on the nested arm64 Windows host's 4 TCG CPUs left woken threads unrun for 15 s
     /// before any snapshot, and lost no interrupt (M427); the guest's watchdog gives the
-    /// kernel's account of a stall only once its main thread and the stream through its
-    /// echo have both stood still past their own pace (the test guest's `stall::Watch`).
-    fn storm_cpus() -> Vec<u32> {
-        let max = shards_vmm::vm::max_vcpus().unwrap().min(common::kernel_nr_cpus());
+    /// kernel's account of a stall only once its main thread and the stream through its echo
+    /// have both stood still past their own pace (the test guest's `stall::Watch`).
+    fn storm_cpus(largest: Largest) -> Vec<u32> {
+        let most = shards_vmm::vm::max_vcpus().unwrap().min(common::kernel_nr_cpus());
         if let Ok(only) = std::env::var("SHARDS_STORM_CPUS") {
             return vec![only.parse().unwrap()];
         }
-        let mut cpus: Vec<u32> = [2, 8, max].into_iter().filter(|&n| n <= max).collect();
-        cpus.dedup();
-        cpus
+        let host = std::thread::available_parallelism().unwrap().get();
+        sizes(u32::try_from(host).unwrap(), most, largest)
+    }
+
+    /// A storm's sizes are the regimes its claim needs, from its host's CPUs and the most vCPUs
+    /// a machine may have: CI's x86_64 runners (4 CPUs, 255), a Mac (18, 64), a host of one
+    /// CPU, and one of more CPUs than a machine may have vCPUs (an arm64 KVM host: 192, 123).
+    #[test]
+    fn a_storms_sizes_are_the_regimes_its_claim_needs() {
+        assert_eq!(sizes(4, 255, Largest::Most), [2, 4, 255]);
+        assert_eq!(sizes(4, 255, Largest::Overcommitted), [2, 4, 5]);
+        assert_eq!(sizes(18, 64, Largest::Most), [2, 18, 64]);
+        assert_eq!(sizes(18, 64, Largest::Overcommitted), [2, 18, 19]);
+        assert_eq!(sizes(1, 255, Largest::Most), [2, 255]);
+        assert_eq!(sizes(1, 255, Largest::Overcommitted), [2]);
+        assert_eq!(sizes(2, 255, Largest::Overcommitted), [2, 3]);
+        assert_eq!(sizes(192, 123, Largest::Most), [2, 123]);
+        assert_eq!(sizes(192, 123, Largest::Overcommitted), [2, 123]);
     }
 
     /// A snapshot of a machine busy in every way at once, its CPUs waking one another, its
     /// timers ticking, both disks mid-request and a vsock stream in both directions, restores
     /// whole (audit A02): each restore finds every activity going on, no interrupt lost, every
-    /// record on the writable disk written exactly once, and the host's stream whole.
+    /// record on the writable disk written exactly once, and the host's stream whole. Of every
+    /// size a machine may have, up to the most ([`Largest::Most`]): a restore alone reads back
+    /// what its snapshot keeps of each vCPU.
     #[test]
     fn restores_of_a_busy_machine_lose_no_interrupt_and_repeat_no_write() {
         if cannot_run_vms() || cannot_snapshot() {
             return;
         }
-        for cpus in storm_cpus() {
+        for cpus in storm_cpus(Largest::Most) {
             let s = Scratch::new(&format!("storm{cpus}"));
             let rw = s.0.join("rw.img");
             std::fs::write(&rw, vec![0u8; RW_BYTES]).unwrap();
@@ -778,6 +832,7 @@ mod storm {
             let streamer = stream(
                 sock.clone(),
                 size(cpus),
+                format!("storm {cpus} vCPUs, its original (it stops at its snapshot)"),
                 stop.clone(),
                 carried.clone(),
                 start,
@@ -809,6 +864,7 @@ mod storm {
                 let streamer = stream(
                     sock.clone(),
                     size(cpus),
+                    format!("storm {cpus} vCPUs, restore {i}"),
                     stop.clone(),
                     carried.clone(),
                     start,
@@ -829,13 +885,16 @@ mod storm {
 
     /// A machine busy in every way at once that resumes after its snapshot goes on whole
     /// (audit A02): every activity continues, and the host's vsock stream, running through
-    /// the snapshot, loses and repeats nothing.
+    /// the snapshot, loses and repeats nothing. Up to one vCPU more than its host has CPUs
+    /// ([`Largest::Overcommitted`]): what a resume adds to a snapshot, the barrier letting its
+    /// vCPUs go on, holds no bound of the machine's, whose largest snapshot the restores'
+    /// storm takes and reads back.
     #[test]
     fn a_busy_machine_goes_on_whole_past_its_snapshot() {
         if cannot_run_vms() || cannot_snapshot() {
             return;
         }
-        for cpus in storm_cpus() {
+        for cpus in storm_cpus(Largest::Overcommitted) {
             let s = Scratch::new(&format!("resume{cpus}"));
             std::fs::write(s.0.join("rw.img"), vec![0u8; RW_BYTES]).unwrap();
             let sock = s.0.join("v.sock");
@@ -846,6 +905,7 @@ mod storm {
             let streamer = stream(
                 sock.clone(),
                 size(cpus),
+                format!("resume {cpus} vCPUs"),
                 stop.clone(),
                 carried.clone(),
                 start,
