@@ -105,6 +105,9 @@ fn main() {
         ((state.wrapping_mul(0x2545_f491_4f6c_dd1d) >> 11) as f64 + 1.0) / (1u64 << 53) as f64
     };
     let kernel = common::kernel_artifact().name.to_string();
+    // Every rate's failed requests: their output goes nowhere, so where any failed the home is
+    // kept, its daemon's log saying why (ci.yml's `Arrival's daemon, stopped` prints it).
+    let mut failures = 0;
     for &rate in &rates {
         let start = Instant::now();
         let mut due = 0.0f64;
@@ -161,6 +164,7 @@ fn main() {
             }
         }
         let done_rate = (n - failed) as f64 / last.duration_since(start).as_secs_f64();
+        failures += failed;
         let name = format!("rate_{rate}");
         let rows = [
             stats(&name, "us", latency),
@@ -179,7 +183,9 @@ fn main() {
         );
     }
     run_env(&strings(&["daemon", "stop"]), false, &env);
-    let _ = std::fs::remove_dir_all(&home);
+    if failures == 0 {
+        let _ = std::fs::remove_dir_all(&home);
+    }
 }
 
 /// A request's end: its client (none where it could not be spawned), whether its command

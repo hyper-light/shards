@@ -14110,7 +14110,9 @@ comes to made no progress for 399 ms, past the slowest answer of its kind seen o
     and which the six snapshot pairs (4bef86c91, D36) outgrew on the Intel, 1188 s before
     Arrival against 1085 s at most (one run; their cost on AMD unmeasured); KVM's failed entries'
     VMCS kept (scripts/ci/kvm-host) and the kernel's log of OOM kills and failed VM entries said
-    in every run. Arrival keeps 5 minutes: its slowest of 33 passes is still 185 s.
+    in every run; the bench keeps its home where any request failed (benches/arrival.rs), so
+    that step says its daemon's log for a pass whose requests failed as well as for a cut.
+    Arrival keeps 5 minutes: its slowest of 33 passes is still 185 s.
   - *What it leaves.* Whether rate 40 on the Intel ends within Arrival's 5 minutes, and what
     fails its requests there, is open (R09: the next Intel run's daemon log, if cut, and its
     kernel's log). `daemon stop` after a cut is unmeasured, bounded by the job's limit alone.
