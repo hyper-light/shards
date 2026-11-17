@@ -3419,8 +3419,46 @@ one CLI.
         let-go would undo. Not macOS's, which the Envelope does not read, and whose mapping
         of a program's code is unread here. Not Windows'.
       - *Its cost.* Each page of its code it touches first faults on its own, where one fault
-        mapped up to 16. How many faults that is, and their time, are unmeasured (R14): the
-        A/B's `to_ready` and `to_beat`.
+        mapped up to 16. Their time, in its A/B (below): a boot's `to_ready`, paired with
+        Firecracker's, -75.3 and -77.8 ms with the hold and -79.1 and -77.5 without, the 1.8
+        ms between the arms within each arm's own runs (2.5 and 1.6 ms); a restore's
+        `to_beat` 8,165 and 8,402 us with it, 8,270 and 8,323 without.
+    - *The cure's A/B* (run 44138427198, A at 8247e14 with the hold, B at ba502bc before it,
+      Intel Xeon 6975P-C, 2 rounds an arm; vm-text's `ab-44138427198.txt`). A's boot kept
+      806,912 bytes of shards-vm's file to B's 2,539,520 and Firecracker's 2,338,816:
+      `rss_file` -375 pages a pair to B's +48, `pss_file` -374 to +49, `overhead` -397 to
+      +27. CI's run 44138098584 (8247e14, AMD EPYC 9V74) then read the fleet's
+      `fleet_private` +6 pages and the restore's `rss_anon` +2, worse. The hold adds neither.
+      - *No page of a VM's.* Registering write-protects nothing, and MADV_DONTNEED drops clean
+        ptes of the file, which refault read-only from it, uncopied, leaving no marker where
+        nothing was write-protected (Linux 7.2-rc4 include/linux/mm_inline.h
+        `pte_install_uffd_wp_if_needed`). Each run's snapshot taken out (vm-text's
+        `within.py`), shards-vm's own anonymous pages, a restore's `rss_anon` less its
+        guest's private copies, were 35 in every run of both arms (36 in at most 8 of 30
+        restores), and a VM of the fleet held 1 page more than a restore in every run: the
+        code each maps a page at a time, the fleet maps alike. The layout moved a page from
+        data to relro: the text grew 1,216 bytes and the read-only segment 240, so the
+        relro, 0x6798 bytes in both, begins 0x898 into its first page rather than 0x2e8 and
+        spans 8 pages, each copied by the start's relocation, and the data and bss 7, not 8.
+      - *Each run's snapshot moves them.* Each restore copies ahead what its working set says
+        its guest wrote (vmm `mapped::copy_written`, D25), recorded once a run over a
+        restore's first second, so a run's guest copies are one number: 229 and 231 pages in
+        A, 227 and 222 in B, to Firecracker's guest's 129 to 145, while Firecracker's process
+        held 114 to 131 pages of its own. A run's restores alike, its interval is a point,
+        its sign that run's draw: `rss_anon` +4 and +2 pages in A, +2 and -2 in B;
+        `fleet_private` +4 and +2, +2 and -0.5. One binary run four times on one AMD EPYC
+        9V74 (vm-text's run 44076339609) read `rss_anon` +11, -9, +2 and -1 and
+        `fleet_private` +12, -5.5, +2 and 0.
+      - *What would hold them* (owed, ROOT's, R14). Either a replicate per snapshot: k pairs
+        of snapshots, each pair's restores one difference, their median bounded by the least
+        and the greatest, which hold it with 1 - 2^(1-k) confidence (the sign test's
+        interval: Hollander, Wolfe and Chicken, *Nonparametric Statistical Methods*, ch. 3),
+        so 6 pairs for the Envelope's 95% (96.9%), each a boot, a recording and
+        Firecracker's boot and snapshot more. Or fewer copies than the draw: what shards'
+        guest writes by its first beat with nothing copied ahead is unmeasured (a restore of
+        the comparison's snapshot without its `working-set`: its `written_pages`). The
+        comparison's guest has no command and is recorded for its first second, where D25
+        records a run until its command answers.
 - A daemon's build is its binary's identity, which includes what it carries; one given
   another VM binary (`SHARDS_VM_BINARY`, for VMM work and tests) is another build.
 - **Tests:** `helpers::tests` (written whole once, found after, a cut copy replaced);

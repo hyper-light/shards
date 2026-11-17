@@ -41,6 +41,13 @@ difference sits near 0 and its sign follows what the guest writes on each host.
 - shards' restore path has no branch by CPU vendor (vmm: `cpuid::vendor` only reads one),
   so what differs is the guest's run on its host's CPU, as the snapshot's guest booted on
   it.
+- Nor is it the host's alone (vm-text's runs 44076339609 and 44138427198, its `within.py`).
+  On one host the copies move as much from run to run, every restore of a run alike: each
+  copies ahead what its working set says the guest wrote (vmm `mapped::copy_written`),
+  recorded once a run. Four runs of one binary held 218 to 231 pages on an AMD EPYC 9V74,
+  and four of two builds 222 to 231 on an Intel Xeon 6975P-C, shards-vm's own anonymous
+  pages 36 and 35 throughout. One run's verdict on this row is that run's draw (D36, the
+  cure's A/B).
 
 **What settles it** (ROOT's). Each restore writes the same pages every time, so one reading
 names them: the comparison's `pages.tsv` (benches/firecracker.rs `pages_to`, in each CI run's
