@@ -258,6 +258,10 @@ fn brings_up_every_vcpu() {
             "--cmdline",
             "console=hvc0 panic=-1",
         ]);
+        // A refusal D261's gate takes for its host's skips it.
+        if common::host_refused(&r.stderr) {
+            return;
+        }
         assert!(
             r.stdout.contains(&format!("smp: Brought up 1 node, {n} CPUs")),
             "{n} vCPUs: {r}"
@@ -341,9 +345,8 @@ fn boots_the_hosts_maximum_vcpu_count() {
                 return;
             }
             Brought::Refused(refused) => {
-                limits
-                    .record(max, Outcome::Refused { vcpu: refused.vcpu })
-                    .unwrap();
+                // Kept with its moment, a witness for D261's gate of a machine refused beside it.
+                limits.record_refusal(max, refused.vcpu, refused.refusal).unwrap();
                 refused.to_string()
             }
         },
@@ -366,9 +369,7 @@ fn boots_the_hosts_maximum_vcpu_count() {
                     limits.record(vcpus, Outcome::Ran).unwrap();
                     return;
                 }
-                Brought::Refused(again) => limits
-                    .record(vcpus, Outcome::Refused { vcpu: again.vcpu })
-                    .unwrap(),
+                Brought::Refused(again) => limits.record_refusal(vcpus, again.vcpu, again.refusal).unwrap(),
             }
         }
         vcpus /= 2;
@@ -613,6 +614,10 @@ fn runs_init_as_pid_1_and_powers_off() {
         "--cmdline",
         "console=hvc0 quiet panic=-1",
     ]);
+    // A refusal D261's gate takes for its host's skips it.
+    if common::host_refused(&r.stderr) {
+        return;
+    }
     assert_eq!(r.status, Some(0), "{r}");
     assert!(r.stdout.contains("shards-init: pid 1 running"), "{r}");
     let (init_us, exit_us) = (
@@ -1555,6 +1560,10 @@ fn a_snapshot_keeps_memory_to_plug() {
         .into_iter()
         .chain((0..2).map(|_| run_shards(&["restore"], &[snapshot.to_str().unwrap()])))
     {
+        // A refusal D261's gate takes for its host's skips it.
+        if common::host_refused(&run.stderr) {
+            return;
+        }
         assert!(run.stdout.contains("SHARDS-TEST PLUGGED "), "{run}");
         assert!(run.stdout.contains("SHARDS-TEST PASS"), "{run}");
     }
@@ -2440,14 +2449,20 @@ fn shards_api_conforms_on_real_guests() {
         return;
     }
     let spec = |mode: &str| api_spec(&format!("console=hvc0 quiet panic=-1 shards_test={mode}"));
-    conformance::run(&conformance::Subject {
+    let conformed = conformance::run(&conformance::Subject {
         guests: &shards_api::Shards,
         serving: spec("echo"),
         port: 1234,
         unserved: 1236,
         powering_off: spec("kmsg"),
-    })
-    .unwrap();
+    });
+    // A refusal D261's gate takes for its host's skips it.
+    if let Err(failed) = &conformed
+        && common::host_refused(&failed.why)
+    {
+        return;
+    }
+    conformed.unwrap();
 }
 
 /// shards-api's `GuestSpec::shares`: the test guest's `share` mode writes through `shards0`
@@ -2477,7 +2492,14 @@ fn shards_api_shares_a_directory_and_a_read_only_one() {
         ..api_spec("console=hvc0 quiet panic=-1 shards_test=share")
     };
     let guest = shards_api::Shards.boot(&spec).unwrap();
-    assert_eq!(guest.wait_while_runs().unwrap(), shards_api::End::PowerOff);
+    let end = guest.wait_while_runs().unwrap();
+    // A refusal D261's gate takes for its host's skips it.
+    if let shards_api::End::Failed(said) = &end
+        && common::host_refused(said)
+    {
+        return;
+    }
+    assert_eq!(end, shards_api::End::PowerOff);
     assert_eq!(
         std::fs::read_to_string(rw.join("from-guest")).unwrap(),
         "written by a shards guest through --share\n"

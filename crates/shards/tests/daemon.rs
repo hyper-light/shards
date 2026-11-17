@@ -3016,9 +3016,20 @@ fn pools_keep_what_their_runs_need_while_they_come() {
         );
     };
     let args = [image.as_str(), "exit", "0"];
-    let run = |env: &[(&str, &OsStr)]| {
+    // A run, served; or true where its VM's host refused an entry D261's gate takes for the
+    // host's, which skips the test.
+    let run = |env: &[(&str, &OsStr)]| -> bool {
         let run = run_shards_env(&["run"], &args, env);
+        if run.status != Some(0)
+            && common::vm_host_refused(
+                &std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default(),
+                &run.stderr,
+            )
+        {
+            return true;
+        }
         assert_eq!(run.status, Some(0), "{}", run.stderr);
+        false
     };
     // A refill, once its daemon has said it: its window then the newest said.
     let refilled = |said: usize| {
@@ -3027,7 +3038,9 @@ fn pools_keep_what_their_runs_need_while_they_come() {
     };
     // Its first run boots its image and saves the template its pool refills from (D25).
     let said = windows().len();
-    run(&env);
+    if run(&env) {
+        return;
+    }
     refilled(said);
     // Runs apart: each begun once the window its daemon said at the refill before it has
     // passed since the run before ended, so its claim comes more than one refill window
@@ -3103,7 +3116,9 @@ fn pools_keep_what_their_runs_need_while_they_come() {
         commands_with(&templates.to_string_lossy()),
         std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default()
     );
-    run(&env);
+    if run(&env) {
+        return;
+    }
     settled(Patience::of(&home), "after the keep-alive", &|n| n >= 1);
     let stopped = run_shards_env(&["daemon"], &["stop"], &env);
     assert_eq!(stopped.status, Some(0), "{stopped}");
