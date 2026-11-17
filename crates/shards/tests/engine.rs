@@ -2663,8 +2663,14 @@ fn a_runs_command_reaches_its_own_microvms_engine() {
     // One call, by the command's own client in its microVM: its status line and body.
     let api = |method: &str, path: &str, body: &str| -> (String, String) {
         let out = shards(&["exec", "prov", "/bin/testguest", "api", method, path, body]);
-        assert_eq!(out.status, Some(0), "{out}");
         let (status, body) = out.stdout.split_once('\n').unwrap_or((&out.stdout, ""));
+        // A refusal (400 or more) ends its command 22, as `curl --fail` does: no served answer.
+        let refused = status
+            .split_whitespace()
+            .nth(2)
+            .and_then(|code| code.parse::<u16>().ok())
+            .is_some_and(|code| code >= 400);
+        assert_eq!(out.status, Some(if refused { 22 } else { 0 }), "{out}");
         (status.to_string(), body.to_string())
     };
     let mut patience = Patience::of(&home);

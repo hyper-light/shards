@@ -61,7 +61,7 @@ fn a_daemons_whole_lines_are_its_words() {
 /// The stand-in a test's wait follows here: this test binary run again for this test alone,
 /// doing what `SHARDS_STAND_IN` says: `exit`, at once; `busy MS`, its CPU busy for MS
 /// milliseconds, then its end; `go MS`, the same once a byte (its go) or its end comes on
-/// its stdin; `refuse`, its end at once, status 1; `answer PORT MS`, connected to loopback's
+/// its stdin; `spins MS`, the same once it has said "spinning" on its stdout; `refuse`, its end at once, status 1; `answer PORT MS`, connected to loopback's
 /// PORT, busy for MS
 /// milliseconds, then its answer written there and its end; `fetch PORT`, a request
 /// written to loopback's PORT, its answer read to the connection's end; `idle`, nothing at all until
@@ -92,6 +92,11 @@ fn stand_in() {
         busy(ms);
     } else if let Some(ms) = asked.strip_prefix("go ").and_then(|ms| ms.parse().ok()) {
         let _ = std::io::stdin().read(&mut [0u8; 1]);
+        busy(ms);
+    } else if let Some(ms) = asked.strip_prefix("spins ").and_then(|ms| ms.parse().ok()) {
+        let mut out = std::io::stdout();
+        out.write_all(b"spinning\n").unwrap();
+        out.flush().unwrap();
         busy(ms);
     } else if asked == "refuse" {
         std::process::exit(1);
@@ -1575,6 +1580,73 @@ fn a_wait_is_refused_though_its_own_polls_outlast_w_star() {
 /// [`Patience::of`] at one call site: one kind for every wait made through it.
 fn outlasted(home: &std::path::Path) -> Patience {
     Patience::of(home)
+}
+
+/// A home's daemon has done the work its last client left it once its threads rest, not
+/// once its request slots read as offered again (`common::settled`): CI 44007524337,
+/// aarch64-apple-darwin, the test above, settled, found "its daemon ran" in its wait's first
+/// window and never after. Red so: settled returns while its daemon still runs. Do: a home
+/// whose slots read as offered (each list's records unread, and their names), its daemon a
+/// stand-in named as a daemon names itself; once it says it spins, settle the home. Expect:
+/// settled only once the stand-in has ended.
+#[cfg(unix)]
+#[test]
+fn a_daemon_is_settled_once_its_threads_rest() {
+    use shards_ipc::slots::{DIR, FREE, FREE_STREAMS, OFFERED, RECORD};
+    use std::os::unix::ffi::OsStrExt as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let home = TempDir::new("rest");
+    let dir = home.join(DIR);
+    std::fs::create_dir_all(&dir).unwrap();
+    // Each list a FIFO this test holds both ends of, its records unread in it.
+    let lists: Vec<(std::fs::File, std::fs::File)> = [FREE, FREE_STREAMS]
+        .iter()
+        .map(|list| {
+            let path = dir.join(list);
+            let named = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+            // SAFETY: mkfifo(2) of a NUL-terminated path this owns.
+            assert_eq!(unsafe { libc::mkfifo(named.as_ptr(), 0o600) }, 0, "{path:?}");
+            let open = |read: bool| {
+                std::fs::OpenOptions::new()
+                    .read(read)
+                    .write(!read)
+                    .custom_flags(libc::O_NONBLOCK)
+                    .open(&path)
+                    .unwrap()
+            };
+            let reader = open(true);
+            let mut writer = open(false);
+            writer.write_all(&vec![0u8; OFFERED * RECORD]).unwrap();
+            (reader, writer)
+        })
+        .collect();
+    for n in 0..2 * OFFERED {
+        std::fs::write(dir.join(format!("{n}.slot")), "").unwrap();
+    }
+    // Long past settled's first look, which comes at once.
+    let mut daemon = stand_in_doing("spins 300")
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let pid = daemon.id();
+    let named = format!("{pid} {}\n", shards_ipc::started(pid).unwrap());
+    std::fs::write(home.join(shards_ipc::PID), named).unwrap();
+    // Its word comes among libtest's own lines ("test stand_in ... spinning").
+    let mut out = std::io::BufReader::new(daemon.stdout.as_mut().unwrap());
+    let mut said = String::new();
+    while !said.contains("spinning") {
+        said.clear();
+        let read = std::io::BufRead::read_line(&mut out, &mut said).unwrap();
+        assert_ne!(read, 0, "the stand-in ended without spinning");
+    }
+    common::settled(&home);
+    let ended = daemon.try_wait().unwrap();
+    if ended.is_none() {
+        let _ = daemon.kill();
+        let _ = daemon.wait();
+    }
+    assert!(ended.is_some(), "settled while its daemon still ran");
+    drop(lists);
 }
 
 /// A command's wait is keyed by its call site and its whole command line, what a run mints

@@ -2456,11 +2456,15 @@ enum Patient {
 /// list offers [`OFFERED`](shards_ipc::slots::OFFERED) slots again, that many records unread
 /// in its FIFO (FIONREAD, as the daemon's own `Requests::waiting` counts them, none read), and
 /// the directory names no slot past them, a taken one's names removed. On Windows a slot is
-/// a pipe's instance, which no listing shows (slots/named.rs): unread there.
+/// a pipe's instance, which no listing shows (slots/named.rs): unread there. Then none of its
+/// daemon's threads runnable ([`daemon_at_rest`]): slots seen as offered are the work's last
+/// effect, not its end, which comes as the thread that made them sleeps (CI 44007524337,
+/// aarch64-apple-darwin, the same test: settled, its wait's first window found "its daemon
+/// 3186 ran", and none after, so it was refused a look late).
 #[track_caller]
 pub fn settled(home: &Path) {
     let mut patience = Patience::of(home);
-    while !slots_settled(home) {
+    while !(slots_settled(home) && daemon_at_rest(home)) {
         assert!(
             patience.holds(),
             "{}'s request slots never settled",
@@ -2509,6 +2513,17 @@ fn slots_settled(home: &Path) -> bool {
 #[cfg(not(unix))]
 fn slots_settled(_: &Path) -> bool {
     true
+}
+
+/// Whether none of `home`'s daemon's threads is runnable, running or waiting for a CPU, as
+/// the judge reads them (`shards_api::runnable_threads`): the work its last client left it
+/// done, its CPU counted to its threads as each slept (XNU adds a thread's run to its task's
+/// as it leaves its CPU). True with no daemon, and where threads are not read (Windows).
+fn daemon_at_rest(home: &Path) -> bool {
+    shards_ipc::Named::read(&home.join(shards_ipc::PID))
+        .filter(shards_ipc::Named::lives)
+        .and_then(|daemon| shards_api::runnable_threads(daemon.pid))
+        .is_none_or(|(runnable, _)| runnable == 0)
 }
 
 impl Patience {
