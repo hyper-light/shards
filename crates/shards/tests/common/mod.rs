@@ -5008,6 +5008,9 @@ pub struct Wait {
     /// Whether it waits on a command of its thread's own ([`Wait::begin`]): its span is its
     /// thread's own work ([`OWN`]) as it ends.
     command: bool,
+    /// How far into it each due look came that found its party still, since one last found
+    /// it progressed, held or based: what its account says its judge saw.
+    still: Vec<Duration>,
 }
 
 /// Where a [`Wait`] is, by what its caller has found of its answer.
@@ -5117,6 +5120,7 @@ impl Wait {
             live: Live::new(),
             stage: Stage::Begun,
             command: false,
+            still: Vec::new(),
         }
     }
 
@@ -5167,6 +5171,7 @@ impl Wait {
             self.stage = Stage::Answered;
             self.judge = shards_api::Judge::begin(&self.kind.record);
             (self.progressed, self.held, self.vouched) = (None, None, false);
+            self.still.clear();
         }
     }
 
@@ -5283,9 +5288,15 @@ impl Wait {
             // begins vouched.
             let work = std::mem::replace(&mut self.vouched, true).then_some(self.work);
             judged = self.judge.found_over(found, shards_api::Span { work, ..span });
+            if found == Found::Still {
+                self.still.push(self.began.elapsed());
+            } else {
+                self.still.clear();
+            }
         } else if looked.found == Found::Based {
             // Its evidence begins at this look's end, due or not: a based look refuses nothing.
             judged = self.judge.found_over(Found::Based, span);
+            self.still.clear();
         }
         self.live.set(self.account(), self.party.home.as_deref());
         let left = self
@@ -5318,7 +5329,7 @@ impl Wait {
             format!("{} {}", self.kind.site, self.kind.line)
         };
         format!(
-            "{kind}: {} ({}), {:?} in: its last progress {} {:?} ago; {}; its record {record}{}; its members now: {}",
+            "{kind}: {} ({}), {:?} in: its last progress {} {:?} ago; {}; its record {record}{}{}; its members now: {}",
             self.asked,
             self.party.named(),
             self.began.elapsed(),
@@ -5331,6 +5342,15 @@ impl Wait {
             self.judge.stillness().map_or_else(String::new, |(still, held, window)| format!(
                 "; still {still:?} of its {window:?} window as its last look saw, {held:?} of its looks' lateness out"
             )),
+            if self.still.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    "; its due looks that found its party still since: {} of them, {:?} in",
+                    self.still.len(),
+                    self.still
+                )
+            },
             self.party.states(),
         )
     }

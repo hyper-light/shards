@@ -1230,8 +1230,11 @@ fn judged_end(party: &mut std::process::Child) -> Result<std::process::ExitStatu
 /// in as it worked). Do: a stand-in idle throughout, the party's one live process, its calls
 /// begun once it says it rests; from one call site, its kind's kept record removed, a call
 /// that answers at once, then one busy for 200 ms on its own thread, then one idle there
-/// until its wait is refused, the refusal ending it. Expect: the first two answer; the idle
-/// one is refused. It sets itself no span: a resting process on Windows runs its default
+/// until its wait is refused, the refusal ending it, or for as long as the judge's rule takes
+/// to refuse a still party over its kind's W* (`shards_api::Judge::refused_within`), past
+/// which it answers. Expect: the first two answer; the idle one is refused, and one that
+/// answers fails the test with the due looks that found its party still. It sets itself no
+/// span of its own: a resting process on Windows runs its default
 /// thread pool's workers when its system decides ("the system controls the lifetime of
 /// thread pool threads", Microsoft's Thread Pools; the loader's own use of the pool, Raymond
 /// Chen, "Why does my single-threaded program have multiple threads?", 2019-11-15), and on
@@ -1246,8 +1249,16 @@ fn a_judged_calls_own_work_is_its_progress() {
             let site = std::panic::Location::caller();
             let _ = std::fs::remove_file(common::WaitKind::kept_at(site, "", ""));
         }
-        // Idle, it waits for its refusal alone, which its wait's stop says.
+        // Idle, it waits for its refusal, which its wait's stop says, for as long as the judge's
+        // rule takes to refuse a still party over its kind's W*.
         let (refused, on_refusal) = std::sync::mpsc::channel::<()>();
+        let bound = match common::WaitKind::at(std::panic::Location::caller())
+            .record()
+            .seen()
+        {
+            shards_api::Seen::Learned { slowest, .. } => shards_api::Judge::refused_within(slowest),
+            shards_api::Seen::Cold => Duration::ZERO,
+        };
         common::judged_accounted(
             common::Party::client(party, None),
             "a call's own work",
@@ -1256,7 +1267,7 @@ fn a_judged_calls_own_work_is_its_progress() {
             },
             move || {
                 if idle {
-                    let _ = on_refusal.recv();
+                    let _ = on_refusal.recv_timeout(bound);
                     return;
                 }
                 let until = Instant::now() + Duration::from_millis(ms);
@@ -1315,10 +1326,13 @@ fn a_judged_calls_own_work_is_its_progress() {
     idle.wait().unwrap();
     assert!(quick.is_ok(), "{quick:?}");
     assert!(busy.is_ok(), "{busy:?}");
-    // Refused, and its account names what its member was doing. It answers no other way:
-    // an answer here says its wait ended without its refusal, its account what kept it.
+    // Refused, and its account names what its member was doing. Answered, it outlasted the
+    // judge's rule: its account names the due looks that found its party still.
     let Err(said) = idle_call else {
-        panic!("a call idle on its own thread not refused; its wait as it answered: {idle_account}");
+        panic!(
+            "a call idle on its own thread not refused within {} due looks of its kind's W*; its wait as it answered: {idle_account}",
+            shards_api::LOOKS_TO_REFUSE
+        );
     };
     // Its member listed, none of its threads runnable: Linux says it sleeping (S), macOS live
     // (SRUN, which XNU keeps for every live process), both by its threads.
