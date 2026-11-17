@@ -365,7 +365,11 @@ impl Value {
 
     /// A set of `items`, each inserted in turn, the first of equal ones kept, as OPA's
     /// `NewSet` adds them: never collected, as a `BTreeSet`'s `collect` sorts its items with
-    /// `slice::sort`, which may panic on OPA's order, no total order (D98).
+    /// `slice::sort`, which may panic on OPA's order, no total order (D98). Never inlined,
+    /// like `compare::sort_by`: the evaluator's `eval_call`, a frame live through every
+    /// nesting level, reads its operands with `eval::to_value`, which builds sets with it,
+    /// and inlined there the insertions' working state would sit in each level's frame.
+    #[inline(never)]
     pub fn set_of(items: impl IntoIterator<Item = Value>) -> BTreeSet<Value> {
         let mut s = BTreeSet::new();
         for item in items {

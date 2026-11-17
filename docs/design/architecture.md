@@ -25970,6 +25970,20 @@ held to more than OPA's answers:
     `a_large_sort_and_a_set_of_the_trailing_zero_rules_numbers_answer` (4,096 of `10.0`,
     `1`, `10` and their kind, through the `sort` builtin, a set and an object). The merge
     sort's cost against `slice::sort_by` (an allocation a level) is unmeasured: owed.
+    `compare::sort_by` and `Value::set_of` are never inlined (`#[inline(never)]`, lane
+    own-36-tag): the evaluator calls them from frames that stay live through every nesting
+    level of a policy, as its continuations run inside them (`unify`, `eval_term`,
+    `eval_tree` and `eval_print`, which `eval_call` alone calls, sort; `eval_call` reads
+    its operands through `to_value`, which builds sets), where, inlined, their working
+    state would sit in each level's frames. `Value::object_of` stays inlinable: only
+    builtins call it, which the evaluator reaches through `funcs::lookup`'s function
+    pointers. With both inlinable, x86_64 Windows' release build ran out of the policy
+    thread's 123 MiB at deep.rs's 4,000 nested `every`s, on windows-2025 and windows-2022
+    (CI 44123748321 and 44125576545; aarch64 Windows passed), which a223a63bc, with std's
+    sort and collect, had answered (CI 44077430171): std inlines an insertion sort of 20 or
+    fewer alone and keeps the rest out of line (`driftsort_main` is `#[inline(never)]`).
+    ROOT's bisection (r752: a223a63bc, 705faa9d9, 8145554234, 0c2eb048a) and a run at the
+    cure are the red and green, owed.
   - Addition and subtraction keep the smaller operand's bits within prec + 2 of the
     larger's top, the rest a sticky bit (and a borrow). The round bit is then at or above
     the cut, so the result rounds as Go's exact sum does (160,000 random sums and
