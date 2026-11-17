@@ -57,6 +57,9 @@ pub enum StartError {
     CommandLine(crate::arch::x86_64::boot::BootError),
     Legacy(String),
     GpuProbe(shards_abi::gpu::GpuProbeError),
+    /// Its count of vCPUs, refused before it starts: none, more than its host's partitions
+    /// take, or more than a nested Hyper-V host's logical processors (D261).
+    Vcpus(limits::VcpusRefused),
 }
 
 impl std::fmt::Display for StartError {
@@ -65,6 +68,7 @@ impl std::fmt::Display for StartError {
             Self::CommandLine(error) => std::fmt::Display::fmt(error, f),
             Self::Legacy(message) => f.write_str(message),
             Self::GpuProbe(why) => why.fmt(f),
+            Self::Vcpus(why) => std::fmt::Display::fmt(why, f),
         }
     }
 }
@@ -73,7 +77,7 @@ impl std::error::Error for StartError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::CommandLine(error) => std::error::Error::source(error),
-            Self::Legacy(_) => None,
+            Self::Legacy(_) | Self::Vcpus(_) => None,
             Self::GpuProbe(why) => std::error::Error::source(why),
         }
     }
@@ -162,29 +166,50 @@ pub fn late_cpus_cmdline(vcpus: u32) -> &'static str {
     ""
 }
 
-/// Whether this host's Hyper-V, whose leaves its processes read, is nested in another's
-/// partition ([`nested_hyperv`]).
+/// Whether this host's Hyper-V, whose leaves its processes read, is nested within another
+/// Hyper-V's partition ([`nested_hyperv`]).
 #[cfg(all(hv = "whp", target_arch = "x86_64"))]
 fn host_hyperv_nested() -> bool {
     use std::arch::x86_64::__cpuid;
-    let top = __cpuid(0x4000_0000);
-    let info = if top.eax >= 0x4000_0004 {
-        __cpuid(0x4000_0004).eax
-    } else {
-        0
-    };
-    nested_hyperv([top.eax, top.ebx, top.ecx, top.edx], info)
+    let present = __cpuid(1).ecx & (1 << 31) != 0;
+    let highest = if present { __cpuid(0x4000_0000).eax } else { 0 };
+    let leaf = |at: u32| if highest >= at { __cpuid(at).eax } else { 0 };
+    nested_hyperv(present, highest, leaf(0x4000_0001), leaf(0x4000_0004))
 }
 
-/// Whether CPUID's leaf 0x40000000 (`top`: its highest leaf and vendor) and the EAX of
-/// 0x40000004, Hyper-V's implementation recommendations, say a Hyper-V nested in another
-/// Hyper-V's partition: the vendor "Microsoft Hv", and 0x40000004's bit 12 (Linux's
-/// HV_X64_HYPERV_NESTED, include/hyperv/hvgdk_mini.h, which Linux reads as "running on a
-/// nested hypervisor", arch/x86/kernel/cpu/mshyperv.c). CI's Windows runners' Hyper-V says
-/// so, and their SMBIOS tables that they are virtual machines; jupiter's says neither (M379).
-pub fn nested_hyperv(top: [u32; 4], info: u32) -> bool {
-    let [highest, vendor @ ..] = top;
-    vendor == [0x7263_694d, 0x666f_736f, 0x7648_2074] && highest >= 0x4000_0004 && info & (1 << 12) != 0
+/// The logical processors of a host whose Hyper-V is nested within another Hyper-V's partition,
+/// which a microVM there has at most (D261, ROOT's ruling of 2026-11-17); none elsewhere, nor
+/// where the count cannot be read: the active processors of every group, as Windows counts them
+/// (GetActiveProcessorCount with ALL_PROCESSOR_GROUPS, Microsoft Learn: "Returns the number of
+/// active processors in a processor group or in the system").
+#[cfg(all(hv = "whp", target_arch = "x86_64"))]
+fn nested_processors() -> Option<u32> {
+    use windows_sys::Win32::System::Threading::{ALL_PROCESSOR_GROUPS, GetActiveProcessorCount};
+    if !host_hyperv_nested() {
+        return None;
+    }
+    // SAFETY: GetActiveProcessorCount takes a group number, and reads and writes nothing else.
+    let processors = unsafe { GetActiveProcessorCount(ALL_PROCESSOR_GROUPS) };
+    (processors > 0).then_some(processors)
+}
+
+/// Elsewhere none: what was measured is WHP's x86_64 on a nested Hyper-V alone (D261).
+#[cfg(all(hv, not(all(hv = "whp", target_arch = "x86_64"))))]
+fn nested_processors() -> Option<u32> {
+    None
+}
+
+/// Whether CPUID says a Hyper-V nested within another Hyper-V's partition, as Microsoft's
+/// Hypervisor Top Level Functional Specification documents it ("Feature and Interface
+/// Discovery", Microsoft Learn): a hypervisor present (leaf 1, ECX bit 31), whose highest leaf
+/// (0x40000000's EAX) reaches 0x40000004, of the interface "Hv#1" (0x40000001's EAX,
+/// 0x31237648, on which "software [should] only base compatibility decisions", the vendor's
+/// name being "for reporting and diagnostic purposes" alone), and whose implementation
+/// recommendations (0x40000004's EAX) set bit 12: "Indicates that the hypervisor is nested
+/// within a Hyper-V partition". CI's Windows runners' Hyper-V says so; jupiter's does not
+/// (PM M379).
+pub fn nested_hyperv(present: bool, highest: u32, interface: u32, recommendations: u32) -> bool {
+    present && highest >= 0x4000_0004 && interface == 0x3123_7648 && recommendations & (1 << 12) != 0
 }
 
 /// Whether a VM resumed from its snapshot records its working set, for restores to
@@ -3869,17 +3894,18 @@ mod tests {
         } else {
             assert_eq!(late, "");
         }
-        let hv = [0x4000_000c, 0x7263_694d, 0x666f_736f, 0x7648_2074];
-        // windows-2022's and windows-2025's leaves, then jupiter's.
-        assert!(nested_hyperv(hv, 0x41d3c));
-        assert!(nested_hyperv(hv, 0x94_1d3c));
-        assert!(!nested_hyperv(hv, 0x94_0d1c));
-        // Another hypervisor's leaves, and a Hyper-V with no recommendations' leaf.
-        assert!(!nested_hyperv(
-            [0x4000_0001, 0x4b4d_564b, 0x564b_4d56, 0x4d],
-            0x1000
-        ));
-        assert!(!nested_hyperv([0x4000_0003, hv[1], hv[2], hv[3]], 0x1000));
+        // windows-2022's and windows-2025's leaves, then jupiter's: a highest leaf of
+        // 0x4000000c and the interface "Hv#1".
+        let hv1 = 0x3123_7648;
+        assert!(nested_hyperv(true, 0x4000_000c, hv1, 0x41d3c));
+        assert!(nested_hyperv(true, 0x4000_000c, hv1, 0x94_1d3c));
+        assert!(!nested_hyperv(true, 0x4000_000c, hv1, 0x94_0d1c));
+        // No hypervisor present; another interface than "Hv#1" (KVM's leaf 0x40000001 is its
+        // features), with bit 12 set or not; a Hyper-V with no recommendations' leaf.
+        assert!(!nested_hyperv(false, 0x4000_000c, hv1, 0x1000));
+        assert!(!nested_hyperv(true, 0x4000_000c, 0x0100_00fb, 0x41d3c));
+        assert!(!nested_hyperv(true, 0x4000_0001, 0x0100_00fb, 0x1000));
+        assert!(!nested_hyperv(true, 0x4000_0003, hv1, 0x1000));
     }
 
     /// A working set naming a page the guest does not have is not prefetched at all

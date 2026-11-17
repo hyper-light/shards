@@ -544,6 +544,74 @@ impl fmt::Display for OnlyRefused {
     }
 }
 
+/// Why a machine's count of vCPUs is refused before it starts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VcpusRefused {
+    /// None asked.
+    None,
+    /// More than its host's hypervisor takes in one partition.
+    PastPartition { vcpus: u32, partition: u32 },
+    /// More than its host has logical processors, where the host's Hyper-V is nested within
+    /// another Hyper-V's partition (D261, ROOT's ruling of 2026-11-17): every vCPU past them is
+    /// one with no host CPU, which each cross-CPU wait of its kernel waits on (PM M379).
+    PastProcessors {
+        vcpus: u32,
+        processors: u32,
+        partition: u32,
+    },
+}
+
+impl fmt::Display for VcpusRefused {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::None => f.write_str("at least one vCPU is required"),
+            Self::PastPartition { vcpus, partition } => {
+                write!(f, "{vcpus} vCPUs requested; this host supports {partition}")
+            }
+            Self::PastProcessors {
+                vcpus,
+                processors,
+                partition,
+            } => write!(
+                f,
+                "{vcpus} vCPUs: this host's Hyper-V is nested within another Hyper-V's partition, where \
+                 a microVM has at most the host's {processors} logical processors (its partitions take \
+                 {partition}): each vCPU past them is one with no host CPU, which every cross-CPU wait \
+                 of its kernel waits on (D261; PM M379; WHP experiment 44127161851 on 4 logical \
+                 processors: 7 CPUs brought online in about 1 s, 14 in 26 s, 29 in 41 min)"
+            ),
+        }
+    }
+}
+
+/// The most vCPUs a machine may have on a host whose hypervisor takes `partition` in one, and
+/// whose logical processors are `nested`, where its Hyper-V is nested within another Hyper-V's
+/// partition (none elsewhere): the fewer of the two there, the partition's elsewhere.
+pub fn most_vcpus(partition: u32, nested: Option<u32>) -> u32 {
+    nested.map_or(partition, |processors| partition.min(processors))
+}
+
+/// Whether a machine of `vcpus` may start on such a host ([`most_vcpus`]), and why not.
+pub fn vcpus_within(vcpus: u32, partition: u32, nested: Option<u32>) -> Result<(), VcpusRefused> {
+    if vcpus == 0 {
+        return Err(VcpusRefused::None);
+    }
+    if let Some(processors) = nested
+        && vcpus > processors
+        && processors < partition
+    {
+        return Err(VcpusRefused::PastProcessors {
+            vcpus,
+            processors,
+            partition,
+        });
+    }
+    if vcpus > partition {
+        return Err(VcpusRefused::PastPartition { vcpus, partition });
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -680,6 +748,56 @@ mod tests {
         assert!(limits.outcomes().is_empty(), "the path's own, none yet");
         limits.record(8, Outcome::Ran).unwrap();
         assert_eq!(std::fs::read_to_string(limits.file()).unwrap(), "8 1 0 -\n");
+    }
+
+    /// On a host whose Hyper-V is nested within another's partition (CI's Windows runners, 4
+    /// logical processors, a partition of 240: PM M379), a machine has at most the host's
+    /// logical processors, and one asking more is refused at its start, typed and said with the
+    /// evidence; elsewhere the partition's most stands, and so do its refusals' words (ROOT's
+    /// ruling of 2026-11-17). Red under the rule it replaces, the partition's most alone, which
+    /// admitted 5 to 240 there.
+    #[test]
+    fn a_nested_hyperv_host_runs_no_more_vcpus_than_its_logical_processors() {
+        assert_eq!(most_vcpus(240, None), 240);
+        assert_eq!(vcpus_within(240, 240, None), Ok(()));
+        assert_eq!(most_vcpus(240, Some(4)), 4);
+        assert_eq!(vcpus_within(4, 240, Some(4)), Ok(()));
+        let refused = vcpus_within(5, 240, Some(4)).unwrap_err();
+        assert_eq!(
+            refused,
+            VcpusRefused::PastProcessors {
+                vcpus: 5,
+                processors: 4,
+                partition: 240
+            }
+        );
+        let said = refused.to_string();
+        for word in [
+            "5 vCPUs:",
+            "nested within another Hyper-V's partition",
+            "4 logical processors",
+            "PM M379",
+            "44127161851",
+        ] {
+            assert!(said.contains(word), "{word}: {said}");
+        }
+        // A nested host of more processors than its partitions take: the partition's most.
+        assert_eq!(most_vcpus(240, Some(512)), 240);
+        assert_eq!(
+            vcpus_within(241, 240, Some(512)),
+            Err(VcpusRefused::PastPartition {
+                vcpus: 241,
+                partition: 240
+            })
+        );
+        assert_eq!(
+            vcpus_within(241, 240, None).unwrap_err().to_string(),
+            "241 vCPUs requested; this host supports 240"
+        );
+        assert_eq!(
+            vcpus_within(0, 240, Some(4)).unwrap_err().to_string(),
+            "at least one vCPU is required"
+        );
     }
 
     /// Records' text reads back as written, and a line that says nothing whole is left out.

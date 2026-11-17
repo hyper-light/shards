@@ -39,9 +39,12 @@ pub fn restores_here() -> bool {
     super::SNAPSHOTS && hv::restores()
 }
 
-/// The most vCPUs one VM can have on this host.
+/// The most vCPUs one VM can have on this host: its hypervisor's most for a partition, and on a
+/// host whose Hyper-V is nested within another's partition no more than its logical processors
+/// (D261, ROOT's ruling of 2026-11-17).
 pub fn max_vcpus() -> Result<u32, String> {
-    hv::max_vcpus().map_err(|e| e.to_string())
+    let partition = hv::max_vcpus().map_err(|e| e.to_string())?;
+    Ok(super::limits::most_vcpus(partition, super::nested_processors()))
 }
 
 /// What reads a run of a live move's layer or swap into a buffer (D176 part 7).
@@ -1469,15 +1472,12 @@ impl Drop for Running {
     }
 }
 
-fn check_vcpus(vcpus: u32) -> Result<(), String> {
-    if vcpus == 0 {
-        return Err("at least one vCPU is required".into());
-    }
-    let max = max_vcpus()?;
-    if vcpus > max {
-        return Err(format!("{vcpus} vCPUs requested; this host supports {max}"));
-    }
-    Ok(())
+/// Whether a machine of `vcpus` may start here ([`max_vcpus`]): refused, typed, where it may
+/// not (`limits::VcpusRefused`).
+fn check_vcpus(vcpus: u32) -> Result<(), super::StartError> {
+    let partition = hv::max_vcpus().map_err(|e| e.to_string())?;
+    super::limits::vcpus_within(vcpus, partition, super::nested_processors())
+        .map_err(super::StartError::Vcpus)
 }
 
 /// Boots a VM. Returns [`super::StartError`] in place of the earlier `String`:
@@ -1585,7 +1585,7 @@ pub fn restore_reported(
         path: generation,
         name,
     } = pinned;
-    check_vcpus(snap.config.vcpus)?;
+    check_vcpus(snap.config.vcpus).map_err(|refused| refused.to_string())?;
     let mut working_set = if cfg.prefetch {
         snapshot::read_working_set(&generation, machine::PAGE, guest_pages(&snap)).unwrap_or_else(|e| {
             warn!("{e}; restoring without prefetching it");
