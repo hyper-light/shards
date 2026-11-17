@@ -18,9 +18,11 @@ fn decode(v: Value) -> Value {
             if o.len() == 1
                 && let Some(Value::Array(items)) = o.get(&Value::string("$set"))
             {
-                return Value::set(items.iter().cloned().map(decode).collect());
+                return Value::set(Value::set_of(items.iter().cloned().map(decode)));
             }
-            Value::object(o.iter().map(|(k, v)| (k.clone(), decode(v.clone()))).collect())
+            Value::object(Value::object_of(
+                o.iter().map(|(k, v)| (k.clone(), decode(v.clone()))),
+            ))
         }
         _ => v.clone(),
     }

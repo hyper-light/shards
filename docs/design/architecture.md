@@ -25949,9 +25949,22 @@ held to more than OPA's answers:
     number `exact_parts` reads, and by text among its own (2026-11-17, kiln goal a8b1ce42,
     lane own-36-tag; value.rs `numbers_past_every_exponent_order_totally_with_the_rest`).
     OPA's own quirk stays as OPA has it: a number with a `.` loses its trailing `.` and `0`
-    there, so `10.0` equals both `1` and `10`, no total order either. Open: Rust's sorts,
-    and BTree sets and maps built from iterators, which sort, may panic on it where Go's
-    sort does not.
+    there, so `10.0` equals both `1` and `10`, no total order either. Rust's `slice::sort`
+    may panic on such an order, and so may a BTree set or map collected from an iterator,
+    which sorts its items so first; Go's sorts never do. So, by ROOT's ruling of 2026-11-17
+    (shards' rule: production never panics), with OPA's comparisons kept exactly: every
+    sort by OPA's order (`compare::term_compare`, `expr_compare`, `rule_compare`, the
+    `sort` builtin's `Value` order, the type checker's keys) is `compare::sort_by`, a
+    stable merge sort of owned halves that takes its left's next unless its right's comes
+    strictly before it, the order `slice::sort_by` gives for a total order and some order,
+    never a panic, for any other; and every set and object of values is built by inserting
+    its members one at a time (`Value::set_of`, `Value::object_of`), the first of equal
+    members kept with a key's last value, as OPA's `NewSet` and object insert keep them,
+    where a collect kept the last. Tests (value.rs):
+    `the_sort_that_cannot_panic_is_the_stable_sort_for_a_total_order` and
+    `a_large_sort_and_a_set_of_the_trailing_zero_rules_numbers_answer` (4,096 of `10.0`,
+    `1`, `10` and their kind, through the `sort` builtin, a set and an object). The merge
+    sort's cost against `slice::sort_by` (an allocation a level) is unmeasured: owed.
   - Addition and subtraction keep the smaller operand's bits within prec + 2 of the
     larger's top, the rest a sticky bit (and a borrow). The round bit is then at or above
     the cut, so the result rounds as Go's exact sum does (160,000 random sums and

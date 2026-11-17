@@ -447,7 +447,7 @@ impl<'a> CopyPropagator<'a> {
             .cloned()
             .collect();
         let mut bindings = removed.clone();
-        bindings.sort_by(|a, b| term_compare(&b.0, &a.0));
+        crate::compare::sort_by(&mut bindings, |a, b| term_compare(&b.0, &a.0));
         for (k, v) in bindings {
             let eq = eq_expr(k, Term::new(v.clone(), None));
             let outputs = output_vars_for_expr(&eq, arity, &safe);
