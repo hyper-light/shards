@@ -462,6 +462,40 @@ mod tests {
         paths
     }
 
+    /// Whether `told` tells the guest of a change at `path`: by its path, or by a place above
+    /// it, as a loss is told by every node the guest holds beneath where it was
+    /// ([`Pending::take`]). FSEvents coalesces a loaded host's changes into one beneath a
+    /// directory (`kFSEventStreamEventFlagMustScanSubDirs`, of events coalesced
+    /// hierarchically, FSEvents.h), which so wakes every watch the guest has of the change:
+    /// ROOT's r696 (macOS 26.4.1) was told `held/moved` only by its root's loss, `""` and
+    /// `held`.
+    fn told_of(told: &[Vec<u8>], path: &[u8]) -> bool {
+        told.iter().any(|p| {
+            p.as_slice() == path
+                || p.is_empty()
+                || path
+                    .strip_prefix(p.as_slice())
+                    .is_some_and(|rest| rest.first() == Some(&b'/'))
+        })
+    }
+
+    /// A change is told by its path or by a place above it, never by another path, nor by a
+    /// name it only begins with: r696's told list tells `held/moved`.
+    #[test]
+    fn a_change_is_told_by_its_path_or_a_place_above_it() {
+        let r696 = [
+            b"held/h".to_vec(),
+            b"held/k".to_vec(),
+            Vec::new(),
+            b"held".to_vec(),
+        ];
+        assert!(told_of(&r696, b"held/moved"));
+        let paths = [b"held/h".to_vec(), b"hel".to_vec(), b"unheld".to_vec()];
+        assert!(told_of(&paths, b"held/h"));
+        assert!(!told_of(&paths, b"held/moved"));
+        assert!(told_of(&[b"held".to_vec()], b"held/moved"));
+    }
+
     /// A share of a directory of the test's own holding `d/f`, its guest having looked up
     /// `d` and `d/f`, so that it holds three nodes, its root's among them.
     fn held_share() -> (shards_testdir::TempDir, &'static [Server]) {
@@ -576,6 +610,8 @@ mod tests {
     /// told `held/k`, PM M550). containers.rs's DAX test moves a file its guest holds out of
     /// the share before it cuts it, so that its guest reads past the cut before anything
     /// tells it the size (D189); Windows refuses that cut wherever the file is (PM M412).
+    /// A change is told by its path, or where FSEvents coalesced it by a place above it
+    /// ([`told_of`]); what must not be told is checked by its own path.
     #[test]
     fn the_hosts_changes_are_told_where_the_guest_looks() {
         use super::super::proto::op;
@@ -643,7 +679,7 @@ mod tests {
         // What is told until `until` is, in order.
         let told_until = |until: &[u8]| {
             let mut told: Vec<Vec<u8>> = Vec::new();
-            while !told.iter().any(|p| p == until) {
+            while !told_of(&told, until) {
                 let left = deadline.saturating_duration_since(std::time::Instant::now());
                 assert!(
                     !left.is_zero(),
@@ -677,7 +713,7 @@ mod tests {
             assert!(moved.unwrap().success());
             write(&root.join("held").join("moved"));
             let told = told_until(b"held/moved");
-            assert!(told.iter().any(|p| p == b"held/k"), "{told:?}");
+            assert!(told_of(&told, b"held/k"), "{told:?}");
             write(&outside.join("k"));
             write(&root.join("held").join("after"));
             let told = told_until(b"held/after");
