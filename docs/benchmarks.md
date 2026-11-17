@@ -548,6 +548,21 @@ Method:
   Three warm-up pairs are discarded.
 - Firecracker is the pinned release binary, run with `--no-api --config-file` and its
   default seccomp filters.
+- Then restores: each VMM's snapshot of the test guest in `beat` mode, restored by fresh
+  processes, interleaved, and fleets of `--fleet` (16) restored VMs of each VMM held at
+  once. The snapshots come in pairs, one of each VMM's taken afresh for each pair, shards'
+  with the working set a first restore of it records; each pair is restored `--runs` times
+  of each VMM after three warm-up pairs, then held in one fleet of each. A pair's restores
+  hold the same pages (shards' copy ahead what its working set says the guest wrote), so
+  each row's samples are alike within a pair, and each pair gives it one difference
+  (PM M616).
+- The Envelope (scripts/bench-envelope, CI's `Envelope` step) takes each row's median paired
+  difference, shards less Firecracker: worse where its interval lies above zero, better
+  where below, tied otherwise. The boot's rows, each sample a fresh boot: a seeded bootstrap
+  95% interval over the pairs. The restores' and fleets' rows: the sign test's interval over
+  the pairs' differences, their least and greatest, which hold the median with 1 - 2^(1-k)
+  for k pairs, so 6 pairs at 95% (96.9%), as many as the bench takes (`snapshot_pairs`). What
+  the pairs add to CI's time is unmeasured until a run shows it.
 
 | Phase | Measured |
 |---|---|

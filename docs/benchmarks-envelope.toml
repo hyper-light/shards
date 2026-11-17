@@ -4,5 +4,13 @@
 # and the date it lapses, after which the check fails until the gap is closed or the
 # allowance decided again.
 #
-# None now: a boot's file-backed memory, glibc's pages, went with static helpers (D36, PM
-# M281), and a restore's memory file is mapped on base pages (PM M287).
+# One now: the boot's anonymous memory, until the boot's guest memory reading takes its gap
+# apart (PM M617; ROOT's ruling, 2026-11-17). Before it none: a boot's file-backed memory,
+# glibc's pages, went with static helpers (D36, PM M281), and a restore's memory file is
+# mapped on base pages (PM M287).
+
+[[allow]]
+metric = "firecracker/rss_anon"
+reason = "shards' boot holds more anonymous memory than Firecracker's on both CPU vendors (PM M617): median gaps of +0.14 to +0.64 MiB on an Intel Xeon 6975P-C and -0.43 to +0.47 on AMD EPYC, worse in 2 of 4 runs and 3 of 8. THP's boot advice holds 0.1 to 0.2 MiB more at p50 for a boot 46 to 50 ms faster (CI's THP A/B: PM M157, M279). The rest is unattributed. at_most is the largest median gap measured, 654 KiB (vm-text run 44138427198, its run a-1, at 8247e14, the Envelope's +0.638672). The boot's guest memory reading (benches/firecracker.rs write_guest; docs/research/measurements/boot-anon/attribute.py) takes the gap apart. It lapses on 2026-12-01: one CI cycle on the reading, then ROOT's runs of it."
+at_most = 0.638671875
+expires = 2026-12-01

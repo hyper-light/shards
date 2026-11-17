@@ -1188,6 +1188,21 @@ is `crates/shards/src/run.rs` and `crates/shards/src/guest.rs`.
     records (D151's free page reports; `GuestMemory::keep_given_back`): the pages its
     host maps when it ends no longer show one given back, and the set would leave it
     out. It sends none where it could not see a range given back.
+  - *What its written pages, copied ahead, hold at a first beat* (measured, open; PM M616).
+    A restore copies ahead every page its working set says the guest wrote
+    (`mapped::copy_written`), so in the Firecracker comparison each restore of one snapshot
+    held the same private copies of its guest's memory by its guest's first beat: 218 to
+    231 pages over four snapshots on an AMD EPYC 9V74 and 222 to 231 over four on an Intel
+    Xeon 6975P-C, where Firecracker's guest, copying only as it writes, held 124 to 145, and
+    shards-vm's own anonymous pages were 35 to 37 to Firecracker's process's 114 to 132.
+    The comparison's guest runs no command, so its working set is recorded over a
+    restore's first second, where a run's ends as its command answers. How many of those
+    pages its guest writes before its first beat, with nothing copied ahead, is
+    unmeasured: a restore of the comparison's snapshot without its `working-set`, its
+    `written_pages`. Copying ahead only those would hold the rest uncopied until its guest
+    writes them, each then copied on its first write, as Firecracker's are; the cost to
+    `to_beat` and a command's first second is unmeasured too. Not taken for 0.8.0 (ROOT,
+    2026-11-17).
 - **Where it applies.** Builds that can snapshot (HVF on arm64, KVM on x86_64,
   `vm::SNAPSHOTS`, and so `vm::WORKING_SETS`); elsewhere every run boots. `--kernel`
   and `--init`, or `SHARDS_KERNEL` and `SHARDS_INIT`, name files by path, so those runs
@@ -3419,8 +3434,63 @@ one CLI.
         let-go would undo. Not macOS's, which the Envelope does not read, and whose mapping
         of a program's code is unread here. Not Windows'.
       - *Its cost.* Each page of its code it touches first faults on its own, where one fault
-        mapped up to 16. How many faults that is, and their time, are unmeasured (R14): the
-        A/B's `to_ready` and `to_beat`.
+        mapped up to 16. Their time, in its A/B (below): a boot's `to_ready`, paired with
+        Firecracker's, -75.3 and -77.8 ms with the hold and -79.1 and -77.5 without, the 1.8
+        ms between the arms within each arm's own runs (2.5 and 1.6 ms); a restore's
+        `to_beat` 8,165 and 8,402 us with it, 8,270 and 8,323 without.
+    - *The cure's A/B* (run 44138427198, A at 8247e14 with the hold, B at ba502bc before it,
+      Intel Xeon 6975P-C, 2 rounds an arm; vm-text's `ab-44138427198.txt`). A's boot kept
+      806,912 bytes of shards-vm's file to B's 2,539,520 and Firecracker's 2,338,816:
+      `rss_file` -375 pages a pair to B's +48, `pss_file` -374 to +49, `overhead` -397 to
+      +27. CI's run 44138098584 (8247e14, AMD EPYC 9V74) then read the fleet's
+      `fleet_private` +6 pages and the restore's `rss_anon` +2, worse. The hold adds neither.
+      - *No page of a VM's.* Registering write-protects nothing, and MADV_DONTNEED drops clean
+        ptes of the file, which refault read-only from it, uncopied, leaving no marker where
+        nothing was write-protected (Linux 7.2-rc4 include/linux/mm_inline.h
+        `pte_install_uffd_wp_if_needed`). Each run's snapshot taken out (vm-text's
+        `within.py`), shards-vm's own anonymous pages, a restore's `rss_anon` less its
+        guest's private copies, were 35 in every run of both arms (36 in at most 8 of 30
+        restores), and a VM of the fleet held 1 page more than a restore in every run: the
+        code each maps a page at a time, the fleet maps alike. The layout moved a page from
+        data to relro: the text grew 1,216 bytes and the read-only segment 240, so the
+        relro, 0x6798 bytes in both, begins 0x898 into its first page rather than 0x2e8 and
+        spans 8 pages, each copied by the start's relocation, and the data and bss 7, not 8.
+      - *Each run's snapshot moves them.* Each restore copies ahead what its working set says
+        its guest wrote (vmm `mapped::copy_written`, D25), recorded once a run over a
+        restore's first second, so a run's guest copies are one number: 229 and 231 pages in
+        A, 227 and 222 in B, to Firecracker's guest's 129 to 145, while Firecracker's process
+        held 114 to 131 pages of its own. A run's restores alike, its interval is a point,
+        its sign that run's draw: `rss_anon` +4 and +2 pages in A, +2 and -2 in B;
+        `fleet_private` +4 and +2, +2 and -0.5. One binary run four times on one AMD EPYC
+        9V74 (vm-text's run 44076339609) read `rss_anon` +11, -9, +2 and -1 and
+        `fleet_private` +12, -5.5, +2 and 0.
+      - *What holds them: a replicate per snapshot* (ROOT's ruling, R14, 2026-11-17; PM
+        M616). The comparison takes k pairs of snapshots, each a fresh shards snapshot with
+        its working set recorded and a fresh Firecracker snapshot; each pair is restored
+        `--runs` times of each VMM after its warm-up, logged, and held in one fleet of each,
+        shards' first in an even pair (benches/firecracker.rs, `Snapshots`, `density`). Each
+        sample of the restores' and fleets' rows names its pair (benches/support
+        `stats_by_snapshot`), and scripts/bench-envelope takes one difference a pair, the
+        median of its paired differences, and bounds their median by the sign test's
+        interval: the r-th least and greatest of k hold it with 1 - 2 P(Binomial(k, 1/2) < r)
+        (Hollander, Wolfe and Chicken, *Nonparametric Statistical Methods*, ch. 3). k is the
+        fewest whose least and greatest hold it with the Envelope's 95%, computed from it
+        (`snapshot_pairs`): 6, at 96.9%; the Envelope refuses a row of pairs too few for it.
+        The boot's rows, each sample a fresh boot, keep the bootstrap. The evidence is the
+        cure's A/B and the four runs of one binary above (PM M616's table). The CI time the
+        six pairs add is unmeasured until a run shows it. Fewer copies than the draw, the
+        other way, stays measured and open in D25.
+      - *The boot's `rss_anon`* (PM M617; ROOT's ruling, R14, 2026-11-17). Above
+        Firecracker's on both CPU vendors, not Intel's alone: median gaps of +0.14 to +0.64
+        MiB on an Intel Xeon 6975P-C and -0.43 to +0.47 on AMD EPYC, worse in 2 of 4 runs and
+        3 of 8. THP's boot advice holds 0.1 to 0.2 MiB of it at p50 for a boot 46 to 50 ms
+        faster; the rest is unattributed. Each boot now records its guest memory (smaps'
+        `Rss`, `AnonHugePages` and `Private_Dirty` over its mappings, and the pages held in
+        each huge page's span: benches/firecracker.rs `guest_memory`), which
+        docs/research/measurements/boot-anon's `attribute.py` takes apart into the VMMs' own
+        memory, huge pages' rounding and pages touched. Until it has, the row is allowed up
+        to 654 KiB, the largest median gap measured, lapsing on 2026-12-01: one CI cycle on
+        the reading and ROOT's runs of it (docs/benchmarks-envelope.toml).
 - A daemon's build is its binary's identity, which includes what it carries; one given
   another VM binary (`SHARDS_VM_BINARY`, for VMM work and tests) is another build.
 - **Tests:** `helpers::tests` (written whole once, found after, a cut copy replaced);
@@ -20375,7 +20445,9 @@ its network the network process's (D142).
   no child in an AppContainer, and points it at the container's own folder, the child's
   `TEMP` at the `Temp` there; without `SystemRoot` Winsock makes no socket
   (WSAEPROVIDERFAILEDINIT). A Windows child had its spawner's whole environment until now
-  (D141).
+  (D141). A confined child's `LOCALAPPDATA` is the one its profile's folder is beneath:
+  this process's where it is there, else the user's own, which a caller may have set this
+  process's apart from (D141's amendment of 2026-11-17, PM M615).
 
 ### D142. The network process on Windows
 
@@ -20437,8 +20509,8 @@ on Windows as on Linux and macOS.
   (`shards_netring::socket_doorbell`), its control and a peer's link are AF_UNIX, made by
   `shards_afunix`, and every socket bound or connected by path is told its directory by
   afunix.h's parent-path controls, as D141's amendment says: the directory as UTF-8, the
-  address its file name alone, so that no directory's length refuses one, an AppContainer's
-  Temp beneath a long `LOCALAPPDATA` among them. ProcessSocketNotifications, which it waits
+  address its file name alone, so that a directory past `sun_path` is taken, up to the 256
+  bytes the controls take (PM M615; D141). ProcessSocketNotifications, which it waits
   on, is documented from "Windows 10 Build 20348" (Microsoft's sdk-api,
   `nf-winsock2-processsocketnotifications.md`, 8f2547f96c), the build of the controls' oldest
   host measured, Windows Server 2022's 20348.5870: shards' Windows floor (D141). What the
@@ -20547,7 +20619,8 @@ was built on [PM M200-M203]:
   parent-path control before its bind (`SIO_AF_UNIX_SETBINDPARENTPATH`) or its connect
   (`SIO_AF_UNIX_SETCONNPARENTPATH`), the directory absolute and as UTF-8 with its NUL, its
   address the file name alone (`shards_afunix`'s `Place`). Only a file name past 107 bytes is
-  refused, naming its path; a pair's directory may be as long as Windows' paths are.
+  refused, naming its path; a pair's directory may be as long as the controls take one, 256
+  bytes measured (below).
   - *Sources.* Microsoft's "AF_UNIX comes to Windows" (the WSL team, 2017-12-19): AF_UNIX from
     Insider build 17063, `sun_path` "a Win32 UTF-8 file system path", no socketpair; it names
     no parent-path control. The Windows SDK 10.0.26100's `shared/afunix.h`
@@ -20590,7 +20663,49 @@ was built on [PM M200-M203]:
     file in the long directory fails. With it, a WHP boot under a long `LOCALAPPDATA`
     (`api_image`), as r735's: the probe ran outside any AppContainer, so the controls inside
     one are first exercised there, and by every Windows VM test, each of whose pairs now goes
-    this way.
+    this way. Run on jupiter (ROOT's r769, r777): the unit test green, red as above, its
+    mutation failing as above; the boot under the user's own `LOCALAPPDATA` passed, and under
+    the long one failed for its Temp (below).
+- **Its Temp where `LOCALAPPDATA` is set apart** (2026-11-17; ROOT's r769 and r777, PM M615).
+  r769 booted a VM at 0e7773c19c (`api_image`) with its spawner's `LOCALAPPDATA` a stand-in
+  (`C:\Users\corph\.cache\w1-long\`, 40 a's, 40 b's, `AppData\Local`), as kiln's runner homes set
+  one (kiln's `tests/vm_e2e/mod.rs` and `tests/common/mod.rs`, with `USERPROFILE` and `APPDATA`):
+  its VM process ended at its first socket pair, refused WSAENETDOWN (10050); r777, the same
+  boot under the user's own, passed. Windows makes an AppContainer's profile folder beneath the
+  user's own LocalAppData whatever the spawner's `LOCALAPPDATA` says (M615: GetAppContainerFolderPath
+  named it there under each stand-in; Microsoft: CreateAppContainerProfile's folders "can be
+  accessed by calling SHGetKnownFolderPath", and GetAppContainerFolderPath's path is "the same
+  path that you would get by calling the SHGetKnownFolderPath function with
+  FOLDERID_LocalAppData"), while it points the child's `TEMP` at
+  `<LOCALAPPDATA>\Packages\<profile>\AC\Temp` of the `LOCALAPPDATA` it is given (M208): beneath a
+  stand-in, a Temp that is not there, where a bind is refused 10050, as one where no directory
+  is (M615). Now a confined child is given the `LOCALAPPDATA` its profile's folder is beneath
+  (`shards_ipc`'s `profile_local_app_data`): this process's where the folder is there (every
+  host whose `LOCALAPPDATA` is the user's own, unchanged), else the user's own as Windows makes
+  the user's environment (CreateEnvironmentBlock for the spawner's token, none of its
+  variables), else refused, naming both. kiln's homes set `USERPROFILE` with `LOCALAPPDATA`;
+  where Windows then makes the folder is unmeasured, and the child is given whichever holds it.
+  An unconfined child keeps the spawner's `LOCALAPPDATA`, and one a caller gives explicitly
+  wins. And a bind or connect `shards_afunix` is refused says its path and its call, which
+  r769's did not ("A socket operation encountered a dead network").
+  - *The controls' length* (M615, confined and not): a directory of 100 to 256 bytes was taken,
+    and bound, connected and accepted; one of 260, 280 or 300 bytes was refused at the control,
+    WSAENOBUFS (10055); 257 to 259 unmeasured. `shards_afunix` sets no bound of its own: a
+    directory the controls refuse is said with its length beside the 256 bytes measured taken.
+    A confined child's Temp beneath the user's own was 70 bytes on CI's runners.
+  - *Profiles left behind.* A profile's folder is beneath the user's own LocalAppData, wherever
+    the spawner's `LOCALAPPDATA` points, and goes with the profile: deleted as its VM ends
+    (`AppContainer`'s drop), under a stand-in too (M615). A spawner killed leaves its profile to
+    the next spawner's sweep of the same records (`<cache>\containers`, its `SHARDS_CACHE`'s or
+    its `LOCALAPPDATA`'s), or to Hex's release; a home removed before either leaves the profile
+    and its folder in the user's own LocalAppData, as it did before this amendment.
+  - *Tests.* `shards_ipc` `a_child_is_given_its_variables_and_what_windows_needs_alone` and
+    `a_confined_child_is_given_the_local_app_data_its_profile_is_beneath`; `shards_afunix`
+    `a_refused_bind_or_connect_says_its_path`; `confined.rs`
+    `a_vm_boots_under_a_stand_in_local_app_data`, a direct boot to its kernel's panic with its
+    spawner's `LOCALAPPDATA` a stand-in: red at 0e7773c19c, as r769, green here. Unrun in its
+    lane, owed on jupiter with r769's boot, kiln's shape and a look for profiles left behind.
+    What CreateEnvironmentBlock costs a spawn that asks it is unmeasured.
 
 Tested on real VMs (`the_vm_process_is_confined`): the VM process's token is an
 AppContainer's, it is in a Job, each mitigation is on, dynamic code forbidden once its guest

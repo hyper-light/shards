@@ -65,6 +65,7 @@ use windows_sys::Win32::Security::{GetTokenInformation, TOKEN_QUERY, TokenIsAppC
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING, READ_CONTROL,
 };
+use windows_sys::Win32::System::Environment::{CreateEnvironmentBlock, DestroyEnvironmentBlock};
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, IsProcessInJob, JOB_OBJECT_LIMIT_ACTIVE_PROCESS,
     JOB_OBJECT_LIMIT_JOB_MEMORY, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
@@ -2737,6 +2738,8 @@ fn create(
     second: bool,
     desktop: Option<&[u16]>,
 ) -> io::Result<PROCESS_INFORMATION> {
+    // A confined child's LOCALAPPDATA: the one beneath which Windows made its profile's folder.
+    let local = s.container.map(profile_local_app_data).transpose()?;
     // Standard input, output and error are inherited, each by a copy made inheritable for the
     // child's handle list alone, closed once it is made: the caller's own are left as they
     // are lent (platform-07). One this process lacks (a null or invalid handle) the child
@@ -2851,7 +2854,7 @@ fn create(
         }
         si.lpAttributeList = attrs;
         let mut pi = PROCESS_INFORMATION::default();
-        let env = environment(s.env);
+        let env = environment(s.env, local.as_deref());
         // A spawner with no console (the daemon) makes its child none at all
         // (DETACHED_PROCESS): one made for a confined child, hidden or not, failed it as
         // it started (STATUS_DLL_INIT_FAILED, on jupiter). One with a console, a window's or
@@ -2892,17 +2895,101 @@ fn create(
 /// `LOCALAPPDATA`, without which Windows makes no child in an AppContainer
 /// (ERROR_ENVVAR_NOT_FOUND), and which it points at the container's own folder, `TEMP` and
 /// `TMP` at the `Temp` in it; and `SystemRoot`, whose `%SystemRoot%` Winsock's providers are
-/// found under as a socket is made.
+/// found under as a socket is made. A confined child's `LOCALAPPDATA` is the one its profile's
+/// folder is beneath ([`profile_local_app_data`]).
 const KEPT: [&str; 2] = ["LOCALAPPDATA", "SystemRoot"];
 
+/// The `LOCALAPPDATA` a child confined in `container` is given: the one its profile's folder
+/// (`Packages\<profile>`) is beneath, this process's where it is there, else the user's own
+/// ([`users_local_app_data`]). Windows points a confined child's `TEMP` at
+/// `<LOCALAPPDATA>\Packages\<profile>\AC\Temp` of the `LOCALAPPDATA` it is given (PM M208), and
+/// makes a profile's folders where SHGetKnownFolderPath reaches them (CreateAppContainerProfile's
+/// documentation): beneath the user's own, which a caller may have set this process's apart from
+/// (ROOT's r769; PM M615), or beneath this process's where Windows reads it so (kiln sets
+/// `USERPROFILE` and `LOCALAPPDATA` together). Given one beneath which the folder is not, a VM
+/// process had a Temp that was not there, and its first socket pair was refused (WSAENETDOWN).
+fn profile_local_app_data(container: &AppContainer) -> io::Result<std::ffi::OsString> {
+    let profile = String::from_utf16_lossy(
+        container
+            .name
+            .strip_suffix(&[0])
+            .unwrap_or(container.name.as_slice()),
+    );
+    let holds = |root: &OsStr| Path::new(root).join("Packages").join(&profile).is_dir();
+    let ours = std::env::var_os("LOCALAPPDATA");
+    if let Some(ours) = ours.as_deref().filter(|&ours| holds(ours)) {
+        return Ok(ours.to_os_string());
+    }
+    let users = users_local_app_data()?;
+    if holds(users.as_os_str()) {
+        return Ok(users);
+    }
+    Err(io::Error::new(
+        io::ErrorKind::NotFound,
+        format!(
+            "Windows made profile {profile}'s folder beneath neither this process's LOCALAPPDATA ({}) nor the user's own ({})",
+            ours.as_deref().unwrap_or_default().display(),
+            users.display()
+        ),
+    ))
+}
+
+/// The user's own `LOCALAPPDATA`, as Windows makes the user's environment: CreateEnvironmentBlock
+/// for this process's token, inheriting none of this process's variables
+/// ([`profile_local_app_data`]).
+fn users_local_app_data() -> io::Result<std::ffi::OsString> {
+    use std::os::windows::ffi::OsStringExt as _;
+    let mut token: HANDLE = std::ptr::null_mut();
+    // SAFETY: this process's own token, for querying.
+    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw mut token) } == 0 {
+        return Err(last());
+    }
+    // SAFETY: a handle just opened, which nothing else owns.
+    let token = unsafe { OwnedHandle::from_raw_handle(token) };
+    let mut block: *mut std::ffi::c_void = std::ptr::null_mut();
+    // SAFETY: the token opened above; a pointer for the call to fill, the block it makes
+    // destroyed below.
+    if unsafe { CreateEnvironmentBlock(&raw mut block, token.as_raw_handle(), 0) } == 0 {
+        return Err(last());
+    }
+    let start = block.cast::<u16>().cast_const();
+    let mut len = 0usize;
+    // SAFETY: within the block CreateEnvironmentBlock made: `NAME=VALUE` entries, each ended
+    // by a NUL, and the block by a NUL more, which this reads up to.
+    while unsafe { (*start.add(len), *start.add(len + 1)) } != (0, 0) {
+        len += 1;
+    }
+    // SAFETY: the `len` units just read, before the block is destroyed.
+    let units = unsafe { std::slice::from_raw_parts(start, len) };
+    let name = "LOCALAPPDATA=";
+    let found = units.split(|&u| u == 0).find_map(|entry| {
+        let (head, value) = entry.split_at_checked(name.len())?;
+        String::from_utf16_lossy(head)
+            .eq_ignore_ascii_case(name)
+            .then(|| std::ffi::OsString::from_wide(value))
+    });
+    // SAFETY: the block CreateEnvironmentBlock made, destroyed once, `units` unused after.
+    unsafe { DestroyEnvironmentBlock(block) };
+    found.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            "Windows made the user's environment without LOCALAPPDATA",
+        )
+    })
+}
+
 /// A child's environment block (CreateProcessW's, Unicode): `given`, and this process's
-/// [`KEPT`]; each `NAME=VALUE` and its NUL, sorted by name as Windows keeps a block (case
-/// folded), and a NUL to end it.
-fn environment(given: &[(&str, &OsStr)]) -> Vec<u16> {
+/// [`KEPT`], its `LOCALAPPDATA` `local` where that is given (a confined child's); each
+/// `NAME=VALUE` and its NUL, sorted by name as Windows keeps a block (case folded), and a NUL
+/// to end it.
+fn environment(given: &[(&str, &OsStr)], local: Option<&OsStr>) -> Vec<u16> {
     let kept: Vec<(&str, std::ffi::OsString)> = KEPT
         .iter()
         .filter(|k| !given.iter().any(|(n, _)| n.eq_ignore_ascii_case(k)))
-        .filter_map(|&k| std::env::var_os(k).map(|v| (k, v)))
+        .filter_map(|&k| match local {
+            Some(local) if k == "LOCALAPPDATA" => Some((k, local.to_os_string())),
+            _ => std::env::var_os(k).map(|v| (k, v)),
+        })
         .collect();
     let mut vars: Vec<(std::ffi::OsString, std::ffi::OsString)> = given
         .iter()
@@ -3407,12 +3494,14 @@ mod tests {
     }
 
     /// A child's environment is what it is given, LOCALAPPDATA and SystemRoot, sorted by
-    /// name with case folded, each variable and the block ended by a NUL.
+    /// name with case folded, each variable and the block ended by a NUL; a confined child's
+    /// LOCALAPPDATA the one it is told, the user's own.
     #[test]
     fn a_child_is_given_its_variables_and_what_windows_needs_alone() {
         let text = |block: &[u16]| String::from_utf16(block).unwrap();
         let ours = |k: &str| std::env::var_os(k).unwrap().to_string_lossy().into_owned();
-        let block = environment(&[("SHARDS_LOG", OsStr::new("debug")), ("a_first", OsStr::new("1"))]);
+        let given = [("SHARDS_LOG", OsStr::new("debug")), ("a_first", OsStr::new("1"))];
+        let block = environment(&given, None);
         assert_eq!(
             text(&block),
             format!(
@@ -3421,12 +3510,45 @@ mod tests {
                 ours("SystemRoot")
             )
         );
-        // One given is kept, not doubled.
-        let block = environment(&[
-            ("SYSTEMROOT", OsStr::new(r"D:\w")),
-            ("localappdata", OsStr::new("L")),
-        ]);
+        let block = environment(&given, Some(OsStr::new(r"C:\Users\u\AppData\Local")));
+        assert_eq!(
+            text(&block),
+            format!(
+                "a_first=1\0LOCALAPPDATA=C:\\Users\\u\\AppData\\Local\0SHARDS_LOG=debug\0SystemRoot={}\0\0",
+                ours("SystemRoot")
+            )
+        );
+        // One given is kept, not doubled, a confined child's too.
+        let block = environment(
+            &[
+                ("SYSTEMROOT", OsStr::new(r"D:\w")),
+                ("localappdata", OsStr::new("L")),
+            ],
+            Some(OsStr::new("U")),
+        );
         assert_eq!(text(&block), "localappdata=L\0SYSTEMROOT=D:\\w\0\0");
+    }
+
+    /// A confined child is given the LOCALAPPDATA its profile's folder is beneath: one is found
+    /// for a profile made here, the folder beneath it; and the user's own, as Windows makes the
+    /// user's environment, is a folder there is (PM M208, M615).
+    #[test]
+    fn a_confined_child_is_given_the_local_app_data_its_profile_is_beneath() {
+        let records = shards_testdir::TempDir::new("profile-root").unwrap();
+        let container = AppContainer::new("t", records.path()).unwrap();
+        let name = String::from_utf16_lossy(
+            container
+                .name
+                .strip_suffix(&[0])
+                .unwrap_or(container.name.as_slice()),
+        );
+        let root = profile_local_app_data(&container).unwrap();
+        assert!(
+            Path::new(&root).join("Packages").join(&name).is_dir(),
+            "{}",
+            root.display()
+        );
+        assert!(Path::new(&users_local_app_data().unwrap()).is_dir());
     }
 
     use std::os::windows::io::AsHandle as _;

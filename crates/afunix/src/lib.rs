@@ -168,11 +168,12 @@ const INFO: usize = std::mem::size_of::<WSAPROTOCOL_INFOW>();
 /// Where a socket at a path is, as afunix.sys is told it: the path's directory, set on the
 /// socket by the control afunix.h names for its bind or for its connect, and its file name
 /// alone as its address. So a path is bounded by its file name, not by the 108 bytes sun_path
-/// holds with its NUL (afunix.h's `UNIX_PATH_MAX`): a VM process makes its pairs in its
-/// AppContainer's Temp, beneath the local app-data folder its spawner gives it, 134 bytes in
-/// kiln's r735 (D141). Every bind and connect here, in every process, is placed so: Windows
-/// Server 2022 (20348.5870), Server 2025 (26100.33674) and Windows 11 (26200.9974, x86_64 and
-/// arm64) bind, connect and accept there (PM M614).
+/// holds with its NUL (afunix.h's `UNIX_PATH_MAX`), and by its directory as the controls take
+/// one, 256 bytes and less where 260 and more are refused WSAENOBUFS (PM M615): a VM process
+/// makes its pairs in its AppContainer's Temp, beneath the local app-data folder its spawner
+/// gives it, 134 bytes in kiln's r735 (D141). Every bind and connect here, in every process, is
+/// placed so: Windows Server 2022 (20348.5870), Server 2025 (26100.33674) and Windows 11
+/// (26200.9974, x86_64 and arm64) bind, connect and accept there (PM M614).
 struct Place<'a> {
     path: &'a Path,
     /// The directory, absolute, as UTF-8 with its NUL: Microsoft's announcement of AF_UNIX
@@ -224,6 +225,13 @@ fn place(path: &Path) -> io::Result<Place<'_>> {
 }
 
 impl Place<'_> {
+    /// `e`, which `call` (bind, connect) met here, saying this place's path: a Winsock error
+    /// alone names none, as r769's VM process said only "A socket operation encountered a dead
+    /// network". Its kind is kept, which callers match.
+    fn refused(&self, call: &str, e: io::Error) -> io::Error {
+        io::Error::new(e.kind(), format!("{}: {call}: {e}", self.path.display()))
+    }
+
     /// A new socket to bind here, its directory set (`SIO_AF_UNIX_SETBINDPARENTPATH`).
     fn to_bind(&self) -> io::Result<Socket> {
         self.socket(SIO_AF_UNIX_SETBINDPARENTPATH, "SIO_AF_UNIX_SETBINDPARENTPATH")
@@ -270,9 +278,11 @@ impl Place<'_> {
             return Err(io::Error::new(
                 e.kind(),
                 format!(
-                    "{}: Windows took no directory for its AF_UNIX socket ({what}, which Windows \
-                     Server 2022 and Windows 11 take, kept up to date): {e}",
-                    self.path.display()
+                    "{}: Windows took no directory of {} bytes for its AF_UNIX socket ({what}, which \
+                     Windows Server 2022 and Windows 11 take, kept up to date, a directory of 256 \
+                     bytes and less; PM M615): {e}",
+                    self.path.display(),
+                    self.parent.len().saturating_sub(1)
                 ),
             ));
         }
@@ -386,7 +396,7 @@ impl UnixStream {
         let s = place.to_connect()?;
         // SAFETY: an address of its own length.
         if unsafe { connect(s.0, (&raw const place.name).cast(), ADDRESS_LEN) } != 0 {
-            return Err(last());
+            return Err(place.refused("connect", last()));
         }
         Ok(UnixStream::wrap(s))
     }
@@ -450,7 +460,7 @@ impl UnixStream {
         if unsafe { connect(s.0, (&raw const place.name).cast(), ADDRESS_LEN) } != 0 {
             let e = last();
             if e.raw_os_error() != Some(WSAEWOULDBLOCK) {
-                return Err(e);
+                return Err(place.refused("connect", e));
             }
             let mut fd = WSAPOLLFD {
                 fd: s.0,
@@ -485,7 +495,7 @@ impl UnixStream {
             }
             let stream = UnixStream::wrap(s);
             if let Some(e) = stream.take_error()? {
-                return Err(e);
+                return Err(place.refused("connect", e));
             }
             if deadline.is_some_and(|at| std::time::Instant::now() >= at) {
                 return Err(io::ErrorKind::TimedOut.into());
@@ -500,7 +510,7 @@ impl UnixStream {
 
     /// A connected pair: Windows has no socketpair(), so a listener at a fresh path in the
     /// temporary directory, a connect and an accept, the path removed (some 0.6 ms, PM
-    /// M199). Its directory may be as long as Windows' paths are, as every path here may
+    /// M199). Its directory may be as long as the controls take, as every path here may
     /// (`Place`): an AppContainer's is the container's own Temp (D141).
     pub fn pair() -> io::Result<(UnixStream, UnixStream)> {
         static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -825,7 +835,7 @@ impl UnixListener {
         let s = place.to_bind()?;
         // SAFETY: an address of its own length.
         if unsafe { bind(s.0, (&raw const place.name).cast(), ADDRESS_LEN) } != 0 {
-            return Err(last());
+            return Err(place.refused("bind", last()));
         }
         Ok(UnixListener(s))
     }
@@ -1121,6 +1131,28 @@ mod tests {
         a.set_nonblocking(true).unwrap();
         let e = (&a).read(&mut [0u8; 1]).unwrap_err();
         assert_eq!(e.kind(), io::ErrorKind::WouldBlock);
+    }
+
+    /// A bind or a connect refused says its path and its call, its kind kept, which callers
+    /// match: r769's VM process said only "A socket operation encountered a dead network".
+    #[test]
+    fn a_refused_bind_or_connect_says_its_path() {
+        let dir = shards_testdir::TempDir::new("afunix-said").unwrap();
+        let path = dir.join("s.sock");
+        let _listener = UnixListener::bind(&path).unwrap();
+        let e = UnixListener::bind(&path).unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::AddrInUse, "{e}");
+        assert!(
+            e.to_string().starts_with(&format!("{}: bind: ", path.display())),
+            "{e}"
+        );
+        let absent = dir.join("absent.sock");
+        let e = UnixStream::connect(&absent).unwrap_err();
+        assert!(
+            e.to_string()
+                .starts_with(&format!("{}: connect: ", absent.display())),
+            "{e}"
+        );
     }
 
     /// A socket in a directory past the 107 bytes an AF_UNIX address holds before its NUL

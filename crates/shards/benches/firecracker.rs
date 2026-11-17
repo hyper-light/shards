@@ -27,6 +27,11 @@
 //!   a private mapping of its snapshot file: the pages it only reads are the file's, in the
 //!   page cache every VM restored from that snapshot shares, and a page it writes becomes
 //!   an anonymous copy of its own.
+//! - Each boot's guest memory, which the envelope does not check (`Guest`): its mappings'
+//!   `Rss`, `AnonHugePages` and `Private_Dirty`, and the pages held in each huge page's span
+//!   of it, at the reading, into `firecracker-guest.tsv` beside the samples
+//!   (SHARDS_BENCH_SAMPLES): the boot's `rss_anon` taken apart by
+//!   docs/research/measurements/boot-anon (PM M617).
 //!
 //! Firecracker is its pinned release binary, run without the jailer as its getting-started
 //! guide runs it: `--no-api --config-file`, default seccomp filters. Each iteration
@@ -43,6 +48,15 @@
 //! bench (`--working-set`), which keeps it beside the snapshot as `shards restore`'s writer
 //! does (D30): every restore after it maps those pages ahead, as `shards restore` does.
 //!
+//! The snapshots come in pairs, one of each VMM's, taken afresh for each pair, each pair's
+//! restored `--runs` times of each VMM after its warm-up, logged, and held in fleets
+//! (density, below) before the next. A snapshot's restores hold the same pages (shards'
+//! copy ahead what its working set says the guest wrote, recorded once a snapshot), so a
+//! row's samples are alike within a pair: each pair gives the row one difference, and the
+//! Envelope judges the row by its pairs (scripts/bench-envelope; D36, the cure's A/B).
+//! There are as many pairs as the fewest whose differences' least and greatest bound their
+//! median with the Envelope's confidence (`snapshot_pairs`): 6. Each sample names its pair.
+//!
 //! - `to_beat`: the host's clock from spawn until the guest's first beat after the restore
 //!   reaches the VMM's stdout: the guest running again, what a user waits for.
 //! - `overhead` and `peak_rss`, as above, while the guest beats.
@@ -57,20 +71,22 @@
 //!   not check: as its first beat arrives, the pages of its memory file its host maps and
 //!   those it holds a private copy of (`touched_pages`, `written_pages`), and KVM's
 //!   counters of its VM (debugfs, which only root reads: through `sudo -n`, as CI's
-//!   runners allow), read a few beats after it, with each restore's time to its beat, into
-//!   `firecracker_restore-kvm.tsv` beside the samples (SHARDS_BENCH_SAMPLES).
+//!   runners allow), read a few beats after it, with each restore's time to its beat and
+//!   its pair, into `firecracker_restore-kvm.tsv` beside the samples (SHARDS_BENCH_SAMPLES).
 //!   `SHARDS_BENCH_KVM=off` reads none of it, for the A/B of the reading itself.
 //! - Where each VMM's restores' time goes in KVM (`--traced N`, none unless asked): once
-//!   density (below) is done, N more restores of each VMM, interleaved, each under KVM's
+//!   the first pair's density (below) is done, N more restores of each VMM of that pair,
+//!   interleaved, each under KVM's
 //!   trace of its vCPUs entering and leaving the guest, its stage-2 faults, port I/O,
 //!   MMIO and exits to its VMM, on the host's monotonic clock, which only root may turn on
 //!   (through `sudo -n`, as CI's runners allow). Each restore's trace goes beside the
 //!   samples (SHARDS_BENCH_SAMPLES), with the clock as its VMM was spawned and as its
 //!   first beat arrived, for docs/research/measurements/restore-faults to read.
 //!
-//! Then density (audit D14): `--fleet K` (16) restored VMs of one VMM held at once, all
-//! beating, then the other's, in rounds S F F S S F F S. Each VM's row pairs with the other
-//! VMM's VM of the same index in the matching round.
+//! Then density (audit D14), for each pair of snapshots: `--fleet K` (16) restored VMs of one
+//! VMM held at once, all beating, then the other's, shards' first in an even pair and
+//! Firecracker's in an odd one (S F F S S F ...). Each VM's row pairs with the other VMM's VM
+//! of the same index in the same pair.
 //!
 //! - `fleet_pss`, `fleet_private`: each VM's proportional set size, and its private pages
 //!   (`Private_Clean` and `Private_Dirty` in smaps_rollup), with its fleet running.
@@ -163,6 +179,34 @@ mod compare {
         /// private copy of ([`touched`]): what a working set recorded then would hold,
         /// read and written; none for a boot.
         touched: Option<(u64, u64)>,
+        /// A boot's guest memory as its host held it at the reading ([`guest_memory`]):
+        /// none for a restore, whose guest memory is its snapshot's file.
+        guest: Option<Guest>,
+    }
+
+    /// A boot's guest memory as its host holds it at the reading, over the mappings of
+    /// guest memory ([`guest_mappings`]), in address order from guest memory's first byte:
+    /// their resident, huge anonymous and privately dirtied bytes (`Rss`, `AnonHugePages`,
+    /// `Private_Dirty` in /proc/PID/smaps), each mapping's span and huge bytes, and the
+    /// pages it holds in each huge page's span of it (2 MiB under 4 KiB pages). What
+    /// shards' boot holds of its guest's memory against Firecracker's, as huge pages round
+    /// its guest's touches up and as its guest touches more
+    /// (docs/research/measurements/boot-anon).
+    struct Guest {
+        rss: u64,
+        anon_huge: u64,
+        private_dirty: u64,
+        /// Each mapping's first byte, from guest memory's, its length, and its huge
+        /// anonymous bytes.
+        spans: Vec<(u64, u64, u64)>,
+        /// The pages held in each huge page's span, from guest memory's first byte: present
+        /// and mapped by this process alone (/proc/PID/pagemap bits 63 and 56), as `Rss`
+        /// counts them. A guest's read of memory nothing wrote maps the zero page, present
+        /// and counted by neither (fs/proc/task_mmu.c `pte_to_pagemap_entry`).
+        held: Vec<u64>,
+        /// The host's page and huge page, in bytes.
+        page: u64,
+        huge: u64,
     }
 
     /// The walking guest's command line (testguest `walk`, 512 MiB).
@@ -386,6 +430,14 @@ mod compare {
                 .collect::<Vec<_>>()
         };
         let paired = |a: Vec<f64>, b: Vec<f64>| a.iter().zip(&b).map(|(x, y)| x - y).collect::<Vec<_>>();
+        // Each boot's guest memory, which the envelope does not check: resident, in huge
+        // pages and privately dirtied, and the huge pages' spans of it it holds pages in.
+        let of_guest = |v: &[Sample], f: fn(&Guest) -> f64| {
+            v.iter()
+                .map(|s| s.guest.as_ref().map_or(f64::NAN, f))
+                .collect::<Vec<_>>()
+        };
+        write_guest(&shards, &fc);
         let mib =
             |v: &[Sample], f: fn(&Sample) -> u64| v.iter().map(|s| f(s) as f64 / MIB).collect::<Vec<_>>();
         support::report(
@@ -418,6 +470,34 @@ mod compare {
                 support::stats("fc_pss", "MiB", mib(&fc, |s| s.pss_bytes)),
                 support::stats("shards_pss_file", "MiB", mib(&shards, |s| s.pss_file_bytes)),
                 support::stats("fc_pss_file", "MiB", mib(&fc, |s| s.pss_file_bytes)),
+                support::diagnostic(
+                    "shards_guest_rss",
+                    "MiB",
+                    of_guest(&shards, |g| g.rss as f64 / MIB),
+                ),
+                support::diagnostic("fc_guest_rss", "MiB", of_guest(&fc, |g| g.rss as f64 / MIB)),
+                support::diagnostic(
+                    "shards_guest_huge",
+                    "MiB",
+                    of_guest(&shards, |g| g.anon_huge as f64 / MIB),
+                ),
+                support::diagnostic(
+                    "fc_guest_huge",
+                    "MiB",
+                    of_guest(&fc, |g| g.anon_huge as f64 / MIB),
+                ),
+                support::diagnostic(
+                    "shards_guest_dirty",
+                    "MiB",
+                    of_guest(&shards, |g| g.private_dirty as f64 / MIB),
+                ),
+                support::diagnostic(
+                    "fc_guest_dirty",
+                    "MiB",
+                    of_guest(&fc, |g| g.private_dirty as f64 / MIB),
+                ),
+                support::diagnostic("shards_guest_regions", "", of_guest(&shards, regions_held)),
+                support::diagnostic("fc_guest_regions", "", of_guest(&fc, regions_held)),
             ],
         );
         let fleet: usize = support::option("--fleet").map_or(16, |v| v.parse().expect("--fleet K"));
@@ -425,8 +505,126 @@ mod compare {
         restores(&firecracker, kernel, &initrd, &cpus, &memory, runs, fleet, traced);
     }
 
-    /// The restore comparison (above): each VMM's snapshot of the beating guest, restored
-    /// by fresh processes, interleaved.
+    /// The Envelope's confidence: scripts/bench-envelope judges each row at it, and refuses a
+    /// row of too few snapshots to bound its median with it.
+    const ENVELOPE_COVERAGE: f64 = 0.95;
+
+    /// How many pairs of snapshots the restore comparison takes: the fewest whose
+    /// differences' least and greatest bound their median with `coverage`. Each pair's
+    /// difference falls on either side of the median alike, so all k fall on one side with
+    /// probability 2 * 2^-k, and [least, greatest] holds the median with 1 - 2^(1-k) (the
+    /// sign test's interval: Hollander, Wolfe and Chicken, Nonparametric Statistical
+    /// Methods, ch. 3): 6 at the Envelope's 0.95, which hold it with 0.969.
+    fn snapshot_pairs(coverage: f64) -> usize {
+        assert!(
+            (0.0..1.0).contains(&coverage),
+            "a coverage below 1, not {coverage}"
+        );
+        let held = |k: i32| 1.0 - 0.5f64.powi(k - 1);
+        (1..)
+            .find(|&k| held(k) >= coverage)
+            .expect("1 - 2^(1-k) passes any coverage below 1") as usize
+    }
+
+    /// One pair of snapshots of the beating guest (above), each VMM's: shards', with the
+    /// working set a first restore of it recorded, and Firecracker's.
+    struct Snapshots {
+        /// shards' snapshot's directory.
+        shards: PathBuf,
+        /// Firecracker's `PUT /snapshot/load` of its snapshot.
+        load: String,
+    }
+
+    impl Snapshots {
+        /// Pair `pair`'s snapshots, written in `dir`, Firecracker's API socket in `sockets`.
+        #[allow(clippy::too_many_arguments)]
+        fn take(
+            firecracker: &Path,
+            kernel: &Path,
+            initrd: &Path,
+            cpus: &str,
+            memory: &str,
+            dir: &Path,
+            sockets: &Path,
+            pair: usize,
+        ) -> Snapshots {
+            std::fs::create_dir_all(dir).unwrap();
+            // shards: the guest asks for its snapshot, and the VM stops once it is written.
+            let snapshot = dir.join("shards");
+            let saved = Command::new(common::shards_vm())
+                .args(["run", "--kernel"])
+                .arg(kernel)
+                .arg("--initrd")
+                .arg(initrd)
+                .args(["--cpus", cpus, "--memory", memory, "--no-console", "--cmdline"])
+                .arg(format!("{BEAT_CMDLINE} shards_snapshot={SNAPSHOT_AFTER}"))
+                .arg("--snapshot-dir")
+                .arg(&snapshot)
+                .output()
+                .unwrap();
+            assert!(
+                saved.status.success() && shards_vmm::snapshot::exists(&snapshot),
+                "shards' snapshot: {}",
+                String::from_utf8_lossy(&saved.stderr)
+            );
+
+            // Firecracker: booted from its config, paused and snapshotted through its API.
+            let (fc_state, fc_memory) = (dir.join("fc.state"), dir.join("fc.memory"));
+            let config = firecracker_config(
+                kernel,
+                initrd,
+                cpus,
+                memory,
+                BEAT_CMDLINE,
+                "firecracker-beat.json",
+            );
+            let socket = sockets.join(format!("save{pair}.sock"));
+            let mut booted = Command::new(firecracker)
+                .arg("--api-sock")
+                .arg(&socket)
+                .arg("--config-file")
+                .arg(&config)
+                .args(["--level", "error"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap();
+            let (beating, _) = first_beat(booted.stdout.take().unwrap());
+            beating
+                .recv_timeout(TIMEOUT)
+                .expect("Firecracker's guest never beat");
+            api(&socket, "PATCH", "/vm", r#"{"state":"Paused"}"#);
+            api(
+                &socket,
+                "PUT",
+                "/snapshot/create",
+                &format!(
+                    "{{\"snapshot_type\":\"Full\",\"snapshot_path\":{},\"mem_file_path\":{}}}",
+                    json_string(&fc_state.to_string_lossy()),
+                    json_string(&fc_memory.to_string_lossy())
+                ),
+            );
+            booted.kill().unwrap();
+            booted.wait().unwrap();
+
+            let kept = record_working_set(&snapshot);
+            println!("shards' snapshot {pair}'s working set: {kept} pages");
+
+            let load = format!(
+                "{{\"snapshot_path\":{},\"mem_backend\":{{\"backend_type\":\"File\",\"backend_path\":{}}},\"resume_vm\":true}}",
+                json_string(&fc_state.to_string_lossy()),
+                json_string(&fc_memory.to_string_lossy())
+            );
+            Snapshots {
+                shards: snapshot,
+                load,
+            }
+        }
+    }
+
+    /// The restore comparison (above): pairs of snapshots of the beating guest, each VMM's,
+    /// each pair restored by fresh processes, interleaved, then held in fleets.
     #[allow(clippy::too_many_arguments)]
     fn restores(
         firecracker: &Path,
@@ -446,129 +644,111 @@ mod compare {
         // workspace can pass sockaddr_un's 108 bytes, and Firecracker then never starts.
         let sockets = shards_testdir::TempDir::new("fc").unwrap();
 
-        // shards: the guest asks for its snapshot, and the VM stops once it is written.
-        let snapshot = dir.join("shards");
-        let saved = Command::new(common::shards_vm())
-            .args(["run", "--kernel"])
-            .arg(kernel)
-            .arg("--initrd")
-            .arg(initrd)
-            .args(["--cpus", cpus, "--memory", memory, "--no-console", "--cmdline"])
-            .arg(format!("{BEAT_CMDLINE} shards_snapshot={SNAPSHOT_AFTER}"))
-            .arg("--snapshot-dir")
-            .arg(&snapshot)
-            .output()
-            .unwrap();
-        assert!(
-            saved.status.success() && shards_vmm::snapshot::exists(&snapshot),
-            "shards' snapshot: {}",
-            String::from_utf8_lossy(&saved.stderr)
-        );
-
-        // Firecracker: booted from its config, paused and snapshotted through its API.
-        let (fc_state, fc_memory) = (dir.join("fc.state"), dir.join("fc.memory"));
-        let config = firecracker_config(
-            kernel,
-            initrd,
-            cpus,
-            memory,
-            BEAT_CMDLINE,
-            "firecracker-beat.json",
-        );
-        let socket = sockets.join("save.sock");
-        let mut booted = Command::new(firecracker)
-            .arg("--api-sock")
-            .arg(&socket)
-            .arg("--config-file")
-            .arg(&config)
-            .args(["--level", "error"])
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap();
-        let (beating, _) = first_beat(booted.stdout.take().unwrap());
-        beating
-            .recv_timeout(TIMEOUT)
-            .expect("Firecracker's guest never beat");
-        api(&socket, "PATCH", "/vm", r#"{"state":"Paused"}"#);
-        api(
-            &socket,
-            "PUT",
-            "/snapshot/create",
-            &format!(
-                "{{\"snapshot_type\":\"Full\",\"snapshot_path\":{},\"mem_file_path\":{}}}",
-                json_string(&fc_state.to_string_lossy()),
-                json_string(&fc_memory.to_string_lossy())
-            ),
-        );
-        booted.kill().unwrap();
-        booted.wait().unwrap();
-
-        let kept = record_working_set(&snapshot);
-        println!("shards' snapshot's working set: {kept} pages");
-
-        let load = format!(
-            "{{\"snapshot_path\":{},\"mem_backend\":{{\"backend_type\":\"File\",\"backend_path\":{}}},\"resume_vm\":true}}",
-            json_string(&fc_state.to_string_lossy()),
-            json_string(&fc_memory.to_string_lossy())
-        );
-        let (mut shards, mut fc) = (Vec::with_capacity(runs), Vec::with_capacity(runs));
-        for i in 0..WARMUP + runs {
-            let order = if i % 2 == 0 {
-                [Vmm::Shards, Vmm::Firecracker]
-            } else {
-                [Vmm::Firecracker, Vmm::Shards]
-            };
-            for vmm in order {
-                let s = match vmm {
-                    Vmm::Shards => {
-                        let mut c = Command::new(common::shards_vm());
-                        c.arg("restore").arg(&snapshot);
-                        restore_sample(&mut c, guest_bytes, "/memory", || {})
-                    }
-                    Vmm::Firecracker => {
-                        let socket = sockets.join(format!("{i}.sock"));
-                        let mut c = Command::new(firecracker);
-                        c.arg("--api-sock").arg(&socket).args(["--level", "error"]);
-                        restore_sample(&mut c, guest_bytes, "/fc.memory", || {
-                            api(&socket, "PUT", "/snapshot/load", &load);
-                        })
-                    }
+        let pairs = snapshot_pairs(ENVELOPE_COVERAGE);
+        // The paired restores' samples and the pair each restored, shards' logged restores
+        // and theirs, and each VMM's fleets.
+        let (mut shards, mut fc, mut restored) = (Vec::new(), Vec::new(), Vec::new());
+        let (mut phases, mut logged) = (Vec::new(), Vec::new());
+        let mut fleets: [Fleet; 2] = Default::default();
+        for pair in 0..pairs {
+            let pair_dir = dir.join(pair.to_string());
+            let snapshots = Snapshots::take(
+                firecracker,
+                kernel,
+                initrd,
+                cpus,
+                memory,
+                &pair_dir,
+                &sockets,
+                pair,
+            );
+            for i in 0..WARMUP + runs {
+                let order = if i % 2 == 0 {
+                    [Vmm::Shards, Vmm::Firecracker]
+                } else {
+                    [Vmm::Firecracker, Vmm::Shards]
                 };
-                if i >= WARMUP {
-                    match vmm {
-                        Vmm::Shards => shards.push(s),
-                        Vmm::Firecracker => fc.push(s),
+                for vmm in order {
+                    let s = match vmm {
+                        Vmm::Shards => {
+                            let mut c = Command::new(common::shards_vm());
+                            c.arg("restore").arg(&snapshots.shards);
+                            restore_sample(&mut c, guest_bytes, "/memory", || {})
+                        }
+                        Vmm::Firecracker => {
+                            let socket = sockets.join(format!("{pair}-{i}.sock"));
+                            let mut c = Command::new(firecracker);
+                            c.arg("--api-sock").arg(&socket).args(["--level", "error"]);
+                            restore_sample(&mut c, guest_bytes, "/fc.memory", || {
+                                api(&socket, "PUT", "/snapshot/load", &snapshots.load);
+                            })
+                        }
+                    };
+                    if i >= WARMUP {
+                        match vmm {
+                            Vmm::Shards => shards.push(s),
+                            Vmm::Firecracker => fc.push(s),
+                        }
                     }
                 }
+                if i >= WARMUP {
+                    restored.push(pair);
+                }
             }
+            phases.extend((0..runs).map(|_| restore_phases(&snapshots.shards)));
+            logged.extend(std::iter::repeat_n(pair, runs));
+            density(firecracker, &snapshots, &sockets, fleet, pair, &mut fleets);
+            if traced > 0 && pair == 0 {
+                traced_restores(firecracker, &snapshots.shards, &sockets, &snapshots.load, traced);
+            }
+            let _ = std::fs::remove_dir_all(&pair_dir);
         }
-        let phases: Vec<Phases> = (0..runs).map(|_| restore_phases(&snapshot)).collect();
-        density(firecracker, &snapshot, &sockets, &load, fleet, cpus, memory);
-        if traced > 0 {
-            traced_restores(firecracker, &snapshot, &sockets, &load, traced);
-        }
+        report_density(fleets, fleet, pairs, cpus, memory);
         let _ = std::fs::remove_dir_all(&dir);
         let to_beat = |v: &[Sample]| v.iter().map(|s| s.to_ready_us).collect::<Vec<_>>();
         let phase = |f: fn(&Phases) -> f64| phases.iter().map(f).collect::<Vec<_>>();
         let mib =
             |v: &[Sample], f: fn(&Sample) -> u64| v.iter().map(|s| f(s) as f64 / MIB).collect::<Vec<_>>();
         let mut rows = vec![
-            support::stats("shards_to_beat", "us", to_beat(&shards)),
-            support::stats("fc_to_beat", "us", to_beat(&fc)),
-            support::stats("shards_overhead", "MiB", mib(&shards, |s| s.overhead_bytes)),
-            support::stats("fc_overhead", "MiB", mib(&fc, |s| s.overhead_bytes)),
-            support::stats("shards_peak_rss", "MiB", mib(&shards, |s| s.peak_rss_bytes)),
-            support::stats("fc_peak_rss", "MiB", mib(&fc, |s| s.peak_rss_bytes)),
-            support::stats("shards_rss_anon", "MiB", mib(&shards, |s| s.rss_anon_bytes)),
-            support::stats("fc_rss_anon", "MiB", mib(&fc, |s| s.rss_anon_bytes)),
-            support::stats("shards_rss_file", "MiB", mib(&shards, |s| s.rss_file_bytes)),
-            support::stats("fc_rss_file", "MiB", mib(&fc, |s| s.rss_file_bytes)),
-            support::stats("shards_pss", "MiB", mib(&shards, |s| s.pss_bytes)),
-            support::stats("fc_pss", "MiB", mib(&fc, |s| s.pss_bytes)),
-            support::stats("shards_pss_file", "MiB", mib(&shards, |s| s.pss_file_bytes)),
-            support::stats("fc_pss_file", "MiB", mib(&fc, |s| s.pss_file_bytes)),
+            support::stats_by_snapshot("shards_to_beat", "us", to_beat(&shards), &restored),
+            support::stats_by_snapshot("fc_to_beat", "us", to_beat(&fc), &restored),
+            support::stats_by_snapshot(
+                "shards_overhead",
+                "MiB",
+                mib(&shards, |s| s.overhead_bytes),
+                &restored,
+            ),
+            support::stats_by_snapshot("fc_overhead", "MiB", mib(&fc, |s| s.overhead_bytes), &restored),
+            support::stats_by_snapshot(
+                "shards_peak_rss",
+                "MiB",
+                mib(&shards, |s| s.peak_rss_bytes),
+                &restored,
+            ),
+            support::stats_by_snapshot("fc_peak_rss", "MiB", mib(&fc, |s| s.peak_rss_bytes), &restored),
+            support::stats_by_snapshot(
+                "shards_rss_anon",
+                "MiB",
+                mib(&shards, |s| s.rss_anon_bytes),
+                &restored,
+            ),
+            support::stats_by_snapshot("fc_rss_anon", "MiB", mib(&fc, |s| s.rss_anon_bytes), &restored),
+            support::stats_by_snapshot(
+                "shards_rss_file",
+                "MiB",
+                mib(&shards, |s| s.rss_file_bytes),
+                &restored,
+            ),
+            support::stats_by_snapshot("fc_rss_file", "MiB", mib(&fc, |s| s.rss_file_bytes), &restored),
+            support::stats_by_snapshot("shards_pss", "MiB", mib(&shards, |s| s.pss_bytes), &restored),
+            support::stats_by_snapshot("fc_pss", "MiB", mib(&fc, |s| s.pss_bytes), &restored),
+            support::stats_by_snapshot(
+                "shards_pss_file",
+                "MiB",
+                mib(&shards, |s| s.pss_file_bytes),
+                &restored,
+            ),
+            support::stats_by_snapshot("fc_pss_file", "MiB", mib(&fc, |s| s.pss_file_bytes), &restored),
             support::diagnostic("restored", "us", phase(|p| p.restored_us)),
             support::diagnostic("vcpus_ready", "us", phase(|p| p.vcpus_ready_us)),
             support::diagnostic("resumed", "us", phase(|p| p.resumed_us)),
@@ -621,11 +801,12 @@ mod compare {
                 phases.iter().map(|p| of(&p.kvm)).collect(),
             ));
         }
-        write_kvm(&shards, &fc, &phases);
+        write_kvm(&shards, &fc, &restored, &phases, &logged);
         support::report(
             "firecracker_restore",
             &[
-                ("n", runs.to_string()),
+                ("n", (runs * pairs).to_string()),
+                ("snapshot_pairs", pairs.to_string()),
                 ("cpus", cpus.to_string()),
                 ("memory_mib", memory.to_string()),
                 ("kernel", common::kernel_artifact().name.to_string()),
@@ -649,9 +830,11 @@ mod compare {
     ];
 
     /// Each restore's time to its first beat, shards' logged phases, and KVM's counters, a
-    /// row each, into `firecracker_restore-kvm.tsv` beside the samples (SHARDS_BENCH_SAMPLES),
-    /// which the envelope does not read: what each restore's faults cost on its host.
-    fn write_kvm(shards: &[Sample], fc: &[Sample], phases: &[Phases]) {
+    /// row each with the pair of snapshots it restored (`restored`, the paired restores',
+    /// and `logged`, the logged ones'), into `firecracker_restore-kvm.tsv` beside the samples
+    /// (SHARDS_BENCH_SAMPLES), which the envelope does not read: what each restore's faults
+    /// cost on its host.
+    fn write_kvm(shards: &[Sample], fc: &[Sample], restored: &[usize], phases: &[Phases], logged: &[usize]) {
         let Some(dir) = std::env::var_os("SHARDS_BENCH_SAMPLES") else {
             return;
         };
@@ -661,11 +844,12 @@ mod compare {
                 .map_or_else(|| "-".to_string(), u64::to_string)
         };
         let mut tsv = format!(
-            "vmm\trun\tto_beat_us\trestored_us\tvcpus_ready_us\tresumed_us\ttouched_pages\twritten_pages\t{}\n",
+            "vmm\trun\tsnapshot\tto_beat_us\trestored_us\tvcpus_ready_us\tresumed_us\ttouched_pages\twritten_pages\t{}\n",
             KVM_COUNTERS.join("\t")
         );
         let mut row = |vmm: &str,
                        i: usize,
+                       snapshot: usize,
                        times: [f64; 4],
                        touched: Option<(u64, u64)>,
                        kvm: &Option<std::collections::BTreeMap<String, u64>>| {
@@ -676,34 +860,37 @@ mod compare {
             );
             let counters: Vec<String> = KVM_COUNTERS.iter().map(|n| counter(kvm, n)).collect();
             tsv.push_str(&format!(
-                "{vmm}\t{i}\t{}\t{read}\t{written}\t{}\n",
+                "{vmm}\t{i}\t{snapshot}\t{}\t{read}\t{written}\t{}\n",
                 times.join("\t"),
                 counters.join("\t")
             ));
         };
         let none = [f64::NAN; 3];
-        for (i, s) in shards.iter().enumerate() {
+        for (i, (s, &snapshot)) in shards.iter().zip(restored).enumerate() {
             row(
                 "shards",
                 i,
+                snapshot,
                 [s.to_ready_us, none[0], none[1], none[2]],
                 s.touched,
                 &s.kvm,
             );
         }
-        for (i, s) in fc.iter().enumerate() {
+        for (i, (s, &snapshot)) in fc.iter().zip(restored).enumerate() {
             row(
                 "firecracker",
                 i,
+                snapshot,
                 [s.to_ready_us, none[0], none[1], none[2]],
                 s.touched,
                 &s.kvm,
             );
         }
-        for (i, p) in phases.iter().enumerate() {
+        for (i, (p, &snapshot)) in phases.iter().zip(logged).enumerate() {
             row(
                 "shards-logged",
                 i,
+                snapshot,
                 [p.to_beat_us, p.restored_us, p.vcpus_ready_us, p.resumed_us],
                 p.touched,
                 &p.kvm,
@@ -768,84 +955,102 @@ mod compare {
             * 1024
     }
 
-    /// The density rounds (above): `fleet` restores of each VMM's snapshot held at once,
-    /// Firecracker's API sockets in `sockets`.
+    /// Each VMM's fleets (`density`): each VM's PSS, private pages and page tables, and each
+    /// round's host share, each with the pair of snapshots it restored.
+    #[derive(Default)]
+    struct Fleet {
+        pss: Vec<f64>,
+        private: Vec<f64>,
+        pte: Vec<f64>,
+        /// The pair each VM restored.
+        vms: Vec<usize>,
+        host: Vec<f64>,
+        /// The pair each round restored.
+        rounds: Vec<usize>,
+    }
+
+    /// The density rounds (above) of pair `pair`: `fleet` restores of each VMM's snapshot held
+    /// at once, Firecracker's API sockets in `sockets`, shards' round first in an even pair
+    /// and Firecracker's in an odd one, into `fleets` (shards', then Firecracker's).
     fn density(
         firecracker: &Path,
-        snapshot: &Path,
+        snapshots: &Snapshots,
         sockets: &Path,
-        load: &str,
         fleet: usize,
-        cpus: &str,
-        memory: &str,
+        pair: usize,
+        fleets: &mut [Fleet; 2],
     ) {
-        let rounds = [
-            Vmm::Shards,
-            Vmm::Firecracker,
-            Vmm::Firecracker,
-            Vmm::Shards,
-            Vmm::Shards,
-            Vmm::Firecracker,
-            Vmm::Firecracker,
-            Vmm::Shards,
-        ];
-        // Per VMM: each VM's PSS, private pages and page tables, and each round's host share.
-        let mut rows: [[Vec<f64>; 4]; 2] = Default::default();
-        for (round, vmm) in rounds.into_iter().enumerate() {
+        let rounds = if pair % 2 == 0 {
+            [Vmm::Shards, Vmm::Firecracker]
+        } else {
+            [Vmm::Firecracker, Vmm::Shards]
+        };
+        for vmm in rounds {
             let before = meminfo_bytes("MemAvailable");
             let held: Vec<Held> = (0..fleet)
                 .map(|k| match vmm {
                     Vmm::Shards => {
                         let mut c = Command::new(common::shards_vm());
-                        c.arg("restore").arg(snapshot);
+                        c.arg("restore").arg(&snapshots.shards);
                         Held::start(&mut c, || {})
                     }
                     Vmm::Firecracker => {
-                        let socket = sockets.join(format!("f{round}-{k}.sock"));
+                        let socket = sockets.join(format!("f{pair}-{k}.sock"));
                         let mut c = Command::new(firecracker);
                         c.arg("--api-sock").arg(&socket).args(["--level", "error"]);
-                        Held::start(&mut c, || api(&socket, "PUT", "/snapshot/load", load))
+                        Held::start(&mut c, || api(&socket, "PUT", "/snapshot/load", &snapshots.load))
                     }
                 })
                 .collect();
             let after = meminfo_bytes("MemAvailable");
-            let row = &mut rows[matches!(vmm, Vmm::Firecracker) as usize];
+            let of = &mut fleets[matches!(vmm, Vmm::Firecracker) as usize];
             for h in &held {
                 let private = ["Private_Clean", "Private_Dirty"]
                     .map(|f| rollup_bytes(h.pid, f).expect("smaps_rollup"))
                     .iter()
                     .sum::<u64>();
-                row[0].push(rollup_bytes(h.pid, "Pss").expect("Pss") as f64 / MIB);
-                row[1].push(private as f64 / MIB);
-                row[2].push(status_bytes(h.pid, "VmPTE").expect("VmPTE") as f64 / MIB);
+                of.pss.push(rollup_bytes(h.pid, "Pss").expect("Pss") as f64 / MIB);
+                of.private.push(private as f64 / MIB);
+                of.pte
+                    .push(status_bytes(h.pid, "VmPTE").expect("VmPTE") as f64 / MIB);
+                of.vms.push(pair);
             }
-            row[3].push(before.saturating_sub(after) as f64 / fleet as f64 / MIB);
+            of.host
+                .push(before.saturating_sub(after) as f64 / fleet as f64 / MIB);
+            of.rounds.push(pair);
             for h in held {
                 h.end();
             }
         }
-        let [shards, fc] = rows;
-        let [s_pss, s_private, s_pte, s_host] = shards;
-        let [f_pss, f_private, f_pte, f_host] = fc;
+    }
+
+    /// The density report: each VMM's fleets over the pairs of snapshots, each row judged
+    /// by its pairs (scripts/bench-envelope).
+    fn report_density(fleets: [Fleet; 2], fleet: usize, pairs: usize, cpus: &str, memory: &str) {
+        let [shards, fc] = fleets;
+        let rounds: Vec<&str> = (0..pairs)
+            .flat_map(|pair| if pair % 2 == 0 { ["S", "F"] } else { ["F", "S"] })
+            .collect();
         support::report(
             "firecracker_density",
             &[
                 ("fleet", fleet.to_string()),
-                ("rounds", "S F F S S F F S".to_string()),
+                ("rounds", rounds.join(" ")),
+                ("snapshot_pairs", pairs.to_string()),
                 ("cpus", cpus.to_string()),
                 ("memory_mib", memory.to_string()),
                 ("kernel", common::kernel_artifact().name.to_string()),
                 ("firecracker", FIRECRACKER.to_string()),
             ],
             &[
-                support::stats("shards_fleet_pss", "MiB", s_pss),
-                support::stats("fc_fleet_pss", "MiB", f_pss),
-                support::stats("shards_fleet_private", "MiB", s_private),
-                support::stats("fc_fleet_private", "MiB", f_private),
-                support::stats("shards_fleet_pte", "MiB", s_pte),
-                support::stats("fc_fleet_pte", "MiB", f_pte),
-                support::stats("shards_fleet_host", "MiB", s_host),
-                support::stats("fc_fleet_host", "MiB", f_host),
+                support::stats_by_snapshot("shards_fleet_pss", "MiB", shards.pss, &shards.vms),
+                support::stats_by_snapshot("fc_fleet_pss", "MiB", fc.pss, &fc.vms),
+                support::stats_by_snapshot("shards_fleet_private", "MiB", shards.private, &shards.vms),
+                support::stats_by_snapshot("fc_fleet_private", "MiB", fc.private, &fc.vms),
+                support::stats_by_snapshot("shards_fleet_pte", "MiB", shards.pte, &shards.vms),
+                support::stats_by_snapshot("fc_fleet_pte", "MiB", fc.pte, &fc.vms),
+                support::stats_by_snapshot("shards_fleet_host", "MiB", shards.host, &shards.rounds),
+                support::stats_by_snapshot("fc_fleet_host", "MiB", fc.host, &fc.rounds),
             ],
         );
     }
@@ -1034,6 +1239,7 @@ mod compare {
             anon_huge_bytes: anon_huge.unwrap_or(0),
             kvm,
             touched,
+            guest: None,
         }
     }
 
@@ -1455,6 +1661,7 @@ mod compare {
         let [peak, anon, file] = ["VmHWM", "RssAnon", "RssFile"].map(|field| status_bytes(pid, field));
         let [pss, pss_file, anon_huge] =
             ["Pss", "Pss_File", "AnonHugePages"].map(|field| rollup_bytes(pid, field));
+        let guest = guest_memory(pid, guest_bytes);
         describe_mappings(pid, &format!("{} boot", command.get_program().to_string_lossy()));
         // SAFETY: the child is not yet reaped, so `pid` still names it.
         unsafe { libc::kill(pid, libc::SIGKILL) };
@@ -1479,6 +1686,7 @@ mod compare {
             anon_huge_bytes: anon_huge.unwrap_or(0),
             kvm: None,
             touched: None,
+            guest,
         }
     }
 
@@ -1661,6 +1869,137 @@ mod compare {
             .open(path)
             .unwrap();
         std::io::Write::write_all(&mut tsv, out.as_bytes()).unwrap();
+    }
+
+    /// The host's PMD-mapped huge page, the span THP rounds a touch of anonymous memory up to
+    /// (/sys/kernel/mm/transparent_hugepage/hpage_pmd_size: 2 MiB under 4 KiB pages); none
+    /// without THP.
+    fn huge_page_bytes() -> Option<u64> {
+        std::fs::read_to_string("/sys/kernel/mm/transparent_hugepage/hpage_pmd_size")
+            .ok()?
+            .trim()
+            .parse()
+            .ok()
+    }
+
+    /// How many huge pages' spans of a boot's guest memory hold a page: its 2 MiB-aligned
+    /// regions the guest touched, each of which a huge page holds whole.
+    fn regions_held(guest: &Guest) -> f64 {
+        guest.held.iter().filter(|&&pages| pages > 0).count() as f64
+    }
+
+    /// `pid`'s guest memory, `guest_bytes` of it, at the reading ([`Guest`]): none where its
+    /// smaps or pagemap, or the host's huge page, cannot be read, or no mapping is guest
+    /// memory.
+    fn guest_memory(pid: libc::pid_t, guest_bytes: u64) -> Option<Guest> {
+        use std::os::unix::fs::FileExt as _;
+        const PRESENT: u64 = 1 << 63;
+        const EXCLUSIVE: u64 = 1 << 56;
+        let huge = huge_page_bytes()?;
+        // SAFETY: sysconf(3) of a name, which only reads.
+        let page = u64::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) }).ok()?;
+        let smaps = std::fs::read_to_string(format!("/proc/{pid}/smaps")).ok()?;
+        // Each mapping's start, end, and `Rss`, `AnonHugePages` and `Private_Dirty` bytes, in
+        // address order.
+        let fields = ["Rss:", "AnonHugePages:", "Private_Dirty:"];
+        let mut maps: Vec<(u64, u64, [u64; 3])> = Vec::new();
+        for line in smaps.lines() {
+            let mut words = line.split_whitespace();
+            let Some(first) = words.next() else { continue };
+            if let Some((start, end)) = first.split_once('-')
+                && let (Ok(start), Ok(end)) = (u64::from_str_radix(start, 16), u64::from_str_radix(end, 16))
+            {
+                maps.push((start, end, [0; 3]));
+            } else if let Some(field) = fields.iter().position(|f| *f == first)
+                && let Some(last) = maps.last_mut()
+                && let Some(kib) = words.next().and_then(|v| v.parse::<u64>().ok())
+            {
+                last.2[field] = kib * 1024;
+            }
+        }
+        let spans: Vec<(u64, u64)> = maps.iter().map(|&(start, end, _)| (start, end)).collect();
+        let ours: Vec<(u64, u64, [u64; 3])> = guest_mappings(&spans, guest_bytes)
+            .iter()
+            .zip(&maps)
+            .filter_map(|(guest, map)| guest.then_some(*map))
+            .collect();
+        if ours.is_empty() {
+            return None;
+        }
+        let pagemap = std::fs::File::open(format!("/proc/{pid}/pagemap")).ok()?;
+        let mut guest = Guest {
+            rss: 0,
+            anon_huge: 0,
+            private_dirty: 0,
+            spans: Vec::new(),
+            held: Vec::new(),
+            page,
+            huge,
+        };
+        let mut from = 0;
+        for (start, end, [rss, anon_huge, private_dirty]) in ours {
+            guest.rss += rss;
+            guest.anon_huge += anon_huge;
+            guest.private_dirty += private_dirty;
+            guest.spans.push((from, end - start, anon_huge));
+            let mut entries = vec![0u8; usize::try_from((end - start) / page * 8).ok()?];
+            pagemap.read_exact_at(&mut entries, start / page * 8).ok()?;
+            for (i, entry) in entries.as_chunks::<8>().0.iter().enumerate() {
+                let entry = u64::from_ne_bytes(*entry);
+                if entry & PRESENT == 0 || entry & EXCLUSIVE == 0 {
+                    continue;
+                }
+                let span = usize::try_from((from + i as u64 * page) / huge).ok()?;
+                if guest.held.len() <= span {
+                    guest.held.resize(span + 1, 0);
+                }
+                guest.held[span] += 1;
+            }
+            from += end - start;
+        }
+        // Each huge page's span of guest memory, held or not.
+        guest.held.resize(usize::try_from(from.div_ceil(huge)).ok()?, 0);
+        Some(guest)
+    }
+
+    /// Each boot's guest memory ([`Guest`]) and `rss_anon`, a row each in the order taken,
+    /// into `firecracker-guest.tsv` beside the samples (SHARDS_BENCH_SAMPLES), which the
+    /// envelope does not read: the boot's `rss_anon` gap taken apart by
+    /// docs/research/measurements/boot-anon/attribute.py.
+    fn write_guest(shards: &[Sample], fc: &[Sample]) {
+        let Some(dir) = std::env::var_os("SHARDS_BENCH_SAMPLES") else {
+            return;
+        };
+        let mut tsv =
+            String::from("vmm\trun\trss_anon\tguest_rss\tguest_huge\tguest_dirty\tpage\thuge\tspans\theld\n");
+        for (vmm, samples) in [("shards", shards), ("firecracker", fc)] {
+            for (i, s) in samples.iter().enumerate() {
+                let anon = s.rss_anon_bytes;
+                let Some(g) = &s.guest else {
+                    tsv.push_str(&format!("{vmm}\t{i}\t{anon}\t-\t-\t-\t-\t-\t-\t-\n"));
+                    continue;
+                };
+                let spans: Vec<String> = g
+                    .spans
+                    .iter()
+                    .map(|(at, len, huge)| format!("{at:#x}+{len:#x}:{huge}"))
+                    .collect();
+                let held: Vec<String> = g.held.iter().map(u64::to_string).collect();
+                tsv.push_str(&format!(
+                    "{vmm}\t{i}\t{anon}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+                    g.rss,
+                    g.anon_huge,
+                    g.private_dirty,
+                    g.page,
+                    g.huge,
+                    spans.join(","),
+                    held.join(",")
+                ));
+            }
+        }
+        let dir = PathBuf::from(dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("firecracker-guest.tsv"), tsv).unwrap();
     }
 
     /// Resident bytes of `pid` outside guest memory, by Firecracker's rule
