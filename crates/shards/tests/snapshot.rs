@@ -795,9 +795,11 @@ mod storm {
     }
 
     /// The most vCPUs a machine may have here: those its hypervisor and the pinned kernel both
-    /// take (D13).
+    /// take (D13), and its host enters (D261): where this host model has only refused that
+    /// many, its known-good count ([`common::vcpus_admitted`]), as boot.rs's
+    /// `boots_the_hosts_maximum_vcpu_count`, run before this binary, keeps it.
     fn most() -> u32 {
-        shards_vmm::vm::max_vcpus().unwrap().min(common::kernel_nr_cpus())
+        common::vcpus_admitted(shards_vmm::vm::max_vcpus().unwrap().min(common::kernel_nr_cpus()))
     }
 
     /// How many restores the restores' storm of `cpus` vCPUs takes, `most` the most a machine

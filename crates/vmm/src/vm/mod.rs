@@ -229,6 +229,7 @@ impl Rated {
 }
 #[cfg(any(hv, test))]
 mod hold;
+pub mod limits;
 pub mod live;
 #[cfg(not(target_os = "linux"))]
 mod passthrough;
@@ -2900,6 +2901,8 @@ pub enum ExitReason {
     Stopped,
     /// Stopped after writing a snapshot ([`AfterSnapshot::Stop`]).
     Snapshotted,
+    /// The host's hypervisor refused to enter a vCPU (D261): the host's, never the guest's.
+    Refused(limits::EntryRefused),
     Error(String),
 }
 

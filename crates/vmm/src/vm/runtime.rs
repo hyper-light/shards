@@ -1903,6 +1903,13 @@ fn vcpu_thread(
             Ok(hv::Exit::Canceled) => sh.park_for_snapshot(index, &vcpu),
             Ok(hv::Exit::Shutdown) => return sh.stop(ExitReason::PowerOff),
             Ok(hv::Exit::Reset) => return sh.stop(ExitReason::Reset),
+            Ok(hv::Exit::Refused(reason)) => {
+                return sh.stop(ExitReason::Refused(super::limits::EntryRefused {
+                    vcpu: index,
+                    reason,
+                    host: super::limits::HostModel::here(),
+                }));
+            }
             Err(e) => return sh.stop(ExitReason::Error(format!("vCPU {index}: {e}"))),
         }
     }
