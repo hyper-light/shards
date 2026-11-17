@@ -10187,7 +10187,8 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
     (`ROOM`), metrics read (`METRICS`), and each of init's builtins its quiet work asks
     (`exec_answered`, a record per builtin: `STAT`, `TOP`, `STATS`, a member's ports, a
     network's switch, a layer's size, an update), which were each `TAKE_TIMEOUT`'s 10 s
-    (ROOT's (3), 2026-11-13). Each keeps W*, the slowest answer seen from a
+    (ROOT's (3), 2026-11-13). A network's switch keeps one record for each verb asked of it
+    (D215, 2026-11-17: a `make`'s answers had judged a `connect`). Each keeps W*, the slowest answer seen from a
     wait's start to its exec's end, and R*, the least CPU rate a microVM still answered at
     (`shards_api::Record`). Only an exec's own end teaches: one the daemon ended teaches
     nothing. Each wait begins before its exec is asked (amended below), so every answer of
@@ -28641,6 +28642,31 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
       `a_runs_stop_grace_is_its_daemons_and_not_refused` ("its kind learned nothing of an
       answer") and `a_streaming_guests_cpu_is_its_liveness_and_its_stop_its_hosts_hold`
       (never refused, its kind cold) failed so on adacachy2 with its 32 cores busy.
+    - *A member is ended only for the stillness of the party its answer waits on* (ROOT's
+      ruling, 2026-11-17, goal fb3528f9, refining ROOT's (3) of 2026-11-13, not reversing
+      it). A health judgment, such as `health::Wait::WhileRuns` on init's builtins, may end a
+      member only where that party made no progress and its host did not hold it. A
+      microVM without CPU while its answer waits on another party is not stalled. That
+      party may be the host's network process, the daemon, or a host-side reply on vsock,
+      and its progress and holds are then the party's too.
+      - *Read, for the case that brought it.* CI 43968984258's x86_64 musl job ended a
+        running member's connect: engine.rs `a_running_member_is_connected_and_disconnected_at_once`,
+        "srv: its microVM ran no CPU in 5.675836ms past the slowest answer seen (3.041764ms)".
+        - Init's answer waits on no other party. `members.rs` `connect` gives the member
+          its address through the switch (links.rs `member_address`: netlink in the switch's,
+          the gate's and the member's namespaces), its routes, and its grants again
+          (`regrant`: the nftables tables, each in one transaction). All of it is the
+          provider guest's own kernel and init, so the provider's VM process is the whole
+          party, as `WhileRuns` follows it.
+        - Its W* was another verb's. One record per builtin byte (`Answers::builtins`) held
+          every `NETWORK` verb, and the test's two `make`s, which only record a network in
+          init's memory, taught 3.0 ms.
+        - Cure: each verb of a network's switch is a kind of its own (`Answers::networks`,
+          `health::NETWORK_VERBS`), cold until its first answer, as D215 keeps each kind apart.
+          Held by daemon.rs `a_networks_verbs_are_judged_each_by_its_own_record` (red with
+          the one record).
+        - Unproven (R09): whether the guest idled those 5.7 ms in its own kernel or its
+          nested host did not run it. The run that would tell is owed to ROOT.
     - *A party is what was found of it until it ends* (waits-09, waits-10). A process once
       found is followed until it has gone or ended, wherever it is listed since: a daemon's
       microVMs as they end after it (a daemon stop's party), a client's children reparented
