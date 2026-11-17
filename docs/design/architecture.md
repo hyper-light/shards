@@ -10544,6 +10544,29 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
       `a_cold_wait_follows_its_microvm_while_it_lives` keeps its W* of the answer's whole
       0.8 s from the ask; the daemon's `a_microvm_that_does_not_give_back_keeps_no_other_waiting`
       learns from one pass. Owed (ROOT): those tests on Linux, macOS and Windows.
+  - *Amended again the same day (own-35-ci-green, kiln goal fb3528f9; ROOT's ruling): the read
+    waits for W\*, by D215's rule.*
+    - *Before.* `await_exit` read the microVM's process at its first look that found nothing
+      to read, right after the ask, which almost no answer comes before; and the answer read
+      it again (`Follow::answered`, whose look on Windows takes another ToolHelp snapshot).
+    - *Decided.* An exec's wait keeps the rule D215 gave its judged waits the same day ("the
+      read waits for W*"; health.rs `read_at`, the one rule of every judged wait: an exec's,
+      a visit's hold, a judged exchange's). It waits on its answer alone until it has lasted
+      W*, its kind's slowest answer timed from the ask, and reads the process only past W*,
+      following it from then, or ending the exec there where it cannot be read
+      (`Cut::Unread`); a kind with no answer yet waits on its answer, or its connection's end,
+      alone, as before. Its answer reads the process only where that read began
+      (`teach_answer`). The trade-off is D215's: before W* its judge could refuse nothing, so
+      a microVM that runs nothing is refused, and a group told (`Wait::GroupWord`), about one
+      W* later, its first judged window beginning at W* instead of at the ask; answers within
+      W* teach W* alone, and R* and C* come from the waits that needed a read.
+    - No literal; no cache touched.
+    - *Tests* (written, not built or run: the lane's no-test rule). health.rs
+      `an_exec_answered_within_w_star_reads_no_process`: red at 2fe4947fba, where its first
+      look read this busy test process and its answer taught that CPU as a rate; green here,
+      W* alone. Owed (ROOT): the health tests and the daemon's exec tests
+      (`metrics_whose_microvm_runs_nothing_are_ended`, now refused one W* later) on Linux,
+      macOS and Windows.
   - *Cold start*: before its kind's first answer, a wait follows its microVM's liveness
     alone, to its exec's end or its microVM's.
   - *The judge*: past W* from its start, the wait looks at the microVM's process once each
@@ -12558,8 +12581,8 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
     comes, and it is refused at once: "no warm VM of … was ready in …: none is starting for
     it". It was `READY_TIMEOUT`'s minute, which it waited out for nothing
     (`a_claim_none_can_start_for_is_refused_at_once`).
-  - *A visit's VM holding its files* (`visit::await_holding`, its STARTED after RUN; one there
-    before the wait's first look timed from its RUN: D222, amended 2026-11-17) is
+  - *A visit's VM holding its files* (`visit::await_holding`, its STARTED after RUN, timed from
+    its RUN, its VM process read only past W*: D222, amended 2026-11-17) is
     judged on `Answers::held`: "its VM ran nothing of its start for …, past the slowest hold
     seen (…), … after it began". It was `READY_STALL`'s 10 s looks and `READY_TIMEOUT`'s
     60 s (`a_visits_vm_is_waited_for_while_it_starts_and_refused_once_still_past_the_slowest_hold`:
@@ -22298,6 +22321,27 @@ to say STARTED only once its run was registered for its hold to teach.
   registration before its 1.5 s, as its hold teaches either way. Owed to ROOT: that test red at
   7fa002ba6e and green here, and the daemon's bin tests on macOS and Linux.
 
+Amended again 2026-11-17 (own-35-ci-green, kiln goal fb3528f9; ROOT's ruling): a visit's hold
+reads its VM process only once its wait has lasted W*, by D215's rule. A hold not there at the
+first look was followed from that look, its VM process read there, and again by its answer
+(`Follow::answered`): on Windows a ToolHelp snapshot with each, and the system's records (13.1
+to 13.8 ms a read, PM M606), the cost the paragraph above left unchanged.
+- *Decided:* `await_holding` keeps the rule D215 gave its judged waits the same day ("the read
+  waits for W*"; `health::read_at`, the one rule of every judged wait: an exec's, a visit's
+  hold, a judged exchange's). It waits on its VM's connection alone until it has lasted W*, the
+  slowest hold seen, timed from the time taken before its RUN, and only past W* follows the VM
+  process from then; a record with no hold yet waits on the connection alone, as before. Each
+  hold teaches its time from the RUN (`health::teach_answer`), and the work its follow read
+  where one began, so a hold within W* teaches W* alone, with no read of the process, wherever
+  it is found. The trade-off is D215's: a VM that runs nothing of its start is refused about one
+  W* later, its first judged window beginning at W* instead of at the first look.
+- *Tests* (written, not built or run: the lane's no-test rule): daemon.rs
+  `a_hold_within_w_star_reads_no_process` (a busy stand-in holds 50 ms after its run is
+  registered, its record's W* 10 s): red at 2fe4947fba, where the first look followed the
+  stand-in and the hold taught its CPU as a rate; green here, W* alone. Owed to ROOT: it, the
+  hold tests above (the still half now refused about one W* later), and the daemon's bin tests
+  on macOS and Linux.
+
 ### The `crates/shards` figures of the picked-constants audit (2026-11-09): each from its source
 
 **Found.** The audit of 2026-11-09 (docs/audit/2026-11-09_picked-constants.md, "crates/shards")
@@ -29977,8 +30021,9 @@ jupiter (PM M606), on the start path of every `shards run`.
   whose TAKEN comes within W*; on Linux and macOS the reads it skips are the process's own
   files and records. One rule on every OS. Held by health.rs
   `an_answer_within_w_star_reads_no_process` (red at e081918540, where the first ask read the
-  process; past W*, its next ask follows it). Not changed by this: an exec's wait (D188) and
-  a visit's hold (D222) read at their first look that finds nothing.
+  process; past W*, its next ask follows it). An exec's wait (D188) and a visit's hold (D222)
+  keep the same rule since, by ROOT's ruling the same day: health.rs `read_at` is the one rule
+  of all three.
 - *Tests* (written, not built or run: the lane's no-test rule). health.rs
   `a_take_there_at_its_waiters_first_look_teaches_from_its_ask`: red at 3c117f5204, where the
   judge, asked first, read this busy test process and taught the take its CPU and a W* timed

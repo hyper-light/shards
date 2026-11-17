@@ -16162,6 +16162,45 @@ mod tests {
         });
     }
 
+    /// A visit's VM that holds within its kind's W* is read nothing of (D222, amended
+    /// 2026-11-17: D215's rule, `health::read_at`): the wait for its hold waits on its
+    /// connection alone until W*, and reads its process only past it, so its hold teaches its
+    /// time from its RUN alone. Before, the wait's first look that found nothing read the VM
+    /// process, and the hold read it again and taught the CPU it ran meanwhile: here a busy
+    /// stand-in's. Its STARTED comes once its run is registered (`until_registered`), the wait
+    /// for its hold next on its thread, so that wait's first look finds it not holding yet.
+    #[cfg(unix)]
+    #[test]
+    fn a_hold_within_w_star_reads_no_process() {
+        let t = Test::new("held-w");
+        t.run(|t| {
+            let slowest = Duration::from_secs(10);
+            t.t.daemon.answers.held.teach_unrated(slowest);
+            let busy = shards_ipc::spawn(
+                Path::new("/bin/sh"),
+                &[OsStr::new("-c"), OsStr::new("while :; do :; done")],
+                &[],
+                false,
+            )
+            .unwrap();
+            let id = t.create("within");
+            let (run, vm) = holding(t, &id, Arc::new(busy));
+            assert_eq!(heard(&vm).0, kind::RUN);
+            say(&vm, kind::TAKEN, &[]);
+            until_registered(&t.t.daemon, &id);
+            std::thread::sleep(Duration::from_millis(50));
+            say(&vm, kind::STARTED, &[]);
+            assert_eq!(joined(run), Ok(()));
+            assert_eq!(
+                t.t.daemon.answers.held.seen(),
+                Seen::Learned { slowest, rated: None },
+                "its process read within W*"
+            );
+            say(&vm, kind::DONE, &[0]);
+            until_ended(&t.t.daemon, &id);
+        });
+    }
+
     /// A warm VM that ends while it waits is reaped, and taken out of its pool, by the
     /// followers' loop: no thread waits out its life (PM M90).
     #[test]
