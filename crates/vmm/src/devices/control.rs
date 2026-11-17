@@ -47,6 +47,8 @@ pub struct Control {
     window_heads: OnceLock<std::sync::Arc<WindowHeads>>,
     /// What runs as the guest first says its PID 1 runs (`marker::INIT_STARTED`).
     on_init_started: std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    /// What runs as the guest's init first announces the contract it speaks (`control::ABI`).
+    on_announced: std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>,
     /// Its PCI bus's hot-plug, where it has slots (D214).
     /// Taken as the machine is taken apart: its slots' MSIs reach its VM, which they would
     /// keep as long as a handle of it lives.
@@ -195,6 +197,17 @@ impl Control {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(hook);
     }
 
+    /// Runs `hook` as the guest's init first announces the contract it speaks
+    /// (`control::ABI`), on the vCPU that announces it: shards-init announces it once the CPUs
+    /// it brings online are (`shards_online`, PM M379), before anything it runs. A restored
+    /// guest announced it before its snapshot, which keeps it, and runs no hook.
+    pub fn on_announced(&self, hook: Box<dyn FnOnce() + Send>) {
+        *self
+            .on_announced
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(hook);
+    }
+
     /// The MAC the VMM was given for the guest's network device, which the guest reads
     /// (`control::MAC`): a restored VM's own, where its guest still has its template's.
     pub fn on_mac(&self, mac: [u8; 6]) {
@@ -242,6 +255,14 @@ impl MmioDevice for Control {
         // In one access only, as it is read.
         if offset == control::ABI && data.len() == 8 {
             self.abi.store(get_le(data), Ordering::Release);
+            let hook = self
+                .on_announced
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take();
+            if let Some(hook) = hook {
+                hook();
+            }
             return;
         }
         if offset == control::HOTPLUG_REQUEST && data.len() == 8 {
@@ -439,5 +460,22 @@ mod tests {
         restored.restore(&mut Reader::new(&saved)).unwrap();
         assert_eq!(restored.guest_abi(), Some(shards_abi::IDENTITY));
         assert_eq!(restored.generation(), 1);
+    }
+
+    /// What waits for the init's announcement (D261's vCPU records) runs as it first comes, in
+    /// its one 64-bit access, and once: not for half of it, nor for an announcement again.
+    #[test]
+    fn the_inits_announcement_runs_its_hook_once() {
+        let c = Control::default();
+        let (told, heard) = std::sync::mpsc::channel();
+        c.on_announced(Box::new(move || {
+            let _ = told.send(());
+        }));
+        c.write(control::ABI, &0x1234_5678u32.to_le_bytes());
+        assert!(heard.try_recv().is_err(), "half of it is none");
+        c.write(control::ABI, &shards_abi::IDENTITY.to_le_bytes());
+        assert!(heard.try_recv().is_ok());
+        c.write(control::ABI, &shards_abi::IDENTITY.to_le_bytes());
+        assert!(heard.try_recv().is_err(), "once");
     }
 }

@@ -686,6 +686,19 @@ pub fn containers() -> Result<PathBuf, String> {
     Ok(dir)
 }
 
+/// What tells a VM process where its host model's vCPU records are kept (`--vcpu-records`,
+/// D261): the user's cache's `vcpu-limits`, which the VM is granted through its spawner (D30).
+/// None where no cache is named whole: its VM then keeps no records.
+pub(crate) fn vcpu_records_words() -> Vec<std::ffi::OsString> {
+    match cache() {
+        Ok(cache) if cache.is_absolute() => vec![
+            "--vcpu-records".into(),
+            cache.join("vcpu-limits").into_os_string(),
+        ],
+        _ => Vec::new(),
+    }
+}
+
 /// This user's cache: `SHARDS_CACHE` where it names a directory, else `~/Library/Caches/shards`
 /// on macOS, `$XDG_CACHE_HOME/shards` or `~/.cache/shards` elsewhere on Unix,
 /// `%LOCALAPPDATA%\shards` on Windows. A command a client of another machine runs there is

@@ -105,6 +105,10 @@ pub enum Access {
     ReadNewestIfThere,
     /// A file it reads and writes: a descriptor opened read-write.
     Write,
+    /// A file it reads and writes, made with its directory where it is not there, which a
+    /// confined VM may not make: a descriptor opened read-write. Its host model's vCPU records
+    /// (D261), kept in its user's cache.
+    Keep,
     /// A directory it writes in, its own: made first if it is not there, then a read-write
     /// bookmark on macOS (a directory cannot be granted read-only, PM M70); on Windows,
     /// where its snapshots' generations are staged for it (D196).

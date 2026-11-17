@@ -3706,7 +3706,12 @@ microVM as virtio-fs shares (virtio 1.3 §5.11; Linux fs/fuse/virtio_fs.c):
       its pin, never guessed from its former path. No retry/deadline/size is added.
       The focused fault test went red before the fix; actual Mac unit/clippy results and
       remaining guest/platform validation are in
-      [runs-fixes](../research/measurements/runs-fixes/README.md).
+      [runs-fixes](../research/measurements/runs-fixes/README.md). *Amended 2026-11-17
+      (CI 44076016255 and 44077430171, arm64 Windows, the test's first Windows runs):* on
+      Windows the record is WSL's words (`$LXUID`, `$LXGID`, `$LXMOD`), and one that is not
+      four bytes was read as absent, so a node whose `$LXUID` broke was its share's default
+      owner's, or root's beside a whole `$LXGID`. Such a word is now a malformed record,
+      refused (EIO); the test breaks the record in each host's own form (`break_owner`).
     - *Root's stays root's.* A root run's host files are root's, as before.
     - *Device nodes stay root's.* A host device node has no attributes here (V08) and
       stays root's. The guest kernel opens a device node itself, as its own device of
@@ -29215,6 +29220,16 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
       (`Wait::read_through`, else `Record::teach_unrated`: W* alone). A kept record is
       `served W* [rated R*cpu R*wall C*]`. One without a whole rating, the older three
       numbers among them, is read as none: its kind cold until its next answer rewrites it.
+      *Amended 2026-11-17 (CI 44076016255, arm64 Windows):* an answer read through its end
+      whose work read none teaches W* alone too (`Record::teach`). It says nothing of the least
+      rate a working party answers at, and R* 0 ns holds no floor. Windows' process times
+      move in its clock's ticks (GetProcessTimes, 15.625 ms; "C* 15.625ms" in the runner's
+      accounts): one of harness.rs' three stand-ins busy 50 ms read as none on that busy
+      runner, its kind R* 0 ns over 70.6 ms, and the sleeper ticking 1 ms in 11 was served
+      22.9 s in. Held by judge.rs `an_answer_of_no_work_teaches_its_slowest_alone` (red with
+      such an answer rated). A wait's account and the tests' rest checks read a process's
+      runnable threads on Windows too (`shards_api::runnable_threads`, from the same system
+      listing a `Followed`'s hold reads); before, Windows read none ("unread").
     - *Where it applies* (ROOT's ruling, 2026-11-14). A caller passes `Span::work`, read
       through one rule (`Watch::vouched_by`: the look ran or rested, and its process was
       neither starved, stopped nor ending). The tests' `Wait` passes it everywhere. A wait on
@@ -37737,11 +37752,45 @@ post-mortem read of the printk ring through VMCOREINFO, not a debug port.
       - The storms size their largest arm by that count (`common::vcpus_admitted`).
       - CI keeps the counts beside the judge's records (`target/judge-records/<class>/vcpus`).
       - The A/B is retired; its experiment's arm stays (`a_d261_arm_boots_the_vcpus_its_experiment_asks`).
-      - *Owed:* the product's runs keeping and asking the counts. vm_run.rs, the VM process of
-        `run --kernel` and of the daemon's runs, asks `admit` before `vm::start` and keeps each
-        outcome. Its directory is the user's cache (`helpers::cache`, made shared with the VM
-        process), which a confined VM process may not reach; that does not matter where entries
-        are never refused (HVF, WHP).
+      - *The product's runs* (built 2026-11-17, ROOT's ruling: "the VM process consults the
+        records before it starts and records each outcome at its end", the user's cache shared
+        with it through D30's grants, never by widening its sandbox).
+        - *Where.* `<the user's cache>/vcpu-limits/<host model>` (`helpers::cache`). The
+          spawner names the directory (`--vcpu-records DIR`, `helpers::vcpu_records_words`):
+          launch.rs, for the daemon's runs and warm VMs, an orchestrator's runs and builders;
+          and the CLI's `run --kernel` and `restore DIR`. The VM is told it, never left to find
+          it: App Sandbox starts a VM process in its container (hence `--cwd`), and its
+          environment is filtered (`netproc::child_env`).
+        - *Granted, one file.* On macOS and Windows it is asked for with the VM's other files:
+          `Access::Keep` for a boot (opened read-write, made with its directory where it is
+          not, `platform::open_made`), `ReadIfThere` for a restore. On Linux the VM holds it
+          open before Landlock (`Limits::hold`), which gives it no rule for the file. Its
+          reads and writes go through `platform::open_input`, as its disks' do.
+        - *Consulted* before the machine is built (`vm::start`, `start_gpu_report`,
+          `restore_reported`). A count only refused there is refused, typed
+          (`StartError::OnlyRefused`), said as the host's with its evidence and the file that
+          keeps it, which its user may remove where the host has changed.
+        - *Kept once, as the outcome comes.* Ran: as the guest's init announces its contract
+          (`control::ABI`, `Control::on_announced`), which shards-init does once its CPUs are
+          online and before anything it runs. Refused: on the vCPU the host refused to enter,
+          as its machine ends. Not at the VM process's end: the daemon ends many by SIGKILL
+          (idle warm VMs, a budget's reclaim, a stop past its grace, daemon/budget.rs and
+          commands.rs), and kept only at their end, a count whose machines are killed would
+          never show it ran, so one flaky refusal would refuse it for good.
+        - *Let go of as kept.* The VM forgets its grant (`platform::forget_input`) before the
+          write, which a thread of its own makes on a descriptor of its own. Nothing its guest
+          runs past its init, a workload that took the process over included, can then write
+          what later machines are refused by (review 8.2's reasoning for the snapshot a VM
+          gives up). A restore reads, then lets go: its template's boot kept its count.
+        - *Written in place* under the file's own lock (flock; LockFileEx on Windows), padded
+          with empty lines where shorter. A VM process may not rename another file over it,
+          and App Sandbox may not let it cut the file short.
+        - *`admit` refined:* a count that has run is tried, even past one only refused ("A
+          count that has both run and been refused is attempted").
+        - *Tests* (written, not run; ROOT's): vmm `vm::limits` (in place, the grant used until
+          let go of, the refinement), `devices::control` (the announcement's hook runs once);
+          the E2E of every boot and restore on HVF, KVM and WHP, whose VMs now ask for their
+          records.
   - WHP's boot said as it comes. On Windows the test starts its VM process with
     `common::Vm::spawn_timed`: each line the process prints is also said on stderr as it
     comes, `D261 WHP boot <time from the spawn>: <line>`. CI's log keeps them whatever ends

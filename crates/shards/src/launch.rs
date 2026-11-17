@@ -444,13 +444,15 @@ fn launch_with(
         }
         None => None,
     };
-    let (fds, words) = handed(
+    let (fds, mut words) = handed(
         &kind,
         null.as_fd(),
         err.as_fd(),
         granted.as_ref().map(|g| g.as_fd()),
         started.as_ref().map(|(_, side, mac)| (side, mac)),
     );
+    // Where its host model's vCPU records are kept (D261), which it is granted (D30).
+    words.extend(crate::helpers::vcpu_records_words());
     let args = absolute(args)?;
     let args: Vec<&OsStr> = args.iter().map(OsString::as_os_str).collect();
     let argv = after_command(&args, &words);
@@ -623,7 +625,7 @@ fn launch(plan: Plan<'_>, kind: Kind) -> Result<Launched, String> {
     let ((asks_from, asks_to), (answers_from, answers_to)) =
         pipes.map_err(|e| format!("{who}'s grants: {e}"))?;
     let (asks_to, answers_from) = (OwnedHandle::from(asks_to), OwnedHandle::from(answers_from));
-    let (given, sockets, words) = handed(
+    let (given, sockets, mut words) = handed(
         &kind,
         [
             shards_ipc::Given {
@@ -637,6 +639,8 @@ fn launch(plan: Plan<'_>, kind: Kind) -> Result<Launched, String> {
         ],
         network.as_ref().map(|(_, side, mac)| (side, mac)),
     );
+    // Where its host model's vCPU records are kept (D261), which it is granted (D30).
+    words.extend(crate::helpers::vcpu_records_words());
     let argv = after_command(args, &words);
     let err = std::io::stderr();
     let suspended = shards_ipc::spawn_suspended(&shards_ipc::Spawn {

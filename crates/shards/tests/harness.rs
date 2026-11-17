@@ -1279,6 +1279,25 @@ fn a_judged_calls_own_work_is_its_progress() {
     // beside it run their own (4 of 4 whole binaries on HVF, run with libtest's threads,
     // "a call idle on its own thread not refused" while they worked).
     let party = idle.id();
+    // At rest, too, before its calls begin: no thread of its process runnable. A process's
+    // start may leave threads of its OS's beside its own (on Windows its loader's workers),
+    // which a host whose CPUs the tests beside it keep busy can hold runnable on no CPU after
+    // its own thread says it rests: its host's hold, which holds a wait on it unrefused. CI's
+    // arm64 Windows runner left the sleeper unrefused in runs 44007524337, 44076016255 and
+    // 44077430171, no account kept: its wait's account below names its members' runnable
+    // threads should it be again (`shards_api::runnable_threads`, read on Windows too).
+    let at_rest = || shards_api::runnable_threads(party).is_none_or(|(runnable, _)| runnable == 0);
+    common::judged(
+        common::Party::client(party, None),
+        "its stand-in at rest",
+        || {},
+        || {
+            while !at_rest() {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        },
+    )
+    .unwrap();
     let call = |ms: u64, sleep: bool, forget: bool| work(party, ms, sleep, forget);
     let (quick, _) = call(0, false, true);
     let (busy, _) = call(200, false, false);

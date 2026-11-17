@@ -9,6 +9,7 @@ use std::thread::JoinHandle;
 use super::barrier::Barrier;
 use super::guest_time::{self, GuestClocks, GuestTimes};
 use super::hold::Hold;
+use super::limits::{Limits, Outcome};
 use super::live::{self, Pages};
 use super::machine::{self, Machine};
 use super::{AfterSnapshot, Config, ExitReason, Precopied, Precopying, RestoreConfig, Save, SnapshotPolicy};
@@ -1105,6 +1106,9 @@ struct Shared {
     governor: Mutex<Option<JoinHandle<()>>>,
     /// Its group's governor's thread (D183), made as its run's group comes.
     group_governor: Mutex<Option<JoinHandle<()>>>,
+    /// Its host model's vCPU records (D261) until its outcome is kept there
+    /// ([`keep_outcome`](Self::keep_outcome)).
+    records: Mutex<Option<Limits>>,
 }
 
 /// What a snapshot the host asks for reads of the machine (D176): its VM and devices by
@@ -1193,6 +1197,47 @@ impl Shared {
             guest: GuestClocks::known(crate::hv::GUEST_TIME_CHARGED),
             governor: Mutex::new(None),
             group_governor: Mutex::new(None),
+            records: Mutex::new(None),
+        }
+    }
+
+    /// Keeps this machine's outcome with its host model's vCPU records (D261), once, and lets
+    /// go of them: that it ran, as its guest's init announces itself with its CPUs online
+    /// (`refused` none), written on a thread of its own as the vCPU that said so goes on; or
+    /// that its host refused to enter vCPU `refused`, on that vCPU, as its machine ends. They
+    /// are let go of before anything is written, so that nothing its guest runs past its init,
+    /// a workload that took its process over among them, may write what later machines are
+    /// refused by: the write has its own descriptor.
+    fn keep_outcome(&self, refused: Option<usize>) {
+        let Some(records) = lock(&self.records).take() else {
+            return;
+        };
+        let opened = records.opened().map_err(|e| e.to_string());
+        records.let_go();
+        let at = records.file().to_path_buf();
+        let counted = u32::try_from(self.kickers.len()).map_err(|e| e.to_string());
+        let (file, vcpus) = match opened.and_then(|file| counted.map(|vcpus| (file, vcpus))) {
+            Ok(kept) => kept,
+            Err(e) => {
+                debug!("its vCPU records, {}: {e}", at.display());
+                return;
+            }
+        };
+        let keep = move |outcome: Outcome| {
+            if let Err(e) = super::limits::keep(file, vcpus, outcome) {
+                debug!("keeping its outcome in {}: {e}", at.display());
+            }
+        };
+        match refused {
+            Some(vcpu) => keep(Outcome::Refused { vcpu }),
+            None => {
+                let spawned = std::thread::Builder::new()
+                    .name("vcpu-records".into())
+                    .spawn(move || keep(Outcome::Ran));
+                if let Err(e) = spawned {
+                    debug!("keeping that it ran: {e}");
+                }
+            }
         }
     }
 
@@ -1365,6 +1410,10 @@ impl Running {
         for t in self.threads.drain(..) {
             let _ = t.join();
         }
+        // Its vCPU records, where it ended with no outcome to keep (D261): let go of.
+        if let Some(records) = lock(&self.shared.records).take() {
+            records.let_go();
+        }
         if let Some(t) = lock(&self.shared.governor).take() {
             let _ = t.join();
         }
@@ -1427,7 +1476,24 @@ fn check_vcpus(vcpus: u32) -> Result<(), String> {
 pub fn start(cfg: &Config) -> Result<(Handle, Running), super::StartError> {
     check_host()?;
     check_vcpus(cfg.vcpus)?;
-    launch(machine::build(cfg)?, cfg.snapshot.clone(), false, cfg.join).map_err(super::StartError::from)
+    admit(cfg.vcpu_records.as_ref(), cfg.vcpus)?;
+    launch(
+        machine::build(cfg)?,
+        cfg.snapshot.clone(),
+        false,
+        cfg.join,
+        cfg.vcpu_records.clone(),
+    )
+    .map_err(super::StartError::from)
+}
+
+/// Refuses at once a machine of `vcpus` its host model has only refused to enter, as `records`
+/// keep it (D261): the host's, typed.
+fn admit(records: Option<&Limits>, vcpus: u32) -> Result<(), super::StartError> {
+    match records {
+        Some(records) => records.admit(vcpus).map_err(super::StartError::OnlyRefused),
+        None => Ok(()),
+    }
 }
 
 /// The same boot, with one borrowed initial-report writer at GPU construction.
@@ -1441,11 +1507,13 @@ pub fn start_gpu_report(
     }
     check_host()?;
     check_vcpus(cfg.vcpus)?;
+    admit(cfg.vcpu_records.as_ref(), cfg.vcpus)?;
     launch(
         machine::build_reported(cfg, Some(report))?,
         cfg.snapshot.clone(),
         false,
         cfg.join,
+        cfg.vcpu_records.clone(),
     )
     .map_err(super::StartError::from)
 }
@@ -1519,6 +1587,13 @@ pub fn restore_reported(
         name,
     } = pinned;
     check_vcpus(snap.config.vcpus)?;
+    // Its count refused where its host model has only refused it (D261), and its records let
+    // go of: a restore keeps no outcome, its template's boot having kept its count's.
+    if let Some(records) = &cfg.vcpu_records {
+        let admitted = records.admit(snap.config.vcpus);
+        records.let_go();
+        admitted.map_err(|refused| refused.to_string())?;
+    }
     let mut working_set = if cfg.prefetch {
         snapshot::read_working_set(&generation, machine::PAGE, guest_pages(&snap)).unwrap_or_else(|e| {
             warn!("{e}; restoring without prefetching it");
@@ -1618,7 +1693,7 @@ pub fn restore_reported(
         snap.config.memory_mib,
         cfg.dir.display()
     );
-    let (handle, running) = launch(machine, cfg.snapshot.clone(), cfg.hold, cfg.join)?;
+    let (handle, running) = launch(machine, cfg.snapshot.clone(), cfg.hold, cfg.join, None)?;
     if recorder.is_some() {
         *lock(&handle.shared.recording) = recorder;
     }
@@ -1671,6 +1746,7 @@ fn launch(
     snapshots: Option<SnapshotPolicy>,
     hold: bool,
     join: Option<&'static crate::devices::virtio::block::Join>,
+    records: Option<Limits>,
 ) -> Result<(Handle, Running), String> {
     let Machine {
         vm,
@@ -1703,6 +1779,13 @@ fn launch(
             PowerEvent::Reset => ExitReason::Reset,
         })
     }));
+    // Its host model's vCPU records (D261), kept once, by whichever comes first: its guest's
+    // init announcing itself, its CPUs online, or a vCPU its host refuses to enter.
+    if let Some(records) = records {
+        *lock(&shared.records) = Some(records);
+        let sh = shared.clone();
+        control.on_announced(Box::new(move || sh.keep_outcome(None)));
+    }
 
     let _ = shared.parts.set(Parts {
         vm: Arc::downgrade(&vm),
@@ -1904,6 +1987,7 @@ fn vcpu_thread(
             Ok(hv::Exit::Shutdown) => return sh.stop(ExitReason::PowerOff),
             Ok(hv::Exit::Reset) => return sh.stop(ExitReason::Reset),
             Ok(hv::Exit::Refused(reason)) => {
+                sh.keep_outcome(Some(index));
                 return sh.stop(ExitReason::Refused(super::limits::EntryRefused {
                     vcpu: index,
                     reason,

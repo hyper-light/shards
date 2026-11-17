@@ -67,6 +67,7 @@ fn access(code: u8) -> Option<Access> {
         2 => Some(Access::Write),
         3 => Some(Access::MakeDir),
         4 => Some(Access::Listen),
+        6 => Some(Access::Keep),
         _ => None,
     }
 }
@@ -177,6 +178,9 @@ fn answer(access: Access, path: &Path, template: Option<&Path>) -> Result<Answer
     match access {
         Access::Read => open(false).map(Answer::File),
         Access::Write => open(true).map(Answer::File),
+        Access::Keep => shards_vmm::platform::open_made(path)
+            .map(Answer::File)
+            .map_err(at),
         Access::ReadIfThere => match std::fs::File::open(path) {
             Ok(file) => Ok(Answer::File(file)),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Answer::Absent),
@@ -458,6 +462,9 @@ fn handed(access: Access, path: &Path) -> Result<Handed, String> {
     match access {
         Access::Read => open(false).map(Handed::File),
         Access::Write => open(true).map(Handed::File),
+        Access::Keep => shards_vmm::platform::open_made(path)
+            .map(Handed::File)
+            .map_err(at),
         Access::ReadIfThere => match std::fs::File::open(path) {
             Ok(file) => Ok(Handed::File(file)),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Handed::Absent),
