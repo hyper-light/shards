@@ -2029,7 +2029,9 @@ impl<D: crate::containers::Disk> Daemon<D> {
     /// from one loop: the signal, then SIGKILL once its grace is up, then its VM once its
     /// guest's teardown has gone on no more for a slice, then giving up once the killed VM
     /// process has gone on with its end no more for a slice, each slice this host's own
-    /// and each end heard kept by it ([`super::ends`], D217). A signal that cannot be sent
+    /// and each end heard learned by it, timed as the loop woke for it, and kept in the home
+    /// once, after the last ([`super::ends`], D217): no end waits on the record's flush, nor
+    /// counts the loop's work on the ends before it as its own. A signal that cannot be sent
     /// kills its VM at once: its guest can be told nothing, nor tell its end. Each end is heard on a socket of its
     /// own, registered before anything is sent, so none is missed; `done` hears each
     /// index once, with whether it ended, as it does.
@@ -2128,6 +2130,8 @@ impl<D: crate::containers::Disk> Daemon<D> {
             }
         };
         let mut ready = Vec::new();
+        // Whether an end was learned, for the home to keep once all have ended.
+        let mut learned = false;
         while !going.is_empty() {
             // Escalate whatever is due.
             let now = Instant::now();
@@ -2205,9 +2209,8 @@ impl<D: crate::containers::Disk> Daemon<D> {
                             let mut byte = [0u8; 1];
                             let ended = matches!((&gone.told).read(&mut byte), Ok(1));
                             if ended {
-                                if let Err(e) = self.ends.heard(End::Exit, gone.since.elapsed()) {
-                                    super::log(e);
-                                }
+                                self.ends.learn(End::Exit, gone.since.elapsed());
+                                learned = true;
                             } else {
                                 super::log(format!(
                                     "microVM {}: no end heard {:?} after it was killed, its process gone on with nothing of its end for {:?}: {}",
@@ -2242,6 +2245,8 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 }
                 break;
             }
+            // When these ends were heard: taking those before one is no part of its end.
+            let woke = Instant::now();
             // Those whose end came.
             for &token in &ready {
                 let Some(k) = going.iter().position(|e| e.index as u64 == token) else {
@@ -2254,15 +2259,16 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 if !ended {
                     self.forget_waiter(&gone.id, gone.waiter);
                 }
-                // What this host's ends take, kept for the next (D217).
-                let kept = match gone.phase {
-                    _ if !ended => Ok(()),
-                    Phase::Killed | Phase::Escalated => self.ends.heard(End::Teardown, gone.since.elapsed()),
-                    Phase::VmKilled => self.ends.heard(End::Exit, gone.since.elapsed()),
-                    Phase::Signalled => Ok(()),
+                // What this host's ends take, learned for the next (D217).
+                let kind = match gone.phase {
+                    _ if !ended => None,
+                    Phase::Killed | Phase::Escalated => Some(End::Teardown),
+                    Phase::VmKilled => Some(End::Exit),
+                    Phase::Signalled => None,
                 };
-                if let Err(e) = kept {
-                    super::log(e);
+                if let Some(kind) = kind {
+                    self.ends.learn(kind, woke.saturating_duration_since(gone.since));
+                    learned = true;
                 }
                 done(
                     gone.index,
@@ -2270,6 +2276,9 @@ impl<D: crate::containers::Disk> Daemon<D> {
                     if ended { how(&gone.phase) } else { How::Lost },
                 );
             }
+        }
+        if learned && let Err(e) = self.ends.keep() {
+            super::log(e);
         }
     }
 

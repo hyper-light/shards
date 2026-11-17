@@ -265,16 +265,25 @@ fn brings_up_every_vcpu() {
     }
 }
 
+/// Hypervisor.framework gives a process one VM at a time (`hv_vm_create` refuses a second,
+/// HV_EXISTS, hv/hvf/sys.rs): this binary's tests that run a machine in its own process take
+/// turns, each holding its turn until its machine has ended.
+static MACHINE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn machine_turn() -> std::sync::MutexGuard<'static, ()> {
+    MACHINE.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// Two vCPUs booted in this process, unconfined, to their end: the kernel panics for want
 /// of a root and resets, as `panic=-1` has it. The control for the SMP boots above, which
-/// run in a confined VM process. The one VM this binary makes in its own process
-/// (Hypervisor.framework allows one a process).
+/// run in a confined VM process.
 #[test]
 fn two_vcpus_boot_to_their_end_in_this_process() {
     use shards_vmm::vm::{self, Config, Console, ExitReason};
     if cannot_run_vms() {
         return;
     }
+    let _turn = machine_turn();
     let mut cfg = Config::new(kernel().to_path_buf(), None);
     cfg.vcpus = 2;
     cfg.memory_mib = 512;
@@ -297,12 +306,15 @@ fn two_vcpus_boot_to_their_end_in_this_process() {
 }
 
 /// The host's most vCPUs: the guest brings up as many as its kernel was built for, and is
-/// shown the rest, which its kernel names as it refuses them. Watched until its kernel says
-/// its CPUs are up, then stopped. hvc0 says so only as it registers and replays the log
-/// (device_initcall, D261), so the boot is watched that far: on a CI runner's nested WHP of
-/// 4 CPUs a 255-vCPU guest did not get there in 53 minutes (D261), where the rest of a boot
-/// of 64 vCPUs past their bring-up had taken 40 s and more. On Windows each line the boot
-/// prints is said as it comes, with its time.
+/// shown the rest, which its kernel names as it refuses them. Booted in this process and
+/// watched until its kernel says its CPUs are up, then stopped, judged by its own progress
+/// (D261): each line its kernel logs, read from its printk ring while its console has said
+/// nothing (from subsys_initcall, which publishes the ring's place, where hvc0 registers only
+/// at device_initcall: on a CI runner's nested WHP of 4 CPUs a 255-vCPU guest did not get
+/// there in 53 minutes), and from its console after. Its wait is refused only once the guest
+/// says nothing new for longer than the slowest gap between lines that passes of it saw on
+/// this host, and then says each line it said and when. On Windows each line is said as it
+/// comes, with its time.
 ///
 /// On an Intel host's KVM, D261's A/B: the boot as it is, then, never beside it, one whose
 /// kernel brings its APs up one at a time (`cpuhp.parallel=0`), each arm's outcome said as it
@@ -343,7 +355,7 @@ fn kvm_on_intel() -> bool {
 
 /// One arm of D261's A/B, [`brings_up_the_most`] told `also`: its outcome said on stderr as
 /// it ends, in a line of its own that CI's log keeps whether the test passes or not (`D261
-/// A/B arm`): brought up, the failed VM entry its VM process reported, or another failure,
+/// A/B arm`): brought up, the failed VM entry its machine ended with, or another failure,
 /// which its panic said above it; and its time from its start. What failed it is kept for its
 /// test to end with.
 fn bring_up_arm(max: u32, arm: &str, also: &str) -> std::thread::Result<()> {
@@ -363,47 +375,48 @@ fn bring_up_arm(max: u32, arm: &str, also: &str) -> std::thread::Result<()> {
     });
     let _ = writeln!(
         std::io::stderr(),
-        "D261 A/B arm {arm} (console=hvc0 panic=-1{also}): {}; {:?} from its start",
+        "D261 A/B arm {arm} ({BRINGS_UP}{also}): {}; {:?} from its start",
         failed.as_deref().unwrap_or("brought up"),
         start.elapsed()
     );
     ran
 }
 
-/// [`boots_the_hosts_maximum_vcpu_count`]'s boot of `max` vCPUs, its kernel told `also` past
-/// `console=hvc0 panic=-1`, which keys its wait apart beside its call site (`Vm::sized`), so
-/// that one arm's answers judge no other's.
+/// [`brings_up_the_most`]'s command line. Its console at the kernel's own default level
+/// (`loglevel=7`: CONFIG_CONSOLE_LOGLEVEL_DEFAULT in the pinned kernels' base configs, which
+/// shards' leave), as `run --kernel` booted it with its console on stdout. Told no level, a
+/// machine whose console no one reads is told `quiet` (`vm::kernel_cmdline`), which keeps the
+/// bring-up off hvc0: a host whose ring is not read would never see it (D261).
+const BRINGS_UP: &str = "console=hvc0 panic=-1 loglevel=7";
+
+/// [`boots_the_hosts_maximum_vcpu_count`]'s boot of `max` vCPUs in this process, its kernel
+/// told `also` past [`BRINGS_UP`], which keys its waits apart beside their call site, so that
+/// one arm's answers judge no other's.
 fn brings_up_the_most(max: u32, also: &str) {
-    let k = kernel();
-    let cpus = max.to_string();
-    let cmdline = format!("console=hvc0 panic=-1{also}");
-    let args: [&std::ffi::OsStr; 9] = [
-        "run".as_ref(),
-        "--kernel".as_ref(),
-        k.as_os_str(),
-        "--cpus".as_ref(),
-        cpus.as_ref(),
-        "--memory".as_ref(),
-        "1024".as_ref(),
-        "--cmdline".as_ref(),
-        cmdline.as_ref(),
-    ];
-    let vm = if cfg!(windows) {
-        common::Vm::spawn_timed(&args, "D261 WHP boot")
-    } else {
-        common::Vm::spawn(&args)
-    };
-    let mut vm = vm.sized(also.to_string());
+    use shards_vmm::vm::{self, Config, Console};
+    let _turn = machine_turn();
+    let mut cfg = Config::new(kernel().to_path_buf(), None);
+    cfg.vcpus = max;
+    cfg.memory_mib = 1024;
+    cfg.cmdline = format!("{BRINGS_UP}{also}");
+    cfg.console = Console::Discard;
+    // Its whole console kept, and with it its kernel's whole ring while its console has said
+    // nothing: this test reads them as it goes (D12, D261).
+    cfg.said = usize::MAX;
+    let (handle, running) = vm::start(&cfg).unwrap_or_else(|e| panic!("{e}"));
+    let (tx, ended) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(running.wait());
+    });
+    let tag = cfg!(windows).then_some("D261 WHP boot");
+    let (said, lines) = common::machine_says(&handle, &ended, "smp: Brought up", also, max, tag)
+        .unwrap_or_else(|failed| panic!("{failed}"));
     let configured = kernel_nr_cpus();
     let up = max.min(configured);
     let plural = if up == 1 { "" } else { "s" };
     let brought = format!("smp: Brought up 1 node, {up} CPU{plural}");
-    // A count other than the one asked for fails at once, with what the guest said. While it
-    // says something new: of more vCPUs than its host has CPUs, its VM process's CPU time
-    // counts only before its first line (`Heard::streaming`).
-    let said = vm.wait_for_any_streamed(&["smp: Brought up"], None);
-    vm.kill();
-    let seen = vm.seen.join("\n");
+    let seen = lines.timed();
+    // A count other than the one asked for fails at once, with what the guest said.
     assert!(said.contains(&brought), "{seen}");
     if max > configured {
         let refused = match common::ARCH {
@@ -412,7 +425,7 @@ fn brings_up_the_most(max: u32, also: &str) {
             // arch/arm64/kernel/smp.c
             _ => format!("Number of cores ({max}) exceeds configured maximum of {configured}"),
         };
-        assert!(seen.contains(&refused), "{seen}");
+        assert!(lines.text().contains(&refused), "{seen}");
     }
 }
 

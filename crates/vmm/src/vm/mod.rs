@@ -1203,12 +1203,16 @@ fn reported_renderer(
     }
 }
 
+/// What a VM process built without the GPU's renderer answers a GPU asked of it.
+#[cfg(all(hv, not(feature = "gpu")))]
+const RENDERS_NO_GPU: &str = "this VM process renders no GPU: shards' GPU VM process does, on macOS, Linux and Windows (D144, D201, D202)";
+
 #[cfg(all(hv, not(feature = "gpu")))]
 fn gpu_renderer(
     _selected: &[gpu_selection::PhysicalGpu],
     _report: Option<&mut GpuReportTo<'_>>,
 ) -> Result<(Box<dyn gpu::Renderer>, u64), String> {
-    Err("this VM process renders no GPU: shards' GPU VM process does, on macOS, Linux and Windows (D144, D201, D202)".into())
+    Err(RENDERS_NO_GPU.into())
 }
 
 /// A GPU's renderer and its window (D144, D201), at the first GiB boundary at or past
@@ -1249,7 +1253,7 @@ fn gpu_layout(
 /// The virtio-gpu device of `renderer`, its window `region` (D144, D201): no request it
 /// reads is larger than the guest's `ram`, from which no legitimate command outsizes, and
 /// a blob's place and length are whole pages of the host's.
-#[cfg(hv)]
+#[cfg(all(hv, feature = "gpu"))]
 fn gpu_device(
     vm: &crate::hv::Vm,
     renderer: Box<dyn gpu::Renderer>,
@@ -1263,9 +1267,22 @@ fn gpu_device(
     Ok(Box::new(gpu::Gpu::new(Box::new(served))))
 }
 
+/// A VM process without the GPU's renderer makes no virtio-gpu device: no renderer reaches
+/// it, [`gpu_layout`] refusing every GPU first, and so it carries none of the device's
+/// code (D36).
+#[cfg(all(hv, not(feature = "gpu")))]
+fn gpu_device(
+    _vm: &crate::hv::Vm,
+    _renderer: Box<dyn gpu::Renderer>,
+    _region: crate::devices::virtio::ShmRegion,
+    _ram: u64,
+) -> Result<Box<dyn crate::devices::virtio::VirtioDevice>, String> {
+    Err(RENDERS_NO_GPU.into())
+}
+
 /// The window a GPU's blobs are mapped into, `region` of the guest's addresses:
 /// Hypervisor.framework's stage 2, which maps each blob at its place (D144).
-#[cfg(hv = "hvf")]
+#[cfg(all(hv = "hvf", feature = "gpu"))]
 fn gpu_window(
     vm: &crate::hv::Vm,
     _region: &crate::devices::virtio::ShmRegion,
@@ -1276,7 +1293,7 @@ fn gpu_window(
 /// The window a GPU's blobs are mapped into, `region` of the guest's addresses: a range of
 /// this process reserved for it, one memslot over it, as a share's DAX window is
 /// (`dax_window`), which each blob is mapped into by its descriptor (D201).
-#[cfg(hv = "kvm")]
+#[cfg(all(hv = "kvm", feature = "gpu"))]
 fn gpu_window(
     vm: &crate::hv::Vm,
     region: &crate::devices::virtio::ShmRegion,
@@ -1295,7 +1312,7 @@ fn gpu_window(
 /// partition's mappings, each blob mapped at its place by its address, as
 /// Hypervisor.framework's stage 2 maps them; readable and writable, never executable
 /// (D202).
-#[cfg(hv = "whp")]
+#[cfg(all(hv = "whp", feature = "gpu"))]
 fn gpu_window(
     vm: &crate::hv::Vm,
     _region: &crate::devices::virtio::ShmRegion,

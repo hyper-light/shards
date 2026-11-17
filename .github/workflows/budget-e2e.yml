@@ -64,6 +64,19 @@ jobs:
         run: |
           nproc && free -m && lscpu | grep -E 'Model name|Virtualization|Hypervisor'
           uname -r
+      - name: The runner's image
+        id: image
+        run: echo "image=$ImageOS-$ImageVersion" >> "$GITHUB_OUTPUT"
+      # What CI's passing runs on this image taught the tests' judge (ci.yml `native`, D261), so
+      # that a stall here is refused as it is there; its target is this runner's own, which
+      # cargo builds for here. Read alone: CI's runs are the records' one writer, as a restore
+      # takes one entry, and a second writer's entry would drop the answers CI's kept after it.
+      - name: The judge's records, as CI kept them
+        uses: actions/cache/restore@v6.1.0
+        with:
+          path: target/judge-records
+          key: judge-records-${{ steps.image.outputs.image }}-${{ runner.arch }}-x86_64-unknown-linux-gnu-${{ github.run_id }}
+          restore-keys: judge-records-${{ steps.image.outputs.image }}-${{ runner.arch }}-x86_64-unknown-linux-gnu-
       - name: E2E
         env:
           SHARDS_REQUIRE_VMS: "1"
@@ -189,6 +202,20 @@ jobs:
           "TEMP: $env:TEMP"
           # Microsoft's console debugger, which a hung client's stacks are taken with (tests/common `stuck`).
           "cdb: " + (Test-Path "${env:ProgramFiles(x86)}\Windows Kits\10\Debuggers\x64\cdb.exe")
+      - name: The runner's image
+        id: image
+        shell: bash
+        run: echo "image=$ImageOS-$ImageVersion" >> "$GITHUB_OUTPUT"
+      # What CI's passing runs on this image taught the tests' judge, read alone, as the e2e
+      # job's are. Not where a log level is asked: its programs then answer at another pace
+      # than CI's, which sets none.
+      - name: The judge's records, as CI kept them
+        if: github.event.inputs.log == ''
+        uses: actions/cache/restore@v6.1.0
+        with:
+          path: target/judge-records
+          key: judge-records-${{ steps.image.outputs.image }}-${{ runner.arch }}-x86_64-pc-windows-msvc-${{ github.run_id }}
+          restore-keys: judge-records-${{ steps.image.outputs.image }}-${{ runner.arch }}-x86_64-pc-windows-msvc-
       - name: Test
         timeout-minutes: 120
         shell: bash
