@@ -2656,6 +2656,98 @@ impl Patience {
     }
 }
 
+/// What [`requests_end`]'s waits await, and key their kind by: the next end of the requests
+/// their party serves.
+pub const NEXT_END: &str = "a request's next end";
+
+/// Waits for `n` more ends of requests as `ended` brings them, judged by their own progress,
+/// their ends (D209 Part 11), as [`guest_says`] judges a guest by its lines: benches/arrival.rs'
+/// drain of each rate's requests once all of them have arrived.
+/// - Each end begins a wait for the next, judged as D215's judge judges ([`Wait`]), of one kind
+///   at its call site ([`NEXT_END`]), whichever rate it drains. Its party is the requests still
+///   outstanding by their clients (`clients`, less each end's own, `client_of`), what descends
+///   from them, and `home`'s daemon, whose CPU is its liveness alone ([`Cpu::Liveness`]): the
+///   daemon and its pools' warm microVMs run whether or not a request ends, and a drain judged
+///   by its party's CPU was never refused (CI 44007524337). Its daemon's words are progress
+///   still, among them its heartbeat of a microVM a client waits on that runs (daemon.rs
+///   `log_progress`).
+/// - Its W* is the slowest stretch this host has shown with requests outstanding and none
+///   ending: `stretches`, those its caller saw before it, taught first; what this host kept of
+///   its kind; and the slowest wait for a next end since. With none, its party's liveness alone.
+/// - Only a pass keeps what it was taught on this host: once all `n` came. A wait refused, or
+///   its party gone, keeps nothing, and an end that came only as it was refused teaches nothing.
+///
+/// The ends in the order they came; refused, those that came and what its wait said.
+#[track_caller]
+pub fn requests_end<E>(
+    ended: &std::sync::mpsc::Receiver<E>,
+    n: usize,
+    clients: &[u32],
+    client_of: impl Fn(&E) -> Option<u32>,
+    stretches: &[Duration],
+    home: &Path,
+) -> Result<Vec<E>, (Vec<E>, String)> {
+    let kind = WaitKind::awaiting(std::panic::Location::caller(), NEXT_END);
+    for &stretch in stretches {
+        kind.record().teach_unrated(stretch);
+    }
+    let party = |outstanding: &[u32]| {
+        let mut party = Party::with(Members::Clients(outstanding.to_vec()), Some(home));
+        party.read_cpu(Cpu::Liveness);
+        party
+    };
+    let mut outstanding = clients.to_vec();
+    let mut wait = Wait::on(kind, party(&outstanding), NEXT_END);
+    let (mut came, mut slowest) = (Vec::with_capacity(n), None::<Duration>);
+    while came.len() < n {
+        match ended.recv_timeout(wait.next_look()) {
+            Ok(end) => {
+                if wait.awaited() {
+                    let waited = wait.began.elapsed();
+                    slowest = Some(slowest.map_or(waited, |s| s.max(waited)));
+                }
+                if let Some(client) = client_of(&end) {
+                    outstanding.retain(|&c| c != client);
+                }
+                came.push(end);
+                wait = Wait::on(kind, party(&outstanding), NEXT_END);
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                let refused = match wait.look(false) {
+                    Err(stall) => wait.refused(&stall),
+                    Ok(()) if wait.gone() => format!(
+                        "its party is gone, its liveness ended\n--- its wait\n{}",
+                        wait.account()
+                    ),
+                    Ok(()) => continue,
+                };
+                // One look more, as a refused Patience's: the ends that came as it was refused.
+                came.extend(ended.try_iter());
+                return if came.len() < n {
+                    Err((came, refused))
+                } else {
+                    Ok(came)
+                };
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                let said = format!(
+                    "its ends' channel closed with {} of {n} come\n--- its wait\n{}",
+                    came.len(),
+                    wait.account()
+                );
+                return Err((came, said));
+            }
+        }
+    }
+    if let Some(waited) = slowest {
+        kind.record().teach_unrated(waited);
+    }
+    if slowest.is_some() || !stretches.is_empty() {
+        kind.keep();
+    }
+    Ok(came)
+}
+
 /// The least a guest gives back at once: one block of its free lists, which free page
 /// reporting hands the host whole (`page_reporting_order`, its pageblock: 2 MiB with 4 KiB
 /// pages, the least a page is, and more with larger pages; mm/page_reporting.c,

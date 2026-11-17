@@ -18,9 +18,11 @@
 //!   `rate_R_done`: the rate they were answered at, per second, over the step's span to
 //!   its last answer.
 //!
-//! Each rate's requests are waited for as the tests wait on what clients bring about
-//! together ([`answered`]): a request that never ends fails the bench, saying what its home
-//! showed, rather than holding it to its CI job's limit.
+//! Each rate is reported as it ends, its table, its `shards-bench` line and its samples, so
+//! that a run cut short still shows the rates it finished. Its requests are waited for by
+//! their own progress, their ends ([`answered`], D209 Part 11): a rate whose requests stop
+//! ending fails the bench, saying what its home showed, rather than holding it to its CI
+//! job's limit.
 //!
 //! `cargo bench -p shards --bench arrival [-- --rates 2,5,10 --secs 10]`
 
@@ -82,9 +84,15 @@ fn main() {
         &env,
     );
     let run_args = strings(&["run", "--rm", "--pull", "never", &image, "exit", "0"]);
-    // The template, and the runs before its working set was recorded.
-    for _ in 0..=UNPREFETCHED {
-        run_env(&run_args, false, &env);
+    // The template, and the runs before its working set was recorded. Each run after the
+    // template's own is a request served alone: its time is a stretch with a request
+    // outstanding and none ending, as the drains' judge counts them ([`answered`]).
+    let mut seen = Vec::new();
+    for run in 0..=UNPREFETCHED {
+        let sample = run_env(&run_args, false, &env);
+        if run > 0 {
+            seen.push(sample.run.elapsed);
+        }
     }
 
     // xorshift64*, seeded: every run of the bench offers the same arrivals.
@@ -96,14 +104,15 @@ fn main() {
         // A float in (0, 1]: never zero, whose logarithm is not finite.
         ((state.wrapping_mul(0x2545_f491_4f6c_dd1d) >> 11) as f64 + 1.0) / (1u64 << 53) as f64
     };
-    let mut rows = Vec::new();
+    let kernel = common::kernel_artifact().name.to_string();
     for &rate in &rates {
         let start = Instant::now();
         let mut due = 0.0f64;
         // Each request's client as its thread spawns it, and each request's end.
         let (spawned, spawns) = mpsc::channel();
         let (ended, ends) = mpsc::channel();
-        let mut n = 0usize;
+        // When each request was due, in the order they were sent.
+        let mut dues = Vec::new();
         loop {
             // Exponential gaps: a Poisson process of `rate` per second.
             due += -uniform().ln() / rate;
@@ -138,11 +147,12 @@ fn main() {
                     done,
                 });
             });
-            n += 1;
+            dues.push(at);
         }
+        let n = dues.len();
         let clients: Vec<u32> = spawns.iter().take(n).flatten().collect();
         let (mut latency, mut failed, mut last) = (Vec::with_capacity(n), 0usize, start);
-        for end in answered(rate, &ends, n, &clients, &home) {
+        for end in answered(rate, &ends, &dues, &clients, &mut seen, &home) {
             last = last.max(end.done);
             if end.ok {
                 latency.push(end.latency_us);
@@ -152,23 +162,24 @@ fn main() {
         }
         let done_rate = (n - failed) as f64 / last.duration_since(start).as_secs_f64();
         let name = format!("rate_{rate}");
-        rows.push(stats(&name, "us", latency));
-        rows.push(stats(&format!("{name}_sent"), "requests", vec![n as f64]));
-        rows.push(stats(&format!("{name}_failed"), "requests", vec![failed as f64]));
-        rows.push(stats(&format!("{name}_done"), "per_s", vec![done_rate]));
+        let rows = [
+            stats(&name, "us", latency),
+            stats(&format!("{name}_sent"), "requests", vec![n as f64]),
+            stats(&format!("{name}_failed"), "requests", vec![failed as f64]),
+            stats(&format!("{name}_done"), "per_s", vec![done_rate]),
+        ];
+        report(
+            "arrival",
+            &[
+                ("rate", rate.to_string()),
+                ("secs", secs.to_string()),
+                ("kernel", kernel.clone()),
+            ],
+            &rows,
+        );
     }
     run_env(&strings(&["daemon", "stop"]), false, &env);
     let _ = std::fs::remove_dir_all(&home);
-    let rates_text: Vec<String> = rates.iter().map(f64::to_string).collect();
-    report(
-        "arrival",
-        &[
-            ("rates", rates_text.join(",")),
-            ("secs", secs.to_string()),
-            ("kernel", common::kernel_artifact().name.to_string()),
-        ],
-        &rows,
-    );
 }
 
 /// A request's end: its client (none where it could not be spawned), whether its command
@@ -181,41 +192,77 @@ struct End {
     done: std::time::Instant,
 }
 
-/// The ends of rate `rate`'s `n` requests as `ends` brings them, `clients` their clients,
-/// waited for as the tests wait on what clients bring about together
-/// ([`common::Patience::clients`]: its party the clients, what descends from them and
-/// `home`'s daemon, judged by D215's judge as D209 rules, its kind's W* the slowest of the
-/// rates' waits before it on this host, no bound of the bench's own). Each request was once
-/// waited on with no judge at all, and two CI runs' firecracker jobs ran to their 30-minute
-/// limit in this step, their logs unkept (43782275660, 43838392544). Refused, the bench fails
-/// ([`stalled`]).
+/// The ends of rate `rate`'s requests, due at `dues`, as `ends` brings them, `clients` their
+/// clients: those that came while they arrived, then the rest, waited for by their own
+/// progress, their ends ([`common::requests_end`], D209 Part 11). `seen` holds the stretches
+/// with requests outstanding and none ending that this run has shown ([`stretches`]): its
+/// template's runs, and each rate's arrivals, this one's added. Waited on with no judge, ten
+/// CI runs' firecracker jobs ran to their 30-minute limit in this step; judged by its party's
+/// CPU, which its daemon and warm microVMs spend whether or not a request ends, an eleventh
+/// did. Refused, the bench fails ([`stalled`]).
 #[cfg(unix)]
 fn answered(
     rate: f64,
     ends: &std::sync::mpsc::Receiver<End>,
-    n: usize,
+    dues: &[std::time::Instant],
     clients: &[u32],
+    seen: &mut Vec<std::time::Duration>,
     home: &std::path::Path,
 ) -> Vec<End> {
-    let mut patience = common::Patience::clients(clients, home);
-    let mut answered = Vec::with_capacity(n);
-    while answered.len() < n {
-        match ends.recv_timeout(patience.next_look()) {
-            Ok(end) => answered.push(end),
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) if patience.holds() => {}
-            Err(_) => stalled(rate, &answered, clients, home),
+    let mut answered: Vec<End> = ends.try_iter().collect();
+    let done: Vec<std::time::Instant> = answered.iter().map(|end| end.done).collect();
+    seen.extend(stretches(dues, &done));
+    let outstanding: Vec<u32> = clients
+        .iter()
+        .copied()
+        .filter(|&client| !answered.iter().any(|end| end.client == Some(client)))
+        .collect();
+    let rest = dues.len().saturating_sub(answered.len());
+    match common::requests_end(ends, rest, &outstanding, |end: &End| end.client, seen, home) {
+        Ok(came) => {
+            answered.extend(came);
+            answered
+        }
+        Err((came, refused)) => {
+            answered.extend(came);
+            stalled(rate, &answered, clients, home, &refused)
         }
     }
-    patience.done();
-    answered
 }
 
-/// Rate `rate`'s requests' wait refused, its account said ([`common::Patience::holds`]):
-/// says which requests never ended, then what their home shows ([`common::stacks_of`]: its
-/// runs, its microVMs' processes, its daemon's log), ends their clients and stops its daemon,
-/// and fails the bench. The home is kept, its daemon's whole log in it.
+/// The stretches seen by requests due at `dues`, of which those that ended did at `done`: each
+/// from when a request was outstanding and none had ended since, to the end that ended it. A
+/// request is outstanding from when it was due; one still outstanding ends no stretch.
 #[cfg(unix)]
-fn stalled(rate: f64, answered: &[End], clients: &[u32], home: &std::path::Path) -> ! {
+fn stretches(dues: &[std::time::Instant], done: &[std::time::Instant]) -> Vec<std::time::Duration> {
+    let mut events: Vec<(std::time::Instant, bool)> = dues
+        .iter()
+        .map(|&at| (at, true))
+        .chain(done.iter().map(|&at| (at, false)))
+        .collect();
+    // At one instant, an arrival before an end.
+    events.sort_by_key(|&(at, arrival)| (at, !arrival));
+    let (mut outstanding, mut since, mut stretches) = (0usize, None, Vec::new());
+    for (at, arrival) in events {
+        if arrival {
+            outstanding += 1;
+            since = since.or(Some(at));
+        } else if let Some(began) = since {
+            stretches.push(at.duration_since(began));
+            outstanding = outstanding.saturating_sub(1);
+            since = (outstanding > 0).then_some(at);
+        }
+    }
+    stretches
+}
+
+/// Rate `rate`'s requests' wait refused, `refused` its account ([`common::requests_end`]):
+/// says which requests never ended and why its wait was refused, then what their home shows
+/// ([`common::stacks_of`]: its runs, its microVMs' processes, its daemon's log), ends their
+/// clients and stops its daemon, and fails the bench. The home is kept, its daemon's whole
+/// log in it.
+#[cfg(unix)]
+fn stalled(rate: f64, answered: &[End], clients: &[u32], home: &std::path::Path, refused: &str) -> ! {
     use std::io::Write as _;
     let waited: Vec<u32> = clients
         .iter()
@@ -227,7 +274,7 @@ fn stalled(rate: f64, answered: &[End], clients: &[u32], home: &std::path::Path)
         waited.len(),
         home.display()
     );
-    let _ = writeln!(std::io::stderr(), "{said}");
+    let _ = writeln!(std::io::stderr(), "{said}\n{refused}");
     let named: Vec<(&str, u32)> = waited
         .iter()
         .map(|&client| ("a request's client", client))

@@ -1069,6 +1069,106 @@ fn a_guests_end_ends_its_wait_and_what_it_said_by_then_is_read() {
     );
 }
 
+/// What [`cold_ends`] gives back: the ends that came, each its client, or those and what its
+/// refusal said.
+type Drained = Result<Vec<u32>, (Vec<u32>, String)>;
+
+/// [`common::requests_end`] at its caller's call site, its kind made cold as [`cold_lines`]'
+/// are: waiting for the ends `ended` brings, each its own client's, of requests whose clients
+/// are `clients`, with `stretches` seen before it, in a home no daemon serves; and its kind,
+/// and where this host keeps its record.
+#[track_caller]
+fn cold_ends(
+    ended: &std::sync::mpsc::Receiver<u32>,
+    clients: &[u32],
+    stretches: &[Duration],
+) -> (Drained, &'static common::WaitKind, std::path::PathBuf) {
+    let site = std::panic::Location::caller();
+    let kept = common::WaitKind::kept_at(site, common::NEXT_END, "");
+    let _ = std::fs::remove_file(&kept);
+    let kind = common::WaitKind::awaiting(site, common::NEXT_END);
+    let home = TempDir::new("ends");
+    let came = common::requests_end(ended, clients.len(), clients, |&c| Some(c), stretches, &home);
+    (came, kind, kept)
+}
+
+/// A drain's wait for its requests' ends (`common::requests_end`: benches/arrival.rs, D209
+/// Part 11) goes on while they end, however slowly, each end's client leaving its party, and
+/// its pass teaches its kind the slowest wait for a next end and keeps it on this host. Do:
+/// cold, three idle clients, whose ends come 30, 120 and 30 ms apart. Expect: all three, in
+/// order; its kind taught a wait of the 120 ms gap's length (100 ms or more, its wakes'
+/// jitter apart), and kept.
+#[test]
+fn a_drains_ends_are_its_progress_and_its_pass_teaches_their_slowest_gap() {
+    let idle: Vec<common::Reaped> = (0..3)
+        .map(|_| {
+            common::Reaped(
+                stand_in_doing("idle")
+                    .stdin(std::process::Stdio::piped())
+                    .spawn()
+                    .unwrap(),
+            )
+        })
+        .collect();
+    let clients: Vec<u32> = idle.iter().map(|client| client.id()).collect();
+    let (end, ended) = std::sync::mpsc::channel();
+    let (came, kind, kept) = std::thread::scope(|s| {
+        s.spawn(|| {
+            for (&client, ms) in clients.iter().zip([30, 120, 30]) {
+                std::thread::sleep(Duration::from_millis(ms));
+                let _ = end.send(client);
+            }
+        });
+        cold_ends(&ended, &clients, &[])
+    });
+    drop(idle);
+    let came = came.unwrap_or_else(|(came, refused)| panic!("refused with {came:?}: {refused}"));
+    assert_eq!(came, clients);
+    let shards_api::Seen::Learned { slowest, .. } = kind.record().seen() else {
+        panic!("its pass taught its kind nothing");
+    };
+    assert!(slowest >= Duration::from_millis(100), "it taught {slowest:?}");
+    assert!(kept.exists(), "its pass kept nothing at {}", kept.display());
+}
+
+/// A drain whose requests stop ending is refused once none has ended for longer than the
+/// slowest stretch its kind has seen, however its party runs (`Cpu::Liveness`: a pool's warm
+/// microVMs and their daemon run for ever), and keeps nothing (D209 Part 11: benches/arrival.rs
+/// in CI 44007524337, its drain followed by its party's CPU to its job's 30-minute limit). Do:
+/// cold, a stretch of 50 ms its caller saw; three clients busy throughout, the ends of two
+/// coming 10 ms apart and then none, its channel open. Expect: refused within
+/// [`refusal_bound`] of 50 ms, those two ends what came; nothing kept.
+#[test]
+fn a_drain_whose_requests_stop_ending_is_refused_and_keeps_nothing() {
+    let busy: Vec<common::Reaped> = (0..3)
+        .map(|_| common::Reaped(stand_in_doing("busy 600000").spawn().unwrap()))
+        .collect();
+    let clients: Vec<u32> = busy.iter().map(|client| client.id()).collect();
+    let (end, ended) = std::sync::mpsc::channel();
+    let began = Instant::now();
+    let (came, _, kept) = std::thread::scope(|s| {
+        s.spawn(|| {
+            for &client in &clients[..2] {
+                std::thread::sleep(Duration::from_millis(10));
+                let _ = end.send(client);
+            }
+        });
+        cold_ends(&ended, &clients, &[Duration::from_millis(50)])
+    });
+    let took = began.elapsed();
+    drop(busy);
+    let Err((came, refused)) = came else {
+        panic!("a drain whose requests stopped ending was not refused");
+    };
+    assert_eq!(came, clients[..2], "{refused}");
+    assert!(
+        took < refusal_bound(Duration::from_millis(50)),
+        "refused {took:?} in: {refused}"
+    );
+    assert!(!kept.exists(), "its refusal kept {}", kept.display());
+    drop(end);
+}
+
 /// A call that blocks until its answer or its run's end (`common::judged`: shards-api's calls
 /// given no bound, `Duration::MAX`, in api_image.rs, member_exec.rs and nesting.rs, and their
 /// reads of a run's channels) goes on while what this test's process started works, as a

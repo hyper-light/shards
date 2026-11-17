@@ -13670,6 +13670,90 @@ comes to made no progress for 399 ms, past the slowest answer of its kind seen o
   a_runs_log_is_sent_to_gelf_as_its_options_say
   a_runs_log_is_sent_to_fluentd_as_its_options_say` on HVF, KVM and WHP.
 
+**Part 11: a drain is judged by its requests' ends** (goal 1453357d, the own-38-released lane,
+2026-11-17; ROOT's brief from CI 44007524337 at 0c3213356)
+- *The hang.* ci.yml's `firecracker comparison (x86_64)` job ran to its 30-minute limit in 11
+  of main's CI runs from 2026-11-15 to 2026-11-17, each in its Arrival step
+  (benches/arrival.rs), which passed in 18, in 76 to 185 s (p50 100 s, p90 141 s). Each cut
+  job ended 5 minutes past its limit with no step after Arrival run and no log kept: the
+  runner never finished cancelling the step, for a cause no log shows. The daemon's stdio is
+  not it (daemon.rs `detach`: a session of its own, its stdio its log, none of the step's
+  pipes). Ten cut runs waited for each rate's requests with no judge, the eleventh with
+  b713e66b2's. Method and records: `docs/research/measurements/arrival-drain/`.
+- *The cause, read from code* (R09's live run is owed, below). A rate's requests were one
+  wait on a state (`Patience::clients`): one kind for every rate, its party the clients,
+  what descends from them and the home's daemon, its CPU progress. Cold (CI kept no record
+  for benches, D261), it follows liveness alone, and the daemon lives through the bench. Once
+  rate 2's pass taught W*, any CPU of the daemon or its pools' warm microVMs is progress, and
+  they spend it whether or not a request ends. So whatever kept a request from ending, the
+  bench waited to the job's limit, and said nothing: it reported only after its last rate.
+- *The rule.* A drain waits for each next end (`common::requests_end`), as `guest_says` waits
+  for each next line (D261): each end begins a wait for the next.
+  - One kind at its call site (`NEXT_END`), whichever rate it drains, so that a rate's first
+    drain is judged by what the rates before it showed. Kinds per rate, the interrupted
+    lane's draft, left each rate's first drain cold in a fresh run, and with it a stall at a
+    rate's onset, as its pools grow to a new demand.
+  - Its party: the requests still outstanding by their clients (each end takes its own out),
+    what descends from them, and the home's daemon, their CPU their liveness alone
+    (`Cpu::Liveness`). The daemon's words are still progress, among them its heartbeat of a
+    microVM a client waits on that runs (daemon.rs `log_progress`), whose gap doubles. Its
+    host's holds hold it as they hold every wait: a member runnable on no CPU, stopped, or in
+    its run's stop grace (Part 6).
+  - Its W*: the slowest stretch this host has shown with requests outstanding and none ending,
+    from when a request was due and none had ended since to the end that ended it. The
+    bench's own are taught first: each run after the template's own in its setup (a request
+    served alone, `run_env`'s time) and each rate's arrivals. Then come what the host kept of
+    its kind, and the slowest wait for a next end in the drain. The person's ruling of
+    2026-11-13 holds (no seed, no ×2): these are answers seen, and with none its party's
+    liveness alone. The setup's runs are answers in every run of the bench, so its drains are
+    judged from its first rate on.
+  - Only a pass keeps on the host what the drain was taught: each rate whose requests all
+    ended. A refusal keeps nothing, and an end that came only as it was refused teaches
+    nothing.
+  - Refused, the bench says which requests never ended and the wait's account. It then says
+    what their home shows (`stacks_of`), ends their clients, stops the daemon (`run_env`, under
+    its own watchdog) and fails.
+- *Each rate is reported as it ends*: its table, its `shards-bench` line (`rate`, `secs`,
+  `kernel`) and its samples (`arrival-N.json`, one file a rate). No reader of the samples
+  reads Arrival's: scripts/bench-envelope pairs `shards_` and `fc_` rows.
+- *CI keeps the bench's records* (D261 amended): restored before the job's first bench, kept
+  after Arrival unless the run is cancelled.
+- *The step's own limit* (`timeout-minutes: 5`): a third above the slowest of its 18 passes,
+  185 s, so 247 s, in whole minutes, as ci.yml's limits are made (M245, M560, M613). The bench
+  has no deadline. The limit is CI's, so that a drain its judge holds (its host holding the
+  party) ends as a step: a step cut at its own limit leaves the runner going on to the steps
+  after it, as this run's x86_64 musl and arm64 Windows test steps did at their limits, their
+  logs kept, where the job's limit kept nothing 11 times of 11. The job's 30 minutes fit it:
+  the passing jobs spent at most 1416 s before Arrival and 37 s after it, so 1416 + 300 + 37
+  = 1753 s.
+- *Alternatives.* The one wait kept with its party's CPU read as liveness: its W* the slowest
+  whole drain, so a stall refused only past the longest drain seen, never in a cold run. A
+  bound of the bench's own (a multiple of a request's time): R03. The judge alone, no step
+  limit: a held drain still runs to the job's limit, and everything after it is lost.
+- *R03.* The judge holds no literal: W* is data, and the cold start is liveness. The step's
+  limit is derived above.
+- *What it leaves.* What kept the requests from ending is unknown: the next refusal names it,
+  its home's processes and its daemon's log. `stacks_of`'s own waits (`ps -a`, `top`) are of
+  kinds a passing bench never answers, cold on CI. Against a daemon that answers nothing they
+  follow liveness alone, and the step's limit ends them; the stall and its account are said
+  before them. A look lists the host's processes, and each end begins a wait whose first look
+  lists them again: its cost at 400 outstanding requests is unmeasured (R14, ROOT's).
+- *Held by* (written, not run: the person's rule of 2026-11-16 leaves every test to ROOT):
+  harness.rs `a_drains_ends_are_its_progress_and_its_pass_teaches_their_slowest_gap` (three
+  idle clients whose ends come 30, 120 and 30 ms apart, cold: all three, the 120 ms gap
+  taught and kept) and `a_drain_whose_requests_stop_ending_is_refused_and_keeps_nothing` (a
+  stretch of 50 ms seen, three clients busy throughout, two ends and then none: refused
+  within `refusal_bound`, nothing kept). Their reds, expected and unrun: `Cpu::Progress` for
+  the party (the busy clients' CPU holds the second past its bound); a keep at the refusal
+  (the second's record kept); no teaching at the pass (the first's kind cold).
+  Owed (ROOT): `cargo test -p shards --profile test-release --test harness -- a_drain`, each
+  red as said; the bench on a KVM x86_64 host shaped as CI's runner (4 vCPUs, 16 GiB),
+  `cargo bench --locked -p shards --bench arrival -- --rates 2,5,10,20,40 --secs 10`,
+  repeated to reproduce the stall live (R09; CI: 11 cut of 29); and main's next CI runs: the
+  firecracker job's `The judge's records, kept` saying "Cache saved with key:
+  judge-records-…-firecracker-…", the next run's restore "Cache restored from key: …", and the
+  Arrival step's log each rate's table as it ends.
+
 ### D207. A Windows host's bind sources: its drives' paths (built)
 
 **Why.** The daemon read `-v` as moby's parser for Linux reads it (linux_parser.go), splitting
@@ -37636,7 +37720,14 @@ post-mortem read of the printk ring through VMCOREINFO, not a debug port.
       level: its programs then answer at another pace than CI's, which sets none.
     - Not cached: budget-e2e.yml's `windows` job (libraries' own tests, which keep no
       records), ci.yml's `musl` release part (shards-rego's stack guards alone), and the
-      benches of ci.yml's `firecracker` job and the measurement workflows.
+      measurement workflows.
+    - ci.yml's `firecracker` job keeps its benches' records as the tests' are kept (amended
+      2026-11-17, goal 1453357d, D209 Part 11): restored before its first bench, kept after
+      its Arrival step unless the run is cancelled, under a key of its own,
+      `judge-records-<ImageOS>-<ImageVersion>-<runner.arch>-firecracker-<run id>-<run attempt>`,
+      restored through `firecracker-`, as each of ci.yml's keys is one job's (*One writer*,
+      above). Its one judged bench, benches/arrival.rs, waits as the tests do (`tests/common`),
+      on kinds of its own. Kept by none until then, each run's drain began cold.
   - **Bounds.** A record is one line of at most 97 bytes (`served `, `rated ` and four u64
     nanosecond counts of at most 20 digits), beside an empty lock file. Their number is the
     suite's kinds. An entry's size is unmeasured: this Mac keeps no records now, and the post
