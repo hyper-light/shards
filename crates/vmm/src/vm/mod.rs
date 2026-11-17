@@ -265,7 +265,7 @@ mod runtime;
 #[cfg(hv)]
 pub use runtime::{
     Handle, Running, Saved, accept_working_set, check_host, keep_working_set, max_vcpus, restore,
-    restore_from, restore_reported, restores_here, start, start_gpu_report, working_set_limit,
+    restore_from, restore_reported, restores_here, start, start_gpu_report, vcpus_refused, working_set_limit,
 };
 
 #[cfg(all(hv, target_arch = "aarch64"))]
@@ -295,7 +295,7 @@ mod unsupported;
 #[cfg(not(hv))]
 pub use unsupported::{
     Handle, Running, Saved, accept_working_set, check_host, keep_working_set, max_vcpus, restore,
-    restore_from, restores_here, start, working_set_limit,
+    restore_from, restores_here, start, vcpus_refused, working_set_limit,
 };
 
 #[cfg(not(hv))]

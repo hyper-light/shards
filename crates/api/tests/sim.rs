@@ -251,6 +251,33 @@ mod client {
         }
     }
 
+    /// shards' refusal of vCPUs past its host's logical processors, where its Hyper-V is nested
+    /// within another's (D261, `vm::limits::VcpusRefused::PastProcessors`), is a `Bounds`
+    /// refusal naming the vCPUs too, as the partition's is: it was `Boot` (CI 44164945050, both
+    /// x86_64 Windows images, `shards_api_conforms_on_real_guests` at u32's most vCPUs).
+    #[test]
+    fn shards_refusing_vcpus_past_its_processors_is_a_bounds_refusal() {
+        let dir = shards_testdir::TempDir::new("api-cpus").unwrap();
+        let bin = stand_in(
+            &dir,
+            "echo \"shards: 4294967295 vCPUs: this host's Hyper-V is nested within another \
+             Hyper-V's partition, where a microVM has at most the host's 4 logical processors \
+             (its partitions take 240)\" >&2; exit 1",
+        );
+        let g = Shards
+            .boot(&GuestSpec {
+                binary: Some(bin),
+                ..spec("")
+            })
+            .unwrap();
+        match g.connect(ECHO, Duration::MAX) {
+            Err(Refusal::Bounds { what: "vcpus", why }) => {
+                assert!(why.contains("4 logical processors"), "{why}")
+            }
+            other => panic!("{:?}", other.err()),
+        }
+    }
+
     /// shards that exits 0 or 3 ends as `PowerOff` or `Reset`, as `shards run` exits for
     /// them (D215).
     #[test]

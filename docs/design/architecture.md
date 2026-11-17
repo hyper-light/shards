@@ -38645,6 +38645,16 @@ post-mortem read of the printk ring through VMCOREINFO, not a debug port.
     processors, the nesting and this evidence. The default count (every host CPU) is within
     it, as is `--cpus N` up to the processors. The max-vCPU test and the storms size to it
     (`vm::max_vcpus`). Elsewhere the refusals' words stand.
+  - **Read as the partition's refusal is** (amended 2026-11-17, own-36, CI 44164945050: three
+    boot.rs tests on both x86_64 Windows images expected the partition's words and met the
+    cap's). `vm::vcpus_refused(n)` gives this host's own refusal of a count, typed, either
+    reason (what `start`'s `check_vcpus` refuses with): `rejects_invalid_vm_configuration`
+    expects it for 100000, `brings_up_every_vcpu` boots each of its counts up to
+    `vm::max_vcpus()`, and shards-api's client reads either refusal as `Bounds { what:
+    "vcpus" }` (by its words, as it links no VMM: D215), as the conformance case for u32's
+    most asks. Tests (written, not built or run): shards-api tests/sim.rs
+    `shards_refusing_vcpus_past_its_processors_is_a_bounds_refusal`, red before the client's
+    second phrase (`Boot`).
   - **The signal, documented.** Microsoft's Hypervisor Top Level Functional Specification,
     "Feature and Interface Discovery" (Microsoft Learn):
     - a hypervisor present: CPUID leaf 1, ECX bit 31;

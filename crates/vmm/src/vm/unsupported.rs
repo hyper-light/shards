@@ -53,6 +53,10 @@ pub fn max_vcpus() -> Result<u32, String> {
     Err(no_backend())
 }
 
+pub fn vcpus_refused(_vcpus: u32) -> Result<Option<super::limits::VcpusRefused>, String> {
+    Err(no_backend())
+}
+
 #[derive(Debug, Clone, Copy)]
 enum Never {}
 

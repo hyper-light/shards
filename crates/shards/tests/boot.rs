@@ -246,7 +246,17 @@ fn brings_up_every_vcpu() {
         return;
     }
     let k = kernel().to_str().unwrap();
-    for n in [2u32, 7, 16] {
+    // Each count this host runs: no more than its own most (`vm::max_vcpus`), which on a host
+    // whose Hyper-V is nested is its logical processors (D261), the 7 and 16 refused there
+    // (CI 44164945050, both x86_64 Windows images, 4 logical processors).
+    let most = shards_vmm::vm::max_vcpus().unwrap();
+    let mut counts: Vec<u32> = [2u32, 7, 16]
+        .iter()
+        .map(|&n| n.min(most))
+        .filter(|&n| n >= 2)
+        .collect();
+    counts.dedup();
+    for n in counts {
         let cpus = n.to_string();
         let r = vm_run(&[
             "--kernel",
@@ -687,9 +697,16 @@ fn rejects_invalid_vm_configuration() {
         return;
     }
     let (k, init) = (kernel().to_str().unwrap(), guest_init().to_str().unwrap());
+    // Refused as this host refuses that many, whichever its reason, named typed
+    // (`vm::limits::VcpusRefused`, D261): past its hypervisor's partition, or past its logical
+    // processors where its Hyper-V is nested (CI 44164945050, both x86_64 Windows images).
+    let too_many = shards_vmm::vm::vcpus_refused(100_000)
+        .unwrap()
+        .expect("100000 vCPUs taken by this host")
+        .to_string();
     let cases: &[(&[&str], &str)] = &[
         (&["--kernel", k, "--cpus", "0"], "at least one vCPU"),
-        (&["--kernel", k, "--cpus", "100000"], "vCPUs requested"),
+        (&["--kernel", k, "--cpus", "100000"], too_many.as_str()),
         (&["--kernel", k, "--memory", "63"], "even number of MiB"),
         (&["--kernel", k, "--memory", "65"], "even number of MiB"),
         // Named whole, as the VM process resolved it: Windows gives it a drive.

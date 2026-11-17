@@ -1476,12 +1476,22 @@ impl Drop for Running {
     }
 }
 
-/// Whether a machine of `vcpus` may start here ([`max_vcpus`]): refused, typed, where it may
-/// not (`limits::VcpusRefused`).
-fn check_vcpus(vcpus: u32) -> Result<(), super::StartError> {
+/// Why this host refuses a machine of `vcpus`, typed (`limits::VcpusRefused`: past its
+/// hypervisor's partition, or past its logical processors where its Hyper-V is nested, D261);
+/// none where it may start ([`max_vcpus`]). What `start` refuses it with, for a caller that
+/// expects this host's own refusal of a count, whichever it is.
+pub fn vcpus_refused(vcpus: u32) -> Result<Option<super::limits::VcpusRefused>, String> {
     let partition = hv::max_vcpus().map_err(|e| e.to_string())?;
-    super::limits::vcpus_within(vcpus, partition, super::nested_processors())
-        .map_err(super::StartError::Vcpus)
+    Ok(super::limits::vcpus_within(vcpus, partition, super::nested_processors()).err())
+}
+
+/// Whether a machine of `vcpus` may start here ([`vcpus_refused`]): refused, typed, where it
+/// may not.
+fn check_vcpus(vcpus: u32) -> Result<(), super::StartError> {
+    match vcpus_refused(vcpus)? {
+        None => Ok(()),
+        Some(refused) => Err(super::StartError::Vcpus(refused)),
+    }
 }
 
 /// Boots a VM. Returns [`super::StartError`] in place of the earlier `String`:
