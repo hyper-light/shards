@@ -2517,14 +2517,44 @@ fn a_failing_tests_vm_ends_with_it() {
     ending.answered();
 }
 
+/// What VM process `vm`'s first vCPU's thread (`vcpu0`, vm/runtime.rs) has run, in ns, as Linux
+/// counts it to the nanosecond: its schedstat's first field, `sum_exec_runtime` (proc(5)),
+/// which holds its guest time, as KVM runs the guest on that thread. Another process's thread
+/// CPU clock is not this process's to read (clock_gettime(2): a thread clock's thread must be
+/// of the caller's thread group). None elsewhere, or where it is unread (a kernel built
+/// without CONFIG_SCHED_INFO keeps no schedstat).
+fn vcpu_ran(vm: u32) -> Option<u64> {
+    #[cfg(target_os = "linux")]
+    {
+        let task = std::fs::read_dir(format!("/proc/{vm}/task"))
+            .ok()?
+            .filter_map(Result::ok)
+            .map(|task| task.path())
+            .find(|task| {
+                std::fs::read_to_string(task.join("comm")).is_ok_and(|name| name.trim_end() == "vcpu0")
+            })?;
+        std::fs::read_to_string(task.join("schedstat"))
+            .ok()?
+            .split_whitespace()
+            .next()?
+            .parse()
+            .ok()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = vm;
+        None
+    }
+}
+
 /// A managed guest's rate (D255): a guest booted `--host-managed`, spinning its one vCPU, is
 /// held by its VM's governor to the quarter CPU a client asks on its vsock socket (`RATE`,
 /// `shards_abi::rate`), as `ManagedGuest::rate` asks it. Its vCPU runs its guest no more than
 /// a quarter of the time passing, two of its governor's periods (its share where the window
 /// and the periods do not line up, and what its vCPU overruns before the governor reads, at
 /// the window's two ends) and one step of its guest time's count (`guest_time_step`), read
-/// by `USE`; or, where that count is KVM's scheduler ticks, its VM process's CPU time, read
-/// by the same `USE`, runs no more than the first two (D265, amended by ci-fixes): the hold
+/// by `USE`; or, where that count is KVM's scheduler ticks, its vCPU's thread's run time
+/// ([`vcpu_ran`]) runs no more than the first two (D265, amended by ci-fixes): the hold
 /// holds its vCPUs, never its VM process's governor or devices, whose CPU
 /// is shards' own (D191). Its vCPU's whole CPU holds nothing, and
 /// none lifts its hold; each answer says the period its VM derives from g as it knows it then,
@@ -2603,27 +2633,42 @@ fn a_managed_guest_is_held_to_the_rate_its_client_asks_on_its_socket() {
     // Its window from before the first read is asked until the second is answered: the
     // reads fall within it.
     let start = Instant::now();
+    let vcpu_from = vcpu_ran(child.id());
     let before = read(&used(&socket));
     std::thread::sleep(Duration::from_secs(2));
     let after = read(&used(&socket));
+    let vcpu = vcpu_ran(child.id())
+        .zip(vcpu_from)
+        .map(|(to, from)| to.saturating_sub(from));
     let ran = after.0.total_ns() - before.0.total_ns();
     let wall = u64::try_from(start.elapsed().as_nanos()).unwrap();
     let most = wall / 4 + 2 * period_ns.get();
     // KVM counts guest time in whole scheduler ticks, each charged to what its vCPU's thread
     // ran as it landed (`thread_guest_ns`): a vCPU let run once a period is counted a tick more
     // or less each time, so over hundreds of periods its count may pass what it ran by more
-    // than a step, by as much as no tick says (CI 43968984258: 2.37 ms past). Its VM process's
-    // CPU time, which Linux counts to the nanosecond (`task_sched_runtime`) and which holds
-    // its vCPU's guest time (D265's `ToThread`), witnesses the hold there: within `most`, its
-    // vCPU ran no more, whatever its ticks say.
+    // than a step, by as much as no tick says (CI 43968984258: 2.37 ms past). Its vCPU's
+    // thread's run time, which Linux counts to the nanosecond ([`vcpu_ran`]) and which holds
+    // its guest time, witnesses the hold there: within `most`, its vCPU ran no more, whatever
+    // its ticks say; read with a step, as that count moves at its kernel's ticks and switches,
+    // so a read as the thread runs lags it by up to a tick, which a count in ticks steps by at
+    // least. Not its VM process's CPU time, which holds its governor's and devices' threads
+    // too, which the hold never holds (D191): 514.04 ms of it in a `most` of 509.68 ms as its
+    // ticks passed `most` and a step by 0.32 ms (CI 44076016255, x86_64 gnu). That witnesses
+    // only where the thread's is unread.
     let own = after.1.cpu_ns - before.1.cpu_ns;
+    let witnessed = match vcpu {
+        Some(thread) => thread <= most + step,
+        None => own <= most,
+    };
     assert!(
-        ran <= most + step || (cfg!(target_os = "linux") && own <= most),
-        "{ran} ns of guest in {wall} ns, held to a quarter CPU over {period_ns} ns (at most {most} ns), read in {step} ns steps; its VM process ran {own} ns of CPU meanwhile, {}",
-        if own > most {
-            "past what its vCPU may run: its governor let its vCPU overrun, or its own threads ran the rest"
-        } else {
-            "within it: its guest time's count passed what its vCPU ran"
+        ran <= most + step || (cfg!(target_os = "linux") && witnessed),
+        "{ran} ns of guest in {wall} ns, held to a quarter CPU over {period_ns} ns (at most {most} ns), read in {step} ns steps; its vCPU's thread ran {vcpu:?} ns and its VM process {own} ns of CPU meanwhile, {}",
+        match vcpu {
+            Some(thread) if thread > most + step => "past what its vCPU may run: its governor let it overrun",
+            None if own > most => {
+                "past what its vCPU may run: its governor let its vCPU overrun, or its own threads ran the rest"
+            }
+            _ => "within it: its guest time's count passed what its vCPU ran",
         }
     );
     assert!(

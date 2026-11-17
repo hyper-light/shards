@@ -1236,12 +1236,12 @@ fn judged_end(party: &mut std::process::Child) -> Result<std::process::ExitStatu
 #[test]
 fn a_judged_calls_own_work_is_its_progress() {
     #[track_caller]
-    fn work(party: u32, ms: u64, sleep: bool, forget: bool) -> Result<(), String> {
+    fn work(party: u32, ms: u64, sleep: bool, forget: bool) -> (Result<(), String>, String) {
         if forget {
             let site = std::panic::Location::caller();
             let _ = std::fs::remove_file(common::WaitKind::kept_at(site, "", ""));
         }
-        common::judged(
+        common::judged_accounted(
             common::Party::client(party, None),
             "a call's own work",
             || {},
@@ -1279,17 +1279,38 @@ fn a_judged_calls_own_work_is_its_progress() {
     // beside it run their own (4 of 4 whole binaries on HVF, run with libtest's threads,
     // "a call idle on its own thread not refused" while they worked).
     let party = idle.id();
+    // At rest, too, before its calls begin: no thread of its process runnable. A process's
+    // start may leave threads of its OS's beside its own (on Windows its loader's workers),
+    // which a host whose CPUs the tests beside it keep busy can hold runnable on no CPU after
+    // its own thread says it rests: its host's hold, which holds a wait on it unrefused. CI's
+    // arm64 Windows runner left the sleeper unrefused in runs 44007524337, 44076016255 and
+    // 44077430171, no account kept: its wait's account below names its members' runnable
+    // threads should it be again (`shards_api::runnable_threads`, read on Windows too).
+    let at_rest = || shards_api::runnable_threads(party).is_none_or(|(runnable, _)| runnable == 0);
+    common::judged(
+        common::Party::client(party, None),
+        "its stand-in at rest",
+        || {},
+        || {
+            while !at_rest() {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        },
+    )
+    .unwrap();
     let call = |ms: u64, sleep: bool, forget: bool| work(party, ms, sleep, forget);
-    let quick = call(0, false, true);
-    let busy = call(200, false, false);
-    let idle_call = call(1000, true, false);
+    let (quick, _) = call(0, false, true);
+    let (busy, _) = call(200, false, false);
+    let (idle_call, idle_account) = call(1000, true, false);
     drop(idle.stdin.take());
     idle.wait().unwrap();
     assert!(quick.is_ok(), "{quick:?}");
     assert!(busy.is_ok(), "{busy:?}");
-    // Refused, and its account names what its member was doing.
+    // Refused, and its account names what its member was doing. Unrefused, its wait's
+    // account as it answered says what kept it: CI's arm64 Windows runner left it unrefused
+    // with its stand-in resting too, and kept no account (run 44077430171).
     let Err(said) = idle_call else {
-        panic!("a call idle on its own thread not refused");
+        panic!("a call idle on its own thread not refused; its wait as it answered: {idle_account}");
     };
     // Its member listed, none of its threads runnable: Linux says it sleeping (S), macOS live
     // (SRUN, which XNU keeps for every live process), both by its threads.

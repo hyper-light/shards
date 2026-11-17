@@ -66,7 +66,9 @@ impl Node {
     fn value(self) -> Value {
         match self {
             Node::Leaf(v) => v,
-            Node::Object { map, .. } => Value::object(map.into_iter().map(|(k, n)| (k, n.value())).collect()),
+            Node::Object { map, .. } => {
+                Value::object(Value::object_of(map.into_iter().map(|(k, n)| (k, n.value()))))
+            }
         }
     }
 }
@@ -125,7 +127,7 @@ fn keys_param(v: &Value) -> Result<BTreeSet<Value>, BuiltinError> {
             Ok(s)
         }
         Value::Set(s) => Ok((**s).clone()),
-        Value::Object(o) => Ok(o.keys().cloned().collect()),
+        Value::Object(o) => Ok(Value::set_of(o.keys().cloned())),
         _ => Err(BuiltinError::operand_type(2, v, &["object", "set", "array"])),
     }
 }
@@ -133,12 +135,11 @@ fn keys_param(v: &Value) -> Result<BTreeSet<Value>, BuiltinError> {
 pub(super) fn remove(_: &mut Context, args: &[Value]) -> Out {
     let obj = object_operand(arg(args, 0)?, 1)?;
     let keys = keys_param(arg(args, 1)?)?;
-    ok(Value::object(
+    ok(Value::object(Value::object_of(
         obj.iter()
             .filter(|(k, _)| !keys.contains(*k))
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect(),
-    ))
+            .map(|(k, v)| (k.clone(), v.clone())),
+    )))
 }
 
 pub(super) fn filter(_: &mut Context, args: &[Value]) -> Out {
@@ -199,7 +200,7 @@ pub(super) fn get(_: &mut Context, args: &[Value]) -> Out {
 
 pub(super) fn keys(_: &mut Context, args: &[Value]) -> Out {
     let obj = object_operand(arg(args, 0)?, 1)?;
-    ok(Value::set(obj.keys().cloned().collect()))
+    ok(Value::set(Value::set_of(obj.keys().cloned())))
 }
 
 fn object_subset(sup: &Map, sub: &Map) -> bool {

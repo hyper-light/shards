@@ -294,7 +294,7 @@ impl Type {
 
     /// types.NewObject: the static properties sorted by key.
     pub fn object(mut fixed: Vec<(Key, Type)>, dynamic: Option<(Type, Type)>) -> Type {
-        fixed.sort_by(|a, b| a.0.compare(&b.0));
+        crate::compare::sort_by(&mut fixed, |a, b| a.0.compare(&b.0));
         Type::Object {
             fixed: fixed.into(),
             dynamic: dynamic.map(|(k, v)| (Part::new(k), Part::new(v))),
@@ -317,7 +317,7 @@ impl Type {
 
     /// types.NewAny: the members sorted.
     pub fn any(mut of: Vec<Type>) -> Type {
-        of.sort_by(compare);
+        crate::compare::sort_by(&mut of, compare);
         Type::Any(of)
     }
 

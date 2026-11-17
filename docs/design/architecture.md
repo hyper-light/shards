@@ -3706,7 +3706,12 @@ microVM as virtio-fs shares (virtio 1.3 §5.11; Linux fs/fuse/virtio_fs.c):
       its pin, never guessed from its former path. No retry/deadline/size is added.
       The focused fault test went red before the fix; actual Mac unit/clippy results and
       remaining guest/platform validation are in
-      [runs-fixes](../research/measurements/runs-fixes/README.md).
+      [runs-fixes](../research/measurements/runs-fixes/README.md). *Amended 2026-11-17
+      (CI 44076016255 and 44077430171, arm64 Windows, the test's first Windows runs):* on
+      Windows the record is WSL's words (`$LXUID`, `$LXGID`, `$LXMOD`), and one that is not
+      four bytes was read as absent, so a node whose `$LXUID` broke was its share's default
+      owner's, or root's beside a whole `$LXGID`. Such a word is now a malformed record,
+      refused (EIO); the test breaks the record in each host's own form (`break_owner`).
     - *Root's stays root's.* A root run's host files are root's, as before.
     - *Device nodes stay root's.* A host device node has no attributes here (V08) and
       stays root's. The guest kernel opens a device node itself, as its own device of
@@ -25949,9 +25954,22 @@ held to more than OPA's answers:
     number `exact_parts` reads, and by text among its own (2026-11-17, kiln goal a8b1ce42,
     lane own-36-tag; value.rs `numbers_past_every_exponent_order_totally_with_the_rest`).
     OPA's own quirk stays as OPA has it: a number with a `.` loses its trailing `.` and `0`
-    there, so `10.0` equals both `1` and `10`, no total order either. Open: Rust's sorts,
-    and BTree sets and maps built from iterators, which sort, may panic on it where Go's
-    sort does not.
+    there, so `10.0` equals both `1` and `10`, no total order either. Rust's `slice::sort`
+    may panic on such an order, and so may a BTree set or map collected from an iterator,
+    which sorts its items so first; Go's sorts never do. So, by ROOT's ruling of 2026-11-17
+    (shards' rule: production never panics), with OPA's comparisons kept exactly: every
+    sort by OPA's order (`compare::term_compare`, `expr_compare`, `rule_compare`, the
+    `sort` builtin's `Value` order, the type checker's keys) is `compare::sort_by`, a
+    stable merge sort of owned halves that takes its left's next unless its right's comes
+    strictly before it, the order `slice::sort_by` gives for a total order and some order,
+    never a panic, for any other; and every set and object of values is built by inserting
+    its members one at a time (`Value::set_of`, `Value::object_of`), the first of equal
+    members kept with a key's last value, as OPA's `NewSet` and object insert keep them,
+    where a collect kept the last. Tests (value.rs):
+    `the_sort_that_cannot_panic_is_the_stable_sort_for_a_total_order` and
+    `a_large_sort_and_a_set_of_the_trailing_zero_rules_numbers_answer` (4,096 of `10.0`,
+    `1`, `10` and their kind, through the `sort` builtin, a set and an object). The merge
+    sort's cost against `slice::sort_by` (an allocation a level) is unmeasured: owed.
   - Addition and subtraction keep the smaller operand's bits within prec + 2 of the
     larger's top, the rest a sticky bit (and a borrow). The round bit is then at or above
     the cut, so the result rounds as Go's exact sum does (160,000 random sums and
@@ -29202,6 +29220,16 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
       (`Wait::read_through`, else `Record::teach_unrated`: W* alone). A kept record is
       `served W* [rated R*cpu R*wall C*]`. One without a whole rating, the older three
       numbers among them, is read as none: its kind cold until its next answer rewrites it.
+      *Amended 2026-11-17 (CI 44076016255, arm64 Windows):* an answer read through its end
+      whose work read none teaches W* alone too (`Record::teach`). It says nothing of the least
+      rate a working party answers at, and R* 0 ns holds no floor. Windows' process times
+      move in its clock's ticks (GetProcessTimes, 15.625 ms; "C* 15.625ms" in the runner's
+      accounts): one of harness.rs' three stand-ins busy 50 ms read as none on that busy
+      runner, its kind R* 0 ns over 70.6 ms, and the sleeper ticking 1 ms in 11 was served
+      22.9 s in. Held by judge.rs `an_answer_of_no_work_teaches_its_slowest_alone` (red with
+      such an answer rated). A wait's account and the tests' rest checks read a process's
+      runnable threads on Windows too (`shards_api::runnable_threads`, from the same system
+      listing a `Followed`'s hold reads); before, Windows read none ("unread").
     - *Where it applies* (ROOT's ruling, 2026-11-14). A caller passes `Span::work`, read
       through one rule (`Watch::vouched_by`: the look ran or rested, and its process was
       neither starved, stopped nor ending). The tests' `Wait` passes it everywhere. A wait on
