@@ -14026,12 +14026,22 @@ mod tests {
             whole.ask(kind::CONTAINER, &command, &[]).unwrap();
             assert_eq!(last(&whole), kind::END);
             drop(whole);
+            t.until("the whole request's client stayed in hand", |d| {
+                d.busy.load(Ordering::SeqCst) == 0
+            });
             // Its first byte (no streams), then after a pause, the rest: no descriptors, and
-            // the request.
+            // the request. Paused once the daemon has counted it in hand, which it does as it
+            // is about to time the rest (`serve_slot`), so that the rest's wait as the daemon
+            // times it holds the pause whole: paused from the write, a slot thread that came
+            // to its first byte late timed less (CI 44076016255, aarch64 gnu: 299.88 ms of a
+            // 300 ms pause).
             let pause = Duration::from_millis(300);
             let paused = take();
             let mut writes = say(&paused);
             writes.write_all(&[0]).unwrap();
+            t.until("the paused client was not counted in hand", |d| {
+                d.busy.load(Ordering::SeqCst) == 1
+            });
             std::thread::sleep(pause);
             let mut rest = vec![0u8];
             rest.extend(s::frame(kind::CONTAINER, &command).unwrap());
@@ -14043,16 +14053,18 @@ mod tests {
             );
             // The whole request's rest taught nothing; the paused one's, waited on, teaches.
             let learned = lock(&t.daemon.seen).request_stall();
-            assert!(learned.is_some_and(|w| w >= pause), "{learned:?}");
+            let Some(learned) = learned.filter(|w| *w >= pause) else {
+                panic!("{learned:?}");
+            };
             drop((writes, paused));
             // Nothing past its first byte for longer than the slowest rest seen: told to ask
-            // again, no sooner.
+            // again, no sooner, its wait timed from no earlier than the write.
             let silent = take();
             let mut writes = say(&silent);
             let t0 = Instant::now();
             writes.write_all(&[0]).unwrap();
             assert_eq!(last(&silent), kind::RESTART);
-            assert!(t0.elapsed() >= pause, "{:?}", t0.elapsed());
+            assert!(t0.elapsed() >= learned, "{:?} of {learned:?}", t0.elapsed());
             drop((writes, silent));
             t.daemon.close();
         });
