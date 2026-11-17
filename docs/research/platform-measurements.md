@@ -26242,3 +26242,31 @@ the counts are a process's, not a thread's. n is one run of each child.
   22621.1 refused the controls), Windows 11 22621 and 22631 as updated now, Windows 10
   (below the 20348 that ProcessSocketNotifications, which D142's network process waits on,
   is documented from), and a directory past MAX_PATH's 260 characters.
+
+### M615. Windows' AF_UNIX parent-path controls in a confined child: where its profile's folder is, and how long a directory they take (D141; ROOT's r769 and r777)
+
+- **Question.** At 0e7773c19c (M614's controls in every `shards_afunix` bind and connect) a VM
+  booted under the user's own `LOCALAPPDATA` (r777, jupiter), and under a stand-in,
+  `C:\Users\corph\.cache\w1-long\`, 40 a's, 40 b's and `AppData\Local`, its VM process ended at
+  its first socket, refused WSAENETDOWN (10050; r769), as M614's bind was where its directory
+  was no directory. Which differs with the stand-in: a directory the confined process's Temp
+  names but that is not there, or a length the controls take no further inside an AppContainer?
+  CreateAppContainerProfile makes a profile's folders where SHGetKnownFolderPath reaches them
+  (Microsoft's documentation of it, and of GetAppContainerFolderPath: "the same path that you
+  would get by calling the SHGetKnownFolderPath function with FOLDERID_LocalAppData"), while
+  Windows points a confined child's `TEMP` at `<LOCALAPPDATA>\Packages\<profile>\AC\Temp` of the
+  `LOCALAPPDATA` it is given (M208; r735's refusal named one beneath the stand-in).
+- **Method.** `docs/research/measurements/whp-run/src/bin/m615.rs`, `cargo run --release --bin
+  m615`, by `whp-run.yml` on windows-2022 and windows-2025 and by hand on jupiter. For each
+  `LOCALAPPDATA` (this process's own, a short stand-in, and one as long as r769's beneath
+  `%USERPROFILE%\.cache`), taken as this process's own first, as r769's spawner had it: a
+  profile made (whp-run's `confine`, as D141 makes the VM process's), GetAppContainerFolderPath's
+  answer, and whether `Packages\<profile>\AC\Temp` is beneath the `LOCALAPPDATA` given and beneath
+  the user's own (CreateEnvironmentBlock's); a child in it (its Job, D141's mitigations, given
+  `LOCALAPPDATA` and `SystemRoot` as shards gives them) says its variables and temporary
+  directory and whether that is there, makes a pair there as `shards_afunix` makes one, binds
+  with the whole path in `sun_path` where it fits, binds where no directory is, and sweeps the
+  directory's length (100, 140, 160, 180, 200, 220, 240, 250, 256, 260, 280 and 300 bytes) in
+  its container's own Temp (GetAppContainerFolderPath's); then the profile is deleted and looked
+  for again. This process sweeps the same lengths unconfined.
+- **Found.** Owed: the runs.
