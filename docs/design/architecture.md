@@ -194,6 +194,57 @@ the crypto self-tests first, since every clone would replay the rest (PM M21).
   pending SError; the GIC through its registers, as the writes that remake it; the counter
   set once for the VM at the release; working sets recorded as on x86_64, and mapped ahead
   by the prefetch program on vCPU 0.
+- **The storms, each sized by what it shows** (tests/snapshot.rs `storm`, audit A02;
+  2026-11-17, kiln goal b2124227, lane ci-storms-judge; the person's rule, R03: sizes from
+  data and the host's own resources). Both storm tests had run 2, 8 and the most vCPUs a
+  machine may have. 8 was picked: on M45's M5 Max (18 cores) it gave every vCPU a core of
+  its own, on CI's 4-CPU runners twice as many vCPUs as CPUs. The most is 255 on x86-64
+  since d77ef9948. On CI's x86_64 musl runner (AMD, 4 CPUs; CI 43968984258, job
+  133659472864) both 255-vCPU storms ran at once, 338 vCPU threads runnable on its 4 CPUs
+  (lane ci-read-4), and neither ended within the step's 58 minutes.
+  - Both take two vCPUs, the least whose CPUs wake one another (the guest's pairs; it
+    refuses fewer). Both take the host's CPUs, or the most where it has more: the most it
+    runs at once, every vCPU on a CPU of its own as the barrier parks them, the races of the
+    phases above (M45's lost kick). The host's CPUs are those the test may run on, which its
+    VM processes inherit (`available_parallelism`: affinity, and Linux's cgroup quota).
+  - The restores' storm also takes the most a machine may have (D13: the hypervisor's limit
+    and the pinned kernel's `CONFIG_NR_CPUS`). A restore alone reads back what a snapshot
+    keeps of each vCPU, and only the most crosses those bounds: the 255-vCPU storm found
+    "sequence of 255 (limit 254)" (D13), and a restore's per-vCPU states, its LAPICs or GIC,
+    are the hypervisor's at that count too.
+  - The resumed storm also takes one vCPU more than its host has CPUs, the least its host
+    cannot run at once, so that the barrier kicks a vCPU its host is not running; where that
+    is more than a machine may have, none. A resume adds to a snapshot only the barrier's
+    release and the stream through the pause, which cross no bound of the machine's own: the
+    largest snapshot is the restores' storm's, which it writes and reads back.
+  - So on CI's x86_64 runners the restores' storm runs 2, 4 and 255 vCPUs and the resumed
+    one 2, 4 and 5; on an 18-core Mac whose machines take 64, 2, 18 and 64, and 2, 18 and 19.
+    One storm at the most runs at a time. `SHARDS_STORM_CPUS` still names one size alone.
+    Held by snapshot.rs `a_storms_sizes_are_the_regimes_its_claim_needs` (starts no VM).
+  - No wall clock bounds a storm (D209). Each round's reads and each wait on its guest are
+    D215's judged waits: past the slowest of their kind they go on while the guest says
+    something new or carries the stream, and cold, as on CI, which keeps no records (D261),
+    they follow liveness. A slow host that makes progress passes; its time is its host's.
+    Whether the restores' 255-vCPU storm ends within a 4-CPU runner's 58 minutes, now that
+    no other runs beside it, is unmeasured: owed. Each storm's guest now says its lines on
+    stderr as they come (`Vm::spawn_timed`), so CI's log keeps where a storm stood when a
+    step's limit ended it: the 255-vCPU restore said nothing of its last 28 minutes.
+  - The "Broken pipe" of that run (`255 vCPUs: round 8, 236.2 s to 273.6 s in, sending:
+    Broken pipe (os error 32)`, 23:30:45) was the restores' storm's, not the resumed one's.
+    The round's costs name VM 203206, whose round 1 had named `storm255-13/v.sock`, the
+    restores' original; its first restore started at 23:30:49. An original told
+    `--snapshot-then stop` ends its VM process after its snapshot, which closes the device's
+    end of the stream's socket as an exiting process's descriptors close. The host's reader
+    read the end, and its writer's next write was refused (EPIPE). The test expects that
+    break and drops the original's rounds ("Its stream breaks where it stopped, at the
+    snapshot"): no guest or host side ended early, under load or not. Both tests' storms of
+    a size had said only "255 vCPUs". Each stream's lines now name their storm and VM
+    (`storm 255 vCPUs, its original (it stops at its snapshot)`, `storm 255 vCPUs, restore
+    0`, `resume 5 vCPUs`).
+  - Owed (ROOT): snapshot.rs's storms on KVM x86-64, an AMD host held to 4 CPUs (`taskset -c
+    0-3 cargo test --locked --profile test-release -p shards --test snapshot -- storm::
+    --nocapture`, timing each size), on HVF and on WHP; and the next ci.yml run's x86_64
+    Tests steps, whether the storms end within their limit.
 
 ### Platforms (D13)
 
@@ -28590,13 +28641,58 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
             window, its host's disks idle or not (`progress::vouches`, `Follow::sampled`).
             Leaving a window out of the rate refuses nothing, and a party stuck so that runs
             nothing is refused by stillness.
-          - Windows unchanged, as the rule has nothing to qualify there: its judge reads no
-            thread as waiting on its host's storage (a flush's wait reason, `Executive`, is a
-            pipe reader's too, PM M606), and its storage shows only by its own processes' I/O
-            counts (`Io::done`). Its memory waits (`FreePage`, `PageIn`, `PoolAllocation`)
-            stay its host's hold unqualified, as Linux's memory pressure does; `PageIn` is a
-            storage wait, and qualifying it would need its disks' counts
-            (IOCTL_DISK_PERFORMANCE on each physical disk), unmeasured: owed.
+          - Windows, amended 2026-11-17 (kiln goal b2124227, lane ci-storms-judge; ROOT's
+            brief: count Windows' hold only while its host shows progress, as Linux's and
+            macOS's now are). A flush still shows by no wait reason (`Executive`, a pipe
+            reader's too, PM M606), only by its processes' own I/O counts (`Io::done`). But
+            its waits on its host's paging had been its host's hold at every look, whatever
+            its disks did: a thread waiting `FreePage`, `PageIn` or `PoolAllocation` (their
+            `Wr` forms too) was read runnable, and so was one in transition, whose kernel
+            stack is out of memory ("waiting for resources other than the processor", WMI's
+            `Win32_Thread`). A party so waiting with its disks idle was never refused.
+            - Now each of those is its wait in its kernel (`os::pages`, `Hold::uninterruptible`),
+              under this rule: held only where its host's disks completed I/O since the look
+              before, and its look vouches for no window of its rate. Its disks serve each: a
+              page-in is their read, and a page is freed by writing it out.
+            - Its disks: every physical disk's `BytesRead` and `BytesWritten`, summed
+              (IOCTL_DISK_PERFORMANCE, winioctl.h's DISK_PERFORMANCE; `os::disks`). Each disk
+              is found by its MS-DOS name `PhysicalDriveN` in QueryDosDeviceW's list of every
+              name (fileapi.h), and opened for no access, as Win32's "Calling DeviceIoControl"
+              opens `\\.\PhysicalDrive0`: the IOCTL asks FILE_ANY_ACCESS. Bytes, as its
+              `ReadCount` and `WriteCount` are 32 bits wide and wrap, which would read as no
+              I/O. Every call is kernel32's, which every process has loaded: no library joins a
+              launch (shards-api adds windows-sys's `Win32_System_Ioctl` feature, and names
+              `Win32_Security`, which its `CreateFileW` already took through shards-ipc).
+            - Why its disks, not its process's counts: a page-in is the memory manager's
+              paging read, which shows in no documented count of its process (its hard faults
+              are in the records' undocumented part, M606's `HardFaultCount`), and a process
+              that ran nothing faulted nothing. Its own I/O counts hold it where they grow, as
+              before (`Io::done`).
+            - R03: no literal. The window is the judge's; growth is any byte; the names' room
+              grows from one character, doubled at each ERROR_INSUFFICIENT_BUFFER, as the call
+              says no size it needs. Cold: a look whose look before read no disks holds
+              nothing by them. A host whose disks this user cannot open holds no paging wait,
+              which its other evidence then decides. A sum that fell (a disk gone) is no
+              growth. Host-wide by design, as Linux's and macOS's: a page-in stuck on a host
+              whose disks are busy with others' I/O is held while they are.
+            - What it does not cure: windows-2025's contested-UDP wait (CI 43968984258, job
+              133659473368, api_image.rs:5242, 71 minutes to the step's limit) was kept by its
+              party's CPU, not by a hold. Its last account says "its last progress process
+              7348 ran 7.595ms ago; its host not holding it". A test's wait on a state reads
+              any CPU of its party as progress (`Cpu::Progress`), and a microVM's VM process
+              on WHP runs CPU while its guest idles (up to 63 ms in 10 s on windows-2025, PM
+              M357). Which process 7348 was is owed (ROOT), read with SHARDS_JUDGE_TRACE on a
+              WHP run of that test at a revision before fad34cf85; the reading to change is
+              then an R02 decision, not this rule's.
+            - Held by progress.rs `a_party_in_its_kernel_is_held_only_while_its_hosts_disks_complete_io`
+              (now on every OS), and on Windows `a_thread_waiting_on_its_hosts_paging_waits_in_its_kernel`
+              (which states and reasons are paging) and `a_hosts_disks_are_read_and_grow_with_a_flush`
+              (a flusher's writes grow the disks read). None has run (the person's rule of
+              2026-11-16: implementers build no code). Owed (ROOT): those on jupiter and
+              windows-2025; clippy on both Windows targets; R09's live red and green, a party
+              paging on a device that serves nothing while its local disks are idle (a file
+              mapped from an SMB share whose server is paused): held for ever before, refused
+              past W* after; R14, the cost of a disks read on a look that finds a paging wait.
           - Held by progress.rs
             `a_party_in_its_kernel_is_held_only_while_its_hosts_disks_complete_io` (the rule
             through `found`), `a_hosts_completed_io_is_summed_from_every_diskstats_line`
@@ -37046,7 +37142,8 @@ post-mortem read of the printk ring through VMCOREINFO, not a debug port.
   - No arm in the snapshot storms. Their 255-vCPU cold boots bring their APs up in parallel
     too, so they share the trigger. But their two tests boot 255 vCPUs beside each other, so
     an arm of one would meet the other's burst, and their restores bring no CPU up. A 0x7 of
-    theirs is one more witness of arm 1's. `brings_up_every_vcpu` and
+    theirs is one more witness of arm 1's. (Since 2026-11-17 only the restores' storm boots
+    the most, D14's storm sizes; the resumed one takes one vCPU more than its host's CPUs.) `brings_up_every_vcpu` and
     `a_snapshot_keeps_the_memory_its_guest_plugged` failed only at the moment a 255-vCPU guest
     did: victims, given no arm.
   - What each outcome says, per x86_64 Linux job on GenuineIntel, read from its two
