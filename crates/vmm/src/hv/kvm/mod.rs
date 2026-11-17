@@ -699,11 +699,9 @@ fn run(fd: &mut sys::VcpuFd, io: &dyn Io, dirty: &Dirty) -> Result<Exit> {
             sys::RunExit::Hlt => {
                 return Err(Error::Guest("HLT exit despite the in-kernel LAPIC".into()));
             }
-            sys::RunExit::FailEntry(reason) => {
-                return Err(Error::Guest(format!(
-                    "VM entry failed (hardware reason {reason:#x})"
-                )));
-            }
+            // The host's hypervisor refused the entry (D261): EC2's nested KVM refuses a
+            // machine of 64 vCPUs or more on 4 CPUs, VM-instruction error 7.
+            sys::RunExit::FailEntry(reason) => return Ok(Exit::Refused(reason)),
             sys::RunExit::InternalError(suberror) => {
                 return Err(Error::Guest(format!("KVM internal error (suberror {suberror})")));
             }
