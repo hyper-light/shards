@@ -518,6 +518,10 @@ mod party {
     #[derive(Default)]
     struct Party {
         members: BTreeMap<u64, Clock>,
+        /// Its living members' threads, by the same keys, as another thread of this process
+        /// reads their states ([`hold`]).
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        threads: BTreeMap<u64, Thread>,
         ended: u64,
         waited: u64,
     }
@@ -623,7 +627,13 @@ mod party {
             PARTY.with(|of| of.set((party, false)));
             let clock = Clock::own()?;
             let key = NEXT_MEMBER.fetch_add(1, Ordering::Relaxed);
-            parties().entry(party).or_default().members.insert(key, clock);
+            {
+                let mut parties = parties();
+                let of = parties.entry(party).or_default();
+                of.members.insert(key, clock);
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                of.threads.insert(key, Thread::own());
+            }
             PARTY.with(|of| of.set((party, true)));
             Some(Member { party, key })
         }
@@ -632,11 +642,167 @@ mod party {
     impl Drop for Member {
         fn drop(&mut self) {
             let mut parties = parties();
-            if let Some(party) = parties.get_mut(&self.party)
-                && let Some(clock) = party.members.remove(&self.key)
-            {
+            let Some(party) = parties.get_mut(&self.party) else {
+                return;
+            };
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            party.threads.remove(&self.key);
+            if let Some(clock) = party.members.remove(&self.key) {
                 party.ended = party.ended.saturating_add(clock.ran().unwrap_or(0));
             }
+        }
+    }
+
+    /// What party `id`'s living members but the thread that asks are doing as it asks: D215's
+    /// hold (shards-api `Hold::held_since`, ROOT's rule for runnable threads and `run_delay`),
+    /// read of threads of this process. None is read on Windows, whose threads' states are in
+    /// the system's whole listing alone (13.1 to 13.8 ms a read, PM M606), as shards-api's
+    /// `starved` reads none there: its waits keep their overruns alone.
+    pub(super) fn hold(id: u64) -> Hold {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            // Read outside the parties' lock, which every member takes as it starts and ends: a
+            // thread gone since reads as none.
+            let threads: Vec<(u64, Thread)> = parties()
+                .get(&id)
+                .map(|party| {
+                    party
+                        .threads
+                        .iter()
+                        .map(|(&key, &thread)| (key, thread))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let asks = Thread::own();
+            let mut hold = Hold::default();
+            for (key, thread) in threads {
+                if thread == asks {
+                    continue;
+                }
+                let Some(state) = thread.read() else {
+                    continue;
+                };
+                hold.read += 1;
+                hold.runnable += usize::from(state.runnable);
+                hold.in_kernel += usize::from(state.in_kernel);
+                if let Some(queued) = state.queued {
+                    hold.queued.insert(key, queued);
+                }
+            }
+            hold
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        {
+            let _ = id;
+            Hold::default()
+        }
+    }
+
+    /// What a look read of a party's members ([`hold`]): how many it read, how many were
+    /// runnable (running, or waiting for a CPU) and how many waited uninterruptibly in their
+    /// kernel; and (Linux) each one's wait for a CPU so far, in nanoseconds, by its key.
+    #[derive(Debug, Default)]
+    pub(super) struct Hold {
+        pub(super) read: usize,
+        pub(super) runnable: usize,
+        pub(super) in_kernel: usize,
+        queued: BTreeMap<u64, u64>,
+    }
+
+    impl Hold {
+        /// Whether its host held a member since the look that read `before`, as D215's
+        /// `Hold::held_since` reads a VM process's threads: one runnable now, or waiting
+        /// uninterruptibly in its kernel now, or one's wait for a CPU grown since (the kernel
+        /// adds a wait to `run_delay` as its thread reaches a CPU, so one runnable throughout
+        /// shows by its state instead). A daemon's thread waits uninterruptibly in its kernel
+        /// only on its host's work (its storage, its pages), never on another of its party.
+        pub(super) fn since(&self, before: &Hold) -> bool {
+            self.runnable > 0
+                || self.in_kernel > 0
+                || self
+                    .queued
+                    .iter()
+                    .any(|(key, now)| before.queued.get(key).is_some_and(|was| now > was))
+        }
+
+        /// A stand-in's members as its test says they are: `runnable` of them runnable.
+        pub(super) fn standing(runnable: usize) -> Hold {
+            Hold {
+                read: runnable,
+                runnable,
+                ..Hold::default()
+            }
+        }
+    }
+
+    /// A member's thread as another thread of this process reads its state ([`hold`]): its
+    /// task's ID on Linux.
+    #[cfg(target_os = "linux")]
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    struct Thread(libc::pid_t);
+
+    /// A member's thread as another thread of this process reads its state ([`hold`]): its
+    /// Mach port on macOS (pthread_mach_thread_np(3)), held by its thread while it lives.
+    #[cfg(target_os = "macos")]
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    struct Thread(libc::mach_port_t);
+
+    /// What a read of a member's thread found: runnable, waiting uninterruptibly in its
+    /// kernel, and (Linux) its wait for a CPU so far, in nanoseconds.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    struct State {
+        runnable: bool,
+        in_kernel: bool,
+        queued: Option<u64>,
+    }
+
+    #[cfg(target_os = "linux")]
+    impl Thread {
+        fn own() -> Thread {
+            // SAFETY: gettid(2) takes nothing and always succeeds.
+            Thread(unsafe { libc::gettid() })
+        }
+
+        /// Its state, `/proc/self/task/<tid>/stat`'s third field (proc(5)): R runnable, D
+        /// waiting uninterruptibly; and its `schedstat`'s second, `run_delay`, its wait for a
+        /// CPU so far (Documentation/scheduler/sched-stats.rst). None once it has gone.
+        fn read(self) -> Option<State> {
+            let stat = std::fs::read_to_string(format!("/proc/self/task/{}/stat", self.0)).ok()?;
+            let state = stat.rsplit_once(')')?.1.trim_start().bytes().next()?;
+            let queued = std::fs::read_to_string(format!("/proc/self/task/{}/schedstat", self.0))
+                .ok()
+                .and_then(|text| text.split_whitespace().nth(1)?.parse().ok());
+            Some(State {
+                runnable: state == b'R',
+                in_kernel: state == b'D',
+                queued,
+            })
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    impl Thread {
+        fn own() -> Thread {
+            // SAFETY: this thread's own pthread, whose port it returns without a new reference.
+            Thread(unsafe { libc::pthread_mach_thread_np(libc::pthread_self()) })
+        }
+
+        /// Its run state (thread_info(2), THREAD_BASIC_INFO): TH_STATE_RUNNING runnable or
+        /// running, TH_STATE_UNINTERRUPTIBLE waiting in its kernel. macOS keeps no thread's
+        /// wait for a CPU. None once it has gone.
+        fn read(self) -> Option<State> {
+            // SAFETY: plain data, for thread_info to fill.
+            let mut info: libc::thread_basic_info = unsafe { std::mem::zeroed() };
+            let flavor = libc::thread_flavor_t::try_from(libc::THREAD_BASIC_INFO).ok()?;
+            let mut count = libc::THREAD_BASIC_INFO_COUNT;
+            // SAFETY: THREAD_BASIC_INFO of a member's port into a local thread_basic_info of
+            // its count's size (mach/thread_info.h); a port its thread has let go of fails.
+            let code = unsafe { libc::thread_info(self.0, flavor, (&raw mut info).cast(), &raw mut count) };
+            (code == libc::KERN_SUCCESS).then_some(State {
+                runnable: info.run_state == libc::TH_STATE_RUNNING,
+                in_kernel: info.run_state == libc::TH_STATE_UNINTERRUPTIBLE,
+                queued: None,
+            })
         }
     }
 
@@ -11145,6 +11311,8 @@ mod tests {
         StandIn {
             ran: fn() -> i128,
             until: fn() -> Option<Instant>,
+            /// How many of its members its host holds now.
+            held: fn() -> usize,
         },
     }
 
@@ -11175,6 +11343,17 @@ mod tests {
             }
         }
 
+        /// What its members are doing now ([`party::hold`]): a test's party's, whose threads
+        /// it knows; a stand-in's as its test says; none read of this process's, of which
+        /// every thread that has run counts already.
+        fn hold(self) -> party::Hold {
+            match self {
+                Counted::Party(id) => party::hold(id),
+                Counted::Process => party::Hold::default(),
+                Counted::StandIn { held, .. } => party::Hold::standing(held()),
+            }
+        }
+
         /// A thread waiting on it ran `cpu` more as it waited: no run of a party's.
         fn waited(self, cpu: u64) {
             WAITERS.fetch_add(cpu, Ordering::Relaxed);
@@ -11198,6 +11377,12 @@ mod tests {
     /// runnable, the looking thread among its threads. How long its host held it is what
     /// its own sleeps and timed waits overran (`overran`): a host that holds the process
     /// holds its waiter, and a stretch of it so held is no stretch its daemon could run in.
+    /// And, as D215 reads a VM process's threads, its members' own states ([`party::hold`]):
+    /// one runnable on no CPU, grown in its wait for one since the look before, or waiting in
+    /// its kernel is held by its host, which no overrun of its waiter's shows where its host
+    /// runs the waiter and not the member (CI 44164945050, aarch64 gnu,
+    /// `a_change_while_its_record_is_written_is_written_after`: refused, W* 1.11 ms, while its
+    /// record's writer, done with its disk, had yet to run or take the registry's lock).
     struct Wait<'r> {
         record: &'r Record,
         /// Whose run and deadlines it counts.
@@ -11215,6 +11400,8 @@ mod tests {
         /// long its host has held it since.
         since: Instant,
         held: Duration,
+        /// What its members were doing at the look before ([`party::hold`]).
+        hold: party::Hold,
     }
 
     impl<'r> Wait<'r> {
@@ -11231,6 +11418,7 @@ mod tests {
                 mine,
                 since: began,
                 held: Duration::ZERO,
+                hold: party.hold(),
             }
         }
 
@@ -11274,7 +11462,12 @@ mod tests {
             }
             let others = self.party.ran();
             let ran = others > std::mem::replace(&mut self.others, others);
-            if ran {
+            // A member its host holds since the look before: its stillness counted from here,
+            // as D215's judge counts it from a look that found its party held.
+            let hold = self.party.hold();
+            let held = hold.since(&self.hold);
+            self.hold = hold;
+            if ran || held {
                 (self.since, self.held) = (now, Duration::ZERO);
             }
             let from = self
@@ -11284,7 +11477,7 @@ mod tests {
             let free = now.saturating_duration_since(from).saturating_sub(self.held);
             self.judge.found(if ran {
                 Found::Progressed
-            } else if free < slowest {
+            } else if held || free < slowest {
                 Found::Held
             } else {
                 Found::Still
@@ -11438,9 +11631,12 @@ mod tests {
         }
         let still = || 0;
         let none = || None;
+        // Each stand-in's host holds none of its members.
+        let unheld = || 0;
         let stopped = Counted::StandIn {
             ran: still,
             until: none,
+            held: unheld,
         };
         let stall = waited_on(&STOPPED, stopped, || false).unwrap_err();
         assert!(stall.waited() >= slowest, "{stall:?}");
@@ -11454,7 +11650,8 @@ mod tests {
                 &ASLEEP,
                 Counted::StandIn {
                     ran: still,
-                    until: asleep
+                    until: asleep,
+                    held: unheld,
                 },
                 || { began.elapsed() >= slowest * 5 }
             ),
@@ -11463,6 +11660,7 @@ mod tests {
         let woke = Counted::StandIn {
             ran: still,
             until: asleep,
+            held: unheld,
         };
         let stall = waited_on(&WOKE_TO_NOTHING, woke, || false).unwrap_err();
         assert!(Instant::now() >= until + slowest, "{stall:?}");
@@ -11480,11 +11678,72 @@ mod tests {
             let slow = Counted::StandIn {
                 ran: runs,
                 until: none,
+                held: unheld,
             };
             let waited = waited_on(&SLOW, slow, || began.elapsed() >= slowest * 25);
             done.store(true, Ordering::Relaxed);
             assert_eq!(waited, Ok(()));
         });
+    }
+
+    /// A wait whose party ran nothing over windows in which its host held a member of it
+    /// (runnable on no CPU, grown in its wait for one, or waiting in its kernel) is held, not
+    /// refused: D215's hold, of its members (`party::hold`). No overrun of its waiter shows a
+    /// member its host held while it ran the waiter (CI 44164945050, aarch64 gnu,
+    /// `a_change_while_its_record_is_written_is_written_after`: refused at W* 1.11 ms while its
+    /// record's writer had yet to run). Waited on past the due looks within which a still
+    /// party is refused, and one more; red where a wait reads its waiter's overruns alone,
+    /// refused a W* or two in.
+    #[test]
+    fn a_wait_whose_member_its_host_holds_is_held_not_refused() {
+        static HELD: Record = Record::new();
+        let slowest = Duration::from_millis(20);
+        HELD.teach(slowest, Duration::ZERO);
+        let held = Counted::StandIn {
+            ran: || 0,
+            until: || None,
+            held: || 1,
+        };
+        let began = Instant::now();
+        let past = slowest * (shards_api::LOOKS_TO_REFUSE + 2);
+        assert_eq!(waited_on(&HELD, held, || began.elapsed() >= past), Ok(()));
+    }
+
+    /// A party's members are read as their OS shows them (`party::hold`): one that spins is
+    /// runnable, one asleep on a channel neither runnable nor waiting in its kernel, and the
+    /// thread that reads is none of them.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn a_partys_members_are_read_as_their_os_shows_them() {
+        let mine = party::of_test();
+        let (spinning, spin) = (AtomicBool::new(false), AtomicBool::new(true));
+        std::thread::scope(|s| {
+            party::spawn_in(s, || {
+                spinning.store(true, Ordering::SeqCst);
+                while spin.load(Ordering::Relaxed) {
+                    std::hint::spin_loop();
+                }
+            });
+            until("its member did not spin", || spinning.load(Ordering::SeqCst));
+            let hold = party::hold(mine);
+            spin.store(false, Ordering::Relaxed);
+            assert_eq!((hold.read, hold.runnable, hold.in_kernel), (1, 1, 0), "{hold:?}");
+        });
+        // Its member asleep, its party runs nothing: a reading that never says so is refused.
+        let (keep, rest) = mpsc::channel::<()>();
+        let (read, last) = std::thread::scope(|s| {
+            party::spawn_in(s, move || {
+                let _ = rest.recv();
+            });
+            let mut last = party::Hold::default();
+            let read = waited(|| {
+                last = party::hold(mine);
+                (last.read, last.runnable, last.in_kernel) == (1, 0, 0)
+            });
+            drop(keep);
+            (read, last)
+        });
+        assert!(read.is_ok(), "its member asleep not read so: {last:?}");
     }
 
     /// A test's wait counts its own test's threads alone ([`party`], D215): a party whose
