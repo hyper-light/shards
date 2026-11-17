@@ -1240,8 +1240,9 @@ fn judged_end(party: &mut std::process::Child) -> Result<std::process::ExitStatu
 /// thread pool threads", Microsoft's Thread Pools; the loader's own use of the pool, Raymond
 /// Chen, "Why does my single-threaded program have multiple threads?", 2019-11-15), and on
 /// CI's arm64 Windows runners one of the stand-in's three ran once, about 840 ms into a call
-/// asleep for 1 s, leaving no window before its end to refuse it in (run 44138098584; trace
-/// run 44151128928, PM M618). Such a run postpones a refusal by a window; none prevents it.
+/// asleep for 1 s, at the due look its refusal had come to (run 44138098584; trace runs
+/// 44151128928 and 44163626733, PM M618). Such a run postpones a refusal by a window; none
+/// prevents it.
 #[test]
 fn a_judged_calls_own_work_is_its_progress() {
     #[track_caller]

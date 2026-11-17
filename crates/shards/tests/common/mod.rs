@@ -5344,9 +5344,15 @@ impl Wait {
                 self.progressed.get_or_insert(ran);
             }
             self.polls = polls;
-            let found = if self.progressed.take().is_some() {
+            // A window's findings are its own: its progress outranks its hold, and neither
+            // carries into the next window. Taken one at a time, a hold its call's spawn
+            // recorded outlived the window its call's first run progressed, and judged the
+            // next one held: every idle call's refusal came a window late, at the fourth
+            // due look, on arm64 Windows and x86_64 alike (judge-trace 44163626733, PM M618).
+            let (progressed, held) = (self.progressed.take(), self.held.take());
+            let found = if progressed.is_some() {
                 Found::Progressed
-            } else if self.held.take().is_some() {
+            } else if held.is_some() {
                 Found::Held
             } else if looked.found == Found::Based {
                 Found::Based

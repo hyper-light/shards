@@ -26422,7 +26422,19 @@ the counts are a process's, not a thread's. n is one run of each child.
   party's process (D215): a pool's worker may run the process's own callbacks, and no
   documented rule tells the system's turns of it apart. So the test sets its idle call no
   span: it stays idle until its wait is refused, the refusal ending it (its `stop`), so the
-  system's one run of a worker postpones the refusal by a window and cannot prevent it. Not
-  explained by this trace, and unmeasured: why on arm64 the due looks before that run, about
-  two and three W* into the call, refused nothing, and at which look x64's refusals came; it
-  records no look's time or verdict.
+  system's one run of a worker postpones the refusal by a window and cannot prevent it.
+- **Why no due look before it refused** (trace run 44163626733, p/judge-trace at 73722d9433:
+  each look of a judged wait, its time, whether due, what it found and why, its judge's
+  stillness, held lateness and window, and its verdict, and each round's own-thread cycles;
+  windows-11-arm and windows-2025, three runs each). In all six, the idle call's second due
+  look, about 410 ms in, judged its party held, though every look found it still and its own
+  thread had run nothing since about 18 ms in; its third, about 615 ms in, then counted 196
+  to 204 ms of stillness, under its window of 203 to 206 ms, and kept it; only its fourth,
+  815 to 832 ms in, could refuse. Two did (windows-2025); the others' found progress there:
+  the stand-in's worker on arm64, and the call's own wake at 85cecd75bb's span. The hold was
+  the test harness's own (common::Wait, not shards-api's judge, whose `Follow::look` judges
+  each due look's own finding): its judging loop's first round, before its call's thread had
+  begun, recorded the host holding that thread; the first due look judged its window
+  progressed by that thread's first run and took the progress alone, so the hold judged the
+  next window held. Each due look now takes both, its progress first: a still party is
+  refused at its third due look (`LOOKS_TO_REFUSE`), every platform alike.
