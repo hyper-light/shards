@@ -4375,9 +4375,39 @@ impl Party {
         };
         match (&self.home, self.daemon()) {
             (Some(home), Some(daemon)) => format!("{who}, daemon {daemon} of {}", home.display()),
-            (Some(home), None) => format!("{who}, no daemon yet in {}", home.display()),
+            // One its home's pid file still names, the same process, no longer living: as it
+            // is now, its threads among it. A killed daemon's main thread may end before its
+            // others (Linux's delayed group leader, kernel/exit.c), so that it reads as a
+            // zombie while they still hold its files open (fs/file.c `put_files_struct`), its
+            // clients' slots among them, which a client waiting on its slot then waits on (CI
+            // 44077430171, x86_64 musl, `a_container_outlives_a_daemon_that_dies`).
+            (Some(home), None) => match shards_ipc::Named::read(&home.join(shards_ipc::PID)) {
+                Some(named) if shards_ipc::started(named.pid).is_ok_and(|start| start == named.start) => {
+                    format!(
+                        "{who}, its daemon {} no longer living in {}: {}",
+                        named.pid,
+                        home.display(),
+                        ending(named.pid)
+                    )
+                }
+                Some(named) => format!("{who}, its daemon {} gone from {}", named.pid, home.display()),
+                None => format!("{who}, no daemon yet in {}", home.display()),
+            },
             (None, _) => who,
         }
+    }
+}
+
+/// Process `pid` as a wait's account says it once it no longer lives: its status
+/// ([`process_status`]) and its threads (`shards_api::runnable_threads`), each where it could
+/// be read.
+fn ending(pid: u32) -> String {
+    let threads = shards_api::runnable_threads(pid).map_or_else(String::new, |(runnable, threads)| {
+        format!(", {runnable} of {threads} threads runnable")
+    });
+    match process_status(pid) {
+        Some(status) => format!("{status}{threads}"),
+        None => format!("its state unread{threads}"),
     }
 }
 
