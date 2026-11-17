@@ -25941,6 +25941,17 @@ held to more than OPA's answers:
     panics on most such pairs ("illegal value": `big.Rat.SetString` refuses |exp5| > 10^6
     and |exp2| > 10^7, go1.26.1 `math/big/ratconv.go`; `big.Float.SetString`, exponents
     past int32). Shards answers exactly.
+  - A number whose exponent is past i64's, which `number::exact_parts` refuses (and OPA
+    panics on), was ordered by its text against the rest, which is no total order: on CI's
+    fuzzing (run 44077430171, rego-builtins' crash-1023800b6193) `sort` of such an array
+    panicked in Rust's sort ("user-provided comparison function does not correctly
+    implement a total order"), `66e<huge>` before 7 and after 10. It now comes after every
+    number `exact_parts` reads, and by text among its own (2026-11-17, kiln goal a8b1ce42,
+    lane own-36-tag; value.rs `numbers_past_every_exponent_order_totally_with_the_rest`).
+    OPA's own quirk stays as OPA has it: a number with a `.` loses its trailing `.` and `0`
+    there, so `10.0` equals both `1` and `10`, no total order either. Open: Rust's sorts,
+    and BTree sets and maps built from iterators, which sort, may panic on it where Go's
+    sort does not.
   - Addition and subtraction keep the smaller operand's bits within prec + 2 of the
     larger's top, the rest a sticky bit (and a borrow). The round bit is then at or above
     the cut, so the result rounds as Go's exact sum does (160,000 random sums and
