@@ -38383,7 +38383,11 @@ post-mortem read of the printk ring through VMCOREINFO, not a debug port.
       anyway. Neither do paravirtual spinlocks: what waits is the rendezvous, not a lock.
     - A nested KVM host brings every CPU up at boot and so holds one rendezvous. CI 44138098584's
       x86_64 gnu runner (AMD EPYC 7763 in Azure, 4 CPUs) brought a guest's 255 CPUs up by
-      26.9 s and its init up at 34.0 s. The cap stays WHP's. ci.yml's x86_64 Windows jobs (`boots_the_hosts_maximum_vcpu_count` at 4
+      26.9 s and its init up at 34.0 s.
+    - **Ruled (ROOT, 2026-11-17): the nested cap stays WHP's.** What fails is WHP's late
+      onlining, a rendezvous of every online CPU for each CPU brought up past the first; KVM
+      brings them all up at boot, where the kernel defers that rendezvous to one
+      (`set_cache_aps_delayed_init`), and its guests came up whole on the same 4 nested CPUs. ci.yml's x86_64 Windows jobs (`boots_the_hosts_maximum_vcpu_count` at 4
     vCPUs, the storms sized so). The 8 lint targets.
 - **CI's judge learns across runs** (2026-11-17, kiln goal b2124227, lane ci-judge-cache).
   ROOT's answer to the question above: CI keeps the judge's records. Until now every CI job
