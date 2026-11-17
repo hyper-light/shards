@@ -11512,7 +11512,9 @@ mod tests {
         // This test's party: a member waiting on nothing that comes.
         let mine = party::of_test();
         let (never, idle) = mpsc::channel::<()>();
-        let idler = party::spawn_member(move || drop(idle.recv()));
+        let idler = party::spawn_member(move || {
+            let _ = idle.recv();
+        });
         let began = Instant::now();
         let stall = waited_on(&STOPPED, Counted::here(), || false).unwrap_err();
         let given_up = began.elapsed();
