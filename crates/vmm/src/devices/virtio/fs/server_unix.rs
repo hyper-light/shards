@@ -151,6 +151,13 @@ pub(super) fn fset_xattr(fd: host::Raw, name: &CStr, value: &[u8], flags: u32) -
     Ok(())
 }
 
+/// `fd`'s file's owner's record broken, as a test breaks it: its attribute a value no owner
+/// parses.
+#[cfg(test)]
+pub(super) fn break_owner(fd: host::Raw) -> Result<(), Errno> {
+    fset_xattr(fd, &owner_xattr()?, b"broken", 0)
+}
+
 /// The name the host keeps a guest's ownership under: Docker Desktop's on macOS, which
 /// keeps no namespaces; in Linux's `user.` namespace on Linux.
 pub(super) fn owner_xattr() -> Result<CString, Errno> {
