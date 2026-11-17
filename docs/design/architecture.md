@@ -39385,7 +39385,10 @@ from one region, its cost the guest's page structures, 64 bytes a 4 KiB page.)
 - *Its guest* (init's `DEVICE` built-in, `pmem ADDR GPA KEY`): the bus rescanned (D214),
   libnvdimm's drivers binding the region and its namespace of themselves, with page
   structures (not raw, as the swap window is, D159), so that its files are DAX; its disk found
-  by its region's address as each uevent comes; EROFS mounted read-only, `nosuid`, `nodev`,
+  by its region's address as each uevent comes, then its nd buses' probing waited for
+  (`wait_probe`, as pmem.rs waits for a boot's: the disk is listed as nd_pmem adds it, before
+  it opens, block/genhd.c `device_add_disk`, and a harness's swap opened it between, refused
+  ENXIO on x86_64 WHP, CI 44138098584 windows-2022); EROFS mounted read-only, `nosuid`, `nodev`,
   `dax=always`, attached nowhere, then put beside the run's writable layer at
   `components/KEY`, where no path from the run's root reaches, as the in-VM server's binary
   is (domains.rs); KEY the component's digest's 64 lowercase hex digits, refused otherwise.
