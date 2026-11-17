@@ -465,7 +465,11 @@ mod storm {
     }
 
     /// A storm (the test guest's `storm` mode) on `cpus` vCPUs, with both disks and a vsock
-    /// device at `sock`, whose snapshot goes to `s.snapshot()`, then `then`.
+    /// device at `sock`, whose snapshot goes to `s.snapshot()`, then `then`. Its CPUs come up as
+    /// the product's guests' do: where every CPU online at boot makes each of the kernel's text
+    /// patches wait for vCPUs that have no host CPU (nested Hyper-V's WHP), its kernel brings
+    /// up its boot CPU alone and the test guest the rest before its storm, as shards-init does
+    /// (`vm::late_cpus_cmdline`, PM M379, D261).
     fn storm_args(s: &Scratch, cpus: u32, sock: &Path, then: &str) -> Vec<std::ffi::OsString> {
         let rw = s.0.join("rw.img");
         [
@@ -486,7 +490,8 @@ mod storm {
             sock.as_os_str().to_owned(),
             "--cmdline".into(),
             format!(
-                "console=hvc0 quiet panic=-1 shards_test=storm shards_vda_bytes={RO_BYTES} shards_vdb_bytes={RW_BYTES} shards_storm_ms={}",
+                "console=hvc0 quiet panic=-1{} shards_test=storm shards_vda_bytes={RO_BYTES} shards_vdb_bytes={RW_BYTES} shards_storm_ms={}",
+                shards_vmm::vm::late_cpus_cmdline(cpus),
                 std::env::var("SHARDS_STORM_MS").unwrap_or_else(|_| "0".into()),
             )
             .into(),

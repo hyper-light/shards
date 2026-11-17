@@ -306,8 +306,9 @@ fn two_vcpus_boot_to_their_end_in_this_process() {
 }
 
 /// The host's most vCPUs: the guest brings up as many as its kernel was built for, and is
-/// shown the rest, which its kernel names as it refuses them. Booted in this process and
-/// watched until its kernel says its CPUs are up, then stopped, judged by its own progress
+/// shown the rest, which its kernel names as it refuses them. Booted in this process as the
+/// product boots its machines, its init bringing its CPUs online where the product's does (PM
+/// M379, [`brings_up_the_most`]), and watched until it powers off, judged by its own progress
 /// (D261): each line its kernel logs, read from its printk ring while its console has said
 /// nothing (from subsys_initcall, which publishes the ring's place, where hvc0 registers only
 /// at device_initcall: on a CI runner's nested WHP of 4 CPUs a 255-vCPU guest did not get
@@ -396,7 +397,8 @@ fn bring_up_arm(max: u32, arm: &str, also: &str) -> std::thread::Result<()> {
     };
     let _ = writeln!(
         std::io::stderr(),
-        "D261 A/B arm {arm} ({BRINGS_UP}{also}): {outcome}; {:?} from its start",
+        "D261 A/B arm {arm} ({BRINGS_UP}{}{also}): {outcome}; {:?} from its start",
+        shards_vmm::vm::late_cpus_cmdline(max),
         start.elapsed()
     );
     match ran {
@@ -434,24 +436,53 @@ fn a_d261_arm_boots_the_vcpus_its_experiment_asks() {
     }
 }
 
-/// [`brings_up_the_most`]'s command line. Its console at the kernel's own default level
-/// (`loglevel=7`: CONFIG_CONSOLE_LOGLEVEL_DEFAULT in the pinned kernels' base configs, which
-/// shards' leave), as `run --kernel` booted it with its console on stdout. Told no level, a
-/// machine whose console no one reads is told `quiet` (`vm::kernel_cmdline`), which keeps the
-/// bring-up off hvc0: a host whose ring is not read would never see it (D261).
+/// [`brings_up_the_most`]'s command line, before what the product's boot tells its kernel. Its
+/// console at the kernel's own default level (`loglevel=7`: CONFIG_CONSOLE_LOGLEVEL_DEFAULT in
+/// the pinned kernels' base configs, which shards' leave), as `run --kernel` booted it with its
+/// console on stdout. Told no level, a machine whose console no one reads is told `quiet`
+/// (`vm::kernel_cmdline`), which keeps the bring-up off hvc0: a host whose ring is not read
+/// would never see it (D261).
 const BRINGS_UP: &str = "console=hvc0 panic=-1 loglevel=7";
 
-/// [`boots_the_hosts_maximum_vcpu_count`]'s boot of `max` vCPUs in this process, its kernel
-/// told `also` past [`BRINGS_UP`]; `also` and its count key its waits apart beside their call
-/// site, so that one arm's or count's answers judge no other's. The host's refusal to enter
-/// one of its vCPUs is its end, typed (D261); any other failure panics.
+/// What shards-init says once its CPUs are online and its boot is done, then powering off, as
+/// a guest given no workload does (crates/init `main`).
+const INIT_RUNS: &str = "shards-init: pid 1 running";
+
+/// What its kernel says as it powers off (kernel/reboot.c `kernel_power_off`), its consoles
+/// flushed before the machine goes (`pr_flush`): every line before it, each CPU's among them,
+/// is on its console by then, as a console prints the kernel's records in their order.
+const POWERS_OFF: &str = "reboot: Power down";
+
+/// What a kernel says of each CPU its init brings online once it runs: x86-64's smpboot, once
+/// its system runs (arch/x86/kernel/smpboot.c `announce_cpu`), and arm64's
+/// (arch/arm64/kernel/smp.c `secondary_start_kernel`).
+fn brought_online() -> &'static str {
+    match common::ARCH {
+        "x86_64" => "smpboot: Booting Node ",
+        _ => "Booted secondary processor",
+    }
+}
+
+/// [`boots_the_hosts_maximum_vcpu_count`]'s boot of `max` vCPUs in this process, booted as the
+/// product boots its machines (vm_run.rs `boot_into`, build/builder.rs): shards-init its PID 1,
+/// and its kernel told [`late_cpus_cmdline`](shards_vmm::vm::late_cpus_cmdline)'s words for
+/// `max` past [`BRINGS_UP`], then `also`. Where every CPU online at boot makes each of its
+/// kernel's text patches wait for vCPUs that have no host CPU, nested Hyper-V's WHP, its
+/// kernel brings up its boot CPU alone and its init the rest (PM M379): a boot of all of them
+/// at once there is one the product never makes, and tests nothing of it (D261, ROOT's ruling
+/// of 2026-11-17). Waited for until it powers off, its init having said it runs, its CPUs
+/// online; then each is checked brought up, at boot or by its init. The late words, `also` and
+/// its count key its waits apart beside their call site, so that one arm's or count's answers
+/// judge no other's. The host's refusal to enter one of its vCPUs is its end, typed (D261); any
+/// other failure panics.
 fn brings_up_the_most(max: u32, also: &str) -> Result<(), shards_vmm::vm::limits::EntryRefused> {
     use shards_vmm::vm::{self, Config, Console, ExitReason};
     let _turn = machine_turn();
-    let mut cfg = Config::new(kernel().to_path_buf(), None);
+    let mut cfg = Config::new(kernel().to_path_buf(), Some(guest_init().to_path_buf()));
     cfg.vcpus = max;
     cfg.memory_mib = 1024;
-    cfg.cmdline = format!("{BRINGS_UP}{also}");
+    let late = vm::late_cpus_cmdline(max);
+    cfg.cmdline = format!("{BRINGS_UP}{late}{also}");
     cfg.console = Console::Discard;
     // Its whole console kept, and with it its kernel's whole ring while its console has said
     // nothing: this test reads them as it goes (D12, D261).
@@ -466,8 +497,8 @@ fn brings_up_the_most(max: u32, also: &str) -> Result<(), shards_vmm::vm::limits
         let _ = tx.send(reason);
     });
     let tag = cfg!(windows).then_some("D261 WHP boot");
-    let key = format!("{also} {max} vCPUs");
-    let (said, lines) = match common::machine_says(&handle, &ended, "smp: Brought up", &key, max, tag) {
+    let key = format!("{late}{also} {max} vCPUs");
+    let (_, lines) = match common::machine_says(&handle, &ended, POWERS_OFF, &key, max, tag) {
         Ok(said) => said,
         Err(failed) => match end.try_recv() {
             Ok(ExitReason::Refused(refused)) => return Err(refused),
@@ -476,11 +507,26 @@ fn brings_up_the_most(max: u32, also: &str) -> Result<(), shards_vmm::vm::limits
     };
     let configured = kernel_nr_cpus();
     let up = max.min(configured);
-    let plural = if up == 1 { "" } else { "s" };
-    let brought = format!("smp: Brought up 1 node, {up} CPU{plural}");
-    let seen = lines.timed();
+    // Its kernel brought up every CPU at boot, or its boot CPU alone and its init the rest.
+    let at_boot = if late.is_empty() { up } else { 1 };
+    let plural = if at_boot == 1 { "" } else { "s" };
+    let brought = format!("smp: Brought up 1 node, {at_boot} CPU{plural}");
+    let (text, seen) = (lines.text(), lines.timed());
     // A count other than the one asked for fails at once, with what the guest said.
-    assert!(said.contains(&brought), "{seen}");
+    assert!(text.contains(&brought), "{seen}");
+    assert!(text.contains(INIT_RUNS), "{seen}");
+    if !late.is_empty() {
+        // Each of the rest brought online by its init, as its kernel says, and none refused
+        // (crates/init `bring_cpus_online`).
+        let online = text.lines().filter(|l| l.contains(brought_online())).count();
+        assert_eq!(
+            u32::try_from(online).ok(),
+            Some(up - 1),
+            "its init brought {online} CPUs online of {}:\n{seen}",
+            up - 1
+        );
+        assert!(!text.contains("not brought online"), "{seen}");
+    }
     if max > configured {
         let refused = match common::ARCH {
             // arch/x86/kernel/cpu/topology.c
@@ -488,7 +534,7 @@ fn brings_up_the_most(max: u32, also: &str) -> Result<(), shards_vmm::vm::limits
             // arch/arm64/kernel/smp.c
             _ => format!("Number of cores ({max}) exceeds configured maximum of {configured}"),
         };
-        assert!(lines.text().contains(&refused), "{seen}");
+        assert!(text.contains(&refused), "{seen}");
     }
     Ok(())
 }

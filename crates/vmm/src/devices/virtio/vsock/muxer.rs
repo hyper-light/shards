@@ -867,7 +867,10 @@ impl Muxer {
     /// pair dropped first left the name no instance, which ends every client's wait on it as
     /// if no one listened (ERROR_FILE_NOT_FOUND as its last instance closes, WaitNamedPipeW),
     /// and `shards_ipc::vsock_open` refuses it so: WHP's rate test, its dial waiting as the
-    /// pair its readiness dial had let go was found broken (CI 44031463755, 6 of 6).
+    /// pair its readiness dial had let go was found broken (CI 44031463755, 6 of 6). Its way
+    /// up goes before the next is made ([`Listening::close_up`]): the waiting client, let in by
+    /// the next pair's way down, opens a way up next, and found the broken pair's still
+    /// listening beside the next's (CI 44077430171).
     #[cfg(windows)]
     fn accept(&mut self) {
         let (taken, broken) = {
@@ -881,6 +884,7 @@ impl Muxer {
                 Paired::Waiting => return,
                 Paired::Broken => {
                     debug!("vsock: a host client went before its pair was whole; the pair replaced");
+                    pair.close_up();
                     (None, listener.pair.take())
                 }
                 Paired::Connected => (listener.pair.take().map(Listening::into_pipes), None),
@@ -3084,7 +3088,11 @@ mod tests {
     /// refused (D272): the broken pair goes once its replacement is there. Dropped first, it
     /// left the name no instance, which ended the client's wait as if no one listened
     /// (ERROR_FILE_NOT_FOUND), refused by `shards_ipc::vsock_open` (CI 44031463755, WHP's rate
-    /// test). Red with the pair dropped before `next_pair` makes the next.
+    /// test). Red with the pair dropped before `next_pair` makes the next. And its way up is
+    /// the replacement's: the broken pair's, left listening until the pair was dropped, took
+    /// the client's open of it as the replacement was made, and the replacement waited on its
+    /// way up for ever (CI 44077430171, arm64 Windows: not let in after 10 s); red without
+    /// `Listening::close_up`, as the client's open races the pair's drop.
     #[cfg(windows)]
     #[test]
     fn a_client_waiting_as_a_broken_pair_is_replaced_is_let_in() {
