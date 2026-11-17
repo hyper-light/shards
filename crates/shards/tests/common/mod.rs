@@ -6789,11 +6789,13 @@ pub fn judged_accounted<T: Send>(
     judging(wait, Stage::Awaited, asked, stop, call, None)
 }
 
-/// [`judged_accounted`], its call told what its wait's account says of its judge's looks as
-/// it goes: on the channel its call takes, the due looks that found its party still since it
-/// last progressed, held or based, each as far into the wait as it came, each time they
-/// change, the channel closing as its wait ends, refused or not. What a test that bounds a
-/// wait on a still party by its judge's own looks reads, where a span of time would be cut
+/// [`judged_accounted`], its call told once its judge's looks have outlasted their rule: on the
+/// channel its call takes, the due looks that found its party still since it last progressed,
+/// held or based, each as far into the wait as it came, once they are more than
+/// [`shards_api::LOOKS_TO_REFUSE`] and none refused it; the channel closing as its wait ends,
+/// refused or not. Its call's thread is its party's member, so it hears nothing before: each
+/// word wakes it, which its next look takes for progress ([`judging`]). What a test that bounds
+/// a wait on a still party by its judge's own looks reads, where a span of time would be cut
 /// short by a host that holds the looks late (harness.rs
 /// `a_judged_calls_own_work_is_its_progress`).
 #[track_caller]
@@ -6869,7 +6871,6 @@ fn judging<T: Send>(
             *thread() = Calling::Called;
             let _ = tx.send(answer);
         });
-        let mut heard = 0;
         let refused = loop {
             match rx.recv_timeout(wait.next_look()) {
                 Ok(answer) => {
@@ -6905,11 +6906,16 @@ fn judging<T: Send>(
             if let Err(stall) = looked {
                 break wait.refused(&stall);
             }
-            // Its watcher hears each change in the due looks that found its party still.
-            if let Some(still) = &watch
-                && heard != wait.still.len()
+            // Its watcher is told once, as its due looks have found its party still more times
+            // than its judge's rule refuses within, none refusing it. Told of each change, its
+            // call's own thread woke to hear it, and that run, its party's member's, was its
+            // next due look's progress: its party never stayed still, so its wait was neither
+            // refused nor told it had outlasted its rule (CI 44164945050 at 95247a79c, harness.rs
+            // `a_judged_calls_own_work_is_its_progress`, to the Tests step's limit on every
+            // Linux and macOS job and on arm64 Windows).
+            if wait.still.len() > shards_api::LOOKS_TO_REFUSE as usize
+                && let Some(still) = watch.take()
             {
-                heard = wait.still.len();
                 let _ = still.send(wait.still.clone());
             }
         };
