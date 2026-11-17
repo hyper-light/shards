@@ -39254,9 +39254,19 @@ finds nothing.
   ConnectNamedPipe overlapped (ERROR_PIPE_CONNECTED, a client in before the call, connected
   at once). With its way down open and its way up not, the way down is watched by a read of
   no bytes (PM M348), which ends as its client goes (or writes on the way it reads): the pair
-  is then `Broken`, dropped and replaced. Whole, it is a handshake's (`Muxer::take`), and the
-  next pair is made first (`platform::PairMaker`: the spawner's, through the hook S3 sets, or
-  this process's own, under the names it made the first with where none was granted).
+  is then `Broken`, replaced, and dropped only once its replacement is there. Whole, it is a
+  handshake's (`Muxer::take`), and the next pair is made first (`platform::PairMaker`: the
+  spawner's, through the hook S3 sets, or this process's own, under the names it made the
+  first with where none was granted). *Amended 2026-11-17 (CI 44031463755):* a pair is also
+  `Broken` where its client opened both ways and let go before the VM's device began its
+  connects (ERROR_NO_DATA): the spawner's first pair, which a readiness dial opens before the
+  device is up (boot.rs `listening`). Dropped before its replacement was made, the name had
+  no instance for that moment, and a client waiting on it (ERROR_PIPE_BUSY, WaitNamedPipeW)
+  was ended as if no one listened (ERROR_FILE_NOT_FOUND as the last instance closed: ReactOS's
+  npfs, strucsup.c `NpDeleteFcb`, run once a name has no instance, cancels its waiters
+  `STATUS_OBJECT_NAME_NOT_FOUND`; the client's os error 2) and refused:
+  WHP's managed-guest rate test, 6 of 6 on windows-2022 and -2025. While a VM listens, its
+  name always has an instance; a dial is refused only once it has ended.
 - *Dials* go through the dialer as before (S3's spawner); with none, the muxer opens the
   host port's pair itself, waiting for nothing (`shards_ipc::vsock_open` to now): a taken pair
   refuses at once, as a socket's full backlog does, rather than stall the device.
