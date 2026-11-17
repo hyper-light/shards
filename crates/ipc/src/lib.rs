@@ -3342,6 +3342,124 @@ mod tests {
         let _ = child.wait();
     }
 
+    /// A process whose main thread, its thread group's leader, has ended while another of its
+    /// threads runs lives until that thread ends, and then, unreaped, no more (ROOT's ruling of
+    /// 2026-11-17, D185): its leader reads as a zombie (`/proc/<pid>/stat` state `Z`) while the
+    /// rest run, hold its files and do its work (kernel/exit.c `delay_group_leader`, fs/file.c
+    /// `put_files_struct`). Red before, where a zombie leader was the process's end: a daemon
+    /// SIGKILLed whose leader went first was no daemon while its other threads still held its
+    /// clients' slots open (CI 44077430171, x86_64 musl,
+    /// `a_container_outlives_a_daemon_that_dies`). Its child is this binary run for
+    /// [`leader_gone_child`] alone.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_process_whose_leader_ended_lives_while_its_threads_run() {
+        use std::io::Read as _;
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "tests::leader_gone_child",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env("SHARDS_LEADER_GONE_CHILD", "1")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let named = Named {
+            pid,
+            start: started(pid).unwrap(),
+        };
+        // What it says once its leader has ended alone: `Z`, or `?` where it never did.
+        let mut said = [0u8; 1];
+        let errors = child.stderr.as_mut().unwrap();
+        while !matches!(said, [b'Z' | b'?']) {
+            errors.read_exact(&mut said).unwrap();
+        }
+        assert_eq!(&said, b"Z", "{pid}'s leader did not end alone");
+        assert!(
+            named.lives(),
+            "{pid}, its leader a zombie and its other threads running, does not live"
+        );
+        // Its stdin's end ends the rest of it; waitid's WNOWAIT leaves it unreaped, every thread
+        // of it gone.
+        drop(child.stdin.take());
+        let id = libc::id_t::try_from(pid).unwrap();
+        // SAFETY: a siginfo_t, plain data, for waitid(2) to fill.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        // SAFETY: waitid(2) of our own child into a siginfo_t of ours; WNOWAIT leaves it
+        // unreaped.
+        let waited = unsafe { libc::waitid(libc::P_PID, id, &mut info, libc::WEXITED | libc::WNOWAIT) };
+        assert_eq!(waited, 0, "{}", std::io::Error::last_os_error());
+        assert!(
+            !named.lives(),
+            "{pid}, every thread of it ended and unreaped, lives"
+        );
+        let _ = child.wait();
+    }
+
+    /// [`a_process_whose_leader_ended_lives_while_its_threads_run`]'s child, which does nothing
+    /// in a run of the tests. Its main thread ends alone, by exit(2) of one thread in a signal's
+    /// handler, while another thread waits on its stdin and ends the process, exit_group(2),
+    /// once that ends; a third says `Z` on its stderr once its leader is a zombie
+    /// (`/proc/self/task/<pid>/stat` state `Z`), or `?` where it is not in 30 s.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn leader_gone_child() {
+        if std::env::var_os("SHARDS_LEADER_GONE_CHILD").is_none() {
+            return;
+        }
+        // Ends the thread that takes it, that one alone.
+        extern "C" fn end_this_thread(_: libc::c_int) {
+            // SAFETY: exit(2) of the calling thread, async-signal-safe.
+            unsafe { libc::syscall(libc::SYS_exit, 0) };
+        }
+        std::thread::spawn(|| {
+            let mut byte = [0u8; 1];
+            // SAFETY: read(2) of this process's stdin into a byte of ours.
+            while unsafe { libc::read(0, byte.as_mut_ptr().cast(), 1) } > 0 {}
+            // SAFETY: _exit(2) of the whole process.
+            unsafe { libc::_exit(0) };
+        });
+        let pid = std::process::id();
+        std::thread::spawn(move || {
+            let leader = format!("/proc/self/task/{pid}/stat");
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            let said: &[u8] = loop {
+                let stat = std::fs::read_to_string(&leader).unwrap_or_default();
+                if stat
+                    .rsplit_once(')')
+                    .and_then(|(_, rest)| rest.split_ascii_whitespace().next())
+                    == Some("Z")
+                {
+                    break b"Z";
+                }
+                if std::time::Instant::now() > deadline {
+                    break b"?";
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            };
+            // SAFETY: write(2) of a byte of ours to this process's stderr, no lock taken.
+            unsafe { libc::write(2, said.as_ptr().cast(), 1) };
+        });
+        let id = libc::pid_t::try_from(pid).unwrap();
+        // SAFETY: sigaction(2) giving SIGUSR1 the handler above, then tgkill(2) of this
+        // process's main thread, whose thread ID is the process's: the test's thread or
+        // another, either way the leader.
+        unsafe {
+            let mut ending: libc::sigaction = std::mem::zeroed();
+            ending.sa_sigaction = end_this_thread as extern "C" fn(libc::c_int) as libc::sighandler_t;
+            assert_eq!(libc::sigaction(libc::SIGUSR1, &ending, std::ptr::null_mut()), 0);
+            libc::syscall(libc::SYS_tgkill, id, id, libc::SIGUSR1);
+        }
+        loop {
+            std::thread::park();
+        }
+    }
+
     /// A working set goes in parts each within a message's payload, and comes back whole,
     /// the last part alone flagged so; an empty one is one part, and a name too long for
     /// its length byte sends nothing.

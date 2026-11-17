@@ -147,6 +147,37 @@ mod linux {
             env!("CARGO_MANIFEST_DIR"),
             "/../../docs/research/measurements/managed-proc-main/reader-tests.rs"
         ));
+
+        /// A record says its process has exited once its state is a zombie's or a dead
+        /// process's and no thread of it is left but that one (ROOT's ruling of 2026-11-17,
+        /// D215): a zombie leader with threads still running, as a SIGKILLed daemon's may be,
+        /// is no end under way. Red before, where its state alone said it.
+        #[test]
+        fn a_zombie_leader_with_threads_left_has_not_exited() {
+            // `PID (COMM) STATE`, fields 4 to 19 each 0, its thread count (field 20), then
+            // fields 21 and 22; its command holds a ')' of its own.
+            let record = |state: &str, threads: &str| {
+                format!("42 (own ) x) {state}{} {threads} 0 7\n", " 0".repeat(16)).into_bytes()
+            };
+            for (state, threads, exited) in [
+                ("Z", "3", false),
+                ("Z", "2", false),
+                ("Z", "1", true),
+                ("X", "0", true),
+                ("S", "1", false),
+                ("R", "5", false),
+            ] {
+                assert_eq!(
+                    super::exited_field(&record(state, threads)),
+                    Ok(exited),
+                    "{state} with {threads} threads"
+                );
+            }
+            assert_eq!(
+                super::exited_field(&record("Z", "x")),
+                Err(ProcessFailure::InvalidStartRecord)
+            );
+        }
     }
 
     pub(super) fn started(pid: u32) -> Result<u64, ProcessFailure> {
@@ -238,18 +269,30 @@ mod linux {
             .ok_or(ProcessFailure::InvalidStartRecord)
     }
 
+    /// Whether a `/proc/<pid>/stat` record says its process has exited: its state, field 3, the
+    /// first after the command's last ')', `Z` or `X`, and no thread of it left but that one,
+    /// its thread count, field 20, at most 1 (proc(5); fs/proc/array.c `do_task_stat`). A
+    /// thread-group leader that exits before its other threads stays a zombie while they run,
+    /// hold its files and do its work, until the last of them has gone (kernel/exit.c: "we
+    /// don't reap group leaders with subthreads"; fs/file.c `put_files_struct`), and the count
+    /// holds it until then (kernel/exit.c `__exit_signal`): its end is not under way (ROOT's
+    /// ruling of 2026-11-17, D215), and a watch follows it, its threads' exit its CPU.
     fn exited_field(stat: &[u8]) -> Result<bool, ProcessFailure> {
-        // Its state, field 3, the first after the command's last ')'.
-        stat.iter()
+        let mut fields = stat
+            .iter()
             .rposition(|byte| *byte == b')')
             .and_then(|i| stat.get(i.saturating_add(1)..))
-            .and_then(|fields| {
-                fields
-                    .split(u8::is_ascii_whitespace)
-                    .find(|field| !field.is_empty())
-            })
-            .map(|state| matches!(state, b"Z" | b"X"))
-            .ok_or(ProcessFailure::InvalidStartRecord)
+            .ok_or(ProcessFailure::InvalidStartRecord)?
+            .split(u8::is_ascii_whitespace)
+            .filter(|field| !field.is_empty());
+        let state = fields.next().ok_or(ProcessFailure::InvalidStartRecord)?;
+        // Field 20, the 17th after the state.
+        let threads: u64 = fields
+            .nth(16)
+            .and_then(|field| std::str::from_utf8(field).ok())
+            .and_then(|field| field.parse().ok())
+            .ok_or(ProcessFailure::InvalidStartRecord)?;
+        Ok(matches!(state, b"Z" | b"X") && threads <= 1)
     }
 
     /// A process held by a pidfd (pidfd_open(2), Linux 5.3), readable once it has exited.

@@ -1359,22 +1359,43 @@ pub(crate) fn alive(pid: u32) -> bool {
     exists && !exited(pid)
 }
 
-/// Whether process `pid` has exited, unreaped: on Linux its `/proc/<pid>/stat` state, field
-/// 3, after the last ')', `Z` (zombie) or `X` (dead, proc(5)). One whose state cannot be read
-/// (gone meanwhile, or hidden) is not known to have.
+/// Whether process `pid` has exited, unreaped: on Linux once its whole thread group has
+/// ([`ended_in`] of its `/proc/<pid>/stat`). One whose state cannot be read (gone meanwhile,
+/// or hidden) is not known to have.
 #[cfg(target_os = "linux")]
 fn exited(pid: u32) -> bool {
-    std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
-        stat.rfind(')')
-            .and_then(|i| stat.get(i.saturating_add(1)..))
-            .and_then(|fields| fields.split_ascii_whitespace().next())
-            .is_some_and(|state| matches!(state, "Z" | "X"))
-    })
+    std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| ended_in(&stat))
+}
+
+/// Whether a `/proc/<pid>/stat` line says its process has exited: its state, field 3, after
+/// the last ')', `Z` (zombie) or `X` (dead), and no thread of it left but that one, its thread
+/// count, field 20, at most 1 (proc(5); fs/proc/array.c `do_task_stat`). A thread-group leader
+/// that exits before its other threads stays a zombie while they run, hold its files and do
+/// its work, until the last of them has gone (kernel/exit.c: "we don't reap group leaders
+/// with subthreads"; fs/file.c `put_files_struct`), and the count holds it until then
+/// (kernel/exit.c `__exit_signal`): it has not exited (ROOT's ruling of 2026-11-17, D185).
+/// A line whose count cannot be read says no exit.
+#[cfg(target_os = "linux")]
+fn ended_in(stat: &str) -> bool {
+    let mut fields = stat
+        .rfind(')')
+        .and_then(|i| stat.get(i.saturating_add(1)..))
+        .unwrap_or_default()
+        .split_ascii_whitespace();
+    let ended = fields.next().is_some_and(|state| matches!(state, "Z" | "X"));
+    // Field 20, the 17th after the state.
+    ended
+        && fields
+            .nth(16)
+            .and_then(|n| n.parse::<u64>().ok())
+            .is_some_and(|n| n <= 1)
 }
 
 /// Whether process `pid` has exited, unreaped: on macOS `proc_pid_rusage`'s
-/// `ri_proc_exit_abstime`, set as it exits (XNU's `proc_exit`), as crates/api's judge reads
-/// a process ending. One whose rusage cannot be read (another user's) is not known to have.
+/// `ri_proc_exit_abstime`, set as its exit begins (XNU's `proc_prepareexit`, which a thread
+/// that ends alone never calls: a process whose main thread has ended lives while its other
+/// threads run), as crates/api's judge reads a process ending. One whose rusage cannot be
+/// read (another user's) is not known to have.
 #[cfg(not(target_os = "linux"))]
 fn exited(pid: u32) -> bool {
     let Ok(pid) = libc::c_int::try_from(pid) else {
@@ -2297,6 +2318,34 @@ pub(crate) mod tests {
                 ));
             }
             Ok(std::time::Instant::now().checked_add(every))
+        }
+    }
+
+    /// A `/proc/<pid>/stat` line says its process has exited once its state is a zombie's or a
+    /// dead process's and no thread of it is left but that one (ROOT's ruling of 2026-11-17,
+    /// D185): a zombie leader with threads still running, as a SIGKILLed daemon's may be, has
+    /// not. Red before, where its state alone said it.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_zombie_leader_with_threads_left_has_not_exited() {
+        // `PID (COMM) STATE`, fields 4 to 19 each 0, its thread count (field 20), then fields
+        // 21 and 22; its command holds a ')' of its own.
+        let line =
+            |state: &str, threads: &str| format!("42 (own ) x) {state}{} {threads} 0 7\n", " 0".repeat(16));
+        for (state, threads, exited) in [
+            ("Z", "3", false),
+            ("Z", "2", false),
+            ("Z", "1", true),
+            ("X", "0", true),
+            ("S", "1", false),
+            ("R", "5", false),
+            ("Z", "x", false),
+        ] {
+            assert_eq!(
+                super::ended_in(&line(state, threads)),
+                exited,
+                "{state} with {threads} threads"
+            );
         }
     }
 

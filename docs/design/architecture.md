@@ -9650,12 +9650,51 @@ process.
   more though its parent has not reaped it (review waits-08, PM M576): a zombie answers
   kill(2) and keeps its start, so a client's wait for a slot from a daemon that a
   supervisor left unreaped waited for ever. Unix's `alive` also reads its exit: Linux's
-  `/proc/<pid>/stat` state `Z` or `X` (proc(5)), macOS's `proc_pid_rusage`
-  `ri_proc_exit_abstime`, set as XNU's `proc_exit` runs (as crates/api's judge reads a
-  process ending); one whose state cannot be read is not known to have exited. Windows'
-  twin already asks its handle (`WaitForSingleObject`, no wait). Red
-  `tests::an_unreaped_daemon_does_not_live` (its child left a zombie by waitid's
-  `WNOWAIT`).
+  `/proc/<pid>/stat` state `Z` or `X` (proc(5)), with no thread of it left (amended below),
+  macOS's `proc_pid_rusage` `ri_proc_exit_abstime`, set as its exit begins (XNU's
+  `proc_prepareexit`; as crates/api's judge reads a process ending); one whose state cannot
+  be read is not known to have exited. Windows' twin already asks its handle
+  (`WaitForSingleObject`, no wait). Red `tests::an_unreaped_daemon_does_not_live` (its child
+  left a zombie by waitid's `WNOWAIT`).
+- **A process has exited only once its whole thread group has** (amended 2026-11-17, ROOT's
+  ruling, goal fb3528f9). A thread-group leader that exits before its other threads stays a
+  zombie while they run, hold its files and do its work, until the last of them has gone
+  (kernel/exit.c: "we don't reap group leaders with subthreads", `delay_group_leader`;
+  fs/file.c `put_files_struct`, which closes its files with its last thread's reference), and
+  `/proc/<pid>/stat` shows the leader's own state (fs/proc/array.c `do_task_stat`).
+  - *Why.* A SIGKILLed daemon whose leader went first read as no daemon while its other
+    threads still held its clients' slots open. CI 44077430171 (x86_64 musl, a223a63bc8)
+    refused `a_container_outlives_a_daemon_that_dies`' wait for its run's client 20 ms in, its
+    party the client alone ("no daemon yet"), asleep in its slot's three reads.
+  - *Linux.* `unix::ended_in` (`alive`) and crates/api's `taken::exited_field`, which its
+    judge's `Watch` reads (D215), take a process as exited where its state is `Z` or `X` and
+    its thread count, field 20 (`num_threads`, `get_nr_threads`), is at most 1: the count
+    holds a delayed leader until it is reaped (kernel/exit.c `__exit_signal`). So a dying
+    daemon stays its party's member, its threads' exit its CPU (D215's look), and a client's
+    wait on it while it lives waits for its last thread, whose end lets go of its lock and
+    slots.
+  - *macOS, not changed.* `ri_proc_exit_abstime` is set in `proc_prepareexit` as an exit
+    begins (xnu-12377.101.15 bsd/kern/kern_exit.c `exit_with_reason`: `P_LEXIT`, then
+    `proc_prepareexit`, then `task_terminate_internal`), which a thread ending alone never
+    calls: a process whose main thread has ended (`pthread_exit`) reads as living while its
+    other threads run, so the ruled shape reads right. Its window is a killed process's: the
+    stamp comes before its other threads have terminated, and its files close only in
+    `proc_exit`, which its last thread calls (osfmk/kern/thread.c `thread_terminate_self`,
+    `active_thread_count` at 0; kern_exit.c `fdt_invalidate`), before `SZOMB`. Unreproduced
+    (R09). The reader that would hold it is `proc_pidinfo`'s short BSD info, `pbsi_status`
+    `SZOMB` (zombies found where its `arg` is nonzero, bsd/kern/proc_info.c); owed a live case
+    first.
+  - *Windows, not changed.* A process ends once its last thread does, or `ExitProcess` or
+    `TerminateProcess` ends it, and its object is signaled once its threads have terminated
+    (Microsoft Learn, "Terminating a Process"; `ExitThread`: a process's last thread's exit
+    ends it). Its main thread's `ExitThread` leaves it running, and its handle says so.
+  - Red/green: crates/ipc `tests::a_process_whose_leader_ended_lives_while_its_threads_run`
+    (Linux: a child of its binary whose main thread ends alone, by exit(2) from a signal's
+    handler, while another waits on its stdin, lives; then, its stdin ended and the child left
+    unreaped by waitid's `WNOWAIT`, lives no more), `unix::tests::a_zombie_leader_with_threads_left_has_not_exited`,
+    and crates/api `taken::linux::tests::a_zombie_leader_with_threads_left_has_not_exited`.
+    The tests' party says such a daemon's state and threads where its pid file still names it
+    (6f81eeaae1).
 
 | Literal | Was | Now | Source |
 |---|---|---|---|
@@ -28993,7 +29032,9 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
       (`shards_ipc::Named`, D185), checked again once its watch is read, never another
       process given its ID. A process found ended (exited and not reaped,
       `shards_api::Watch::ended`: on Unix its look's end under way, which a zombie's every
-      look says; on Windows every process of its tree exited, which their handles read
+      look says, on Linux once no thread of it is left (D185, amended 2026-11-17: a zombie
+      leader whose other threads still run is followed, their exit its CPU); on Windows every
+      process of its tree exited, which their handles read
       still) is no live member, its end progress once, at the look that first finds it
       under way: a test's wait on a state reaps nothing, so an end under way for ever was
       progress for ever.
