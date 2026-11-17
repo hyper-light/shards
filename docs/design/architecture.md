@@ -1439,7 +1439,28 @@ for the exit status.
     a killed daemon's waiting VMs ended and its running ones ran on, reached by nothing: a
     failed test's restored microVM ran for a day and a half
     (`a_killed_daemons_runs_end_with_it`, a run and a restored run; mutation-checked: the
-    order not sent, not taken). `stop` returns
+    order not sent, not taken). Its machine goes with them (ci-leaks, 2026-11-17): the order
+    ends a run's command alone, and a guest goes on past that command where joiners run in it
+    (D119) or it waits on its host, which nothing reaches once its daemon has gone. So each VM
+    keeps its course (warm.rs `Course`): its run going, its end told, its end had (told, its
+    layer kept or sent as asked), and its daemon there or gone; once its end is had and its
+    daemon gone, it stops its machine, whatever its guest still serves. A link closing shows
+    the daemon gone only while the run on it goes on, since a daemon that goes on lets go of a
+    run's link once done with it, its end taken, its layer settled and its joiners ended: the
+    VM's own link closing before its run's end is told, or a joiner's before that joiner's.
+    Told no order (a visit's VM, D37, whose standby holds until it is killed, or a run whose
+    daemon died before sending one), the command is SIGKILLed at once, as the daemon sends
+    SIGKILL for a signal it cannot send; a grace waited out ends early at the run's end, its
+    SIGKILL then unsent. Before, a joiner running as its daemon died held its microVM up for
+    ever. (CI 43968984258's two microVMs, 20 minutes past their daemons, were held instead by
+    a layer's ask their guests never answered, fixed where it was asked: D119, `SAVE` where a
+    joiner ever joined.) Tests: daemon.rs
+    `a_killed_daemons_joined_microvms_end_with_it` (a microVM whose command the daemon's going
+    stops, and one whose command had ended, each with its joiner running), warm.rs
+    `a_vms_machine_ends_once_its_run_is_over_and_its_daemon_gone` (every order of the
+    course's moves). Not covered: a guest that never ends its command once SIGKILLed, nor
+    answers its layer's ask, holds its VM still, as a cold home's daemon waits on one (D217);
+    and a microVM held at a live move's last save (D176 part 7) stays held. `stop` returns
     once the daemon has let go of its home: the daemon unlocks it and closes the stop
     connections itself, last, since the kernel closes an exiting process's descriptors
     in no order to rely on (XNU `fdt_invalidate` closes the highest first).
@@ -22712,7 +22733,18 @@ the boundary is a container's, which is what the mode asks for.
   outlives it, running or ended with its layer still to come, not after that layer: held
   till the layer was sent, its end came after `kill`'s 10 s, whose escalation killed the
   microVM, the end and the rest of the layer with it (PM M303: 5 runs of 5 on the Mac, the
-  provider's status 255; said at once, `kill` took 11 to 123 ms). Put back
+  provider's status 255; said at once, `kill` took 11 to 123 ms). From then on its guest
+  takes the provider's layer asked for as one sent (`SAVE`), or its host's end of asking,
+  and drops a `KEEP` (D190's layer kept in its file); so its VM asks `SAVE` of any microVM a
+  joiner ever joined (warm.rs `joined`, ci-leaks). It asked `KEEP` where its count of joiners
+  running read none, which a joiner whose end its guest had just said had left already, and
+  each then waited on the other for ever, past the run and past its daemon (CI 43968984258,
+  x86_64 musl: containers.rs `a_container_joins_another_containers_network` and
+  engine_ring.rs `a_give_back_lets_an_idle_slot_go`, each provider's VM 20 minutes past its
+  daemon's end, its `workload` thread reading its run's connection and its guest's relay
+  never ended). That test now waits for its microVM's end too, its daemon going on. Its cost,
+  a provider whose joiners all ended well before it packing its layer where it could have
+  kept it in place, is unmeasured. Put back
   as it starts again: the VM process appends the layer to the join disk beside its image
   (`join-layer=OFFSET,LEN`), and the joiner's child applies it over its root as ApplyLayer
   does, before it reads its users and before anything is mounted in its root, with its

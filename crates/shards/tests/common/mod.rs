@@ -7193,6 +7193,33 @@ impl Drop for Vm {
     }
 }
 
+/// A process this test started, killed and reaped as it drops, as [`Vm`] is: as its test ends,
+/// and as a failing test's panic unwinds past it, which leaves a bare `std::process::Child`
+/// running (CI 43968984258, x86_64 gnu: boot.rs' rate test failed past its boot, and its guest,
+/// told to spin for ten minutes, ran 6.5 minutes past the test binary's end). On Unix `run
+/// --kernel` becomes the VM process; on Windows its VM process is in a job that ends with it.
+pub struct Reaped(pub std::process::Child);
+
+impl std::ops::Deref for Reaped {
+    type Target = std::process::Child;
+    fn deref(&self) -> &std::process::Child {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for Reaped {
+    fn deref_mut(&mut self) -> &mut std::process::Child {
+        &mut self.0
+    }
+}
+
+impl Drop for Reaped {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
 /// A host program's end of a guest's vsock stream: a Unix stream socket; on Windows its two
 /// pipes (D272, [`PipeStream`]).
 #[cfg(unix)]

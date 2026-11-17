@@ -3332,6 +3332,52 @@ fn a_killed_daemons_runs_end_with_it() {
     all_end(&named, "runs outlived their killed daemon");
 }
 
+/// A daemon killed outright takes its microVMs' joiners (D119) with them: a microVM whose own
+/// command the daemon's going stops, and one whose own command had ended already, its joiner
+/// going on in it, each end once their daemon has gone. Before, a joiner held its microVM up
+/// with nothing left to reach it: the stop order a VM keeps (`STOP_ORDER`) ends its own command
+/// alone, and the machine's end was its guest's, which serves its joiners past that command.
+#[test]
+fn a_killed_daemons_joined_microvms_end_with_it() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let home = home("daemon-killed-joined", &image);
+    let env = [("SHARDS_HOME", home.as_os_str())];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
+    for provider in ["going", "past"] {
+        let up = shards(&[
+            "run", "vm", "-d", "--name", provider, "--pull", "never", &image, "sleep",
+        ]);
+        assert_eq!(up.status, Some(0), "{}", up.stderr);
+        let (joiner, network) = (format!("{provider}-joiner"), format!("container:{provider}"));
+        let joined = shards(&[
+            "run",
+            "vm",
+            "-d",
+            "--name",
+            &joiner,
+            "--network",
+            &network,
+            "--pull",
+            "never",
+            &image,
+            "sleep",
+        ]);
+        assert_eq!(joined.status, Some(0), "{}", joined.stderr);
+    }
+    // `past`'s own command ended, its joiner going on in its microVM.
+    let killed = shards(&["kill", "vm", "past"]);
+    assert_eq!(killed.status, Some(0), "{}", killed.stderr);
+    let waited = shards(&["wait", "vm", "past"]);
+    assert_eq!(waited.status, Some(0), "{}", waited.stderr);
+    let named = home.to_string_lossy().into_owned();
+    let daemon = daemon_pid(&home).expect("a daemon pid");
+    kill_now(daemon);
+    all_end(&named, "joined microVMs outlived their killed daemon");
+}
+
 /// A home named relatively is one home, wherever it is named from, however long, with
 /// spaces, or on Linux in bytes that are not UTF-8: each process resolves it before it
 /// makes the home its working directory, and hands the daemon it starts the resolved

@@ -366,13 +366,20 @@ fn many_published_ports_all_reach_the_guest() {
 
 /// `--network container:NAME` (D119): the joiner runs in the provider's microVM, in its
 /// network namespace, as Docker's joiner runs in the provider's: it reaches the provider's
-/// listener on the loopback, and has its hostname.
+/// listener on the loopback, and has its hostname. The provider serves the joiner's one ask and
+/// ends as the joiner does, and their microVM ends with them, its daemon going on: its guest,
+/// counting the joiner unfinished as the provider's command ended, takes only `SAVE` for the
+/// provider's layer, which its VM once asked as `KEEP`, the joiner having left its own count
+/// by then, each then waiting on the other past the runs and past the daemon (CI 43968984258,
+/// x86_64 musl: this test's microVM 20 minutes past its daemon's end; `warm::joined`).
 #[test]
 fn a_container_joins_another_containers_network() {
     let Some((home, image)) = home("containers-join") else {
         return;
     };
     let mut provider = start(&home, &image, &["--name", "prov"], &["serve", "7000", "1"]);
+    let vm = shards_in(&home, &["inspect", "vm", "-f", "{{.State.Pid}}", "prov"]);
+    let vm: u32 = vm.stdout.trim().parse().unwrap_or_else(|_| panic!("{vm}"));
     let joined = run_in(
         &home,
         &image,
@@ -385,6 +392,12 @@ fn a_container_joins_another_containers_network() {
         "{joined}"
     );
     assert_eq!(exit(&mut provider, &home), Some(0));
+    if let Err(refused) = process_ended(vm, "a provider's VM past its run and its joiner's") {
+        panic!(
+            "{refused}\n{}",
+            common::stacks_of(&[("its VM process", vm)], Some(&*home))
+        );
+    }
 }
 
 /// A joiner is a container of its own (D119): detached, its log kept; an exec in it runs
