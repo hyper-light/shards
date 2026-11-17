@@ -449,7 +449,10 @@ pub fn report(bench: &str, params: &[(&str, String)], rows: &[(String, String)])
         let rows: Vec<String> = samples
             .iter()
             .map(|(name, unit, values)| {
-                let values: Vec<String> = values.iter().map(|v| format!("{v:.1}")).collect();
+                // As measured, every digit: the envelope's verdicts are these samples'
+                // (scripts/bench-envelope), and a rounding of them, 0.1 MiB being 25.6 pages,
+                // would be a margin no measurement chose (R03).
+                let values: Vec<String> = values.iter().map(|v| format!("{v}")).collect();
                 format!(
                     "\"{name}\":{{\"unit\":\"{unit}\",\"values\":[{}]}}",
                     values.join(",")

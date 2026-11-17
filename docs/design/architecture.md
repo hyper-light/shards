@@ -3106,6 +3106,63 @@ one CLI.
   are linked by rust-lld, as the init's are, so a host needs no toolchain of its own for
   them; the network code reads `resolv.conf` itself, and no helper uses the C library's
   resolver.
+- **The VM process's size, 2026-11-11 to 11-17.** CI's Firecracker comparison read the VM
+  process's file-backed memory (`rss_file`, `pss_file`) worse than Firecracker's from
+  78753d965 on, on every runner CPU (Envelope, row 11): its text mapped grew from
+  1,949,696 bytes (0342b85d9, 2026-11-11) to 2,371,584 (1793da7c2, 11-16), and what of it a
+  boot keeps resident from 1,687,552 to 2,240,512, where Firecracker v1.17.0 maps 2,527,232
+  and keeps 2,002,944 (19 CI runs' logs and samples, read by lane release-rows).
+  - *What grew.* No dependency: the VM process dropped `shards-net` in that time and took
+    none. Its own code did, each part a feature a VM runs: the engine ring (D230: vsock
+    `ring.rs`, `conn/ringed.rs`, `conn.rs`, `muxer.rs`, `poll.rs`; abi `ring.rs`); the
+    share server's change notices (D235, `notices.rs`), bounds (D281, `bound.rs`), volumes
+    (`fs/server.rs`) and learned DAX crossings (D189, `crossover.rs`); managed runs'
+    members, lanes and sockets relayed (abi `run/*`, `warm.rs`, `workload.rs`,
+    `vm_run.rs`); `confine.rs`'s Landlock pass over every thread; the virtio console and a
+    guest's last words in place of the serial port (`console.rs`, `printk.rs`, D12); rates,
+    holds and guest time (D255, D265, D267); XSAVE and CPUID baselines (D176); and the
+    GPU's selection and report (D232, D233). CI's steps line up with the engine ring,
+    `confine.rs` and `fs/server.rs`, the console and `printk.rs`, and the muxer and
+    `fs/bound.rs`. No daemon code was found compiled in through a shared module
+    (`vm_run.rs`, `warm.rs`, `workload.rs` and `confine.rs` compile into the VM process
+    alone, and of the shared crates' daemon parts read, shards-ipc's `spawn` and vmm's
+    `platform::progress`, none is on its paths), nor, module by module, any of another OS.
+  - *Relocations packed (RELR).* On Linux the VM process is a static PIE (PM M34, M281):
+    before `main` its start (musl's `_dlstart_c`, in rcrt1.o) reads every relative
+    relocation, 24 bytes each in `.rela.dyn`, file-backed pages that then stay resident in
+    every VM. It is now linked with LLD's `--pack-dyn-relocs=relr` (crates/vm-process/
+    build.rs): DT_RELR, an address and then bitmaps of the 63 words after it. On `shards`
+    the same packing took `.rela.dyn` from 613,680 bytes to 5,712 beside a `.relr.dyn` of
+    8,120, and left `.data.rel.ro`, which every start writes, as it was (PM M514, which
+    weighed a launch's time, the same either way, and left `shards` unpacked; a VM
+    process's table is memory each VM keeps). musl's static-PIE start applies DT_RELR:
+    Rust 1.98.0's and 1.98.1's self-contained `rcrt1.o` (x86_64 SHA-256 7998a49f…, aarch64
+    e65dadc8…, the same in both) keeps dynamic tags up to DT_RELR (36) and walks DT_RELR
+    for DT_RELRSZ bytes, an even word an address and an odd one a bitmap of the next 63
+    (`llvm-objdump -d rcrt1.o`, `_start_c`). Packed only where the VM process is musl's,
+    linked by rust-lld itself (.cargo/config.toml and crates/shards/build.rs name it), and
+    not the GPU's, which links its host's C library through its C compiler (D201). PIE, and
+    with it ASLR, stays: a static non-PIE binary carries no relocations but loads every VM
+    at one address. What it takes from a VM's `rss_file`: unmeasured.
+  - *No virtio-gpu device in the VM process without the GPU's renderer.* There
+    `gpu_layout` refuses every GPU before a renderer exists, but `gpu_device`, which makes
+    the device (vmm `devices::virtio::gpu`'s `Gpu`, `Served` and KVM's window), was still
+    compiled and called on the path after it; whether fat LTO proved that call dead was
+    never read. It is now the GPU build's alone, the other build's a refusal like its
+    renderer's, so that build carries none of the device. Nothing a VM does changes. What it
+    takes: unmeasured, nothing where LTO had dropped it already.
+  - *Owed (the coordinator's).* The VM process's sections and relocations before (main
+    before this change) and after, on x86_64 Linux: `cargo build --locked --release -p shards`,
+    then `llvm-readelf -S -W -d target/helpers/x86_64-unknown-linux-musl/release/shards-vm`
+    (`.text`, `.rodata`, `.rela.dyn`, `.relr.dyn`, DT_RELR) and `size -A` of the same; a
+    restore and a boot of it (`cargo bench --locked -p shards --bench firecracker -- --runs
+    30`); and the Envelope on ten runners (`gh workflow run envelope.yml --ref main`).
+    Not taken here, each unmeasured: the boot path's functions placed together, as a read
+    fault maps the cached pages of the 64 KiB around it (Linux's `fault_around_bytes`; a
+    symbol ordering from a profile of a boot); `opt-level = "s"` for the VM process's
+    colder crates (a speed A/B); LLD's `--icf` (which folds functions whose addresses a
+    program may compare); and the same packing for the network process, which each
+    networked VM runs too.
 - A daemon's build is its binary's identity, which includes what it carries; one given
   another VM binary (`SHARDS_VM_BINARY`, for VMM work and tests) is another build.
 - **Tests:** `helpers::tests` (written whole once, found after, a cut copy replaced);
@@ -8638,6 +8695,24 @@ Decided by the user on 2026-10-14 ("so long as they apply appropriately to micro
     group within its max, so the round after, ended by the first's unanswered room, stops
     nothing. An answer or refusal wakes the existing groups condvar. No new bound, reader
     or cache.
+    A round is judged with the members its group had as its last answer came (flake-harden,
+    2026-11-16). The groups' thread kept joins, ends and answers in three lists, and took a
+    wake's joins in before its answers, so a round whose last answer came before a member
+    joined was judged with that member whenever the thread looked late, as a loaded host
+    holds it: in `a_refused_room_is_not_the_next_rounds_verdict`, round 1 (the first member
+    alone, its room refused) judged with the second's 500 MiB, past the max of 1000, and the
+    first OOM-killed. That test failed 1 of 24 at 6f5755ae1 under load (lane shards-green),
+    0 of 48 after, its output not kept: the cause read from the code, its reproduction
+    owed (R09). Now what the thread hears is one list in the order it came (`Heard`), and a
+    round an end or an answer finishes is judged as that is taken, before any join after it.
+    Guard: `a_round_is_judged_with_the_members_its_group_had_as_its_last_answer_came` holds
+    the thread in a pass (`Groups::hold_passes`) while the first's room is refused and the
+    second joins (red with joins taken first, where the held pass began before the refusal,
+    as it does unless the host delays it 20 ms). Both tests print, as they fail, what the
+    thread and its members' words heard and did, in order (`Groups::trace`, tests alone),
+    on the test process's stderr. Not changed: a refusal stands while its exec does, so a
+    round opened before a refused exec's kill is answered is judged by it (`judge_round`);
+    no test has shown that wrong.
     Past `memory.max` with nothing given back its largest is stopped. A group whose
     budget goes tells each member it told a room that it has none, its hold let go of.
     [Red/green and owed real-VM validation](../research/measurements/waits-fixes-v1/README.md).
@@ -9703,6 +9778,28 @@ back by a new process's `Ends`), red on Windows with the plain read put back; Un
 no versions, so only Windows can show it red. The E2E reader
 (`a_kills_end_is_kept_as_this_hosts_in_its_home`) reads the newest version too.
 
+**A stop keeps its ends once** (flake-harden, 2026-11-16). A stop's one loop (`end_all`,
+which `stop`, `kill`, `rm -f` and `restart` end their targets from) kept each end it heard
+in the home as it heard it: `heard`'s reread under the record's lock and `write_in`, which
+syncs the file and then its directory, two F_FULLFSYNCs on macOS (PM M46: 8.5 ms at p50 on
+a quiet host; M313: 100 to 614 ms each on a loaded one). Each keep held up every end after
+it, and each end was timed only once the ends before it were taken, the keeps with them, so
+that on a loaded host an end of a burst was the slowest yet, and kept, in turn.
+`daemon::tests::stop_ends_every_container_at_once` (sixty, a 10 s grace) took 25.9 s in a
+loaded full run at 6f5755ae1 (lane shards-green), where three other runs passed: the cause
+read from the code, with no trace kept, and its loaded reproduction owed (R09). Now the loop
+learns each end in memory as it hears it (`Ends::learn`, the slices from then on), timed as
+its poll woke, and keeps the record once, after the last (`Ends::keep`): no end waits on a
+flush, nor counts one in its time. `keep` holds the memory's lock
+only to merge, not over the record's lock and flush, which every slice asked meanwhile (a
+stop's escalation, the followers' loop's helper slice) waited on. `heard`, the two together,
+stays for those that keep one end in a wait of their own (`netproc::reap`). Guard:
+`a_stop_answers_each_end_while_its_homes_record_is_held`, a kill of two with the record's
+lock held, both answered (red with a keep per end); the stop test's failure says when its
+SIGKILLs came, so the next red tells a late escalation from late ends. Unchanged and
+unreproduced: the followers' loop keeps a network process's end as it hears it
+(`follow.rs` `process_ended`), on the loop that takes every run's messages.
+
 **Found.** The audit of what was taken from Docker (docs/audit/2026-10-16_docker-framing.md):
 a microVM whose command outlived its SIGKILL had its VM killed 10 s later and its end given
 up 2 s after that (moby daemon/kill.go), a signal that could not be sent waited out 2 s
@@ -10620,9 +10717,14 @@ start's looks was refused before any VM process had been looked at twice: under 
 on adacachy2 (Linux 7.3.3 x86_64) at 8bfa6150e and 9d2da923d, 97.49 ms after its command
 began against a slowest start of 32.44 ms, its slice at its `memory.high` with 4345 `high`
 events. `a_slow_start_is_refused_only_past_a_whole_slice_without_progress_or_hold` plays
-starts of 500 ms against a slowest of 30 ms, one with an idle stand-in VM process not yet
-judged and one in a slice whose PSI total grows, each followed to its end, and a start that
-never comes, refused past a whole slice. The record is the reads held to none
+starts of 500 ms against a slowest of 30 ms, one with a running stand-in VM process not yet
+judged and one in a slice its host holds all along, each followed to its end, and a start
+that never comes, refused past a whole slice. The held slice's PSI total is read at each
+look as its kernel sums one, a stall still on counted to the read's own clock (Linux 7.2
+kernel/sched/psi.c `psi_show`, `get_recent_times`): the time since the stall began. Until
+2026-11-17 a thread of the test's wrote it each 5 ms, and CI runs 43876891053 (x86_64 musl)
+and 43926955660 (arm64 gnu) refused that start 60 and 361 ms in, a look finding the total as
+the look before had where the thread had not run between them. The record is the reads held to none
 alone, never seeded, so that a budget's reads never raise the bound they are judged by.
 Until 237f3ebe7 the medians of 3 were held within twice those under none, a multiple, and
 each read was waited on 600 s and past that while its microVM ran: on adacachy2 (32 CPUs)
@@ -37083,6 +37185,91 @@ post-mortem read of the printk ring through VMCOREINFO, not a debug port.
          (`vm::late_cpus_cmdline`, M379), and check its count from init.
       3. Keep waiting through device_initcall.
       Option 1 restores the test's scope and every boot's early log, which the UART gave.
+- **The boot judged by its guest's own progress** (2026-11-17, kiln goal b2124227, lane
+  whp-boot-judge). ROOT's decision of option 1 above: "judge the boot by the guest's own
+  progress". The person's ruling stands: no fixed time limit (R03). No VMM change.
+  - **Where the ring is read.** `boots_the_hosts_maximum_vcpu_count` boots its guest in the
+    test's own process (`vm::start`), as `two_vcpus_boot_to_their_end_in_this_process` does.
+    - `Handle::console_said` is the one channel shards has to a running guest's ring: it reads
+      the ring while the console has carried nothing, and the tests' `machine_ended` already
+      reads it so.
+    - A VM process offers none. `run --kernel` quotes its ring only as its machine ends (a
+      reset or an error, `vm_run.rs` `supervise`).
+    - Tailing the ring in the VM process instead would be a production change with a polling
+      period of its own to justify, for one test.
+  - **What it sees.** The ring from subsys_initcall, when VMCOREINFO is published, until hvc0
+    registers at device_initcall; the console after.
+    - smp_init logs "smp: Brought up" before the first initcall level (Linux v6.18
+      init/main.c `kernel_init_freeable`: `smp_init`, then `do_basic_setup`). So the ring's
+      first read already holds it.
+    - The test's scope is then the UART's again, plus the core, postcore and arch initcall
+      levels. On nested WHP it ended at device_initcall, which the guest had not reached in
+      3170 s.
+  - **Its wait** (`common::guest_says`, D215's judge, tests' `Heard`). Each line the guest had
+    not said before is its progress.
+    - The party is this process's threads beside the waiter (`Party::machine`). For a guest of
+      more vCPUs than its host has CPUs, as every host's most vCPUs are, their CPU is liveness
+      alone (`Cpu::Liveness`), from the start. Before its first line too: otherwise a stall
+      before any line could never be refused, even on a host that has learned this wait.
+    - Its first line's wait is a kind of its own. Each line that comes begins a wait for the
+      next, of a second kind, whose W* is the slowest gap between two lines seen on that host.
+      Both are keyed by the call site and the arm's command-line addition.
+    - Only a pass teaches them. Once the bring-up line is found, the time to the first line
+      (where its wait found it missing first) and the slowest gap after it are taught and kept
+      (`target/judge-records`). A wait that stalls, ends or is refused teaches nothing: gaps
+      taught one by one in a host's first boot would let its early, quick gaps refuse a later,
+      slower phase of the same boot.
+    - Refused, its failure says each line the guest said, with when a read first found it,
+      from the wait's start; each kernel line carries the guest's own `[seconds]` too.
+    - The guest is read at Young's optimum of the read's own cost against the wait so far
+      (`shards_api::pause`, D215's pace), and before each look the judge makes.
+    - Its machine's end ends the wait, the guest's last lines read first. A guest that said
+      the bring-up and then reset (its root-mount panic, `panic=-1`) has said it.
+  - **The console's level.** The command line is `console=hvc0 panic=-1 loglevel=7`.
+    - A machine whose console no one reads is told `quiet` unless its line names a level
+      (`vm::kernel_cmdline`). `quiet` would keep the bring-up off hvc0, so a host whose ring is
+      not read would never see it.
+    - `loglevel=7` is CONFIG_CONSOLE_LOGLEVEL_DEFAULT in both pinned base configs
+      (resources/kernel/firecracker-*-6.18.config), which shards' configs leave. It is the
+      level `run --kernel` booted this guest at, its console on stdout.
+    - The arms' `D261 A/B arm` lines name it in their command line.
+  - **One machine a process.** Hypervisor.framework refuses a process's second VM
+    (`hv_vm_create`, HV_EXISTS, hv/hvf/sys.rs). boot.rs's two in-process tests take turns
+    (`MACHINE`), each holding its turn until its machine has ended: `machine_says` stops the
+    machine and waits for its end before it returns.
+  - **Replaced.** `common::Vm::spawn_timed` is removed. On Windows each line is said on stderr
+    as the reads find it: `D261 WHP boot <time from the wait's start>: <line>`.
+  - **What it cannot judge.** Before subsys_initcall the ring has no published place. Finding
+    it earlier needs the kernel's symbols, which an arm64 Image does not carry.
+    - A guest that never gets there says nothing, and its first line's wait follows its
+      liveness until its kind has a pass on that host.
+    - CI keeps no records (ci.yml caches no `target/judge-records`), so every CI job's wait is
+      cold. On CI "fails fast" needs that cache, which is ROOT's to decide (the person's
+      ruling of 2026-11-13: a record learned on the host is data, not a seed; `host_class`
+      already keys records by a runner image's OS, architecture and CPUs).
+  - **What the next ci.yml run's x86_64 Windows jobs should show** (grep `D261 WHP boot`):
+    - Expected: a burst of lines at the ring's first read, from "Linux version" through "smp:
+      Brought up 1 node, 240 CPUs" (WHP's 240 at most on GitHub's runners, NR_CPUS 255), each
+      with the guest's `[seconds]`, then `boots_the_hosts_maximum_vcpu_count ... ok`. The
+      `[seconds]` say how long the bring-up took and how long the core, postcore and arch
+      levels took after it.
+    - Or no such line, and the step's limit as before: the guest did not reach
+      subsys_initcall in the time left (cold, its first line's wait follows liveness). That
+      places the stall before subsys_initcall. The next decision is then D261's option 2 (late
+      CPUs on nested Hyper-V) or the records' cache.
+    - How long nested WHP takes to reach subsys_initcall with 240 vCPUs online is unmeasured.
+      Each text patch there waits for every online CPU (PM M379).
+  - **Tests** (written, not run; ROOT's):
+    - harness.rs, against stand-in consoles, no microVM:
+      - `a_guests_lines_are_its_progress_and_its_pass_teaches_their_slowest_gap`
+      - `a_guest_silent_past_its_slowest_gap_is_refused_and_its_stall_teaches_nothing`
+      - `a_guests_end_ends_its_wait_and_what_it_said_by_then_is_read`
+    - boot.rs `boots_the_hosts_maximum_vcpu_count` and
+      `two_vcpus_boot_to_their_end_in_this_process` on HVF, KVM (AMD, and Intel's A/B) and WHP.
+  - **Costs, owed to ROOT (R14).** Each ring read scans every page of guest RAM for
+    VMCOREINFO (printk.rs `infos`). In the test process that faults in a 1 GiB guest's
+    untouched pages (shared memory on Linux, committed memory on Windows). The pace bounds its
+    CPU; its resident memory is unmeasured.
 
 **Alternatives rejected.**
 - A write-only debug port (x86's 0xe9 debugcon): mainline x86 early_printk has no 0xe9

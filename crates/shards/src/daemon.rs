@@ -12087,8 +12087,10 @@ mod tests {
     /// SIGTERM all hear it before any hears SIGKILL, and all are stopped one grace after,
     /// where docker/cli's 50 at a time would take two; the answers in the order asked. The
     /// grace is long beside what sending 60 signals takes a busy host (2.8 s once, where
-    /// the bound was 0.9 s), so that its bounds, the grace's own, tell one grace from two
-    /// whatever the host's load.
+    /// the bound was 0.9 s), and beside hearing their ends, whose record the stop keeps in
+    /// its home once, as it ends (D217): kept as each was heard, two flushes each on macOS,
+    /// sixty took 25.9 s once on a loaded host (6f5755ae1). So its bounds, the grace's own,
+    /// tell one grace from two whatever the host's load.
     #[test]
     fn stop_ends_every_container_at_once() {
         const N: usize = 60;
@@ -12106,8 +12108,12 @@ mod tests {
                 assert_eq!(heard(vm), signal(15));
             }
             let terms = t0.elapsed();
+            // When each SIGKILL was heard: a failure says whether its time went before
+            // them, the escalation late, or after them, the ends heard late.
+            let mut kills = Vec::with_capacity(N);
             for (_, _, vm) in &vms {
                 assert_eq!(heard(vm), signal(9));
+                kills.push(t0.elapsed());
                 say(vm, kind::DONE, &[137]);
             }
             let (status, out, err) = joined(asked);
@@ -12116,8 +12122,50 @@ mod tests {
             assert_eq!(out, names.iter().map(|n| format!("{n}\n")).collect::<String>());
             // A second round of 50 would start a grace after the first.
             assert!(terms < GRACE, "SIGTERM to all took {terms:?}, a grace or more");
-            assert!(took >= GRACE && took < 2 * GRACE, "one grace, not two: {took:?}");
+            assert!(
+                took >= GRACE && took < 2 * GRACE,
+                "one grace, not two: {took:?}; SIGTERMs heard by {terms:?}, SIGKILLs from {:?} to {:?}",
+                kills.first(),
+                kills.last()
+            );
             for (_, starting, _) in vms {
+                let _ = joined(starting.run);
+            }
+        });
+    }
+
+    /// A stop answers each end as it hears it, and keeps the ends in its home once, after
+    /// the last (D217): with the home's record of ends held, as a run's host keeping its own
+    /// holds it, both ends of a kill are answered. Red with a keep of each end as it is
+    /// heard, which held up every end after it behind the record (two flushes each on
+    /// macOS; `stop_ends_every_container_at_once`'s 25.9 s at 6f5755ae1).
+    #[test]
+    fn a_stop_answers_each_end_while_its_homes_record_is_held() {
+        let t = Test::new("kill-held");
+        t.run(|t| {
+            let runs = [running(t, "a"), running(t, "b")];
+            let held = shards_image::store::Locked::exclusive(&t.daemon.home.join("ends.lock")).unwrap();
+            let (ours, theirs) = UnixStream::pair().unwrap();
+            let daemon = &t.t.daemon;
+            let asked = t.threads.spawn(move || {
+                let argv = ["kill", "a", "b"].map(String::from);
+                daemon.command(&argv, &asker(), &commands::Reply(&ours))
+            });
+            for (_, _, vm) in &runs {
+                assert_eq!(heard(vm), signal(9));
+                say(vm, kind::DONE, &[137]);
+            }
+            for name in ["a", "b"] {
+                let m = read("an end of the kill not answered", &theirs, |c| {
+                    shards_ipc::recv(c)
+                })
+                .unwrap()
+                .unwrap();
+                assert_eq!((m.kind, m.payload), (kind::OUT, format!("{name}\n").into_bytes()));
+            }
+            drop(held);
+            assert_eq!(joined(asked), 0);
+            for (_, starting, _) in runs {
                 let _ = joined(starting.run);
             }
         });
@@ -14292,6 +14340,27 @@ mod tests {
         }
     }
 
+    /// Says, as its test fails, what its daemon's groups' thread and its members' words
+    /// heard and did, in order (`Groups::trace`): its rounds, each opened, answered and
+    /// judged. On this process's stderr, as the daemon logs, so that neither the capture of
+    /// a failing test's output nor an abort of the tests loses it.
+    #[cfg(any(target_os = "macos", windows))]
+    struct Traced<'a>(&'a Daemon<Real>);
+
+    #[cfg(any(target_os = "macos", windows))]
+    impl Drop for Traced<'_> {
+        fn drop(&mut self) {
+            if std::thread::panicking() {
+                let test = std::thread::current().name().unwrap_or("a test").to_string();
+                let said = format!(
+                    "{test}: its groups' thread and words heard and did:\n{}\n",
+                    self.0.groups.trace()
+                );
+                let _ = io::stderr().write_all(said.as_bytes());
+            }
+        }
+    }
+
     /// A group's member whose guest never answers holds up no other member's words and no
     /// group's verdict (D183, slice 3): each member is told its room and asked to give back
     /// on a thread of its own, its wait judged as D215's judge judges one, and the groups'
@@ -14361,12 +14430,13 @@ mod tests {
     /// round 2, its group within its max again, so the round after, its room to `a`
     /// unanswered, stops nothing. Red with the room's refusal left standing through the
     /// give-back: round 2 counted `a` as nothing given, its group past its max, and
-    /// OOM-killed `a` before its round-2 word came.
+    /// OOM-killed `a` before its round-2 word came. A failure says its rounds ([`Traced`]).
     #[cfg(any(target_os = "macos", windows))]
     #[test]
     fn a_refused_room_is_not_the_next_rounds_verdict() {
         let t = Test::new("group-stale");
         t.run(|t| {
+            let _traced = Traced(&t.daemon);
             t.daemon
                 .answers
                 .room
@@ -14430,6 +14500,67 @@ mod tests {
                     "a, asked in round 2 and giving back, was OOM-killed"
                 );
             });
+        });
+    }
+
+    /// A round is judged with the members its group had as its last answer came (D183,
+    /// R04), however late the groups' thread looks: `a` (600 MiB, under a high of 500 and a
+    /// max of 1000) has its room of round 1 refused while the thread is held in a pass, as a
+    /// loaded host holds it, and `b` (500 MiB) joins before it looks again. Round 1 asked
+    /// `a` alone, and gave nothing with its group within its max: it stops nothing, and the
+    /// pass after asks `b` its room. Red with a wake's joins taken in before its answers:
+    /// round 1 judged with `b`, its group past its max, and `a` OOM-killed, the cause read
+    /// for `a_refused_room_is_not_the_next_rounds_verdict`'s 1 of 24 under load (6f5755ae1).
+    #[cfg(any(target_os = "macos", windows))]
+    #[test]
+    fn a_round_is_judged_with_the_members_its_group_had_as_its_last_answer_came() {
+        let t = Test::new("group-order");
+        t.run(|t| {
+            let _traced = Traced(&t.daemon);
+            t.daemon
+                .answers
+                .room
+                .teach(Duration::from_millis(20), Duration::ZERO);
+            let mib = |n: u64| n << 20;
+            let dir = groups::made(&t.daemon.home, "g").unwrap();
+            std::fs::write(dir.join("memory.high"), format!("{}\n", mib(500))).unwrap();
+            std::fs::write(dir.join("memory.max"), format!("{}\n", mib(1000))).unwrap();
+            t.t.daemon.start_groups(t.threads);
+            let builtin = |m: &shards_ipc::Message| {
+                assert_eq!(m.kind, kind::EXEC_RUN, "asked {} where an exec was due", m.kind);
+                m.payload
+                    .get(9..)
+                    .and_then(shards_abi::run::Spec::decode)
+                    .unwrap()
+                    .builtin
+            };
+            let (a, _a_run, a_vm, _) = running_under(t, "first", "g", mib(600));
+            // Round 1 asks a its room; the thread is held from its next pass on.
+            let room = heard_whole(&a_vm);
+            assert_eq!(builtin(&room), shards_abi::run::builtin::ROOM);
+            let held = t.daemon.groups.hold_passes();
+            // a's room refused by its own judge, the kill answered, its give-back held.
+            let conn = stream_of(&room.fds[0]);
+            let killed = shards_ipc::recv(&conn).unwrap().unwrap();
+            assert_eq!((killed.kind, killed.payload), signal(9));
+            shards_ipc::send(&conn, kind::EXIT, &[137], &[]).unwrap();
+            drop((conn, room));
+            let give = heard_whole(&a_vm);
+            assert_eq!(builtin(&give), shards_abi::run::builtin::RECLAIM);
+            let (_, _b_run, b_vm, _) = running_under(t, "second", "g", mib(500));
+            let _ends = Ends {
+                held: None,
+                vms: vec![(&a_vm, 0), (&b_vm, 0)],
+            };
+            drop(held);
+            // b's room, told by the pass after round 1's verdict.
+            let told = heard_whole(&b_vm);
+            assert_eq!(builtin(&told), shards_abi::run::builtin::ROOM);
+            assert!(
+                !lock(&t.daemon.containers).get(&a).is_some_and(|c| c.oom_killed),
+                "round 1, which asked a alone, was judged with b, which joined after its last answer"
+            );
+            drop((told, give));
         });
     }
 

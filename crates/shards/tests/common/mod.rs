@@ -6568,23 +6568,6 @@ impl Vm {
 
     /// [`Vm::spawn`], with `env` added to shards' environment.
     pub fn spawn_env<S: AsRef<std::ffi::OsStr>>(args: &[S], env: &[(&str, &str)]) -> Vm {
-        Vm::spawned(args, env, None)
-    }
-
-    /// [`Vm::spawn`], each line it prints also said on stderr as it comes, after `tag` and its
-    /// time from the spawn: what CI's log keeps of a boot whatever ends its test, a step's
-    /// limit among them, which says nothing of what the test saw (D261: WHP's 255-vCPU boot,
-    /// 3170 s with nothing said).
-    pub fn spawn_timed<S: AsRef<std::ffi::OsStr>>(args: &[S], tag: &'static str) -> Vm {
-        Vm::spawned(args, &[], Some(tag))
-    }
-
-    fn spawned<S: AsRef<std::ffi::OsStr>>(
-        args: &[S],
-        env: &[(&str, &str)],
-        timed: Option<&'static str>,
-    ) -> Vm {
-        let start = Instant::now();
         let mut child = command()
             .envs(env.iter().copied())
             .args(args)
@@ -6600,9 +6583,6 @@ impl Vm {
             let (tx, log) = (tx.clone(), log.clone());
             std::thread::spawn(move || {
                 for line in BufReader::new(stream).lines().map_while(Result::ok) {
-                    if let Some(tag) = timed {
-                        let _ = writeln!(io::stderr(), "{tag} {:?}: {line}", start.elapsed());
-                    }
                     if let Ok(mut log) = log.lock() {
                         log.push(line.clone());
                     }
@@ -6799,7 +6779,8 @@ enum Guest {
     /// More: progress until its first line, its liveness after.
     Streaming,
     /// A machine of this process's: this process's threads beside its waiter's, progress
-    /// throughout ([`Party::machine`]).
+    /// throughout ([`Party::machine`]); or, of more vCPUs than its host has CPUs, its
+    /// liveness alone, its lines its progress ([`guest_says`]).
     Machine,
 }
 
@@ -6882,6 +6863,21 @@ impl<'a> Heard<'a> {
         )
     }
 
+    /// A wait of `kind` for a line of a guest's ([`guest_says`]), `asked` naming which: by its
+    /// lines, its caller beginning another wait as each comes, and by the CPU of this
+    /// process's threads beside the one that waits read as `cpu` says ([`Party::machine`]).
+    fn lines(kind: &'static WaitKind, asked: &str, cpu: Cpu) -> Heard<'static> {
+        let mut party = Party::machine();
+        party.read_cpu(cpu);
+        Heard {
+            wait: Wait::on(kind, party, asked),
+            guest: Guest::Machine,
+            streamed: None,
+            bytes: 0,
+            new: false,
+        }
+    }
+
     /// Something it said, `new` where it had not said it before.
     pub fn said(&mut self, new: bool) {
         self.new |= new;
@@ -6957,6 +6953,237 @@ pub fn machine_ended(
             return Err(refused);
         }
     }
+}
+
+/// What [`guest_says`] awaits first, and keys that wait's kind by: its guest's first line,
+/// from its wait's start.
+pub const FIRST_LINE: &str = "its guest's first line";
+/// What each of [`guest_says`]' waits after its first awaits, and keys their kind by: its
+/// guest's next line, from the line before.
+pub const NEXT_LINE: &str = "its guest's next line";
+
+/// What a guest said as [`guest_says`] read it: each line as a read first found it, and the
+/// time from the wait's start at which that read began.
+pub struct Lines {
+    began: Instant,
+    seen: Vec<(Duration, String)>,
+    known: std::collections::BTreeSet<String>,
+}
+
+impl Lines {
+    fn new() -> Lines {
+        Lines {
+            began: Instant::now(),
+            seen: Vec::new(),
+            known: std::collections::BTreeSet::new(),
+        }
+    }
+
+    /// Takes in a read of its guest, `said` its whole lines: each line it had not said before
+    /// is kept, and said on stderr after `tag` and its time where a tag is given, which CI's
+    /// log keeps whatever ends the test, a step's limit among them. Returns how many lines it
+    /// had before: those past them are new.
+    fn heard(&mut self, said: &[u8], tag: Option<&str>) -> usize {
+        let (before, at) = (self.seen.len(), self.began.elapsed());
+        for line in String::from_utf8_lossy(said).lines() {
+            if self.known.insert(line.to_string()) {
+                if let Some(tag) = tag {
+                    let _ = writeln!(io::stderr(), "{tag} {at:?}: {line}");
+                }
+                self.seen.push((at, line.to_string()));
+            }
+        }
+        before
+    }
+
+    /// Each line, after the time from the wait's start at which the read that first found
+    /// it began.
+    pub fn seen(&self) -> &[(Duration, String)] {
+        &self.seen
+    }
+
+    /// Every line, as its guest said them.
+    pub fn text(&self) -> String {
+        self.seen
+            .iter()
+            .map(|(_, line)| line.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Every line, after the time a read first found it: what a failure says.
+    pub fn timed(&self) -> String {
+        self.seen
+            .iter()
+            .map(|(at, line)| format!("{at:.3?} {line}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
+/// How [`guest_says`]' wait ended.
+#[derive(Debug)]
+pub enum Saying<E> {
+    /// Its guest said a line with its text: the first such, and its machine's end where that
+    /// came before the read that found it.
+    Said { line: String, ended: Option<E> },
+    /// Its machine ended and its guest had not said it: its end, none where the channel that
+    /// tells it closed without one.
+    Ended(Option<E>),
+    /// Its wait was refused: what its wait said of itself.
+    Refused(String),
+}
+
+/// Whether a guest of `vcpus` vCPUs has more than this host has CPUs, and so runs them for
+/// ever, its workload stopped or not ([`Cpu::Liveness`]).
+fn wider_than_host(vcpus: u32) -> bool {
+    let cpus = std::thread::available_parallelism().map_or(0, std::num::NonZero::get);
+    usize::try_from(vcpus).is_ok_and(|vcpus| vcpus > cpus)
+}
+
+/// Waits for a guest to say a line containing `text`, each read of its whole lines `read`'s,
+/// until `ended`, its machine's end, comes; judged by its guest's own progress, its lines
+/// (D261): each line it had not said before.
+/// - Each wait is judged as D215's judge judges ([`Heard`]), its party this process's threads
+///   beside the one that waits ([`Party::machine`]), whose CPU is the liveness alone of a
+///   guest of more vCPUs than its host has CPUs (`vcpus`), and its progress otherwise.
+/// - Its first line's wait is a kind of its own ([`FIRST_LINE`]), beside its call site and
+///   `size`. Each line that comes begins a wait for the next, of another ([`NEXT_LINE`]), whose
+///   W* is the slowest gap between two lines seen on this host, so that a guest silent for
+///   longer than that is refused there, however long its boot.
+/// - Only a pass teaches them: once it has found its text, what its waits took (the time to its
+///   first line, where it was found missing first; the slowest gap after it) is taught to their
+///   kinds and kept on this host. A guest that stalls, or a wait refused, teaches nothing.
+/// - Its guest is read as its read's own cost weighs against the wait so far (`shards_api::
+///   pause`, D215's pace), and before each look its judge makes, which sees what it found.
+/// - Its machine's end ends it, what its guest said by then read first.
+#[track_caller]
+pub fn guest_says<E>(
+    mut read: impl FnMut() -> Vec<u8>,
+    ended: &std::sync::mpsc::Receiver<E>,
+    text: &str,
+    size: &str,
+    vcpus: u32,
+    tag: Option<&str>,
+) -> (Saying<E>, Lines) {
+    let site = std::panic::Location::caller();
+    let (first, next) = (
+        WaitKind::of(site, FIRST_LINE, size),
+        WaitKind::of(site, NEXT_LINE, size),
+    );
+    let cpu = if wider_than_host(vcpus) {
+        Cpu::Liveness
+    } else {
+        Cpu::Progress
+    };
+    let mut lines = Lines::new();
+    let mut heard = Heard::lines(first, FIRST_LINE, cpu);
+    // When its last lines were read, from its start; what its first line's wait took, and
+    // the slowest wait for a next line since, each where its wait found it missing first.
+    let (mut last, mut first_came, mut slowest) = (Duration::ZERO, None, None::<Duration>);
+    let mut read_at = Instant::now();
+    loop {
+        if Instant::now() >= read_at {
+            let began = Instant::now();
+            let from = lines.heard(&read(), tag);
+            let cost = began.elapsed();
+            if let Some(&(at, _)) = lines.seen.get(from) {
+                if heard.wait.awaited() {
+                    let waited = at.saturating_sub(last);
+                    if from == 0 {
+                        first_came = Some(waited);
+                    } else {
+                        slowest = Some(slowest.map_or(waited, |s| s.max(waited)));
+                    }
+                }
+                last = at;
+                if let Some(line) = lines.seen[from..].iter().find(|(_, l)| l.contains(text)) {
+                    let line = line.1.clone();
+                    for (kind, waited) in [(first, first_came), (next, slowest)] {
+                        if let Some(waited) = waited {
+                            kind.record().teach_unrated(waited);
+                            kind.keep();
+                        }
+                    }
+                    return (Saying::Said { line, ended: None }, lines);
+                }
+                heard = Heard::lines(next, NEXT_LINE, cpu);
+            }
+            let left = heard
+                .wait
+                .judge
+                .due()
+                .map_or(Duration::MAX, |due| due.saturating_duration_since(Instant::now()));
+            read_at = Instant::now() + shards_api::pause(cost, heard.wait.began.elapsed(), left);
+        }
+        if let Err(refused) = heard.look(true) {
+            return (Saying::Refused(refused), lines);
+        }
+        let pause = read_at
+            .saturating_duration_since(Instant::now())
+            .min(heard.next_look());
+        let end = match ended.recv_timeout(pause) {
+            Ok(end) => Some(end),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => None,
+        };
+        let from = lines.heard(&read(), tag);
+        let saying = match lines.seen[from..].iter().find(|(_, l)| l.contains(text)) {
+            Some((_, line)) => Saying::Said {
+                line: line.clone(),
+                ended: end,
+            },
+            None => Saying::Ended(end),
+        };
+        return (saying, lines);
+    }
+}
+
+/// [`guest_says`] of a machine this process runs, `handle`, whose end `ended` says (a
+/// thread's `running.wait()`): its lines those of its console, or, while its console has
+/// carried nothing, of its kernel's printk ring, read from its memory
+/// ([`Handle::console_said`](shards_vmm::vm::Handle::console_said), D261: hvc0 registers only
+/// at device_initcall, and its ring is found from subsys_initcall on, as VMCOREINFO is
+/// published). Once it has said it, or its wait is refused, its machine is stopped and its
+/// end waited for ([`machine_ended`]), so that none of it runs once this returns. The line
+/// and what it said; or what failed, and what it said, each line after when a read first
+/// found it.
+#[track_caller]
+pub fn machine_says(
+    handle: &shards_vmm::vm::Handle,
+    ended: &std::sync::mpsc::Receiver<shards_vmm::vm::ExitReason>,
+    text: &str,
+    size: &str,
+    vcpus: u32,
+    tag: Option<&str>,
+) -> Result<(String, Lines), String> {
+    use shards_vmm::vm::ExitReason;
+    let (saying, lines) = guest_says(|| handle.console_said().lines, ended, text, size, vcpus, tag);
+    let stop = match saying {
+        Saying::Said { ended: None, .. } | Saying::Refused(_) => {
+            handle.stop();
+            machine_ended(handle, ended).err()
+        }
+        Saying::Said { ended: Some(_), .. } | Saying::Ended(_) => None,
+    };
+    let failed = match saying {
+        Saying::Said { line, .. } if stop.is_none() => return Ok((line, lines)),
+        Saying::Said { .. } => format!("its guest said {text:?}"),
+        // Its end's own line, a vCPU's "VM entry failed" among them (D261's A/B), on a line
+        // of its own.
+        Saying::Ended(Some(ExitReason::Error(e))) => {
+            format!("no {text:?} from its guest: its machine ended:\n{e}")
+        }
+        Saying::Ended(end) => format!("no {text:?} from its guest: its machine ended: {end:?}"),
+        Saying::Refused(refused) => format!("no {text:?} from its guest: {refused}"),
+    };
+    let stop = stop.map_or_else(String::new, |refused| {
+        format!("\nstopped, its machine did not end: {refused}")
+    });
+    Err(format!(
+        "{failed}{stop}\nwhat it said, each line after when a read first found it:\n{}",
+        lines.timed()
+    ))
 }
 
 impl Drop for Vm {
