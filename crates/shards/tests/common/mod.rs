@@ -3672,6 +3672,40 @@ pub struct Party {
 /// (status 2), 0 of 12 threads runnable" of an idle daemon), each said with its letter or
 /// number; none where it cannot be read (Windows,
 /// whose process has no such state).
+/// Where the threads of process `pid` wait, each by its kernel's name for the place it
+/// sleeps (`/proc/<pid>/task/<tid>/wchan`, proc(5)), with how many: for a refusal's account,
+/// which said a party's threads all slept but not on what (CI 43968984258, x86_64 musl:
+/// engine.rs' refused create and `/system/df`, each daemon's 17 threads `S`, its looks on
+/// time). None where none is read, and off Linux.
+fn waits_in(pid: u32) -> Option<String> {
+    #[cfg(target_os = "linux")]
+    {
+        let mut counts = std::collections::BTreeMap::<String, usize>::new();
+        for task in std::fs::read_dir(format!("/proc/{pid}/task")).ok()?.flatten() {
+            let Ok(wchan) = std::fs::read_to_string(task.path().join("wchan")) else {
+                continue;
+            };
+            let wchan = wchan.trim();
+            // "0": a thread on a CPU, or a name its reader may not see.
+            if !wchan.is_empty() && wchan != "0" {
+                *counts.entry(wchan.to_string()).or_default() += 1;
+            }
+        }
+        (!counts.is_empty()).then(|| {
+            counts
+                .iter()
+                .map(|(wchan, n)| format!("{wchan} x{n}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
 #[cfg(target_os = "linux")]
 fn process_status(pid: u32) -> Option<String> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
@@ -4150,7 +4184,8 @@ impl Party {
     /// itself, so that a refusal names its own premise (ROOT, 2026-11-14: api_image.rs:1379's
     /// refusal named no member's state, whether one was ending among them): its status
     /// ([`process_status`]), how many of its threads are runnable (`shards_api::
-    /// runnable_threads`), and its end under way or its stop, as its look found them.
+    /// runnable_threads`), where its threads wait ([`waits_in`]), and its end under way or its
+    /// stop, as its look found them.
     fn states(&self) -> String {
         if self.watched.is_empty() {
             return "none followed".into();
@@ -4169,6 +4204,9 @@ impl Party {
                 );
                 if let Some((runnable, threads)) = shards_api::runnable_threads(pid) {
                     said.push_str(&format!(", {runnable} of {threads} threads runnable"));
+                }
+                if let Some(waits) = waits_in(pid) {
+                    said.push_str(&format!(", its threads waiting in {waits}"));
                 }
                 if watch.ended() {
                     said.push_str(", its end under way");

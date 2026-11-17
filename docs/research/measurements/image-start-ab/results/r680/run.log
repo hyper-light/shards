@@ -1,0 +1,73 @@
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=aarch64_apple_darwin
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'aarch64-apple-darwin'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/Users/adalundhe/.cache/cut-a/a/target/release/build/aws-lc-sys-a6aaf3311725cafc/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Using flag: -ffile-prefix-map=/Users/adalundhe/.cache/cut-a/a/vendor/aws-lc-sys=
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/Users/adalundhe/.cache/cut-a/a/target/release/build/aws-lc-sys-a6aaf3311725cafc/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/Users/adalundhe/.cache/cut-a/a/target/release/build/aws-lc-sys-a6aaf3311725cafc/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'neon_sha3_check.c' succeeded - Ok(["/Users/adalundhe/.cache/cut-a/a/target/release/build/aws-lc-sys-a6aaf3311725cafc/out/out-neon_sha3_check/7dfda64fdf5a526c-neon_sha3_check.o"]).
+    Finished `release` profile [optimized + debuginfo] target(s) in 0.17s
+  Executable tests/api_image.rs (target/release/deps/api_image-c665f96ed393319f)
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=aarch64_apple_darwin
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'aarch64-apple-darwin'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/Users/adalundhe/.cache/cut-a/b/target/release/build/aws-lc-sys-a6aaf3311725cafc/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Using flag: -ffile-prefix-map=/Users/adalundhe/.cache/cut-a/b/vendor/aws-lc-sys=
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/Users/adalundhe/.cache/cut-a/b/target/release/build/aws-lc-sys-a6aaf3311725cafc/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/Users/adalundhe/.cache/cut-a/b/target/release/build/aws-lc-sys-a6aaf3311725cafc/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'neon_sha3_check.c' succeeded - Ok(["/Users/adalundhe/.cache/cut-a/b/target/release/build/aws-lc-sys-a6aaf3311725cafc/out/out-neon_sha3_check/7dfda64fdf5a526c-neon_sha3_check.o"]).
+    Finished `release` profile [optimized + debuginfo] target(s) in 0.11s
+  Executable tests/api_image.rs (target/release/deps/api_image-c665f96ed393319f)
+host Adas-Mac-Studio-2.local, Darwin 25.2.0 arm64, 14 CPUs; load (3.24267578125, 3.732421875, 3.60302734375) before, (3.64990234375, 3.8369140625, 3.876953125) after; 38 rounds ABBA, N 10
+A dcac51807512 (/Users/adalundhe/.cache/cut-a/a), logs /Users/adalundhe/.cache/cut-a/out/A-0.log, /Users/adalundhe/.cache/cut-a/out/A-1.log, /Users/adalundhe/.cache/cut-a/out/A-2.log, /Users/adalundhe/.cache/cut-a/out/A-3.log, /Users/adalundhe/.cache/cut-a/out/A-4.log, /Users/adalundhe/.cache/cut-a/out/A-5.log, /Users/adalundhe/.cache/cut-a/out/A-6.log, /Users/adalundhe/.cache/cut-a/out/A-7.log, /Users/adalundhe/.cache/cut-a/out/A-8.log, /Users/adalundhe/.cache/cut-a/out/A-9.log, /Users/adalundhe/.cache/cut-a/out/A-10.log, /Users/adalundhe/.cache/cut-a/out/A-11.log, /Users/adalundhe/.cache/cut-a/out/A-12.log, /Users/adalundhe/.cache/cut-a/out/A-13.log, /Users/adalundhe/.cache/cut-a/out/A-14.log, /Users/adalundhe/.cache/cut-a/out/A-15.log, /Users/adalundhe/.cache/cut-a/out/A-16.log, /Users/adalundhe/.cache/cut-a/out/A-17.log, /Users/adalundhe/.cache/cut-a/out/A-18.log, /Users/adalundhe/.cache/cut-a/out/A-19.log, /Users/adalundhe/.cache/cut-a/out/A-20.log, /Users/adalundhe/.cache/cut-a/out/A-21.log, /Users/adalundhe/.cache/cut-a/out/A-22.log, /Users/adalundhe/.cache/cut-a/out/A-23.log, /Users/adalundhe/.cache/cut-a/out/A-24.log, /Users/adalundhe/.cache/cut-a/out/A-25.log, /Users/adalundhe/.cache/cut-a/out/A-26.log, /Users/adalundhe/.cache/cut-a/out/A-27.log, /Users/adalundhe/.cache/cut-a/out/A-28.log, /Users/adalundhe/.cache/cut-a/out/A-29.log, /Users/adalundhe/.cache/cut-a/out/A-30.log, /Users/adalundhe/.cache/cut-a/out/A-31.log, /Users/adalundhe/.cache/cut-a/out/A-32.log, /Users/adalundhe/.cache/cut-a/out/A-33.log, /Users/adalundhe/.cache/cut-a/out/A-34.log, /Users/adalundhe/.cache/cut-a/out/A-35.log, /Users/adalundhe/.cache/cut-a/out/A-36.log, /Users/adalundhe/.cache/cut-a/out/A-37.log
+  Booted    boot                 n 380 p50 74.585 p90 77.616 p99 88.605 max 90.702 ms
+  Booted    first output         n 380 p50 77.302 p90 80.318 p99 91.392 max 93.109 ms
+  Booted    stop                 n 380 p50 1.561 p90 1.639 p99 1.903 max 6.737 ms
+  Booted    layer: launch waited n 38 p50 1.500 p90 1.549 p99 1.564 max 1.564 ms
+  Booted    layer: its thread    n 0
+  Saved     boot                 n 380 p50 199.060 p90 207.400 p99 245.849 max 254.423 ms
+  Saved     first output         n 380 p50 207.381 p90 215.762 p99 254.594 max 263.143 ms
+  Saved     stop                 n 380 p50 2.082 p90 2.216 p99 6.476 max 7.977 ms
+  Saved     layer: launch waited n 38 p50 1.407 p90 1.990 p99 9.160 max 9.160 ms
+  Saved     layer: its thread    n 0
+  Restored  boot                 n 380 p50 18.711 p90 20.675 p99 23.314 max 27.957 ms
+  Restored  first output         n 380 p50 23.880 p90 25.904 p99 29.030 max 33.018 ms
+  Restored  stop                 n 380 p50 1.504 p90 1.624 p99 3.403 max 5.278 ms
+  Restored  layer: launch waited n 38 p50 0.287 p90 0.310 p99 1.968 max 1.968 ms
+  Restored  layer: its thread    n 0
+  Warm      boot                 n 380 p50 0.259 p90 0.344 p99 0.409 max 3.881 ms
+  Warm      first output         n 380 p50 5.197 p90 5.775 p99 6.255 max 6.465 ms
+  Warm      stop                 n 380 p50 1.657 p90 1.810 p99 5.031 max 10.657 ms
+  Warm      layer: launch waited n 38 p50 0.284 p90 0.314 p99 0.430 max 0.430 ms
+  Warm      layer: its thread    n 0
+B 26c1ea5df2c3 (/Users/adalundhe/.cache/cut-a/b), logs /Users/adalundhe/.cache/cut-a/out/B-0.log, /Users/adalundhe/.cache/cut-a/out/B-1.log, /Users/adalundhe/.cache/cut-a/out/B-2.log, /Users/adalundhe/.cache/cut-a/out/B-3.log, /Users/adalundhe/.cache/cut-a/out/B-4.log, /Users/adalundhe/.cache/cut-a/out/B-5.log, /Users/adalundhe/.cache/cut-a/out/B-6.log, /Users/adalundhe/.cache/cut-a/out/B-7.log, /Users/adalundhe/.cache/cut-a/out/B-8.log, /Users/adalundhe/.cache/cut-a/out/B-9.log, /Users/adalundhe/.cache/cut-a/out/B-10.log, /Users/adalundhe/.cache/cut-a/out/B-11.log, /Users/adalundhe/.cache/cut-a/out/B-12.log, /Users/adalundhe/.cache/cut-a/out/B-13.log, /Users/adalundhe/.cache/cut-a/out/B-14.log, /Users/adalundhe/.cache/cut-a/out/B-15.log, /Users/adalundhe/.cache/cut-a/out/B-16.log, /Users/adalundhe/.cache/cut-a/out/B-17.log, /Users/adalundhe/.cache/cut-a/out/B-18.log, /Users/adalundhe/.cache/cut-a/out/B-19.log, /Users/adalundhe/.cache/cut-a/out/B-20.log, /Users/adalundhe/.cache/cut-a/out/B-21.log, /Users/adalundhe/.cache/cut-a/out/B-22.log, /Users/adalundhe/.cache/cut-a/out/B-23.log, /Users/adalundhe/.cache/cut-a/out/B-24.log, /Users/adalundhe/.cache/cut-a/out/B-25.log, /Users/adalundhe/.cache/cut-a/out/B-26.log, /Users/adalundhe/.cache/cut-a/out/B-27.log, /Users/adalundhe/.cache/cut-a/out/B-28.log, /Users/adalundhe/.cache/cut-a/out/B-29.log, /Users/adalundhe/.cache/cut-a/out/B-30.log, /Users/adalundhe/.cache/cut-a/out/B-31.log, /Users/adalundhe/.cache/cut-a/out/B-32.log, /Users/adalundhe/.cache/cut-a/out/B-33.log, /Users/adalundhe/.cache/cut-a/out/B-34.log, /Users/adalundhe/.cache/cut-a/out/B-35.log, /Users/adalundhe/.cache/cut-a/out/B-36.log, /Users/adalundhe/.cache/cut-a/out/B-37.log
+  Booted    boot                 n 380 p50 73.036 p90 76.091 p99 84.767 max 86.250 ms
+  Booted    first output         n 380 p50 75.670 p90 78.769 p99 87.865 max 89.166 ms
+  Booted    stop                 n 380 p50 1.571 p90 1.678 p99 6.109 max 7.241 ms
+  Booted    layer: launch waited n 38 p50 0.005 p90 0.008 p99 0.009 max 0.009 ms
+  Booted    layer: its thread    n 38 p50 1.541 p90 1.737 p99 3.836 max 3.836 ms
+  Saved     boot                 n 380 p50 197.755 p90 206.168 p99 220.200 max 236.356 ms
+  Saved     first output         n 380 p50 205.813 p90 214.541 p99 228.665 max 244.699 ms
+  Saved     stop                 n 380 p50 2.085 p90 2.191 p99 6.371 max 6.884 ms
+  Saved     layer: launch waited n 38 p50 0.005 p90 0.008 p99 0.009 max 0.009 ms
+  Saved     layer: its thread    n 38 p50 1.515 p90 2.434 p99 2.632 max 2.632 ms
+  Restored  boot                 n 380 p50 18.323 p90 20.254 p99 21.965 max 23.070 ms
+  Restored  first output         n 380 p50 23.552 p90 25.416 p99 26.804 max 27.983 ms
+  Restored  stop                 n 380 p50 1.517 p90 1.634 p99 2.661 max 4.623 ms
+  Restored  layer: launch waited n 38 p50 0.006 p90 0.009 p99 0.012 max 0.012 ms
+  Restored  layer: its thread    n 38 p50 0.295 p90 0.309 p99 0.364 max 0.364 ms
+  Warm      boot                 n 380 p50 0.265 p90 0.346 p99 0.796 max 3.349 ms
+  Warm      first output         n 380 p50 5.348 p90 5.809 p99 6.134 max 6.441 ms
+  Warm      stop                 n 380 p50 1.652 p90 1.798 p99 4.468 max 4.635 ms
+  Warm      layer: launch waited n 38 p50 0.006 p90 0.008 p99 0.013 max 0.013 ms
+  Warm      layer: its thread    n 38 p50 0.338 p90 0.367 p99 2.364 max 2.364 ms
