@@ -38189,14 +38189,33 @@ post-mortem read of the printk ring through VMCOREINFO, not a debug port.
     | 8 | windows-2025 | AMD EPYC 9V74 | 0.88 s |
     | 8 | windows-2022 | AMD EPYC 9V74 | 1.28 s |
     | 15 | windows-2025 | AMD EPYC 9V74 | 26.3 s |
+    | 15 | windows-2022 | AMD EPYC 7763 | 4550 s (9,504 guest lines) |
     | 30 | windows-2025 | Intel Xeon Platinum 8573C | 2500 s (21,266 guest lines) |
 
     - No CPU failed to come online in these four (the record's stuck-vCPU column empty). They
       failed only their wait for the kernel's power-off line, cured by f455a80c97 (*The test
       boots as the product boots*, above).
     - Every arm from 60 vCPUs up on both images (60, 120, 240, 240 `cpuhp.parallel=0`, 240
-      with the guest idle register), and 15 and 30 on windows-2022, were still running past
-      1.5 hours, against their 122-minute bound.
+      with the guest idle register), and 30 on windows-2022, were still running past 1.5
+      hours, against their 122-minute bound.
+    - Each CPU's online, by the guest's uptime at its `smpboot: Booting Node 0 Processor N`
+      (the arms' records, `arm.log`). Every arm took its first 7 to 9 CPUs within 0.7 to
+      2.4 s; after that each next CPU took longer than all before it:
+      - 15 vCPUs, EPYC 9V74: CPU 12 at 3.4 s, 13 at 4.8 s, 14 at 14.7 s; init up at 26.3 s.
+      - 15 vCPUs, EPYC 7763: CPU 10 at 9.5 s, 12 at 186 s, 14 at 1683 s; init up at 4550 s.
+      - 30 vCPUs, Intel 8573C: CPU 13 at 4.0 s, 14 at 16 s, 17 at 334 s, 29 at 2259 s; init
+        up at 2500 s.
+    - What it waits on, plain in the records: soft lockups. 488 such lines in the EPYC 7763's
+      15-vCPU guest and 1,306 in the 30-vCPU guest ("watchdog: BUG: soft lockup - CPU#N stuck
+      for Ns! [migration/N]"), none in the 8-vCPU guests or the EPYC 9V74's 15. Every one of
+      them sits in `multi_cpu_stop`, called from `stop_machine_from_inactive_cpu`.
+      - That function has one caller, x86's `cache_ap_online` (arch/x86/kernel/cpu/
+        cacheinfo.c). For each CPU coming online it holds a MTRR/PAT rendezvous in which
+        every online CPU spins at once with its interrupts off. A boot skips it: smpboot.c's
+        `set_cache_aps_delayed_init(true)` leaves one rendezvous after `smp_init`.
+      - So each CPU brought online late needs every online vCPU running at the same time.
+        On 4 logical processors it cannot, past 4, until the hosts above time-slice them
+        through it. A cap at the host's logical processors is exactly where that ends.
     - So bringing CPUs online took about 0.1 s for 3 (M379), 1 s for 7, 26 s for 14 and
       41 minutes for 29: far faster growth than the count. M379's mechanism fits: each
       cross-CPU call (`smp_call_function_many_cond`, text patches' syncs, grace periods as the
@@ -38231,8 +38250,8 @@ post-mortem read of the printk ring through VMCOREINFO, not a debug port.
     under the rule it replaces, the partition's most alone, which admitted 5 to 240 on the
     runners' description); `vm::tests::guests_are_brought_up_late_on_a_nested_hyperv_alone`
     (the documented signal; an interface other than "Hv#1" is not one).
-  - **Owed.** The 30-vCPU arm's lines and the 60+ arms' outcomes, read from their artifacts
-    when they come. ci.yml's x86_64 Windows jobs (`boots_the_hosts_maximum_vcpu_count` at 4
+  - **Owed.** The 60+ arms' outcomes, read from their artifacts when they come (each ends
+    at its 122-minute bound at the latest). ci.yml's x86_64 Windows jobs (`boots_the_hosts_maximum_vcpu_count` at 4
     vCPUs, the storms sized so). The 8 lint targets.
 - **CI's judge learns across runs** (2026-11-17, kiln goal b2124227, lane ci-judge-cache).
   ROOT's answer to the question above: CI keeps the judge's records. Until now every CI job
