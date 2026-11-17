@@ -16090,13 +16090,61 @@ mod tests {
     fn a_builtin_ask_is_waited_for_while_its_microvm_runs() {
         let t = Test::new("answered");
         t.run(|t| {
-            let stat = shards_abi::run::builtin::STAT;
-            let record = t.daemon.answers.builtins.get(usize::from(stat)).unwrap();
+            let stat = shards_abi::run::Spec {
+                builtin: shards_abi::run::builtin::STAT,
+                ..Default::default()
+            };
+            let record = t.daemon.answers.builtins.get(usize::from(stat.builtin)).unwrap();
             assert!(matches!(
-                t.daemon.answered_wait(Some(7), stat),
+                t.daemon.answered_wait(Some(7), &stat),
                 health::Wait::WhileRuns(7, judged) if std::ptr::eq(judged, record)
             ));
-            assert!(matches!(t.daemon.answered_wait(None, stat), health::Wait::Ending));
+            assert!(matches!(
+                t.daemon.answered_wait(None, &stat),
+                health::Wait::Ending
+            ));
+        });
+    }
+
+    /// A network's switch is judged by each verb's own record (D215, ROOT's ruling of
+    /// 2026-11-17): a `make`'s quick answers are no `connect`'s slowest. Red with the
+    /// builtin's one record for every verb, under which a member's connect was ended 5.7 ms
+    /// into a stillness, past makes' 3.0 ms (CI 43968984258, engine.rs
+    /// `a_running_member_is_connected_and_disconnected_at_once`).
+    #[test]
+    fn a_networks_verbs_are_judged_each_by_its_own_record() {
+        let t = Test::new("answered-net");
+        t.run(|t| {
+            let network = shards_abi::run::builtin::NETWORK;
+            let judged = |verb: &str| {
+                let asked = shards_abi::run::Spec {
+                    builtin: network,
+                    argv: vec![verb.as_bytes().to_vec()],
+                    ..Default::default()
+                };
+                match t.daemon.answered_wait(Some(7), &asked) {
+                    health::Wait::WhileRuns(7, record) => std::ptr::from_ref(record),
+                    _ => panic!("{verb}: not judged while its microVM runs"),
+                }
+            };
+            let records: Vec<_> = health::NETWORK_VERBS.iter().map(|verb| judged(verb)).collect();
+            for (i, record) in records.iter().enumerate() {
+                assert_eq!(
+                    records.iter().filter(|other| *other == record).count(),
+                    1,
+                    "{} shares its record",
+                    health::NETWORK_VERBS[i]
+                );
+            }
+            assert!(
+                std::ptr::eq(judged("connect"), judged("connect")),
+                "one verb, one kind"
+            );
+            let builtin = t.daemon.answers.builtins.get(usize::from(network)).unwrap();
+            assert!(
+                std::ptr::eq(judged("no verb of its"), builtin),
+                "a verb init has not is the builtin's"
+            );
         });
     }
 

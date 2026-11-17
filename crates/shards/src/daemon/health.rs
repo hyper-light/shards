@@ -179,7 +179,17 @@ pub(super) struct Answers {
     /// `STATS`, a member's ports, a network's switch, a layer's size, an update), by its
     /// byte.
     pub builtins: Box<[Record; 256]>,
+    /// A network's switch (`NETWORK`) asked each of [`NETWORK_VERBS`], each its own kind: a
+    /// `make` records a network in init's memory, a `connect` gives a running member its
+    /// address in three namespaces and its grants again (init links.rs). One record of them
+    /// all took makes' answers for a connect's slowest (CI 43968984258: a connect ended 5.7 ms
+    /// into a stillness, past makes' 3.0 ms).
+    pub networks: [Record; NETWORK_VERBS.len()],
 }
+
+/// What a network's switch is asked (init members.rs `network`), each judged by its own
+/// record ([`Answers::networks`]).
+pub(super) const NETWORK_VERBS: [&str; 5] = ["default", "make", "remove", "connect", "disconnect"];
 
 impl Default for Answers {
     fn default() -> Answers {
@@ -199,6 +209,7 @@ impl Default for Answers {
             #[cfg(target_os = "macos")]
             grants: Record::new(),
             builtins: Box::new([const { Record::new() }; 256]),
+            networks: [const { Record::new() }; NETWORK_VERBS.len()],
         }
     }
 }
@@ -527,16 +538,28 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             Some(RunState::Tracked(t)) => Some(t.vm.id()),
             _ => None,
         };
-        self.exec_waiting(id, spec, None, limit, self.answered_wait(vm, spec.builtin))
+        self.exec_waiting(id, spec, None, limit, self.answered_wait(vm, spec))
     }
 
-    /// How init's answer of `builtin` is waited for in a microVM whose process is `vm`: while
-    /// it runs, judged by that builtin's record (D215's judge, [`Wait::WhileRuns`]): before
-    /// its first answer, its liveness alone; then past the slowest seen, ended where a whole
-    /// one shows it ran no CPU, its host not the reason (R03, ROOT's (3), 2026-11-13). With no
-    /// process to follow, its end alone.
-    pub(super) fn answered_wait(&self, vm: Option<u32>, builtin: u8) -> Wait<'_> {
-        match (vm, self.answers.builtins.get(usize::from(builtin))) {
+    /// How init's answer of `spec`'s builtin is waited for in a microVM whose process is
+    /// `vm`: while it runs, judged by its kind's record (D215's judge, [`Wait::WhileRuns`]),
+    /// the builtin's, or a network verb's own ([`Answers::networks`]): before its first
+    /// answer, its liveness alone; then past the slowest seen, ended where a whole one shows it
+    /// ran no CPU, its host not the reason (R03, ROOT's (3), 2026-11-13). With no process to
+    /// follow, its end alone.
+    pub(super) fn answered_wait(&self, vm: Option<u32>, spec: &shards_abi::run::Spec) -> Wait<'_> {
+        let verb = match (
+            spec.builtin == shards_abi::run::builtin::NETWORK,
+            spec.argv.first(),
+        ) {
+            (true, Some(verb)) => NETWORK_VERBS.iter().position(|v| v.as_bytes() == verb.as_slice()),
+            _ => None,
+        };
+        let record = match verb {
+            Some(at) => self.answers.networks.get(at),
+            None => self.answers.builtins.get(usize::from(spec.builtin)),
+        };
+        match (vm, record) {
             (Some(vm), Some(record)) => Wait::WhileRuns(vm, record),
             _ => Wait::Ending,
         }
