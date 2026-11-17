@@ -1,0 +1,27 @@
+query($n:Int!, $after:String) {
+  repository(owner:"hyper-light", name:"shards") {
+    object(expression:"main") {
+      ... on Commit {
+        history(first:$n, after:$after) {
+          pageInfo { endCursor hasNextPage }
+          nodes {
+            oid
+            committedDate
+            checkSuites(first:5) {
+              nodes {
+                workflowRun { databaseId workflow { name } }
+                checkRuns(first:3, filterBy:{checkName:"firecracker comparison (x86_64)"}) {
+                  nodes {
+                    databaseId conclusion startedAt completedAt
+                    steps(first:20) { nodes { name conclusion startedAt completedAt } }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  rateLimit { cost remaining }
+}
