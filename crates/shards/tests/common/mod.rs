@@ -5249,6 +5249,10 @@ impl Wait {
         }
         self.holding = None;
         self.gone = looked.found == Found::Gone;
+        // p/judge-trace alone: what the party's look found, for the trace below.
+        let (party_found, party_what) = (looked.found, looked.what.clone());
+        let was_due = due.is_some_and(|due| now >= due);
+        let mut judged_found = None;
         match looked.found {
             Found::Progressed => {
                 self.last = (now, looked.what.clone());
@@ -5288,6 +5292,7 @@ impl Wait {
             // begins vouched.
             let work = std::mem::replace(&mut self.vouched, true).then_some(self.work);
             judged = self.judge.found_over(found, shards_api::Span { work, ..span });
+            judged_found = Some(found);
             if found == Found::Still {
                 self.still.push(self.began.elapsed());
             } else {
@@ -5296,7 +5301,30 @@ impl Wait {
         } else if looked.found == Found::Based {
             // Its evidence begins at this look's end, due or not: a based look refuses nothing.
             judged = self.judge.found_over(Found::Based, span);
+            judged_found = Some(Found::Based);
             self.still.clear();
+        }
+        // p/judge-trace alone (never for main): every look of a judged wait, its time, whether
+        // it was due, what its party's look found and why, what its judge then judged, the
+        // judge's stillness, held lateness and window, and its verdict.
+        if std::env::var_os("SHARDS_JUDGE_TRACE").is_some() {
+            let _ = writeln!(
+                std::io::stderr(),
+                "shards judge look: {} at {}: +{:?} {}, due +{:?}, party {:?} ({}), judged {:?}, still/held/window {:?}, {}",
+                self.asked,
+                self.kind.site,
+                now.saturating_duration_since(self.began),
+                if was_due { "due" } else { "paced" },
+                due.map(|due| due.saturating_duration_since(self.began)),
+                party_found,
+                party_what,
+                judged_found,
+                self.judge.stillness(),
+                match &judged {
+                    Ok(()) => "kept".to_string(),
+                    Err(stall) => format!("refused: {stall:?}"),
+                },
+            );
         }
         self.live.set(self.account(), self.party.home.as_deref());
         let left = self
@@ -6791,7 +6819,16 @@ fn judging<T: Send>(
                 Calling::Spawned => wait.call_looked(false, true),
                 Calling::Calls(thread) => {
                     let before = thread.last;
-                    wait.call_looked(thread.ran() > before, thread.runnable());
+                    let ran = thread.ran();
+                    // p/judge-trace alone: its own thread's cycles as each round reads them.
+                    if std::env::var_os("SHARDS_JUDGE_TRACE").is_some() {
+                        let _ = writeln!(
+                            std::io::stderr(),
+                            "shards judge call: {asked}: +{:?} its own thread's cycles {before} -> {ran}",
+                            wait.began.elapsed()
+                        );
+                    }
+                    wait.call_looked(ran > before, thread.runnable());
                 }
                 Calling::Called => {}
             }

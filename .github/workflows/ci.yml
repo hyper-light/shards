@@ -2,6 +2,8 @@ name: CI
 
 on:
   push:
+    # Not p/judge-trace, whose own workflow is its evidence (judge-trace.yml): never for main.
+    branches-ignore: [p/judge-trace]
     # Every change but a measurement's own scripts, patches, notes and data, and the
     # workflows that run them alone, which no build or test reads: those run their own
     # jobs. A measurement's Rust (tests/fleet.rs and commit.rs take theirs by #[path]) is
