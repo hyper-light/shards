@@ -1,8 +1,8 @@
 # A restore's anonymous memory on Intel (Envelope, `firecracker_restore/rss_anon`)
 
 **Question.** CI's Firecracker comparison read shards' restored VM's anonymous memory
-(`rss_anon`) worse than Firecracker's on an Intel Xeon 6975P-C runner, and better on AMD.
-What does the restore hold on Intel that it does not on AMD?
+(`rss_anon`) worse than Firecracker's on an Intel Xeon 6975P-C runner and an AMD EPYC 9V45
+one, and better on AMD EPYC 7763 and 9V74. What does it hold that Firecracker's does not?
 
 **Which check.** The Envelope's `firecracker_restore` report, metric `rss_anon`
 (scripts/bench-envelope): bounded by Firecracker's own paired samples, no allowance, as row
@@ -21,6 +21,13 @@ What does the restore hold on Intel that it does not on AMD?
 | the memory file's private copies in shards-vm's mappings | 946,176 B | 921,600 B |
 
 vm-text's run 44031672087 (2893961893, AMD EPYC 9V74) read it better too: -0.0214844 MiB.
+Main's CI run 44077430171 (a223a63bc, AMD EPYC 9V45) read it worse, +0.0195312 MiB, and its
+fleet's private pages (`firecracker_density/fleet_private`, the same pages with 16 VMs held)
++0.015625 MiB. There shards-vm held private copies of 230 pages of its guest's memory by the
+first beat, Firecracker 157, and of its own anonymous memory about 100 KiB in its largest
+mappings to Firecracker's about 388 KiB (the log's mappings): shards' guest writes some 73
+pages more, and Firecracker's process holds about as much more of its own, so their
+difference sits near 0 and its sign follows what the guest writes on each host.
 
 - The 24 KiB is the 6 pages more of guest RAM written on Intel, every restore alike: the
   memory file's private copies differ by 24,576 bytes, and shards-vm's own anonymous
@@ -35,11 +42,13 @@ vm-text's run 44031672087 (2893961893, AMD EPYC 9V74) read it better too: -0.021
   so what differs is the guest's run on its host's CPU, as the snapshot's guest booted on
   it.
 
-**What settles it** (ROOT's). Each restore writes the same pages every time, so one reading a
-host names them: the comparison's `pages.tsv` (benches/firecracker.rs `pages_to`, beside each
-run's samples) from one Intel 6975P-C run and one AMD run of the same revision, each restore's
-privately copied pages of its memory file by offset. Then `written.py INTEL/pages.tsv
-AMD/pages.tsv target/artifacts/vmlinux-6.18.48-x86_64-kvm-836568f8ad2c` lists the pages
-written on one host and not the other, each in the kernel's image named by its symbols. CI's
-firecracker job keeps `pages.tsv` in its `bench-samples-<sha>` artifact; the runner's CPU is
-GitHub's choice, so a pair comes from the next runs that land on each.
+**What settles it** (ROOT's). Each restore writes the same pages every time, so one reading
+names them: the comparison's `pages.tsv` (benches/firecracker.rs `pages_to`, in each CI run's
+`bench-samples-<sha>` artifact, run 44077430171's among them), each restore's privately copied
+pages of its guest's memory by offset.
+- What shards' guest writes that Firecracker's does not, from one run:
+  `written.py pages.tsv pages.tsv@firecracker target/artifacts/vmlinux-6.18.48-x86_64-kvm-836568f8ad2c`,
+  each page of the kernel's image named by its symbols (both VMMs boot that kernel, so its
+  image lies at the same guest-physical pages in both).
+- What one host's restore writes that another's does not: `written.py INTEL/pages.tsv
+  AMD/pages.tsv VMLINUX`, from two runs of one revision; the runner's CPU is GitHub's choice.

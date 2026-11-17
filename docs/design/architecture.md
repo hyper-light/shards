@@ -3335,6 +3335,35 @@ one CLI.
       `--symbol-ordering-file`), then 2 rounds of both, alternated. If B keeps the envelope
       and its time, its ordering file joins the VM process's link (vm-process/build.rs), and
       how it follows the code as the code changes is decided then.
+    - *That A/B measured nothing* (run 44076339609 at fc9f30ccc, AMD EPYC 9V74; the
+      record's `ab-44076339609.txt`). Its arm B named its order in
+      `CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS`, which the nested build of the VM
+      process never read. Cargo sets `CARGO_ENCODED_RUSTFLAGS` for a build script, so
+      crates/shards/build.rs's nested cargo inherits it, and it is the first of Cargo's
+      "four mutually exclusive sources of extra flags", "checked in order, with the first
+      one being used" (Cargo's configuration reference, `build.rustflags`). So B built as A:
+      each section of its VM process the same size, and every boot of both arms 2,240,512
+      bytes of text resident. Its order, 2,923 symbols from A's 490 touched pages, linked
+      nothing. B won nothing, and nothing was cut.
+    - *The A/B again* (owed, the coordinator's): the same command, its arms now trees. B is
+      main's tree again, a git worktree, with A's order kept as
+      `crates/vm-process/order/<arch>.txt`. vm-process/build.rs links by an order kept so
+      for the target's architecture (LLD's `--symbol-ordering-file`, and
+      `--no-warn-symbol-ordering` for symbols a later build no longer has), under the same
+      terms as the packing: musl, rust-lld, not the GPU's VM process. None is kept, so
+      nothing links by one yet. B is the change that would land: its order file. `run.sh`'s
+      `ab ROUNDS REF` compares main with any revision so, never by flags.
+    - *CI's run 44077430171* (a223a63bc, AMD EPYC 9V45). The boot read as before:
+      `rss_file` +23 pages, `pss_file` +24 and `overhead` +1, each one value a pair. The
+      density read `fleet_private` +0.015625 MiB and `fleet_pte` +0.00390625 MiB, and the
+      restore `rss_anon` +0.0195312 MiB, each worse. `fleet_private` and `rss_anon` are the
+      restored guest's private copies, 230 pages to Firecracker's 157, outweighing
+      Firecracker's own larger anonymous memory on this host
+      (docs/research/measurements/restore-anon, whose `written.py` over the run's
+      `pages.tsv` names the pages; owed). `fleet_pte`, a page table's page more a VM, is
+      unread: the log says no mapping's address, only its offset in 2 MiB. Its Arrival step
+      reported each rate as it ended and passed in 84 s, and its judge's records were
+      restored from the job's own key and kept again (D209 Part 11).
 - A daemon's build is its binary's identity, which includes what it carries; one given
   another VM binary (`SHARDS_VM_BINARY`, for VMM work and tests) is another build.
 - **Tests:** `helpers::tests` (written whole once, found after, a cut copy replaced);

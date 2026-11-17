@@ -3,19 +3,15 @@ name: vm-text
 # What a VM process's boot keeps of its own binary against Firecracker's (D36, Envelope row
 # 11), on the runner CI's comparison runs on: docs/research/measurements/vm-text/run.sh,
 # `windows` (the comparison with the host's fault-around at its own size, then at one page),
-# `ab ROUNDS` (shards-vm as main builds it against `b_rustflags` for its musl helpers) or
+# `ab ROUNDS REF` (shards as the dispatched revision builds it against git revision REF) or
 # `order ROUNDS` (against shards-vm linked in the order of the functions its boot touched).
 # Runs when asked.
 on:
   workflow_dispatch:
     inputs:
       run:
-        description: "run.sh's mode and arguments after OUT: windows, ab ROUNDS or order ROUNDS"
+        description: "run.sh's mode and arguments after OUT: windows, ab ROUNDS REF or order ROUNDS"
         required: true
-      b_rustflags:
-        description: "ab's arm B: RUSTFLAGS for the musl helpers' build"
-        required: false
-        default: ""
 
 permissions:
   contents: read
@@ -45,7 +41,6 @@ jobs:
       - name: Measure
         env:
           RUN: ${{ inputs.run }}
-          B_RUSTFLAGS: ${{ inputs.b_rustflags }}
         run: |
           read -r -a run <<<"$RUN"
           docs/research/measurements/vm-text/run.sh target/vm-text "${run[@]}"

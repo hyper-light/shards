@@ -9,15 +9,21 @@
 #     `fault_around_bytes`, in debugfs; put back after): each VMM's file-backed resident
 #     bytes at boot and restore, split into the pages it touches and the cached pages a read
 #     fault maps around them.
-#   run.sh OUT ab ROUNDS
-#     The comparison of shards as main builds it (A) and with $B_RUSTFLAGS for its musl
-#     helpers (B: CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS, which the nested helper
-#     build inherits, crates/shards/build.rs), each built in a target directory of its own,
-#     ROUNDS rounds, their order alternating (A B, then B A), each round's envelope.
+#   run.sh OUT ab ROUNDS REF
+#     The comparison of shards as this checkout builds it (A) and as git revision REF builds
+#     it (B, fetched from origin), ROUNDS rounds, their order alternating (A B, then B A),
+#     each round's envelope.
 #   run.sh OUT order ROUNDS
-#     `ab` with B the VM process linked in the order of the functions A's boot touched: A's
-#     comparison with fault-around at one page, its boot's pages of shards-vm (pages.tsv)
-#     made an ordering file (order.py), and B linked by it (LLD --symbol-ordering-file).
+#     `ab` with B this checkout with the order of its boot kept for the VM process
+#     (crates/vm-process/order/<arch>.txt, which vm-process/build.rs links by, LLD's
+#     --symbol-ordering-file): A's comparison with fault-around at one page, its boot's pages
+#     of shards-vm (the bench's pages.tsv) made that order by order.py.
+#
+# Each arm is a tree of its own (B a git worktree), built in a target directory of its own.
+# An arm is never flags: the nested build of the VM process takes none from its parent's
+# environment, as Cargo sets CARGO_ENCODED_RUSTFLAGS for a build script, which outranks every
+# other source of flags (Cargo's configuration reference, `build.rustflags`; vm-text's run
+# 44076339609 built its flags' arm as the other).
 #
 # OUT keeps each run's samples (pages.tsv among them), stdout, stderr and envelope, each
 # arm's sections, and the summary of the binaries' mappings (maps.py).
@@ -25,39 +31,45 @@ set -euo pipefail
 out=${1:?an output directory}
 mode=${2:?windows, ab or order}
 here=$(cd "$(dirname "$0")" && pwd)
+root=$(pwd)
 mkdir -p "$out"
 out=$(cd "$out" && pwd)
-musl=CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS
 knob=/sys/kernel/debug/fault_around_bytes
 host=""
 
-# One run of the comparison as LABEL, VAR=VALUE settings before it; its status kept.
+tree() { if [ "$1" = b ]; then echo "$out/tree-b"; else echo "$root"; fi; }
+vm() { echo "$out/target-$1/helpers/$(uname -m)-unknown-linux-musl/release/shards-vm"; }
+
+# One run of the comparison as LABEL, by arm ARM's tree and target directory; its status kept.
 compare() {
-  local label=$1
-  shift
-  local status=0
-  env "$@" SHARDS_BENCH_SAMPLES="$out/$label" \
-    cargo bench --locked -p shards --bench firecracker -- --runs 30 \
+  local label=$1 arm=$2 status=0
+  (cd "$(tree "$arm")" && env CARGO_TARGET_DIR="$out/target-$arm" SHARDS_BENCH_SAMPLES="$out/$label" \
+    cargo bench --locked -p shards --bench firecracker -- --runs 30) \
     >"$out/$label.stdout" 2>"$out/$label.stderr" || status=$?
   echo "$status" >"$out/$label.status"
-  scripts/bench-envelope "$out/$label" >"$out/$label.envelope" 2>&1 || true
+  "$root/scripts/bench-envelope" "$out/$label" >"$out/$label.envelope" 2>&1 || true
 }
 
-# The host's fault-around: noted before the first change, and put back as this ends.
+# The host's fault-around: noted before the first change, and put back as this ends, with
+# arm B's tree removed.
 fault_around() {
   if [ -z "$host" ]; then host=$(sudo -n cat "$knob"); fi
   sudo -n sh -c "echo $1 > $knob"
 }
 restore() { if [ -n "$host" ]; then sudo -n sh -c "echo $host > $knob"; fi; }
-trap restore EXIT
+finish() {
+  restore
+  if [ -d "$out/tree-b" ]; then git -C "$root" worktree remove --force "$out/tree-b" || true; fi
+}
+trap finish EXIT
 
-flags() { if [ "$1" = b ]; then echo "$B_RUSTFLAGS"; fi; }
-vm() { echo "$out/target-$1/helpers/x86_64-unknown-linux-musl/release/shards-vm"; }
+# Arm B's tree, at revision REV.
+tree_b() { git -C "$root" worktree add --detach "$out/tree-b" "$1" >"$out/tree-b.log" 2>&1; }
 
-# Arm ARM built in its own target directory, its VM process's sections kept.
+# Arm ARM built, its VM process's sections kept.
 build() {
-  env CARGO_TARGET_DIR="$out/target-$1" "$musl=$(flags "$1")" \
-    cargo bench --locked -p shards --bench firecracker --no-run >"$out/build-$1.log" 2>&1
+  (cd "$(tree "$1")" && env CARGO_TARGET_DIR="$out/target-$1" \
+    cargo bench --locked -p shards --bench firecracker --no-run) >"$out/build-$1.log" 2>&1
   readelf -lSdW "$(vm "$1")" >"$out/readelf-$1.txt"
   size -A "$(vm "$1")" >"$out/size-$1.txt"
 }
@@ -67,7 +79,7 @@ rounds() {
   for round in $(seq "$1"); do
     if [ $((round % 2)) = 1 ]; then order="a b"; else order="b a"; fi
     for arm in $order; do
-      compare "$arm-$round" CARGO_TARGET_DIR="$out/target-$arm" "$musl=$(flags "$arm")"
+      compare "$arm-$round" "$arm"
     done
   done
   python3 -I "$here/maps.py" "$out"/[ab]-*.stderr | tee "$out/maps.txt"
@@ -78,31 +90,34 @@ windows)
   page=$(getconf PAGESIZE)
   for bytes in "$(sudo -n cat "$knob")" "$page"; do
     fault_around "$bytes"
-    compare "windows-$bytes"
+    compare "windows-$bytes" a
   done
   restore
   python3 -I "$here/maps.py" "$out"/windows-*.stderr | tee "$out/maps.txt"
   ;;
 ab)
-  # Checked here: a failure inside the substitutions below would not stop the script.
-  : "${B_RUSTFLAGS:?B_RUSTFLAGS names the flags of arm B}"
+  rounds=${3:?rounds}
+  git -C "$root" fetch --quiet --depth 1 origin "${4:?a git revision for arm B}"
+  tree_b FETCH_HEAD
   build a
   build b
-  rounds "${3:?rounds}"
+  rounds "$rounds"
   ;;
 order)
   rounds=${3:?rounds}
   build a
   fault_around "$(getconf PAGESIZE)"
-  compare touched CARGO_TARGET_DIR="$out/target-a" "$musl="
+  compare touched a
   restore
   python3 -I "$here/order.py" "$(vm a)" "$out/touched/pages.tsv" >"$out/order.txt"
-  B_RUSTFLAGS="-C link-arg=--symbol-ordering-file=$out/order.txt -C link-arg=--no-warn-symbol-ordering"
+  tree_b HEAD
+  mkdir -p "$out/tree-b/crates/vm-process/order"
+  cp "$out/order.txt" "$out/tree-b/crates/vm-process/order/$(uname -m).txt"
   build b
   rounds "$rounds"
   ;;
 *)
-  echo "run.sh OUT windows | run.sh OUT ab ROUNDS | run.sh OUT order ROUNDS" >&2
+  echo "run.sh OUT windows | run.sh OUT ab ROUNDS REF | run.sh OUT order ROUNDS" >&2
   exit 2
   ;;
 esac
