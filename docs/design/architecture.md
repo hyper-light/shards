@@ -11476,6 +11476,22 @@ of packages against 1.4 MiB of file pages (PM M295), which no give-back of file 
 takes: that comes back as its layers leave memory, to its swap window or a layer on the
 host's disk as a run's (D190). M268 at larger sizes.
 
+**Owed after the tag: a warm builder's reads under its hold (2026-11-18, #36; ROOT's ruling,
+not for v0.8.0).** A builder booted at its learned boot holds its build at `memory.high`,
+a few MiB of working room past its use (D133's `plug::working_room`), and plugs as its build
+grows. A sequential read outruns its grower: past `memory.high` the kernel reclaims the
+cgroup's inactive file pages, the read's own, rather than throttle its reader, so what the
+read leaves cached is what its grower kept up with. CI's give-back test read a 256 MiB file
+so: on ubuntu-24.04 (44243183339, one runner in eight) 116 MiB stayed cached and 140 MiB went
+to direct reclaim (`pgsteal_direct`); on windows-2025 (44227612442) 14 MiB stayed and 242
+went; each give-back then gave back all that was held. The test is held to what its step held
+since (`common::held_as_read`). The product question stays open: a build that reads the same
+input again, a compiler re-reading headers, may refault it each time (`workingset_refault_file`)
+while its grower lags. Owed: a measurement under R14 (refaults, CPU and wall time of a build
+re-reading its inputs, warm builder against cold, on each host), and against it the
+alternative of plugging ahead of a sequential read's growth so that its cache survives the
+hold.
+
 ### D189. Volumes' file data once, in the host's page cache: virtio-fs DAX windows (built: every share's window as long as its host's memory, but on a virtual machine on an AMD CPU)
 
 **Review memory-09 (2026-11-14): which files a window maps, learned where it runs.**

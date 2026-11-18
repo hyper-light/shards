@@ -582,9 +582,11 @@ fn a_builder_gives_back_what_it_holds_cold_at_its_builds_word() {
     let shown = lines.join("\n");
     assert!(status.success(), "{shown}");
     let gave = gave.unwrap_or_else(|| panic!("nothing given back said:\n{shown}"));
+    // Most of what its step held of the file as it read it (`common::held_as_read`).
+    let held = common::held_as_read(&shown);
     assert!(
-        gave >= MIB / 2,
-        "gave back {gave} MiB of the {MIB} MiB file:\n{shown}"
+        gave >= held / 2,
+        "gave back {gave} MiB of the {held} MiB its step held of the {MIB} MiB file:\n{shown}"
     );
     assert!(
         shown.contains("dropped "),

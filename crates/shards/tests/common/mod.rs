@@ -1087,6 +1087,38 @@ pub fn kvm_counters(pid: u32) -> Option<std::collections::BTreeMap<String, u64>>
     (out.status.success() && !counters.is_empty()).then_some(counters)
 }
 
+/// What a give-back test's step said its cgroup held of its file as it read it (testguest
+/// `read-dropped`'s `memory.stat as read: file N`), in MiB, which its builder's give-back is
+/// held to half of: under its hold (`memory.high`) a builder's kernel reclaims a read's own
+/// pages as the read outruns its grower (`pgsteal_direct`), so not all of the file is there to
+/// give back (CI 44243183339, ubuntu-24.04: 116 MiB of 256 held, 140 reclaimed; 44227612442,
+/// windows-2025: 14 held, 242 reclaimed; each given back whole). A step that held none of its
+/// file fails its test, saying so, as its builder had nothing of it to give.
+pub fn held_as_read(shown: &str) -> u64 {
+    let said = |key: &str| {
+        shown
+            .lines()
+            .find_map(|line| line.split_once("memory.stat as read: "))
+            .and_then(|(_, stat)| {
+                stat.split(", ").find_map(|kv| {
+                    kv.strip_prefix(key)?
+                        .strip_prefix(' ')?
+                        .trim()
+                        .parse::<u64>()
+                        .ok()
+                })
+            })
+    };
+    let held = said("file").unwrap_or_else(|| panic!("its step's memory.stat as read not said:\n{shown}"));
+    assert!(
+        held > 0,
+        "its step's cgroup held none of its file as it read it (pgsteal_direct {:?}): its builder \
+         had nothing of it to give back:\n{shown}",
+        said("pgsteal_direct")
+    );
+    held >> 20
+}
+
 /// The VM process, for what runs microVMs without the command in front.
 pub fn shards_vm() -> &'static Path {
     static V: OnceLock<PathBuf> = OnceLock::new();

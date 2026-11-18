@@ -3858,14 +3858,13 @@ fn cat() -> i32 {
     }
 }
 
-/// `read`'s: each file of `paths` read to its end, then `read PATH BYTES in MS ms` said.
-/// The guest's page cache, in KiB (/proc/meminfo's `Cached`).
-fn cached_kib() -> Option<u64> {
-    std::fs::read_to_string("/proc/meminfo")
+/// Its cgroup's file pages, in bytes (memory.stat's `file`), as [`file_stat`] says them.
+fn cgroup_file() -> Option<u64> {
+    std::fs::read_to_string("/sys/fs/cgroup/memory.stat")
         .ok()?
         .lines()
-        .find_map(|l| l.strip_prefix("Cached:"))
-        .and_then(|v| v.split_whitespace().next()?.parse().ok())
+        .find_map(|l| l.strip_prefix("file "))
+        .and_then(|v| v.trim().parse().ok())
 }
 
 /// The bytes of the file at `path` and their FNV-1a checksum.
@@ -3930,12 +3929,16 @@ fn read_dropped(path: &str, secs: u64, out: &str) -> i32 {
     let stat = file_stat();
     let _ = writeln!(io::stdout(), "read {path} {total}");
     let _ = writeln!(io::stdout(), "memory.stat as read: {stat}");
-    let held = cached_kib().unwrap_or(0);
+    // What its cgroup held of the file as it read it, half of which it waits to see dropped:
+    // a builder held at its `memory.high` reclaims a read's own pages as the read outruns its
+    // grower (`pgsteal_direct`), so not all of the file may be there to drop (CI 44243183339,
+    // ubuntu-24.04; 44227612442, windows-2025).
+    let held = cgroup_file().unwrap_or(0);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(secs);
     loop {
-        let now = cached_kib().unwrap_or(held);
-        if held.saturating_sub(now) >= total / 2 / 1024 {
-            let _ = writeln!(io::stdout(), "dropped {} MiB", held.saturating_sub(now) >> 10);
+        let now = cgroup_file().unwrap_or(held);
+        if held > 0 && held.saturating_sub(now) >= held / 2 {
+            let _ = writeln!(io::stdout(), "dropped {} MiB", held.saturating_sub(now) >> 20);
             break;
         }
         if std::time::Instant::now() >= deadline {

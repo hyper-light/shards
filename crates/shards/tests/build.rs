@@ -805,7 +805,9 @@ fn a_builders_memory_is_plugged_as_fast_as_its_jobs_take_it() {
 /// first, whose builder booted cold and taught the home its guest's boot (memory-15), into
 /// its builder's page cache, then waits; the build is told once that its host is short of
 /// memory (SHARDS_BUILD_PRESSURE's FIFO, as no unprivileged process may raise macOS's
-/// system pressure), and its builder gives back most of the file, its VM process then
+/// system pressure), and its builder gives back most of what its step held of the file as
+/// it read it (`common::held_as_read`: under its hold a builder's kernel reclaims a read's own
+/// pages as the read outruns its grower), its VM process then
 /// holding that much less on its host, the step going on to its end; and the build's
 /// layers are the same as the same build's not told, byte for byte. Each build runs its
 /// step again for a build argument of its own, its cache kept, as `--no-cache` would start
@@ -906,9 +908,11 @@ fn a_builder_gives_back_what_it_holds_cold_at_its_builds_word() {
     let shown = lines.join("\n");
     assert!(status.success(), "{shown}");
     let gave = gave.unwrap_or_else(|| panic!("nothing given back said:\n{shown}"));
+    // Most of what its step held of the file as it read it (`common::held_as_read`).
+    let held = common::held_as_read(&shown);
     assert!(
-        gave >= MIB / 2,
-        "gave back {gave} MiB of the {MIB} MiB file:\n{shown}"
+        gave >= held / 2,
+        "gave back {gave} MiB of the {held} MiB its step held of the {MIB} MiB file:\n{shown}"
     );
     assert!(
         shown.contains("dropped "),
