@@ -142,6 +142,8 @@ fn stand_in() {
         own_vms();
     } else if asked == "starved" {
         starved();
+    } else if let Some(bytes) = asked.strip_prefix("durable ").and_then(|b| b.parse::<u64>().ok()) {
+        durable(bytes);
     } else if let Some(ms) = asked.strip_prefix("leaves ") {
         #[allow(
             clippy::zombie_processes,
@@ -156,6 +158,94 @@ fn stand_in() {
             .unwrap();
         out.flush().unwrap();
     }
+}
+
+/// A stand-in's durable write of `bytes` (D286): declared in the home `SHARDS_HOME` names, as
+/// every process of a home declares there; written, said "written" on its stdout, then made
+/// durable at once (`shards_durable::data`) as a byte (its go) or its end comes on its stdin,
+/// and said "durable".
+fn durable(bytes: u64) {
+    use std::io::Read as _;
+    let home = std::path::PathBuf::from(std::env::var_os("SHARDS_HOME").unwrap());
+    shards_durable::install(&home).unwrap();
+    let mut file = std::fs::File::create(home.join("durable-write")).unwrap();
+    let chunk = vec![0x5a_u8; 1 << 20];
+    let mut left = bytes;
+    while left > 0 {
+        let n = left.min(chunk.len() as u64);
+        file.write_all(&chunk[..n as usize]).unwrap();
+        left -= n;
+    }
+    let mut out = std::io::stdout();
+    out.write_all(b"written\n").unwrap();
+    out.flush().unwrap();
+    let _ = std::io::stdin().read(&mut [0u8; 1]);
+    shards_durable::data(&file).unwrap();
+    out.write_all(b"durable\n").unwrap();
+    out.flush().unwrap();
+}
+
+/// A party in one long durable write is its host's while its write's volume works (D286,
+/// D215): a stand-in that wrote a GiB makes it durable at once, under a judged wait whose kind
+/// learned, from a write of nothing, a quick answer. Its flush waits in its kernel, on Windows
+/// as `Executive` (PM M606), as a read of a pipe no one writes does, so that no thread state
+/// tells it: its declaration does, its volume's own counters the evidence. Before, Windows
+/// refused such a wait past W* (CI 44282442232, windows-2025: context's and snapshot's
+/// flushes, 0.19 to 1.82 s past W*s of 65 to 220 ms); Linux and macOS held it by their
+/// threads' `D` and uninterruptible states and their summed disks. Each round from one call
+/// site, the closure's, so that the second is judged by what the first taught.
+#[test]
+fn a_party_in_a_long_durable_write_is_held_while_its_volume_works() {
+    use std::io::BufRead as _;
+    #[track_caller]
+    fn round(home: &std::path::Path, bytes: u64, forget: bool) -> Result<(), String> {
+        if forget {
+            let site = std::panic::Location::caller();
+            let _ = std::fs::remove_file(common::WaitKind::kept_at(site, "", ""));
+        }
+        let mut writer = stand_in_doing(&format!("durable {bytes}"))
+            .env("SHARDS_HOME", home)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut out = std::io::BufReader::new(writer.stdout.take().unwrap());
+        let mut said = String::new();
+        // Written first, outside the wait: its writing is its CPU.
+        while !said.contains("written") {
+            said.clear();
+            assert_ne!(
+                out.read_line(&mut said).unwrap(),
+                0,
+                "the stand-in ended unwritten"
+            );
+        }
+        let mut go = writer.stdin.take().unwrap();
+        let party = common::Party::client(writer.id(), Some(home));
+        let judged = common::judged(
+            party,
+            "a durable write",
+            || {},
+            move || {
+                go.write_all(b"g").unwrap();
+                let mut said = String::new();
+                while !said.contains("durable") {
+                    said.clear();
+                    assert_ne!(
+                        out.read_line(&mut said).unwrap(),
+                        0,
+                        "the stand-in ended undurable"
+                    );
+                }
+            },
+        );
+        writer.wait().unwrap();
+        judged
+    }
+    let home = TempDir::new("durable-held").unwrap();
+    let round = |bytes: u64, forget: bool| round(&home, bytes, forget);
+    round(0, true).unwrap();
+    round(1 << 30, false).unwrap();
 }
 
 /// A stand-in's listing of every process ([`common::processes`], what each look at a wait's

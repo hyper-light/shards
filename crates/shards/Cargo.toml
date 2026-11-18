@@ -27,6 +27,8 @@ alloc-count = []
 # conformance suite, run on real guests this binary boots (tests/boot.rs).
 shards-api = { path = "../api" }
 shards-abi = { path = "../abi" }
+# Every durable write, declared to whoever follows the process (D286).
+shards-durable = { path = "../durable" }
 shards-net = { path = "../net" }
 shards-netring = { path = "../netring" }
 shards-user = { path = "../user" }

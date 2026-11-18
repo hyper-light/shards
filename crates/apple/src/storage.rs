@@ -19,6 +19,10 @@ struct Api {
     IOIteratorNext: unsafe extern "C" fn(u32) -> u32,
     IORegistryEntryCreateCFProperty: unsafe extern "C" fn(u32, CFTypeRef, CFTypeRef, u32) -> CFTypeRef,
     IOObjectRelease: unsafe extern "C" fn(u32) -> i32,
+    IOBSDNameMatching: unsafe extern "C" fn(u32, u32, *const c_char) -> CFTypeRef,
+    IOServiceGetMatchingService: unsafe extern "C" fn(u32, CFTypeRef) -> u32,
+    IORegistryEntryCreateIterator: unsafe extern "C" fn(u32, *const c_char, u32, *mut u32) -> i32,
+    IOObjectConformsTo: unsafe extern "C" fn(u32, *const c_char) -> i32,
 }
 
 // SAFETY: function pointers of a process-wide framework, never written.
@@ -50,6 +54,10 @@ fn api() -> Result<&'static Api, String> {
             IOIteratorNext: f!(c"IOIteratorNext"),
             IORegistryEntryCreateCFProperty: f!(c"IORegistryEntryCreateCFProperty"),
             IOObjectRelease: f!(c"IOObjectRelease"),
+            IOBSDNameMatching: f!(c"IOBSDNameMatching"),
+            IOServiceGetMatchingService: f!(c"IOServiceGetMatchingService"),
+            IORegistryEntryCreateIterator: f!(c"IORegistryEntryCreateIterator"),
+            IOObjectConformsTo: f!(c"IOObjectConformsTo"),
         })
     })
     .as_ref()
@@ -101,6 +109,123 @@ pub fn completed() -> Option<u64> {
     // SAFETY: the iterator made above, released once.
     unsafe { (io.IOObjectRelease)(drivers) };
     Some(sum)
+}
+
+/// What the block storage beneath one volume has completed so far (D286): its driver's
+/// `Statistics`, as [`completed`] reads every driver's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Completed {
+    /// Its reads and writes, and their bytes, summed: only growth is read.
+    pub done: u64,
+    /// The time its reads and writes took, summed (`Total Time (Read)`, `Total Time
+    /// (Write)`, nanoseconds): it grows as an operation completes.
+    pub busy: u64,
+}
+
+/// IOKit's registry plane of services (IOKitKeys.h `kIOServicePlane`).
+const SERVICE_PLANE: &CStr = c"IOService";
+/// IORegistryEntryCreateIterator's options (IOKitKeys.h): `kIORegistryIterateRecursively`
+/// and `kIORegistryIterateParents`, so that every entry above the first is given.
+const ITERATE_PARENTS_RECURSIVELY: u32 = 1 | 2;
+
+/// Why a volume's storage statistics could not be read ([`volume_completed`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VolumeUnread {
+    /// IOKit or CoreFoundation was not loaded, or a key of theirs not made.
+    Framework,
+    /// No IOMedia has the BSD name.
+    NoMedia,
+    /// Its media's parents could not be iterated: IOKit's `kern_return_t`.
+    Parents(i32),
+    /// No IOBlockStorageDriver lies beneath its media.
+    NoDriver,
+    /// Its driver keeps no `Statistics`, or they hold no count of a key read.
+    NoStatistics,
+}
+
+/// What the block storage driver beneath the volume whose BSD device is `bsd` (`disk3s5`, as
+/// devname(3) names a `st_dev`) has completed: the volume's media (IOBSDNameMatching), then its
+/// parents in the service plane, up to the first that is an `IOBlockStorageDriver`, as an APFS
+/// volume's lies above its container's physical store.
+pub fn volume_completed(bsd: &CStr) -> Result<Completed, VolumeUnread> {
+    let io = api().map_err(|_| VolumeUnread::Framework)?;
+    let cf = frameworks::api().map_err(|_| VolumeUnread::Framework)?;
+    let key = |s: &str| frameworks::string(cf, s).ok_or(VolumeUnread::Framework);
+    let statistics = key("Statistics")?;
+    let counted = [
+        key("Operations (Read)")?,
+        key("Operations (Write)")?,
+        key("Bytes (Read)")?,
+        key("Bytes (Write)")?,
+    ];
+    let timed = [key("Total Time (Read)")?, key("Total Time (Write)")?];
+    // SAFETY: the default main port, no options and a NUL-terminated BSD name; the
+    // dictionary made is consumed below.
+    let matching = unsafe { (io.IOBSDNameMatching)(MAIN_PORT_DEFAULT, 0, bsd.as_ptr()) };
+    if matching.is_null() {
+        return Err(VolumeUnread::Framework);
+    }
+    // SAFETY: the default main port and the matching dictionary, one reference of which the
+    // call consumes.
+    let media = unsafe { (io.IOServiceGetMatchingService)(MAIN_PORT_DEFAULT, matching) };
+    if media == 0 {
+        return Err(VolumeUnread::NoMedia);
+    }
+    let mut parents: u32 = 0;
+    // SAFETY: the media entry above, the service plane's NUL-terminated name, and an
+    // iterator for the call to fill.
+    let made = unsafe {
+        (io.IORegistryEntryCreateIterator)(
+            media,
+            SERVICE_PLANE.as_ptr(),
+            ITERATE_PARENTS_RECURSIVELY,
+            &raw mut parents,
+        )
+    };
+    // SAFETY: the entry IOServiceGetMatchingService returned, released once.
+    unsafe { (io.IOObjectRelease)(media) };
+    if made != 0 {
+        return Err(VolumeUnread::Parents(made));
+    }
+    let mut driver = 0u32;
+    loop {
+        // SAFETY: the iterator made above, released after the loop.
+        let entry = unsafe { (io.IOIteratorNext)(parents) };
+        if entry == 0 {
+            break;
+        }
+        // SAFETY: a registry entry the iterator gave, and a NUL-terminated class name.
+        if unsafe { (io.IOObjectConformsTo)(entry, c"IOBlockStorageDriver".as_ptr()) } != 0 {
+            driver = entry;
+            break;
+        }
+        // SAFETY: the entry IOIteratorNext returned, released once.
+        unsafe { (io.IOObjectRelease)(entry) };
+    }
+    // SAFETY: the iterator made above, released once.
+    unsafe { (io.IOObjectRelease)(parents) };
+    if driver == 0 {
+        return Err(VolumeUnread::NoDriver);
+    }
+    // SAFETY: the driver entry found above and a CFString key; the property is a copy of
+    // ours, released as it drops.
+    let property = Owned::new(cf, unsafe {
+        (io.IORegistryEntryCreateCFProperty)(driver, statistics.ptr, std::ptr::null(), 0)
+    });
+    // SAFETY: the driver entry, released once.
+    unsafe { (io.IOObjectRelease)(driver) };
+    let property = property.ok_or(VolumeUnread::NoStatistics)?;
+    let sum = |keys: &[Owned<'_>]| {
+        keys.iter().try_fold(0u64, |sum, key| {
+            count(cf, property.ptr, key.ptr)
+                .map(|n| sum.saturating_add(n))
+                .ok_or(VolumeUnread::NoStatistics)
+        })
+    };
+    Ok(Completed {
+        done: sum(&counted)?,
+        busy: sum(&timed)?,
+    })
 }
 
 /// The count `dictionary` holds under `key`: none where it is no dictionary, holds no

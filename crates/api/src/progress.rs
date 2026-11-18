@@ -177,6 +177,9 @@ struct Hold {
     pressure: Option<u64>,
     /// What its host's storage has done for it so far ([`Io`]).
     io: Io,
+    /// A durable write a member of it declared (D286), judged by its volume's own counters
+    /// ([`Writing`]); none where it declares none.
+    declared: Option<Writing>,
 }
 
 /// What its host's storage has done for a process so far, as its OS accumulates it: either
@@ -287,20 +290,26 @@ impl Hold {
         let in_kernel = self.uninterruptible
             && (matches!((before.disks, self.disks), (Some(b), Some(n)) if n > b)
                 || matches!((before.stalls, self.stalls), (Some(b), Some(n)) if n.cpu > b.cpu || n.memory > b.memory));
-        self.runnable || in_kernel || queued || pressed || self.io.grown_since(&before.io)
+        // A declared durable write is its host's while its volume works (D286), whatever its
+        // thread's state: its volume's own counters, read since their last reading.
+        let declared = self.declared.is_some_and(|w| w.moved == Moved::Worked);
+        self.runnable || in_kernel || declared || queued || pressed || self.io.grown_since(&before.io)
     }
 
-    /// Whether a thread of it waited uninterruptibly in its kernel as it was looked at.
+    /// Whether a thread of it waited uninterruptibly in its kernel, or in a durable write it
+    /// declared, as it was looked at: its host's work for it, which vouches for no window of
+    /// its rate.
     fn in_kernel(&self) -> bool {
-        self.uninterruptible
+        self.uninterruptible || self.declared.is_some()
     }
 
     /// What a look that found a thread of it in its kernel read of its host's work since the
     /// look that saw `before`, by which [`held_since`](Self::held_since) decided: its devices'
     /// work, and its host's CPU and memory stalls; none where no thread of it waited there.
     fn kernel_since(&self, before: &Hold) -> Option<String> {
+        let writing = self.declared.map(|w| w.said());
         if !self.uninterruptible {
-            return None;
+            return writing;
         }
         let devices = match (before.disks, self.disks) {
             (Some(b), Some(n)) => format!("its host's devices' work +{}", n.saturating_sub(b)),
@@ -315,9 +324,235 @@ impl Hold {
             (_, None) => "no pressure record (no CONFIG_PSI, or psi=0): its devices alone decide".to_string(),
             (None, Some(_)) => "its host's pressure unread before".to_string(),
         };
-        Some(format!(
-            "in its kernel, since its look before: {devices}, {stalls}"
-        ))
+        let kernel = format!("in its kernel, since its look before: {devices}, {stalls}");
+        Some(match writing {
+            Some(writing) => format!("{writing}; {kernel}"),
+            None => kernel,
+        })
+    }
+}
+
+/// A durable write a member of a party declared (D286), as a look found it: judged by its
+/// volume's own counters, never by its thread's state (D215; the person's word of 2026-11-18:
+/// no fallbacks). The longest of the party's declared writes stands for them in its account;
+/// their volumes together decide whether its host works for them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Writing {
+    /// The volume the longest of them is on (`shards_durable::Declared::volume`).
+    volume: u64,
+    /// How long that write had gone on as the look found it.
+    lasted: Duration,
+    /// What their volumes did since their last reading.
+    moved: Moved,
+}
+
+impl Writing {
+    /// What its account says of it.
+    fn said(&self) -> String {
+        let (volume, lasted) = (os::volume_name(self.volume), self.lasted);
+        match self.moved {
+            Moved::Worked => format!("a durable write on {volume} for {lasted:?}, its volume working"),
+            Moved::Cold => format!("a durable write on {volume} for {lasted:?}, its volume read first now"),
+            Moved::Idle => format!(
+                "a durable write on {volume} for {lasted:?}; {volume} moved nothing since the look before"
+            ),
+            Moved::Unreadable(_, Unread::Declarations(errno)) => {
+                format!(
+                    "its home's declarations unreadable: {}",
+                    Unread::Declarations(errno)
+                )
+            }
+            Moved::Unreadable(at, why) => format!(
+                "a durable write on {volume} for {lasted:?}; {}'s counters unreadable: {why}",
+                os::volume_name(at)
+            ),
+        }
+    }
+}
+
+/// What the volumes of a party's declared writes did since their last reading.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Moved {
+    /// One completed I/O since its last reading, or holds I/O in flight now: its host works
+    /// for the writes, which holds them.
+    Worked,
+    /// Read for the first time now, nothing in flight: no reading before to compare with, as
+    /// a look whose look before read no disks holds nothing by them. Still.
+    Cold,
+    /// None completed any since its last reading, and none holds any in flight: the writes wait
+    /// on what no counter shows (another task's lock, a frozen or hung device), which holding
+    /// unbounded would make the hang D215 ends. Still, judged as any wait.
+    Idle,
+    /// What could not be read, of which volume: said in its account, never taken for none.
+    /// Not held.
+    Unreadable(u64, Unread),
+}
+
+/// Why a declared write's evidence could not be read (D286).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Unread {
+    /// Its home's declarations (`shards_durable::Reader`): their OS error.
+    Declarations(Option<i32>),
+    /// No device of counters lies beneath its volume: Linux its mount's source names no block
+    /// device; macOS no IOBlockStorageDriver lies beneath its media; Windows no volume has its
+    /// serial.
+    NoDevice,
+    /// Its device's counters could not be read: their OS error (macOS IOKit's `kern_return_t`).
+    Counters(Option<i32>),
+}
+
+impl std::fmt::Display for Unread {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let error = |errno: &Option<i32>| match errno {
+            Some(code) => format!("{}", std::io::Error::from_raw_os_error(*code)),
+            None => "no OS error said".to_string(),
+        };
+        match self {
+            Unread::Declarations(errno) => write!(f, "{}", error(errno)),
+            Unread::NoDevice => write!(f, "no device of counters lies beneath it"),
+            Unread::Counters(errno) => write!(f, "{}", error(errno)),
+        }
+    }
+}
+
+/// What a volume's device had done by a reading: its completed operations (and their bytes,
+/// where its OS counts them), the time it spent on them, and what it holds in flight.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Counters {
+    done: u64,
+    busy: u64,
+    in_flight: u64,
+}
+
+impl Counters {
+    /// Whether its device worked since `before`: completed an operation, spent time on one,
+    /// or holds one in flight now.
+    fn worked_since(&self, before: &Counters) -> bool {
+        self.done > before.done || self.busy > before.busy || self.in_flight > 0
+    }
+}
+
+/// Where a followed process's home keeps its declared writes (D286), and the last reading of
+/// each of their volumes' devices, by which a look tells whether they worked since.
+#[derive(Debug)]
+pub(crate) struct Declarations {
+    reader: Source,
+    volumes: std::sync::Mutex<std::collections::BTreeMap<u64, Volume>>,
+}
+
+/// Whose reader of a home's declarations a follower reads.
+#[derive(Debug)]
+enum Source {
+    /// This process's own home's (`shards_durable::installed`).
+    Installed(&'static shards_durable::Reader),
+    /// Another home's, which its follower names (`Followed::declaring`).
+    Own(shards_durable::Reader),
+}
+
+/// A volume's device as first found, and its last reading.
+#[derive(Debug)]
+struct Volume {
+    device: Result<os::Device, Unread>,
+    last: Option<Counters>,
+}
+
+impl Declarations {
+    /// This process's own home's, where it installed its slot file; none where it did not.
+    fn installed() -> Option<Declarations> {
+        shards_durable::installed().map(|reader| Declarations::of(Source::Installed(reader)))
+    }
+
+    /// The home `home`'s.
+    fn of_home(home: &std::path::Path) -> std::io::Result<Declarations> {
+        Ok(Declarations::of(Source::Own(shards_durable::Reader::open(home)?)))
+    }
+
+    fn of(reader: Source) -> Declarations {
+        Declarations {
+            reader,
+            volumes: std::sync::Mutex::new(std::collections::BTreeMap::new()),
+        }
+    }
+
+    fn reader(&self) -> &shards_durable::Reader {
+        match &self.reader {
+            Source::Installed(reader) => reader,
+            Source::Own(reader) => reader,
+        }
+    }
+
+    /// What processes `members` (each its ID and its start as its OS keeps it) declare now:
+    /// the writing a look's hold says, and the declaring threads, which the threads' own
+    /// witnesses then leave out (D286: a declared write is judged by its volume alone).
+    fn writing(&self, members: &[(u32, u64)]) -> (Option<Writing>, Vec<u64>) {
+        let mut declared = Vec::new();
+        for &(pid, start) in members {
+            match self.reader().declared(pid, start) {
+                Ok(found) => declared.extend(found.into_iter().map(|d| (pid, d))),
+                Err(e) => {
+                    let moved = Moved::Unreadable(0, Unread::Declarations(e.raw_os_error()));
+                    return (
+                        Some(Writing {
+                            volume: 0,
+                            lasted: Duration::ZERO,
+                            moved,
+                        }),
+                        Vec::new(),
+                    );
+                }
+            }
+        }
+        let Some(&(_, longest)) = declared.iter().min_by_key(|(_, d)| d.since) else {
+            return (None, Vec::new());
+        };
+        let threads = declared.iter().map(|(_, d)| d.thread).collect();
+        let lasted = shards_durable::now().map_or(Duration::ZERO, |now| {
+            Duration::from_nanos(now.saturating_sub(longest.since))
+        });
+        let mut volumes = self
+            .volumes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut read: Vec<u64> = Vec::new();
+        let mut moved: Option<Moved> = None;
+        for &(pid, d) in &declared {
+            if read.contains(&d.volume) {
+                continue;
+            }
+            read.push(d.volume);
+            let volume = volumes.entry(d.volume).or_insert_with(|| Volume {
+                device: os::device(d.volume, pid),
+                last: None,
+            });
+            let this = match &volume.device {
+                Err(why) => Moved::Unreadable(d.volume, *why),
+                Ok(device) => match os::counters(device) {
+                    Err(why) => Moved::Unreadable(d.volume, why),
+                    Ok(now) => {
+                        let this = match volume.last {
+                            Some(before) if now.worked_since(&before) => Moved::Worked,
+                            Some(_) => Moved::Idle,
+                            None if now.in_flight > 0 => Moved::Worked,
+                            None => Moved::Cold,
+                        };
+                        volume.last = Some(now);
+                        this
+                    }
+                },
+            };
+            moved = Some(match (moved, this) {
+                (Some(Moved::Worked), _) | (_, Moved::Worked) => Moved::Worked,
+                (Some(unread @ Moved::Unreadable(..)), _) | (_, unread @ Moved::Unreadable(..)) => unread,
+                (Some(Moved::Cold), _) | (_, Moved::Cold) => Moved::Cold,
+                _ => Moved::Idle,
+            });
+        }
+        let writing = moved.map(|moved| Writing {
+            volume: longest.volume,
+            lasted,
+            moved,
+        });
+        (writing, threads)
     }
 }
 
@@ -952,6 +1187,9 @@ impl<'a> Follow<'a> {
 pub struct Followed {
     pid: u32,
     started: u64,
+    /// Where its home keeps the durable writes it declares (D286): this process's own home's,
+    /// unless its follower names another ([`declaring`](Self::declaring)); none where neither.
+    declarations: Option<Declarations>,
 }
 
 #[cfg(unix)]
@@ -960,13 +1198,27 @@ impl Followed {
         Followed {
             pid: identity.pid,
             started: identity.started,
+            declarations: Declarations::installed(),
         }
     }
 
     /// Process `pid` as it is now, its start read, which tells it from a process given its
     /// pid later; none where no process has it.
     pub fn of_pid(pid: u32) -> Result<Option<Followed>, ProcessFailure> {
-        Ok(os::started(pid)?.map(|started| Followed { pid, started }))
+        Ok(os::started(pid)?.map(|started| Followed {
+            pid,
+            started,
+            declarations: Declarations::installed(),
+        }))
+    }
+
+    /// It, its durable writes read from the declarations of the home `home` (D286), where its
+    /// follower is not of that home (a test's party, a client of another's).
+    pub fn declaring(self, home: &std::path::Path) -> std::io::Result<Followed> {
+        Ok(Followed {
+            declarations: Some(Declarations::of_home(home)?),
+            ..self
+        })
     }
 
     fn pid(&self) -> u32 {
@@ -982,9 +1234,17 @@ impl Followed {
         os::look(self.pid, self.started)
     }
 
-    /// What its host is doing to it, now ([`Hold`]).
+    /// What its host is doing to it, now ([`Hold`]): its declared durable writes judged by
+    /// their volumes, its other threads by their own states.
     fn hold(&self) -> Hold {
-        os::hold(self.pid)
+        let (declared, threads) = self
+            .declarations
+            .as_ref()
+            .map_or((None, Vec::new()), |d| d.writing(&[(self.pid, self.started)]));
+        Hold {
+            declared,
+            ..os::hold(self.pid, &threads)
+        }
     }
 
     /// Its threads now, for D215's rule of a thread its host keeps from any CPU ([`starved`]):
@@ -1050,6 +1310,110 @@ mod os {
         Ok(stat(pid)?.map(|(started, _)| started))
     }
 
+    /// A volume's device, as its counters are read: its block device's statistics file
+    /// (`/sys/dev/block/<major>:<minor>/stat`, Documentation/block/stat.rst).
+    pub(super) type Device = PathBuf;
+
+    /// The device beneath volume `volume` (a `st_dev`) of process `pid`'s: its own where it is
+    /// a block device's; else (an anonymous device's: btrfs's, overlayfs') its mount's in that
+    /// process's mount table (`/proc/<pid>/mountinfo`, proc(5)): its source's, a block device's
+    /// node, or an overlay's upper layer's, followed until a block device's, each once.
+    pub(super) fn device(volume: u64, pid: u32) -> Result<Device, super::Unread> {
+        use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _};
+        let mut seen: Vec<u64> = Vec::new();
+        let mut at = volume;
+        loop {
+            if seen.contains(&at) {
+                return Err(super::Unread::NoDevice);
+            }
+            seen.push(at);
+            let (major, minor) = (libc::major(at), libc::minor(at));
+            let stat = PathBuf::from(format!("/sys/dev/block/{major}:{minor}/stat"));
+            if stat.exists() {
+                return Ok(stat);
+            }
+            let table = std::fs::read_to_string(format!("/proc/{pid}/mountinfo"))
+                .map_err(|e| super::Unread::Counters(e.raw_os_error()))?;
+            let wanted = format!("{major}:{minor}");
+            let mount = table
+                .lines()
+                .find(|line| line.split(' ').nth(2) == Some(wanted.as_str()))
+                .and_then(|line| line.split_once(" - "))
+                .ok_or(super::Unread::NoDevice)?;
+            let mut fields = mount.1.split(' ');
+            let (kind, source, options) = (fields.next(), fields.next(), fields.next());
+            let beneath = if kind == Some("overlay") {
+                options
+                    .and_then(|o| o.split(',').find_map(|option| option.strip_prefix("upperdir=")))
+                    .and_then(|upper| std::fs::metadata(unescaped(upper)).ok())
+                    .map(|upper| upper.dev())
+            } else {
+                source
+                    .filter(|source| source.starts_with('/'))
+                    .and_then(|source| std::fs::metadata(unescaped(source)).ok())
+                    .filter(|node| node.file_type().is_block_device())
+                    .map(|node| node.rdev())
+            };
+            at = beneath.ok_or(super::Unread::NoDevice)?;
+        }
+    }
+
+    /// A mount table's field as its path: proc(5)'s octal escapes (`\040` for a space, `\011`,
+    /// `\012`, `\134`) undone.
+    fn unescaped(field: &str) -> PathBuf {
+        use std::os::unix::ffi::OsStringExt as _;
+        let bytes = field.as_bytes();
+        let mut out = Vec::with_capacity(bytes.len());
+        let mut k = 0;
+        while let Some(&b) = bytes.get(k) {
+            let octal = bytes
+                .get(k.saturating_add(1)..k.saturating_add(4))
+                .filter(|digits| b == b'\\' && digits.iter().all(|d| (b'0'..=b'7').contains(d)))
+                .and_then(|digits| u8::from_str_radix(std::str::from_utf8(digits).ok()?, 8).ok());
+            match octal {
+                Some(byte) => {
+                    out.push(byte);
+                    k = k.saturating_add(4);
+                }
+                None => {
+                    out.push(b);
+                    k = k.saturating_add(1);
+                }
+            }
+        }
+        PathBuf::from(std::ffi::OsString::from_vec(out))
+    }
+
+    /// What `device` has done (Documentation/block/stat.rst): its read, write, discard and
+    /// flush I/Os completed (fields 1, 5, 12 and 16, the last two where its kernel counts
+    /// them), its `io_ticks` (field 10) and its I/Os in flight (field 9).
+    pub(super) fn counters(device: &Device) -> Result<super::Counters, super::Unread> {
+        let text = std::fs::read_to_string(device).map_err(|e| super::Unread::Counters(e.raw_os_error()))?;
+        let fields: Vec<u64> = text
+            .split_whitespace()
+            .map(|field| field.parse().ok())
+            .collect::<Option<_>>()
+            .ok_or(super::Unread::Counters(None))?;
+        let at = |k: usize| fields.get(k).copied();
+        let (Some(reads), Some(writes), Some(in_flight), Some(busy)) = (at(0), at(4), at(8), at(9)) else {
+            return Err(super::Unread::Counters(None));
+        };
+        let done = [Some(reads), Some(writes), at(11), at(15)]
+            .into_iter()
+            .flatten()
+            .fold(0u64, u64::saturating_add);
+        Ok(super::Counters {
+            done,
+            busy,
+            in_flight,
+        })
+    }
+
+    /// A volume as its account names it: its device's `major:minor`.
+    pub(super) fn volume_name(volume: u64) -> String {
+        format!("{}:{}", libc::major(volume), libc::minor(volume))
+    }
+
     /// What its host is doing to process `pid` ([`Hold`]), from its own evidence alone: a
     /// thread of it runnable, its state `R` (`/proc/<pid>/task/<tid>/stat` field 3, proc(5)),
     /// or waiting uninterruptibly in its kernel, `D`, which vouches for no window of its rate,
@@ -1064,8 +1428,10 @@ mod os {
     /// faults and storage bytes, and its tasks' block I/O delays while task delay accounting is
     /// on (`kernel.task_delayacct`, Documentation/accounting/delay-accounting.rst). A cgroup it
     /// shares, the root's among them (the host's, `/proc/pressure`), is not read: its pressure
-    /// is its other tasks' as much as this one's. What it cannot read shows nothing.
-    pub(super) fn hold(pid: u32) -> Hold {
+    /// is its other tasks' as much as this one's. What it cannot read shows nothing. A thread
+    /// of `declared`, in a durable write it declared (D286), is its declaration's to judge, by
+    /// its volume's own counters: its `D` is no witness here.
+    pub(super) fn hold(pid: u32, declared: &[u64]) -> Hold {
         let mut hold = Hold::default();
         let delays = std::fs::read("/proc/sys/kernel/task_delayacct").is_ok_and(|on| on.trim_ascii() == b"1");
         let mut waited: Option<u64> = None;
@@ -1084,12 +1450,13 @@ mod os {
                 let Some(state) = state(&stat) else {
                     continue;
                 };
+                let tid = task.file_name().to_str().and_then(|tid| tid.parse::<u64>().ok());
                 hold.runnable |= state == b'R';
-                hold.uninterruptible |= state == b'D';
+                hold.uninterruptible |= state == b'D' && !tid.is_some_and(|tid| declared.contains(&tid));
                 if delays && let Some(ticks) = field(&stat, BLKIO_TICKS) {
                     waited = Some(waited.unwrap_or(0).saturating_add(ticks));
                 }
-                let leader = task.file_name().to_str().and_then(|tid| tid.parse::<u32>().ok()) == Some(pid);
+                let leader = tid == Some(u64::from(pid));
                 hold.stopped |= leader && matches!(state, b'T' | b't');
             }
         }
@@ -1594,7 +1961,7 @@ mod os {
     /// holds through a look's sample does; and its storage's work for it
     /// ([`Io::done`](super::Io)), none of it a time waited, which macOS keeps no count of.
     /// What it cannot read shows nothing.
-    pub(super) fn hold(pid: u32) -> Hold {
+    pub(super) fn hold(pid: u32, declared: &[u64]) -> Hold {
         let Ok(id) = libc::c_int::try_from(pid) else {
             return Hold::default();
         };
@@ -1604,7 +1971,16 @@ mod os {
             .filter_map(|handle| run_state(id, handle))
             .collect();
         let usage = rusage_v4(id);
-        let uninterruptible = states.contains(&libc::TH_STATE_UNINTERRUPTIBLE);
+        // A thread of `declared`, in a durable write it declared (D286), is its declaration's
+        // to judge by its volume's own counters: an uninterruptible wait witnesses here only
+        // past those threads' own, read by their IDs (`PROC_PIDTHREADID64INFO`), as the
+        // listing's handles name no thread by its ID.
+        let waiting = |state: &&libc::c_int| **state == libc::TH_STATE_UNINTERRUPTIBLE;
+        let declaring = declared
+            .iter()
+            .filter(|&&thread| run_state_of_id(id, thread) == Some(libc::TH_STATE_UNINTERRUPTIBLE))
+            .count();
+        let uninterruptible = states.iter().filter(waiting).count() > declaring;
         Hold {
             queued: usage.map_or(Queued::Unread, |u| Queued::Waited(u.ri_runnable_time)),
             runnable: states.contains(&libc::TH_STATE_RUNNING),
@@ -1621,6 +1997,7 @@ mod os {
                 }),
                 waited: None,
             },
+            declared: None,
         }
     }
 
@@ -1741,6 +2118,84 @@ mod os {
     /// not be read, as of a thread that ended since it was listed.
     fn run_state(id: libc::c_int, handle: u64) -> Option<libc::c_int> {
         thread_info(id, handle).map(|info| info.pth_run_state)
+    }
+
+    /// `PROC_PIDTHREADID64INFO` (sys/proc_info.h; libc binds no name for it): a thread's
+    /// `proc_threadinfo` by its system-wide ID (pthread_threadid_np(3)), as a declaration
+    /// names it.
+    const PROC_PIDTHREADID64INFO: libc::c_int = 15;
+
+    /// The run state of process `id`'s thread whose system-wide ID is `thread`; none where it
+    /// could not be read.
+    fn run_state_of_id(id: libc::c_int, thread: u64) -> Option<libc::c_int> {
+        // SAFETY: a proc_threadinfo, plain data, for proc_pidinfo to fill.
+        let mut info: libc::proc_threadinfo = unsafe { std::mem::zeroed() };
+        let size = libc::c_int::try_from(size_of::<libc::proc_threadinfo>()).ok()?;
+        // SAFETY: proc_pidinfo(3) writes at most `size` bytes into `info`.
+        let got =
+            unsafe { libc::proc_pidinfo(id, PROC_PIDTHREADID64INFO, thread, (&raw mut info).cast(), size) };
+        (got == size).then_some(info.pth_run_state)
+    }
+
+    /// A volume's device, as its counters are read: its BSD name (`disk3s5`).
+    pub(super) type Device = std::ffi::CString;
+
+    unsafe extern "C" {
+        /// devname_r(3): a device number's name in /dev, into a buffer of the caller's.
+        fn devname_r(
+            dev: libc::dev_t,
+            kind: libc::mode_t,
+            buf: *mut libc::c_char,
+            len: libc::c_int,
+        ) -> *mut libc::c_char;
+    }
+
+    /// The BSD name of the block device `volume` (a `st_dev`) names (devname_r(3)); none
+    /// where /dev has none. Its room: a directory entry's most, `MAXNAMLEN` (255, sys/dirent.h),
+    /// and its NUL.
+    fn bsd_name(volume: u64) -> Option<std::ffi::CString> {
+        // dev_t is i32 here: the volume's low 32 bits are its.
+        #[allow(clippy::cast_possible_truncation)]
+        let dev = volume as libc::dev_t;
+        let mut name = [0 as libc::c_char; 256];
+        let len = libc::c_int::try_from(name.len()).ok()?;
+        // SAFETY: devname_r(3) into a buffer of ours of `len` bytes, which it NUL-terminates.
+        let named = unsafe { devname_r(dev, libc::S_IFBLK, name.as_mut_ptr(), len) };
+        if named.is_null() {
+            return None;
+        }
+        // SAFETY: devname_r returned `name`, NUL-terminated within it.
+        let found = unsafe { std::ffi::CStr::from_ptr(name.as_ptr()) };
+        (!found.is_empty()).then(|| found.to_owned())
+    }
+
+    /// The device beneath volume `volume` (a `st_dev`): its block device's BSD name, whose
+    /// media IOKit finds by it.
+    pub(super) fn device(volume: u64, _pid: u32) -> Result<Device, super::Unread> {
+        bsd_name(volume).ok_or(super::Unread::NoDevice)
+    }
+
+    /// What `device`'s storage driver has completed (shards-apple `volume_completed`).
+    pub(super) fn counters(device: &Device) -> Result<super::Counters, super::Unread> {
+        use shards_apple::storage::VolumeUnread;
+        match shards_apple::storage::volume_completed(device) {
+            Ok(completed) => Ok(super::Counters {
+                done: completed.done,
+                busy: completed.busy,
+                in_flight: 0,
+            }),
+            Err(VolumeUnread::NoMedia | VolumeUnread::NoDriver) => Err(super::Unread::NoDevice),
+            Err(VolumeUnread::Parents(code)) => Err(super::Unread::Counters(Some(code))),
+            Err(VolumeUnread::Framework | VolumeUnread::NoStatistics) => Err(super::Unread::Counters(None)),
+        }
+    }
+
+    /// A volume as its account names it: its BSD name, else its number.
+    pub(super) fn volume_name(volume: u64) -> String {
+        bsd_name(volume).map_or_else(
+            || format!("device {volume:#x}"),
+            |name| name.to_string_lossy().into_owned(),
+        )
     }
 
     /// Each thread of process `pid` as `PROC_PIDTHREADINFO` shows it
@@ -1892,7 +2347,7 @@ mod os {
 
 #[cfg(windows)]
 mod os {
-    use super::{Hold, Look};
+    use super::{Declarations, Hold, Look};
     use crate::taken::io_failure;
     use crate::{ProcessFailure, ProcessOperation};
     use shards_judge::threads::{WAITING, each_thread, is_suspension, pages, records, wants_cpu};
@@ -1931,6 +2386,10 @@ mod os {
         members: Vec<Member>,
         /// Its root alone, none of what descends from it ([`of_pid_alone`](Followed::of_pid_alone)).
         alone: bool,
+        /// Where its home keeps the durable writes its processes declare (D286): this
+        /// process's own home's, unless its follower names another
+        /// ([`declaring`](Followed::declaring)); none where neither.
+        declarations: Option<Declarations>,
     }
 
     #[derive(Debug)]
@@ -1961,6 +2420,7 @@ mod os {
                 created,
                 members,
                 alone: false,
+                declarations: Declarations::installed(),
             })
         }
 
@@ -1981,7 +2441,18 @@ mod os {
                 created,
                 members,
                 alone: false,
+                declarations: Declarations::installed(),
             }))
+        }
+
+        /// It, the durable writes its processes declare read from the declarations of the home
+        /// `home` (D286), where its follower is not of that home (a test's party, a client of
+        /// another's).
+        pub fn declaring(self, home: &std::path::Path) -> io::Result<Followed> {
+            Ok(Followed {
+                declarations: Some(Declarations::of_home(home)?),
+                ..self
+            })
         }
 
         /// Process `pid` alone, as on Unix: none of what descends from it, for a follower
@@ -2033,8 +2504,23 @@ mod os {
         /// ([`disks`]); stopped where every thread of its live processes is suspended
         /// (Suspended, WrSuspended), as a frozen Job's are. What it cannot read shows nothing.
         pub(super) fn hold(&self) -> Hold {
+            // Its live processes' declared durable writes (D286), judged by their volumes alone:
+            // their threads' paging waits witness nothing here.
+            let live: Vec<(u32, u64)> = self
+                .members
+                .iter()
+                .filter(|m| !m.exited)
+                .map(|m| (m.pid, m.created))
+                .collect();
+            let (declared, declaring) = self
+                .declarations
+                .as_ref()
+                .map_or((None, Vec::new()), |d| d.writing(&live));
             let Ok(records) = records() else {
-                return Hold::default();
+                return Hold {
+                    declared,
+                    ..Hold::default()
+                };
             };
             let (mut runnable, mut paging, mut threads, mut suspended) = (false, false, 0usize, 0usize);
             each_thread(&records, |pid, t| {
@@ -2042,9 +2528,10 @@ mod os {
                     return;
                 }
                 let (state, reason) = (t.ThreadState, t.WaitReason);
+                let tid = t.ClientId.UniqueThread as usize as u64;
                 threads = threads.saturating_add(1);
                 runnable |= wants_cpu(state);
-                paging |= pages(state, reason);
+                paging |= pages(state, reason) && !declaring.contains(&tid);
                 suspended = suspended.saturating_add(usize::from(state == WAITING && is_suspension(reason)));
             });
             Hold {
@@ -2057,6 +2544,7 @@ mod os {
                     done: self.io_done(),
                     waited: None,
                 },
+                declared,
             }
         }
 
@@ -2325,6 +2813,125 @@ mod os {
         (threads > 0).then_some((runnable, threads))
     }
 
+    /// A volume's device, as its counters are read: a handle to the volume itself
+    /// (`\\?\Volume{GUID}`), opened for no access, its metadata alone.
+    #[derive(Debug)]
+    pub(super) struct Device(OwnedHandle);
+
+    /// The volume whose serial number is `volume` (GetVolumeInformationW's, as a declaration
+    /// names it): each volume of the host by its GUID path (FindFirstVolumeW, FindNextVolumeW),
+    /// its serial read at its root, the one that has it opened as itself (its path without its
+    /// trailing backslash, which names its root directory) for no access, as IOCTL_DISK_PERFORMANCE
+    /// asks FILE_ANY_ACCESS and the volume manager answers it for volumes (ntdddisk.h).
+    /// `MAX_PATH` characters: the most a volume's GUID path takes, as FindFirstVolumeW's
+    /// documentation sizes its buffer.
+    pub(super) fn device(volume: u64, _pid: u32) -> Result<Device, super::Unread> {
+        use windows_sys::Win32::Foundation::MAX_PATH;
+        use windows_sys::Win32::Storage::FileSystem::{
+            FindFirstVolumeW, FindNextVolumeW, FindVolumeClose, GetVolumeInformationW,
+        };
+        let failed = || super::Unread::Counters(io::Error::last_os_error().raw_os_error());
+        let room = usize::try_from(MAX_PATH).map_err(|_| super::Unread::Counters(None))?;
+        let mut name: Vec<u16> = vec![0; room];
+        // SAFETY: a buffer of MAX_PATH characters for the first volume's GUID path; the search
+        // handle closed below.
+        let search = unsafe { FindFirstVolumeW(name.as_mut_ptr(), MAX_PATH) };
+        if search == INVALID_HANDLE_VALUE {
+            return Err(failed());
+        }
+        let found = loop {
+            let mut serial = 0u32;
+            // SAFETY: a NUL-terminated root path, and the serial alone asked for.
+            let read = unsafe {
+                GetVolumeInformationW(
+                    name.as_ptr(),
+                    std::ptr::null_mut(),
+                    0,
+                    &raw mut serial,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    0,
+                )
+            };
+            if read != 0 && u64::from(serial) == volume {
+                break Some(name.clone());
+            }
+            // SAFETY: the search handle above, and the buffer for the next volume's path.
+            if unsafe { FindNextVolumeW(search, name.as_mut_ptr(), MAX_PATH) } == 0 {
+                break None;
+            }
+        };
+        // SAFETY: the search handle FindFirstVolumeW made, closed once.
+        unsafe { FindVolumeClose(search) };
+        let mut path = found.ok_or(super::Unread::NoDevice)?;
+        let end = path.iter().position(|&c| c == 0).unwrap_or(path.len());
+        if let Some(last) = end.checked_sub(1).and_then(|at| path.get_mut(at))
+            && *last == u16::from(b'\\')
+        {
+            *last = 0;
+        }
+        // SAFETY: a NUL-terminated volume path, opened for no access, shared both ways, with
+        // no security attributes or template; the handle owned below.
+        let raw = unsafe {
+            CreateFileW(
+                path.as_ptr(),
+                0,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                std::ptr::null(),
+                OPEN_EXISTING,
+                0,
+                std::ptr::null_mut(),
+            )
+        };
+        if raw == INVALID_HANDLE_VALUE {
+            return Err(failed());
+        }
+        // SAFETY: the handle CreateFileW just made, owned from here alone.
+        Ok(Device(unsafe { OwnedHandle::from_raw_handle(raw) }))
+    }
+
+    /// What `device`'s volume has done (IOCTL_DISK_PERFORMANCE, the volume manager's
+    /// DISK_PERFORMANCE): the bytes it read and wrote, the time its reads and writes took, and
+    /// its I/Os queued now (`QueueDepth`). Bytes, as its counts of reads and writes are 32
+    /// bits wide and wrap.
+    pub(super) fn counters(device: &Device) -> Result<super::Counters, super::Unread> {
+        let mut performance = DISK_PERFORMANCE::default();
+        let size = u32::try_from(size_of::<DISK_PERFORMANCE>()).map_err(|_| super::Unread::Counters(None))?;
+        let mut returned = 0u32;
+        // SAFETY: an IOCTL with no input, into a DISK_PERFORMANCE of ours of `size` bytes, on
+        // the volume handle `device` holds, waited for (no OVERLAPPED).
+        let asked = unsafe {
+            DeviceIoControl(
+                device.0.as_raw_handle(),
+                IOCTL_DISK_PERFORMANCE,
+                std::ptr::null(),
+                0,
+                (&raw mut performance).cast(),
+                size,
+                &raw mut returned,
+                std::ptr::null_mut(),
+            )
+        };
+        if asked == 0 {
+            return Err(super::Unread::Counters(io::Error::last_os_error().raw_os_error()));
+        }
+        if returned < size {
+            return Err(super::Unread::Counters(None));
+        }
+        let n = |v: i64| u64::try_from(v).unwrap_or(0);
+        Ok(super::Counters {
+            done: n(performance.BytesRead).saturating_add(n(performance.BytesWritten)),
+            busy: n(performance.ReadTime).saturating_add(n(performance.WriteTime)),
+            in_flight: u64::from(performance.QueueDepth),
+        })
+    }
+
+    /// A volume as its account names it: its serial number as `vol` says it.
+    pub(super) fn volume_name(volume: u64) -> String {
+        format!("volume {:04X}-{:04X}", (volume >> 16) & 0xFFFF, volume & 0xFFFF)
+    }
+
     /// The MS-DOS device names of physical disks (`\\.\PhysicalDrive0`, Win32's "Naming Files,
     /// Paths, and Namespaces"): this, then the disk's number.
     const PHYSICAL_DRIVE: &str = "PhysicalDrive";
@@ -2497,6 +3104,81 @@ mod starved_tests {
 mod tests {
     use super::*;
     use crate::Rate;
+
+    /// A declared durable write is its host's while its volume works, whatever its thread's
+    /// state (D286): held where its volume worked since its last reading or holds I/O in
+    /// flight; still where its volume was read first now, moved nothing, or could not be read;
+    /// vouching for no window either way; and its account says which, an unreadable volume
+    /// with why, never silently.
+    #[test]
+    fn a_declared_write_is_held_while_its_volume_works() {
+        let writing = |moved| Hold {
+            declared: Some(Writing {
+                volume: 0,
+                lasted: Duration::from_millis(1800),
+                moved,
+            }),
+            ..Hold::default()
+        };
+        let before = Hold::default();
+        assert!(writing(Moved::Worked).held_since(&before));
+        assert!(writing(Moved::Worked).in_kernel());
+        assert_eq!(found(false, false, &before, &writing(Moved::Worked)), Found::Held);
+        for still in [Moved::Cold, Moved::Idle, Moved::Unreadable(0, Unread::NoDevice)] {
+            assert!(!writing(still).held_since(&before), "{still:?}");
+            assert!(writing(still).in_kernel(), "{still:?}");
+            assert_eq!(
+                found(false, false, &before, &writing(still)),
+                Found::Still,
+                "{still:?}"
+            );
+        }
+        let idle = writing(Moved::Idle).kernel_since(&before).unwrap();
+        assert!(idle.contains("moved nothing since the look before"), "{idle}");
+        let unread = writing(Moved::Unreadable(7, Unread::Counters(Some(5))))
+            .kernel_since(&before)
+            .unwrap();
+        assert!(unread.contains("counters unreadable"), "{unread}");
+        let declarations = writing(Moved::Unreadable(0, Unread::Declarations(Some(2))))
+            .kernel_since(&before)
+            .unwrap();
+        assert!(
+            declarations.contains("its home's declarations unreadable"),
+            "{declarations}"
+        );
+    }
+
+    /// A file's volume has its device's counters read, the device found from the volume as a
+    /// declaration names it (D286): this test's directory's, on each host; and a durable write
+    /// there is work they count.
+    #[test]
+    fn a_files_volume_has_its_devices_counters_read() {
+        let dir = shards_testdir::TempDir::new("volume").unwrap();
+        let mut file = std::fs::File::create(dir.join("written")).unwrap();
+        #[cfg(unix)]
+        let volume = std::os::unix::fs::MetadataExt::dev(&file.metadata().unwrap());
+        #[cfg(windows)]
+        let volume = {
+            use std::os::windows::io::AsRawHandle as _;
+            use windows_sys::Win32::Storage::FileSystem::{
+                BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
+            };
+            let mut info = BY_HANDLE_FILE_INFORMATION::default();
+            // SAFETY: a handle the test holds, into a BY_HANDLE_FILE_INFORMATION of its own.
+            assert_ne!(
+                unsafe { GetFileInformationByHandle(file.as_raw_handle(), &raw mut info) },
+                0
+            );
+            u64::from(info.dwVolumeSerialNumber)
+        };
+        let device = os::device(volume, std::process::id()).unwrap();
+        let first = os::counters(&device).unwrap();
+        std::io::Write::write_all(&mut file, &vec![0x5a_u8; 1 << 20]).unwrap();
+        shards_durable::all(&file).unwrap();
+        let then = os::counters(&device).unwrap();
+        assert!(then.worked_since(&first), "{first:?} then {then:?}");
+        assert!(!os::volume_name(volume).is_empty());
+    }
 
     /// A process is followed by its pid alone, as the daemon follows its VM process: read
     /// with the start that tells it from a process given its pid later, so that one reaped is
@@ -2742,6 +3424,7 @@ mod tests {
             #[cfg(target_os = "linux")]
             pressure: None,
             io: Io::default(),
+            declared: None,
         };
         let (idle, throttled, stopped) = (hold(false, false), hold(true, false), hold(true, true));
         assert_eq!(found(true, false, &idle, &idle), Found::Progressed);

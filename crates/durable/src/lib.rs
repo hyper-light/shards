@@ -15,7 +15,7 @@ pub mod table;
 use std::io;
 use std::ptr::NonNull;
 
-pub use table::{Declared, FILE, Reader, install, install_file, open};
+pub use table::{Declared, FILE, Reader, install, install_file, installed, open};
 
 /// What a durable write is made of: a file's descriptor on Unix, its handle on Windows,
 /// borrowed, as a `&File` and a raw one borrowed both are.

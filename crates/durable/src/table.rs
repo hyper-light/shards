@@ -140,13 +140,27 @@ pub fn install(home: &Path) -> io::Result<()> {
 }
 
 /// Declares this process's durable writes in `file`, a home's slot file [`open`] made (a
-/// sandboxed process is given it by its spawner). Once a process: a second install is
-/// refused.
+/// sandboxed process is given it by its spawner), and reads its home's declarations from it
+/// ([`installed`]). Once a process: a second install is refused.
 pub fn install_file(file: File) -> io::Result<()> {
+    let reader = Reader::of(file.try_clone()?)?;
     let writer = Writer::of(file)?;
     WRITER
         .set(writer)
+        .map_err(|_| io::Error::other("a slot file is installed already"))?;
+    READER
+        .set(reader)
         .map_err(|_| io::Error::other("a slot file is installed already"))
+}
+
+/// This process's reader of its own home's declarations, where it installed its slot file
+/// ([`install`]): what a follower of the home's processes reads by default.
+static READER: OnceLock<Reader> = OnceLock::new();
+
+/// The reader of the home this process installed its slot file of ([`install`]); none where
+/// it installed none.
+pub fn installed() -> Option<&'static Reader> {
+    READER.get()
 }
 
 impl Writer {

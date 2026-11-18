@@ -30916,6 +30916,67 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
               paging on a device that serves nothing while its local disks are idle (a file
               mapped from an SMB share whose server is paused): held for ever before, refused
               past W* after; R14, the cost of a disks read on a look that finds a paging wait.
+          - Declared durable writes, amended 2026-11-18 (D286; #36, ROOT's ruling; the person's
+            word: "We do NOT want fallbacks"). A flush waits on Windows as `Executive`, as a read
+            of a pipe no one writes does (PM M606), so that no thread state tells it, and CI
+            44282442232's windows-2025 job refused five waits so: context's clients in
+            `FlushFileBuffers` (`context::write_file`, 1.82 s and 420 ms past W*s of 220 and
+            104 ms) and snapshot's storm originals saving their snapshots (702 and 187 ms past 81
+            and 65 ms). The evidence is now the subject's own: every durable write shards makes
+            declares itself (D286), and a member's look reads its home's declarations.
+            - *A thread in a declared write* is judged by its volume's own counters, read only
+              while it declares, as the paging and `D` paths read the disks only then: Linux
+              `/sys/dev/block/<major>:<minor>/stat` of the device beneath the volume (its
+              `st_dev`'s own, else its mount's in the writer's `/proc/<pid>/mountinfo`: a block
+              device source's node, an overlay's upper layer's, each followed once), completed
+              reads, writes, discards and flushes (fields 1, 5, 12 and 16), `io_ticks` and
+              `in_flight` (Documentation/block/stat.rst); macOS the IOBlockStorageDriver
+              beneath the volume's media (devname_r(3) of its `st_dev`, IOBSDNameMatching, its
+              parents in the service plane), its `Statistics`' operations, bytes and total
+              times (shards-apple `volume_completed`); Windows IOCTL_DISK_PERFORMANCE on the
+              volume itself (`\\?\Volume{GUID}`, found once by the serial GetVolumeInformationW
+              reads, opened for no access as the IOCTL asks FILE_ANY_ACCESS, the volume
+              manager's counters, ntdddisk.h): bytes, read and write times, `QueueDepth`.
+            - Its volume worked since its last reading, or holds I/O in flight now: held, not
+              progressing; its look vouches for no window of its rate (`Hold::in_kernel`).
+            - Its volume read first now, nothing in flight: still, as a look whose look before
+              read no disks holds nothing by them; its next look decides.
+            - Its volume moved nothing and holds nothing in flight: still, judged as any wait.
+              A hold is its host's work for its subject, shown; a write its disk serves
+              nothing of waits on what no counter shows (another task's lock, a frozen or
+              hung device, a file system with no device of counters), and holding it unbounded
+              is the hang this decision ends. Its refusal's account says "a durable write on V
+              for T; V moved nothing since the look before".
+            - Counters unreadable, or no device of counters beneath the volume (FUSE, NFS,
+              virtiofs): not held, and the account says which volume and why
+              (`Unread`: its OS error, IOKit's `kern_return_t`); its home's declarations
+              unreadable too. Said, never silent: the rule as stated, not a fallback.
+            - *Second witnesses* (ROOT's ruling (c)): Linux's `D` with its disks and stalls
+              (R-D), macOS's uninterruptible state with its disks, Windows' paging waits with
+              its disks, each now for the threads no declaration names: the kernel's own waits
+              (a restore's page-ins of its mapped memory, dirty throttling inside write(2),
+              journal waits inside rename(2) and close(2)), which are no call shards brackets.
+              A declared thread is left out of them (Linux by its task ID, Windows by
+              `ClientId.UniqueThread`, macOS by `PROC_PIDTHREADID64INFO` of its system-wide ID
+              against the listing's uninterruptible count), so that a declared write on an idle
+              volume is not held by another disk's work.
+            - Followers: a test's party reads its home's declarations (`Followed::declaring`);
+              every other follower its own process's home's (`shards_durable::installed`). A
+              party served by another home's daemon (`serving`) reads its own home's alone:
+              owed, its serving home's members' declarations.
+            - Tests (none run here; ROOT's): progress.rs
+              `a_declared_write_is_held_while_its_volume_works` (the rule through `found`, its
+              accounts) and `a_files_volume_has_its_devices_counters_read` (each OS's device
+              found from a file's volume, its counters grown by a durable write); harness.rs
+              `a_party_in_a_long_durable_write_is_held_while_its_volume_works`, the red: a
+              stand-in writes 1 GiB, then makes it durable once, under a judged wait whose
+              kind learned a write of nothing; refused past W* at main on Windows, held after.
+              Owed (ROOT): that test on jupiter and both windows runners; Linux's red, a
+              declared fsync on a volume frozen with fsfreeze(8) (root, adacachy) while another
+              disk works: held at main by the host-wide disks, refused past W* after; macOS's,
+              after M600's states.c sampled on the stand-in shows whether a look finds its
+              F_FULLFSYNC interruptible; R14, the cost of a look's declarations and of a
+              declared write's counters on each OS.
           - Held by progress.rs
             `a_party_in_its_kernel_is_held_only_while_its_hosts_disks_complete_io` (the rule
             through `found`), `a_hosts_completed_io_is_summed_from_every_diskstats_line`
@@ -44451,6 +44512,60 @@ after; rewritten by lane xnet-v, *Amended* below). Owed (ROOT), at this slice's 
   microVM cannot hold apart", with no wire change. Tests: light,
   `api_run::hosted::tests::a_port_coming_in_to_a_runs_address_on_a_shared_network_is_one_members`;
   real VMs, the contested test's holder granted in beside the other, refused `Unheld`.
+
+### D286. Every durable write, declared to whoever follows its process (built: the helper and its slot file, the judge's rule; the conversion of every call site owed, commit 3 of #36's)
+
+**Why.** D215 ends a wait on evidence about its own subject. A flush's wait shows by no
+thread state on Windows (`Executive`, as a pipe's unanswered read, PM M606), and between two
+looks by none anywhere (M601); CI 44282442232's windows-2025 job refused five waits on
+flushes. The person's word of 2026-11-18: "We do NOT want fallbacks. We want maximally
+correct, robust, performant, and efficient." So the evidence is the subject's own word.
+
+**Alternatives** (ROOT's rulings of 2026-11-18). *Any `Executive` wait in its kernel*: every
+pipe, socket and console reader would be held while its host's disks did anything, the hang
+class D215 ends, and its looks would vouch for no rate window. *ThreadLastSystemCall's first
+argument a disk file's handle*: an information class Microsoft documents no layout of
+(phnt; Geoff Chappell: class 0x15 since 6.0), falling back to refusals where its reads
+failed: withdrawn. *GetThreadIOPendingFlag*: a pipe's read has its I/O pending too. *Thread
+names* as a channel: free to read on Linux and macOS, a call per thread on Windows. *A run's
+stdout*: Docker's byte-exact texts. *The daemon's IPC*: its children's alone.
+
+**Decided.**
+- *One helper* (crates/durable, `shards-durable`, on libc and windows-sys alone): `data`
+  (Linux fdatasync, macOS `F_FULLFSYNC` else fsync as SQLite's `full_fsync` falls back,
+  Windows FlushFileBuffers), `all` (fsync where Linux's `data` is fdatasync), `entries` (a
+  directory's names; on Windows a handle that may write, which vmm's `sync_entries` reopens),
+  `view` (msync `MS_SYNC`, FlushViewOfFile), `mapped` (vmm's `sync_mapped`) and `ahead`
+  (macOS's write-back thread). Commit 3 makes it the only way to sync: clippy's
+  `disallowed-methods` for std's `sync_all` and `sync_data`, libc's fsync and fdatasync, and
+  windows-sys's FlushFileBuffers and FlushViewOfFile, allowed in shards-durable alone.
+- *Declared*, where the process installed its home's slot file (`install`; a sandboxed VM
+  process given it by its spawner): `<home>/durable-v1`, a file of 64-byte slots (the least
+  power of two its five words fit, so that slots tile every granule) mapped shared by every
+  writer of the home and each follower, as D281's count file is. A slot: its owner (pid and
+  the low half of its start), its start as its OS keeps it, its thread's ID as its OS's
+  thread listing names it, the volume (`st_dev`; Windows the volume serial,
+  GetFileInformationByHandle) and since (the system's monotonic clock). A thread claims one
+  slot once (a compare-and-swap of its owner from 0) and gives it back as it ends; a
+  declaration stores the volume, then since (release), its end since 0; a write inside
+  another's is the outer's. A failed declaration fails its write. The file grows by one
+  granule (a page; Windows' allocation granularity) where no slot is free, under its growth
+  lock (flock; LockFileEx of the byte at 2^63, past every byte its views read), after a
+  claimer maps what another grew and takes back slots whose process ended; a reader maps it
+  once, and again only where its head says it grew. No literal of ours sizes it (R03).
+- *Read* by a follower (`Reader::declared(pid, start)`), lock-free: since before and after
+  the fields, so that none is paired with another declaration's; judged by D215's rule
+  (amended 2026-11-18).
+- *Outside it*: the guest's syncs (init's), which no host judge follows, their host cost its
+  VMM's declared flush; a tool writing outside any home declares nothing.
+
+**Verified** (light tests, none run here; ROOT's): shards-durable `a_write_is_declared_while_it_goes_on`,
+`claims_past_a_granule_grow_the_file_by_one`, `an_ended_processs_slot_is_taken_back_before_the_file_grows`,
+`a_write_another_process_declares_is_read` (the test binary as a child declaring); D215's
+tests above. **Owed:** commit 3 (every call site, the slot file installed at every host
+entry, the clippy rule, and a lint for `F_FULLFSYNC`, a constant clippy cannot name); R14
+per durable write (one volume call, one clock read, two stores; a claim once a thread) and
+per look (a scan of the slots; a declared volume's counters, one read).
 
 ## 4. Start path (≤ 5 ms budget)
 

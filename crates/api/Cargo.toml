@@ -12,6 +12,8 @@ publish = false
 sha2 = "0.11"
 shards-abi = { path = "../abi" }
 shards-dns = { path = "../dns" }
+# The declarations of durable writes its members make (D286), which a wait reads (D215).
+shards-durable = { path = "../durable" }
 shards-ipc = { path = "../ipc" }
 # D215's judge, beneath this crate so that the tests' judged waits (shards-testwait) share it;
 # re-exported whole.

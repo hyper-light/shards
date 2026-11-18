@@ -4843,7 +4843,16 @@ impl Party {
             if self.watched.contains_key(&pid) {
                 continue;
             }
-            let watch = followed(pid).and_then(|followed| shards_api::Watch::of(followed).ok().flatten());
+            // Its durable writes read from its home's declarations (D286), where it has a home:
+            // every process of a home declares there, its VM processes given its slot file.
+            let declaring = |followed: shards_api::Followed| match &self.home {
+                Some(home) => followed
+                    .declaring(home)
+                    .unwrap_or_else(|e| panic!("{}'s declarations unread: {e}", home.display())),
+                None => followed,
+            };
+            let watch =
+                followed(pid).and_then(|followed| shards_api::Watch::of(declaring(followed)).ok().flatten());
             // Its daemon named again once read: the ID its file names is still the process
             // that started then, so the one read is it.
             let Some(watch) =
