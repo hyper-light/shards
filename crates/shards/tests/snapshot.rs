@@ -278,12 +278,18 @@ impl Unwritable {
             mounted: unsafe { libc::geteuid() } == 0 && read_only_over_itself(dir),
         };
         // What it is for, checked as the run writes there first: a file, its snapshot's lock
-        // (vmm `snapshot::staging`), which a directory's FILE_ADD_FILE grants (icacls' WD), not
-        // a directory, which its FILE_ADD_SUBDIRECTORY does (icacls' AD; Microsoft's File Access
-        // Rights Constants). The icacls reference calls the deny's `W` write-only access and
-        // does not say which of the two it holds: why a directory was made past it on the
-        // hosted windows-2025 runner (CI 44189693085) is unexplained. A test given a directory
-        // it could write in proves nothing.
+        // (vmm `snapshot::staging`), which a directory's FILE_ADD_FILE grants (icacls' WD; a
+        // subdirectory takes FILE_ADD_SUBDIRECTORY, AD: Microsoft's File Access Rights
+        // Constants). Not a directory: a host whose token holds SeBackupPrivilege and
+        // SeRestorePrivilege enabled makes directories past the deny. On jupiter, under kiln's
+        // service token, CreateDirectoryW made a subdirectory past a deny of W, WD, AD and WD,AD
+        // alike, where CreateFileW was refused by each naming WD (2026-11-18), and the hosted
+        // windows-2025 runner made one past it too (CI 44189693085). SE_RESTORE_NAME grants
+        // FILE_ADD_FILE and FILE_ADD_SUBDIRECTORY whatever the ACL (Microsoft's Privilege
+        // Constants) to an open made for backup or restore (CreateFileW's
+        // FILE_FLAG_BACKUP_SEMANTICS); CreateDirectoryW's page names no such open, so that it
+        // makes one is the probe's word alone. A test given a directory it could write in proves
+        // nothing.
         let probe = dir.join("probe");
         assert!(
             std::fs::OpenOptions::new()
