@@ -29915,6 +29915,48 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
           first answer is waited for, the second given up on a whole W* after its host stopped.
           Red (lanes/redgreen/remote-slow-lane.patch): the first waited for within 5 W* of the
           test's own, as control.rs's tests waited, fails "answered within the test's patience".
+        - *A cold wait is judged too* (2026-11-17, #36, ROOT: a wait that never gives up is a
+          CI job lost at its time limit). Before its kind's first answer in a process, a test's
+          wait followed that process's liveness alone (`Judge::due` none while cold), so that a
+          wait on what never came never ended. It is judged now by D215's own rule over
+          `COLD`, a record whose W* is the host's scheduling granularity as this process's
+          waiters measure it, the longest a thread of it asleep for a nanosecond took to run
+          again (D215's measure of a waiter's lateness, `Wait::overran`): a party still (no
+          member ran, none held, no deadline of its own to come) at each of `LOOKS_TO_REFUSE`
+          judged looks is refused, and the wait is judged by its kind's record from that
+          kind's first answer on. The product's judge keeps the person's ruling of 2026-11-13
+          (a cold wait follows its party's liveness): this is the tests' waits' alone. A cold
+          wait's party waiting on a process outside it (its events no member's) is refused at
+          the granularity's pace, as a learned one is at W*'s. Test: shards-testwait
+          `a_cold_wait_refuses_a_still_party`; red (lanes/redgreen/cold-wait.patch) where a
+          cold wait is not judged, its own judged wait giving up, never a hang.
+        - *A cold E2E wait gives up a party only once it has gone, read from its start*
+          (2026-11-18, #36, ROOT, with jupiter's evidence). This is the other face of a cold wait.
+          The E2E harness's waits (crates/shards/tests/common `Wait`, `Patience`) keep the
+          person's cold rule of 2026-11-13: they follow their party's liveness alone. But they
+          refused a cold party at the one look that found none of it.
+          - daemon.rs' `a_restored_microvm_ends_with_its_home` failed two of three runs on
+            jupiter (bare-metal WHP, 183fe264e3). It was refused 57 ms in, "this test's own VM
+            processes, no daemon yet": its party was read only at its first look, after the
+            test's own removal of the home.
+          - Windows' removal deleted what no process held open, the daemon's record among it,
+            and stopped at what the restored microVM still held (ERROR_SHARING_VIOLATION). So
+            that look found no daemon, none of what descends from it (Windows follows a
+            daemon's microVMs as its process tree) and no own VM: no member at all, so gone.
+          - How Windows reads a VM process as it ends, once a wait follows it: through the
+            handle the wait holds, GetProcessTimes and QueryProcessCycleTime (any cycle its
+            exiting threads run is progress), and WaitForSingleObject's zero-time wait (its
+            exit is progress at the look that first sees it, its tree's end found at the look
+            after). The jupiter wait read none of this, because the microVM was never its
+            member.
+          - Now a wait's first look is as it begins, as D215's judge takes it (`Judge::begin`),
+            and a process found then stays in its party until it has gone. A party keeps its
+            daemon's record past the record's file.
+          - A party is gone only when `LOOKS_TO_REFUSE` looks in a row find it so, each paced
+            as D215 paces looks (`sqrt(2 c w)`: the look's measured cost against the wait so
+            far), as a still party is refused only at that many judged looks.
+          - Test: harness.rs `a_homes_patience_follows_its_daemon_past_its_record`. Red
+            (cold-wait.patch's second command): refused at its first look, its daemon alive.
         - *crates/remote's other tests, judged* (2026-11-17, #36, ROOT's batch): control/unix.rs,
           control/drive.rs, managed.rs and managed/input.rs wait through shards-testwait as
           control.rs's do, and the product's threads (unix.rs's socket lanes, server.rs's and

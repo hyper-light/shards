@@ -814,6 +814,55 @@ fn a_patient_wait_goes_on_while_its_party_works() {
     }
 }
 
+/// A home's patience follows the daemon it found as it began after the daemon's record has
+/// gone, and gives it up only once it has gone too, at as many looks in a row that find none
+/// of its party as refuse a still one (`LOOKS_TO_REFUSE`; ROOT, 2026-11-18, #36). A test's
+/// removal of its home takes the daemon's record before the daemon has ended, and on Windows
+/// stops at what the home's microVMs still hold: daemon.rs' `a_restored_microvm_ends_with_its_home`
+/// made its patience before its removal, which first looked after it, and was refused 57 ms
+/// in, "this test's own VM processes, no daemon yet", its restored microVM still ending
+/// (jupiter, bare-metal WHP, at 183fe264e3). Red so (lanes/redgreen/cold-wait.patch): refused
+/// at its first look. Do: a stand-in, idle, named its home's daemon; a cold patience of the
+/// home; the record removed; as many looks as refuse a gone party, and one more, while the
+/// stand-in lives; then its end, and looks until its patience gives up. Expect: held while it
+/// lives; given up after, at no fewer looks than refuse a gone party.
+#[test]
+fn a_homes_patience_follows_its_daemon_past_its_record() {
+    let home = TempDir::new("unrecorded");
+    let mut daemon = stand_in_doing("idle")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    name_daemon(&home, daemon.id());
+    let mut patience = cold_patience(&home);
+    std::fs::remove_file(home.join("daemon.pid")).unwrap();
+    // Each look a due one: its pace waited out before it.
+    for look in 0..=shards_api::LOOKS_TO_REFUSE {
+        std::thread::sleep(patience.next_look());
+        if !patience.holds() {
+            let _ = daemon.kill();
+            let _ = daemon.wait();
+            panic!("given up at look {look} with its daemon alive, its record gone");
+        }
+    }
+    drop(daemon.stdin.take());
+    daemon.wait().unwrap();
+    let mut looks = 0;
+    loop {
+        std::thread::sleep(patience.next_look());
+        if !patience.holds() {
+            break;
+        }
+        looks += 1;
+    }
+    assert!(
+        looks >= shards_api::LOOKS_TO_REFUSE,
+        "given up {looks} looks past its daemon's end, before {} found its party gone",
+        shards_api::LOOKS_TO_REFUSE
+    );
+}
+
 /// A test's wait on a guest (`Heard`: every `Vm` wait, `within`, run.rs' and restore.rs'
 /// waits on their VM process) goes on while its party works, as a command's wait does (the
 /// person's ruling of 2026-11-13, D209): its caller gives it no bound, and past its cold start
@@ -1836,11 +1885,12 @@ fn one_state(home: &std::path::Path) -> Patience {
     cold_patience(home)
 }
 
-/// A wait whose first look at its party comes past its kind's W* judges nothing at that
-/// look: it has nothing before it to compare with (#77 waits-02; ROOT's KVM refusals at
-/// c120c8a95, "its last progress its start", 18.4 ms and 31.1 ms into waits of W* 3.527 µs
-/// and 14.0 ms). Red at 9efde7252, refused at that look, as a party found anew was found
-/// still and its wait's start taken for a look. Do: teach a kind its W* by a quick
+/// A wait its caller first looks at past its kind's W* refuses nothing at that look for what
+/// it did not see: its party's work since its own first look, as it began (`Wait::on`), is
+/// progress (#77 waits-02; ROOT's KVM refusals at c120c8a95, "its last progress its start",
+/// 18.4 ms and 31.1 ms into waits of W* 3.527 µs and 14.0 ms). Red at 9efde7252, refused at
+/// that look, as a party found anew was found still and its wait's start taken for a look,
+/// no look made then. Do: teach a kind its W* by a quick
 /// stand-in's end; follow a busy stand-in, then a sleeping one, each first looked at 2 W*
 /// past its wait's start; then follow a sleeping one look after look. Expect: neither first
 /// look refuses; the sleeper looked at on is refused, once its looks have seen a whole W*.

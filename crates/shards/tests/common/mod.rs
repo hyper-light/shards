@@ -2789,8 +2789,11 @@ impl Said {
 /// answer of its kind on this host), it follows its party's liveness alone; learned, it is
 /// looked at each W* past its start and refused at a look that finds its party made no
 /// progress at all since the look before, its host not holding it. Cold or learned, it is
-/// refused at a look that finds its party gone: none of it running and its daemon saying
-/// nothing, its liveness ended. Its caller gives it no bound (R03).
+/// refused once its party is gone ([`Wait::gone`]): none of it running and its daemon saying
+/// nothing at [`LOOKS_TO_REFUSE`](shards_api::LOOKS_TO_REFUSE) of its looks in a row, its
+/// liveness ended. Its party is read as it begins ([`Wait`]), so that what its caller does
+/// before its first check takes nothing of it: a home's removal takes its daemon's record.
+/// Its caller gives it no bound (R03).
 ///
 /// [`done`]: Patience::done
 pub struct Patience {
@@ -4241,6 +4244,14 @@ pub fn serving_home(cmd: &Command, home: Option<&Path>) -> Option<PathBuf> {
 pub struct Party {
     members: Members,
     home: Option<PathBuf>,
+    /// Its home's daemon as its pid file last named it to a look of this party's, kept past
+    /// the file: a daemon's record goes before its last work and its exit, as it finishes
+    /// (`Daemon::finish`), and with its home as a test removes the home. Windows deletes what
+    /// no process holds open, the record among it, and leaves what the home's microVMs still
+    /// hold (jupiter, bare-metal WHP, at 183fe264e3: daemon.rs'
+    /// `a_restored_microvm_ends_with_its_home` said "no daemon yet" of a home whose daemon
+    /// and restored microVM were still ending).
+    recorded: Option<shards_ipc::Named>,
     /// The home whose daemon serves its command, where a context of its home's sends the
     /// command to another home of this test's ([`serving_home`]): that daemon is a member, its
     /// threads the party's, as its own home's daemon is (ROOT's word, 2026-11-18, D215).
@@ -4462,6 +4473,7 @@ impl Party {
         Party {
             members,
             home: home.map(Path::to_path_buf),
+            recorded: None,
             serving: None,
             said: home.map(Said::of),
             watched: std::collections::BTreeMap::new(),
@@ -4479,12 +4491,18 @@ impl Party {
         self.cpu = cpu;
     }
 
-    /// Its home's daemon now, as its pid file names it by its ID and its start
-    /// (`shards_ipc::Named`, D185): none where the process with that ID is not the one that
-    /// started then, a crashed daemon's ID reused (#77 waits-09).
+    /// Its home's daemon now, as its record names it by its ID and its start
+    /// (`shards_ipc::Named`, D185, [`record`](Self::record)): none where the process with
+    /// that ID is not the one that started then, a crashed daemon's ID reused (#77 waits-09).
     fn daemon(&self) -> Option<u32> {
-        let named = shards_ipc::Named::read(&self.home.as_ref()?.join(shards_ipc::PID))?;
+        let named = self.record()?;
         named.lives().then_some(named.pid)
+    }
+
+    /// Its home's daemon's record: as its pid file names it now, or, that file gone, as it
+    /// named it to a look of this party's before ([`Party::recorded`]).
+    fn record(&self) -> Option<shards_ipc::Named> {
+        shards_ipc::Named::read(&self.home.as_ref()?.join(shards_ipc::PID)).or(self.recorded)
     }
 
     /// The daemon that serves its command from another home ([`Party::serving`]) now, as
@@ -4518,6 +4536,8 @@ impl Party {
             #[cfg(unix)]
             Members::Groups(groups) => grouped(&listed, groups).map(|(pid, ..)| *pid).collect(),
         };
+        // Its daemon's record, kept for its looks after its pid file has gone ([`Party::recorded`]).
+        self.recorded = self.record();
         let daemon = self.daemon();
         // The daemon that serves its command from another home, where one does: a member as
         // its own home's daemon is ([`Party::serving`]).
@@ -4867,7 +4887,7 @@ impl Party {
             // zombie while they still hold its files open (fs/file.c `put_files_struct`), its
             // clients' slots among them, which a client waiting on its slot then waits on (CI
             // 44077430171, x86_64 musl, `a_container_outlives_a_daemon_that_dies`).
-            (Some(home), None) => match shards_ipc::Named::read(&home.join(shards_ipc::PID)) {
+            (Some(home), None) => match self.record() {
                 Some(named) if shards_ipc::started(named.pid).is_ok_and(|start| start == named.start) => {
                     format!(
                         "{who}, its daemon {} no longer living in {}: {}",
@@ -5448,7 +5468,12 @@ impl Drop for ServerThread {
 /// its host not holding it. Looked at between those too, paced as D215 paces looks
 /// (`shards_api::pause`: a look's own cost against the wait so far), so that what it last
 /// did is known, for its account of itself at a refusal or as the test process is ended
-/// ([`dump_live_waits`]).
+/// ([`dump_live_waits`]). Its first look is as it begins, as D215's judge takes it
+/// (`Judge::begin`), so that its party is what it was then: a process found then is its
+/// party's until it has gone, whatever its caller does before it looks again. Its party is
+/// gone, its liveness ended, once [`LOOKS_TO_REFUSE`](shards_api::LOOKS_TO_REFUSE) of its
+/// looks in a row, each paced so, find none of it running and its daemon saying nothing
+/// ([`gone`](Self::gone)).
 pub struct Wait {
     kind: &'static WaitKind,
     judge: shards_api::Judge<'static>,
@@ -5464,9 +5489,9 @@ pub struct Wait {
     last: (Instant, String),
     /// Whether its last look found its host holding it, and what showed it.
     holding: Option<String>,
-    /// Whether its last look found its party gone: nothing of it running, nor its daemon
-    /// saying anything.
-    gone: bool,
+    /// How many of its looks in a row, its last among them, found its party gone: nothing of
+    /// it running, nor its daemon saying anything.
+    gone: u32,
     /// Its party's CPU since it began.
     work: Duration,
     /// Whether every look since its judge's look before saw its party run or rest unheld
@@ -5584,7 +5609,7 @@ impl Wait {
             let mut own = own.borrow_mut();
             own.0 = own.0.saturating_add(1);
         });
-        Wait {
+        let mut wait = Wait {
             kind,
             judge: shards_api::Judge::begin(&kind.record),
             party,
@@ -5595,7 +5620,7 @@ impl Wait {
             held: None,
             last: (began, "its start".into()),
             holding: None,
-            gone: false,
+            gone: 0,
             work: Duration::ZERO,
             vouched: false,
             read: None,
@@ -5605,7 +5630,18 @@ impl Wait {
             stage: Stage::Begun,
             command: false,
             still: Vec::new(),
-        }
+        };
+        // Its party as it begins, its first look's (`Judge::begin`): read later, it was what
+        // its caller left of it. A home's patience made before the home's removal first
+        // looked after it, the daemon's record removed and Windows' removal stopped by what
+        // the home's restored microVM still held, and found none of its party, gone, 57 ms in
+        // (jupiter, bare-metal WHP, at 183fe264e3: daemon.rs'
+        // `a_restored_microvm_ends_with_its_home`, flaky so). Found now, its daemon and what
+        // descends from it are followed until each has gone. A first look finds its party
+        // anew, which refuses nothing (`Found::Based`); had it refused, its next look, paced
+        // from this one, judges the same stillness again.
+        let _ = wait.looked(false);
+        wait
     }
 
     /// Its answer came (its client's own end, the line or the state it waited for): its
@@ -5732,7 +5768,11 @@ impl Wait {
             self.daemon_ran = looked.daemon_ran;
         }
         self.holding = None;
-        self.gone = looked.found == Found::Gone;
+        self.gone = if looked.found == Found::Gone {
+            self.gone.saturating_add(1)
+        } else {
+            0
+        };
         match looked.found {
             Found::Progressed => {
                 self.last = (now, looked.what.clone());
@@ -5819,7 +5859,7 @@ impl Wait {
             format!("{} {}", self.kind.site, self.kind.line)
         };
         format!(
-            "{kind}: {} ({}), {:?} in: its last progress {} {:?} ago; {}; its record {record}{}{}; its members now: {}",
+            "{kind}: {} ({}), {:?} in: its last progress {} {:?} ago; {}; its record {record}{}{}{}; its members now: {}",
             self.asked,
             self.party.named(),
             self.began.elapsed(),
@@ -5841,6 +5881,15 @@ impl Wait {
                     self.still
                 )
             },
+            if self.gone == 0 {
+                String::new()
+            } else {
+                format!(
+                    "; its party found gone at its last {} looks in a row, {} of which refuse it",
+                    self.gone,
+                    shards_api::LOOKS_TO_REFUSE
+                )
+            },
             self.party.states(),
         )
     }
@@ -5858,9 +5907,12 @@ impl Wait {
         self.judge.due().is_some()
     }
 
-    /// Whether its last look found its party gone ([`Party::look`]).
+    /// Whether its party is gone, its liveness ended: found so ([`Party::look`]) by
+    /// [`LOOKS_TO_REFUSE`](shards_api::LOOKS_TO_REFUSE) of its looks in a row, each paced as
+    /// D215 paces looks, so that a cold wait refuses a party only as its rule refuses a still
+    /// one, never at the one look that found none of it (ROOT, 2026-11-18, #36).
     pub fn gone(&self) -> bool {
-        self.gone
+        self.gone >= shards_api::LOOKS_TO_REFUSE
     }
 
     /// What a refusal says of it.

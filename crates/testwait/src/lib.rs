@@ -79,6 +79,28 @@ pub fn latest_deadline_of(party: u64) -> Option<Instant> {
 /// waits on a party alike, its own test's threads ([`Counted`]).
 static WAITS: Record = Record::new();
 
+/// What a wait is judged by while its kind is cold, no answer of it come in this process: its
+/// host's scheduling granularity as this process's waiters measured it, the longest a thread
+/// of it asleep for the least it may ask (a nanosecond) took to run again, as D215 counts a
+/// waiter's lateness its host's ([`Wait::overran`]). A wait judged by it refuses a party still
+/// for a whole one of those at each of `LOOKS_TO_REFUSE` looks: no member ran, none was held,
+/// and no deadline of its own was still to come. Before, a cold wait followed its process's
+/// liveness alone and never gave up, so that a wait on what never came was a CI job lost at
+/// its time limit (ROOT, 2026-11-17).
+static COLD: Record = Record::new();
+
+/// The record a wait of kind `record` is judged by as it begins: its kind's, once that has an
+/// answer; else [`COLD`], taught the host's granularity as this wait measures it now.
+fn judging(record: &Record) -> &Record {
+    if matches!(record.seen(), Seen::Learned { .. }) {
+        return record;
+    }
+    let asked = Instant::now();
+    std::thread::sleep(Duration::from_nanos(1));
+    COLD.teach_unrated(asked.elapsed());
+    &COLD
+}
+
 /// The CPU the threads waiting in a [`Wait`] have run while they waited, in [`cpu`]'s
 /// units: a waiter that polls, reads a clock or wakes runs too, and is no party to its
 /// wait.
@@ -206,8 +228,8 @@ impl Counted {
 /// whole W* its host did not hold it in, counted from no earlier than the latest deadline
 /// a thread of its party waits until ([`Waiting`]): a party asleep on a deadline of its
 /// own has not stalled before it.
-/// Before the first answer it follows this process's liveness alone, and is judged from
-/// the first that comes.
+/// Before its kind's first answer it is judged so by its host's scheduling granularity
+/// ([`COLD`]), and by its kind's record from the first answer on.
 ///
 /// Not shards-api's `progress::Watch`: of its own process every look finds it ran and
 /// runnable, the looking thread among its threads. How long its host held it is what
@@ -221,6 +243,8 @@ impl Counted {
 /// record's writer, done with its disk, had yet to run or take the registry's lock).
 struct Wait<'r> {
     record: &'r Record,
+    /// What it is judged by: its kind's record, or while that is cold, [`COLD`].
+    judging: &'r Record,
     /// Whose run and deadlines it counts.
     party: Counted,
     judge: Judge<'r>,
@@ -242,11 +266,13 @@ struct Wait<'r> {
 
 impl<'r> Wait<'r> {
     fn on(record: &'r Record, party: Counted) -> Wait<'r> {
+        let judging = judging(record);
         let (began, mine, others) = (Instant::now(), cpu(false), party.ran());
         Wait {
             record,
+            judging,
             party,
-            judge: Judge::begin(record),
+            judge: Judge::begin(judging),
             began,
             #[cfg(unix)]
             from: others,
@@ -265,9 +291,8 @@ impl<'r> Wait<'r> {
         }
     }
 
-    /// How long to wait before it looks: until its look is due; while it is not judged,
-    /// as long as it has waited, so that it finds its record's first answer within
-    /// twice the time it took to come.
+    /// How long to wait before it looks: until its look is due; where it is not judged, as
+    /// long as it has waited.
     fn slice(&self) -> Duration {
         self.judge.due().map_or_else(
             || self.began.elapsed(),
@@ -289,15 +314,18 @@ impl<'r> Wait<'r> {
         self.party.waited(mine.saturating_sub(self.mine));
         self.mine = mine;
         let now = Instant::now();
+        // Begun while its kind was cold, judged by its host's granularity: from its kind's first
+        // answer, judged by its kind's record, its stillness counted from here.
+        if !std::ptr::eq(self.judging, self.record) && matches!(self.record.seen(), Seen::Learned { .. }) {
+            self.judging = self.record;
+            self.judge = Judge::begin(self.record);
+            (self.others, self.since, self.held) = (self.party.ran(), now, Duration::ZERO);
+            return Ok(());
+        }
         let Some(due) = self.judge.due() else {
-            // Begun before its kind's first answer: judged from the first.
-            if matches!(self.record.seen(), Seen::Learned { .. }) {
-                self.judge = Judge::begin(self.record);
-                (self.others, self.since, self.held) = (self.party.ran(), now, Duration::ZERO);
-            }
             return Ok(());
         };
-        let Seen::Learned { slowest, .. } = self.record.seen() else {
+        let Seen::Learned { slowest, .. } = self.judging.seen() else {
             return Ok(());
         };
         if now < due {
@@ -354,7 +382,11 @@ pub fn stalled(stall: &Stall) -> String {
     )
 }
 
-/// Waits until `f` holds, polled as the tests poll, `party` judged on `record`'s
+/// How long a polled wait sleeps between its polls ([`waited_on`]), as the daemon's tests
+/// polled before their waits were judged.
+const POLL: Duration = Duration::from_millis(1);
+
+/// Waits until `f` holds, polled as the tests poll ([`POLL`]), `party` judged on `record`'s
 /// judgment ([`Wait`]).
 pub fn waited_on(record: &Record, party: Counted, mut f: impl FnMut() -> bool) -> Result<(), Stall> {
     let mut wait = Wait::on(record, party);
@@ -364,7 +396,7 @@ pub fn waited_on(record: &Record, party: Counted, mut f: impl FnMut() -> bool) -
             return Ok(());
         }
         wait.look()?;
-        let (asked, slept) = (Duration::from_millis(1), Instant::now());
+        let (asked, slept) = (POLL, Instant::now());
         std::thread::sleep(asked);
         wait.overran(asked, slept.elapsed());
     }
@@ -664,6 +696,50 @@ mod tests {
         );
         drop(never);
         idler.join().unwrap();
+    }
+
+    /// A wait whose kind is cold, no answer of it come in this process, refuses a party still
+    /// throughout (no member ran, none held, no deadline to come) within `LOOKS_TO_REFUSE` of
+    /// its judged looks, each a host's granularity ([`COLD`]). Its condition is the test's own
+    /// judged wait, on a stand-in whose progress is each judged look the cold wait makes
+    /// (its stand-in's `ran`, read at each), of a W* of `LOOKS_TO_REFUSE` of the cold wait's
+    /// polls ([`POLL`] and a granularity each), so that it is given up on only once the cold
+    /// wait judges no more. Red where a cold wait is not judged, as before: its looks read
+    /// nothing, the test's own wait is given up on and ends it, answered.
+    #[test]
+    fn a_cold_wait_refuses_a_still_party() {
+        static KIND: Record = Record::new();
+        static OWN: Record = Record::new();
+        static LOOKS: AtomicU64 = AtomicU64::new(0);
+        let grain = match judging(&KIND).seen() {
+            Seen::Learned { slowest, .. } => slowest,
+            Seen::Cold => panic!("its host's granularity unmeasured"),
+        };
+        OWN.teach_unrated((POLL + grain) * shards_judge::LOOKS_TO_REFUSE);
+        let still = Counted::StandIn {
+            ran: || {
+                LOOKS.fetch_add(1, Ordering::Relaxed);
+                0
+            },
+            until: || None,
+            held: || 0,
+        };
+        let judging_looks = Counted::StandIn {
+            ran: || i128::from(LOOKS.load(Ordering::Relaxed)),
+            until: || None,
+            held: || 0,
+        };
+        let mut own = Wait::on(&OWN, judging_looks);
+        let refused = waited_on(&KIND, still, || own.look().is_err());
+        let stall = refused.expect_err("a still party's cold wait never gave up");
+        let Seen::Learned { slowest, .. } = COLD.seen() else {
+            panic!("refused by no granularity");
+        };
+        assert!(
+            stall.slowest() <= slowest,
+            "judged by its host's granularity: {stall:?}"
+        );
+        assert_eq!(KIND.seen(), Seen::Cold, "a refusal teaches its kind nothing");
     }
 
     /// A wait of attempts ([`answered_on`]), each of which says none where nothing came in the
