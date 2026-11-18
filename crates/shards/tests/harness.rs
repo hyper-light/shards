@@ -2589,10 +2589,14 @@ fn a_commands_end_found_before_its_first_look_teaches_its_kind() {
     let began = Instant::now();
     let run = cold_run(cmd);
     let elapsed = began.elapsed();
+    // The client's line is one write(2) of 18 bytes to a pipe, which arrives whole (pipe(7):
+    // a write of at most PIPE_BUF bytes is atomic), but not always first: the holder may exec
+    // and its libtest say "test stand_in ... " before it, on its line, while the client waits
+    // for a CPU (CI 44227612442, x86_64 musl: "test stand_in ... holder 0000184475").
     let holder: Option<i32> = run
         .stdout
         .lines()
-        .find_map(|line| line.strip_prefix("holder ")?.trim().parse().ok());
+        .find_map(|line| line.split_once("holder ")?.1.trim().parse().ok());
     if let Some(holder) = holder {
         // SAFETY: kill(2) of the holder this test's client forked.
         unsafe {
