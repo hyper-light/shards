@@ -13895,7 +13895,11 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
       CONFIG_SCHED_INFO), as is one that cannot be read or parsed. Red, Linux and
       Windows: harness.rs `a_streaming_guest_whose_thread_its_host_keeps_from_any_cpu_is_held`
       (a stand-in whose idle-class thread is pinned beside a spinner of its own on one CPU:
-      held, where Windows refused it).
+      held, where Windows refused it). Amended 2026-11-18 (own-38m): followed from its spawn,
+      its three windows of a W* of 593 µs ended while it started on a loaded KVM host (ROOT's
+      run at c7e44c7185, glibc: "its host not holding it", refused 2.05 ms in), none of its
+      threads yet kept; the stand-in now says "kept" once its idle thread is pinned and in its
+      class and then its spinner pinned, and the test follows it from that word.
   - *A daemon's helpers serving a waiter's own clients are its daemon's run* (2026-11-14,
     judgecli). Part 8's rule discounted the daemon's own run in a window in which the
     waiter began a client of its home, not its helper processes'. On KVM (adacachy2,
@@ -14488,7 +14492,10 @@ CPU in 17.694042ms".
   (D215), each learning from its own answers alone. No literal and no bound changed (R03).
 - *Held by* tests/harness.rs `a_moved_guests_first_answer_is_a_kind_of_its_own`
   (a stream answered 5 ms in, then one answered after four times the W* that taught, from
-  two call sites of one `#[track_caller]` helper), on adas-mac-studio-3.local (macOS arm64,
+  two call sites of one `#[track_caller]` helper; amended 2026-11-18, own-38m: each answered
+  that long after its reader's first read, which its peer is told of, as on a loaded KVM host
+  at 53366451ac a first read past the 5 ms found the answer there and taught nothing, Part
+  11's amendment), on adas-mac-studio-3.local (macOS arm64,
   kiln r60/r64, dac3eafa3's tests): green 3 of 3; red with both read through one closure
   (moved.rs' shape), 2 of 2, "refused 81.1845ms into its peer's quiet: a guest's stream made
   no progress for 20.296125ms, past the slowest answer of its kind seen on this host
@@ -14865,6 +14872,25 @@ comes to made no progress for 399 ms, past the slowest answer of its kind seen o
   firecracker job's `The judge's records, kept` saying "Cache saved with key:
   judge-records-…-firecracker-…", the next run's restore "Cache restored from key: …", and the
   Arrival step's log each rate's table as it ends.
+- *Amended 2026-11-18 (own-38m): its test's ends come as its reads find them missing.* ROOT's
+  run on a loaded KVM host (32 CPUs, load about 50; rust:1.98.1 glibc container, 53366451ac)
+  failed the first test above, "its pass taught its kind nothing", where the musl container
+  had just passed it. A drain's wait teaches an end only where a read of it timed out and its
+  look found that end missing first; its ends came 30, 120 and 30 ms apart by its sender's
+  own clock, so an end that came before its wait's first look (`Wait::on`) and that look's
+  pause (`sqrt(2 c w)`) had ended was taken by a read that had not missed it, and taught
+  nothing: so every end there (the code's account; the run's log keeps no times). Now
+  `requests_end` reads through its caller's `next` (a channel's `recv_timeout` in the bench),
+  as `guest_says` reads through its caller's `read`, and the test's reads tell its sender
+  whether each took an end (`ends_come`): each end comes its pause after a read past the one
+  that took the end before found it missing, so each wait spans its whole pause from its
+  start, on any host, and the test asserts the longest pause taught, its old 100 ms allowance
+  for its sender's clock gone. The same premise, an answer by its own clock that a first look
+  can outlast, is gone from harness.rs' moved-stream test (Part 7), the waited stream of
+  `an_answer_already_there_teaches_nothing` (a peer told of its reader's reads, `Telling`),
+  and the patient, retry, own-VM and guest waits on busy stand-ins, now busy from a go sent
+  once a look of their wait found them running; the last two now assert their first round
+  taught their second's kind, which they said and did not check. No literal added (R03).
 - *Amended: the host, and what a cut step leaves* (CI 44164945050 at 95247a79c, goal 1453357d,
   own-38b, 2026-11-17). Its firecracker job passed its Envelope; Arrival was cut at its own 5
   minutes (313 s); Guest memory (M117), 22 to 35 s in its 33 passes, had run 293 s when the job

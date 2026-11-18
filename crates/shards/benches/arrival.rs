@@ -422,7 +422,8 @@ fn answered(
         .filter(|&client| !answered.iter().any(|end| end.client == Some(client)))
         .collect();
     let rest = dues.len().saturating_sub(answered.len());
-    match common::requests_end(ends, rest, &outstanding, |end: &End| end.client, seen, home) {
+    let next = |within| ends.recv_timeout(within);
+    match common::requests_end(next, rest, &outstanding, |end: &End| end.client, seen, home) {
         Ok(came) => {
             answered.extend(came);
             answered

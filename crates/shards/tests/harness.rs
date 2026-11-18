@@ -73,7 +73,8 @@ fn a_daemons_whole_lines_are_its_words() {
 /// and `spinner`, a machine's waits in a process of their own ([`stages`], [`spinner`]);
 /// `serving`, a wait on a server thread of its own process ([`serving`]); `own-vms`, waits
 /// on VM processes of its own ([`own_vms`]); `starved`, two threads spinning on one CPU until
-/// its stdin closes, one of them kept from it ([`starved`]).
+/// its stdin closes, one of them kept from it, "kept" said on its stdout once it is
+/// ([`starved`]).
 #[test]
 #[ignore = "a process of its own for the harness's stand-ins, which run it"]
 fn stand_in() {
@@ -910,18 +911,21 @@ fn refused_beside_a_deadline(
 /// gives it no bound. daemon.rs' and containers.rs' waits on pools and runs were cut at
 /// their tests' `TIMEOUT` however their daemon worked, as run_command's were before W6's
 /// slice 2: red so at 3e9723c64, cut 0.1 s into a second's work at a bound of 100 ms. Do: a
-/// stand-in busy for a second, named its home's daemon; wait for its end, twice, from one
-/// call site. Expect: each wait holds until it ends, and its end, told `done`, teaches the
-/// call site's kind its answer.
+/// stand-in named its home's daemon, busy for a second from its go, sent once a look of its
+/// wait has found it running; wait for its end, twice, from one call site. Expect: each wait
+/// holds until it ends, and its end, told `done`, teaches the call site's kind its answer.
 #[test]
 fn a_patient_wait_goes_on_while_its_party_works() {
     let home = TempDir::new("patient");
     let busy = Duration::from_secs(1);
     for round in 0..2 {
-        // Its busy second begins on its go, sent once its wait has begun, so that the answer
-        // its end gives, timed from that begin, is never less than its work: a busy second
-        // begun as it ran, before its spawn returned, taught 993.99 ms under load
-        // (adacachy2 at 9dd326609), as runs-11's health test's answer did (490ddff78).
+        // Its busy second begins on its go, its stdin's end, sent once a look of its wait
+        // found its end missing, so that its end is an answer its wait waited for, timed
+        // from its wait's begin, and never less than its work: a busy second begun as it
+        // ran, before its spawn returned, taught 993.99 ms under load (adacachy2 at
+        // 9dd326609), as runs-11's health test's answer did (490ddff78); and an end found
+        // before any look of its wait teaches nothing, as a drain's ends and a stream's answer
+        // did on a loaded KVM host (ROOT's run at 53366451ac).
         let mut daemon = stand_in_doing(&format!("go {}", busy.as_millis()))
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::null())
@@ -930,7 +934,6 @@ fn a_patient_wait_goes_on_while_its_party_works() {
         name_daemon(&home, daemon.id());
         let mut patience = Patience::of(&home);
         let began = Instant::now();
-        daemon.stdin.take().unwrap().write_all(b"\n").unwrap();
         while daemon.try_wait().unwrap().is_none() {
             if !patience.holds() {
                 let _ = daemon.kill();
@@ -940,6 +943,7 @@ fn a_patient_wait_goes_on_while_its_party_works() {
                     began.elapsed()
                 );
             }
+            drop(daemon.stdin.take());
             std::thread::sleep(Duration::from_millis(5));
         }
         assert!(began.elapsed() >= busy, "it ended {:?} in", began.elapsed());
@@ -1010,20 +1014,27 @@ fn a_homes_patience_follows_its_daemon_past_its_record() {
 /// `red_a_guest_wait_goes_on_while_its_party_works` there: `Heard::running` on a stand-in
 /// busy for a second, past a caller's bound of 100 ms, cut 0.1 s in, as `Ran` judged a VM
 /// process only a `PROGRESS_SLICE` after it first found it, and its stand-in no VM process
-/// at all. Do: a stand-in busy for a second; wait for its end, twice, from one call site.
-/// Expect: each wait holds until it ends, and the first's end teaches the second's kind.
+/// at all. Do: a stand-in busy for a second from its go, sent once a look of its wait has
+/// found it running (as [`a_patient_wait_goes_on_while_its_party_works`]'); wait for its end,
+/// twice, from one call site. Expect: each wait holds until it ends, and the first's end
+/// teaches the second's kind.
 #[test]
 fn a_guest_wait_goes_on_while_its_party_works() {
     let busy = Duration::from_secs(1);
     for round in 0..2 {
-        // Begun before its spawn: the stand-in's busy clock starts as it runs, which can
-        // be before spawn returns here (CI run 43530570785: "it ended 998.689681ms in").
         let began = Instant::now();
-        let mut party = stand_in_doing(&format!("busy {}", busy.as_millis()))
+        let mut party = stand_in_doing(&format!("go {}", busy.as_millis()))
+            .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::null())
             .spawn()
             .unwrap();
         let mut heard = common::Heard::running(party.id());
+        assert!(
+            round == 0
+                || matches!(heard.seen(), shards_api::Seen::Learned { slowest, .. } if slowest >= busy),
+            "its kind learned no answer of a second's work: {:?}",
+            heard.seen()
+        );
         while party.try_wait().unwrap().is_none() {
             if let Err(refused) = heard.look(true) {
                 let _ = party.kill();
@@ -1033,6 +1044,7 @@ fn a_guest_wait_goes_on_while_its_party_works() {
                     began.elapsed()
                 );
             }
+            drop(party.stdin.take());
             std::thread::sleep(Duration::from_millis(2));
         }
         heard.answered();
@@ -1128,9 +1140,13 @@ fn a_streaming_guests_cpu_is_its_liveness_and_its_stop_its_hosts_hold() {
 /// guest's other vCPUs hold is its host's hold (ROOT's batch 26), and Windows read no thread
 /// of it before (own-38h, ROOT's ruling of 2026-11-18). Do: teach the kind its W* by a
 /// stand-in's own end; follow a stand-in two threads of which spin pinned to one CPU, one of
-/// them in its OS's idle class ([`starved`]), through `LOOKS_TO_REFUSE` of its judge's windows,
-/// looking at its own pace. Expect: no look refused; with Windows' read removed
-/// (lanes/redgreen/own-38h-starved-windows.patch), refused there.
+/// them in its OS's idle class ([`starved`]), from its word that the other keeps it from that
+/// CPU, through `LOOKS_TO_REFUSE` of its judge's windows, looking at its own pace. Expect: no
+/// look refused; with Windows' read removed (lanes/redgreen/own-38h-starved-windows.patch),
+/// refused there. Followed from its spawn, before its threads were in their places, it was
+/// refused while it started, its process running and none of its threads kept, three windows
+/// of a W* of 593 µs being less than its start on a loaded KVM host (ROOT's run at p/batch2
+/// c7e44c7185, glibc: "its host not holding it", refused 2.05 ms in).
 #[cfg(any(target_os = "linux", windows))]
 #[test]
 fn a_streaming_guest_whose_thread_its_host_keeps_from_any_cpu_is_held() {
@@ -1149,9 +1165,18 @@ fn a_streaming_guest_whose_thread_its_host_keeps_from_any_cpu_is_held() {
     };
     let mut kept = stand_in_doing("starved")
         .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
         .spawn()
         .unwrap();
+    // Its word comes among libtest's own lines ("test stand_in ... kept"); its stdout is held
+    // open until its end, so that what libtest says after it finds a reader.
+    let mut out = std::io::BufReader::new(kept.stdout.take().unwrap());
+    let mut said = String::new();
+    while !said.contains("kept") {
+        said.clear();
+        let read = std::io::BufRead::read_line(&mut out, &mut said).unwrap();
+        assert_ne!(read, 0, "the stand-in ended with none of its threads kept");
+    }
     let mut heard = streaming(kept.id());
     let began = Instant::now();
     while began.elapsed() <= slowest.saturating_mul(shards_api::LOOKS_TO_REFUSE) {
@@ -1373,7 +1398,11 @@ fn a_wide_guest_silent_while_its_host_holds_a_thread_beside_its_waiter_is_held()
 
 /// A stand-in's two threads spinning pinned to one CPU until its stdin closes, one of them in
 /// its OS's idle class ([`idle_policy`]): the other keeps it from that CPU, so that it is
-/// runnable and almost never run, as its host keeps a vCPU of a guest wider than itself.
+/// runnable and almost never run, as its host keeps a vCPU of a guest wider than itself. It
+/// says "kept" on its stdout once that is so: the idle one placed first, pinned and in its
+/// class, while nothing of its own keeps it from running to say so, then the other, pinned.
+/// Never while either is not: a thread that fails to place itself has the other stop, and
+/// its failure ends the stand-in.
 #[cfg(any(target_os = "linux", windows))]
 fn starved() {
     use std::io::Read as _;
@@ -1381,19 +1410,27 @@ fn starved() {
     let cpu = first_cpu();
     let spinning = AtomicBool::new(true);
     std::thread::scope(|s| {
-        for idle in [false, true] {
+        let placed = [true, false].into_iter().all(|idle| {
+            let (ready, readied) = std::sync::mpsc::channel();
             let spinning = &spinning;
             s.spawn(move || {
                 pin_to(cpu);
                 if idle {
                     idle_policy();
                 }
+                let _ = ready.send(());
                 while spinning.load(Ordering::Relaxed) {
                     std::hint::spin_loop();
                 }
             });
+            readied.recv().is_ok()
+        });
+        if placed {
+            let mut out = std::io::stdout();
+            let _ = out.write_all(b"kept\n");
+            let _ = out.flush();
+            let _ = std::io::stdin().read(&mut [0u8; 1]);
         }
-        let _ = std::io::stdin().read(&mut [0u8; 1]);
         spinning.store(false, Ordering::Relaxed);
     });
 }
@@ -1535,12 +1572,12 @@ fn a_guests_end_ends_its_wait_and_what_it_said_by_then_is_read() {
 type Drained = Result<Vec<u32>, (Vec<u32>, String)>;
 
 /// [`common::requests_end`] at its caller's call site, its kind made cold as [`cold_lines`]'
-/// are: waiting for the ends `ended` brings, each its own client's, of requests whose clients
+/// are: waiting for the ends `next` reads, each its own client's, of requests whose clients
 /// are `clients`, with `stretches` seen before it, in a home no daemon serves; and its kind,
 /// and where this host keeps its record.
 #[track_caller]
 fn cold_ends(
-    ended: &std::sync::mpsc::Receiver<u32>,
+    next: impl FnMut(Duration) -> Result<u32, std::sync::mpsc::RecvTimeoutError>,
     clients: &[u32],
     stretches: &[Duration],
 ) -> (Drained, &'static common::WaitKind, std::path::PathBuf) {
@@ -1549,16 +1586,42 @@ fn cold_ends(
     let _ = std::fs::remove_file(&kept);
     let kind = common::WaitKind::awaiting(site, common::NEXT_END);
     let home = TempDir::new("ends");
-    let came = common::requests_end(ended, clients.len(), clients, |&c| Some(c), stretches, &home);
+    let came = common::requests_end(next, clients.len(), clients, |&c| Some(c), stretches, &home);
     (came, kind, kept)
+}
+
+/// Sends each of `ends`' clients on `end`, its pause in milliseconds after a read of its
+/// waiter's ([`cold_ends`]) found it missing, `reads` telling of each read, once it has
+/// returned, whether it took an end: the first's after a read that took none, each other's
+/// after one past the read that took the end before, so that each end teaches the wait that
+/// began as that one was taken, and each pause is a silence that wait saw from its start,
+/// however long its looks take. A clock of its own did not do that: a drain's wait teaches an
+/// end only where a read of it timed out and its look found its end missing first, and with
+/// ends 30, 120 and 30 ms apart from its start each came before its wait's first look and its
+/// pause had ended, under load, and its pass taught nothing (ROOT's run on a loaded KVM host
+/// at 53366451ac, glibc). Ends at its script's end, or once its waiter reads no more.
+fn ends_come(
+    end: &std::sync::mpsc::Sender<u32>,
+    reads: std::sync::mpsc::Receiver<bool>,
+    ends: &[(u32, u64)],
+) {
+    for (n, &(client, ms)) in ends.iter().enumerate() {
+        let mut told = reads.iter();
+        if (n > 0 && !told.any(|took| took)) || !told.any(|took| !took) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(ms));
+        let _ = end.send(client);
+    }
 }
 
 /// A drain's wait for its requests' ends (`common::requests_end`: benches/arrival.rs, D209
 /// Part 11) goes on while they end, however slowly, each end's client leaving its party, and
 /// its pass teaches its kind the slowest wait for a next end and keeps it on this host. Do:
-/// cold, three idle clients, whose ends come 30, 120 and 30 ms apart. Expect: all three, in
-/// order; its kind taught a wait of the 120 ms gap's length (100 ms or more, its wakes'
-/// jitter apart), and kept.
+/// cold, three idle clients, whose ends come 30, 120 and 30 ms after a read of its waiter's
+/// found each missing ([`ends_come`]). Expect: all three, in order; its kind taught a wait no
+/// shorter than the longest pause, which the wait for that end spans from its start, and
+/// kept.
 #[test]
 fn a_drains_ends_are_its_progress_and_its_pass_teaches_their_slowest_gap() {
     let idle: Vec<common::Reaped> = (0..3)
@@ -1572,15 +1635,18 @@ fn a_drains_ends_are_its_progress_and_its_pass_teaches_their_slowest_gap() {
         })
         .collect();
     let clients: Vec<u32> = idle.iter().map(|client| client.id()).collect();
+    let ends: Vec<(u32, u64)> = clients.iter().copied().zip([30, 120, 30]).collect();
     let (end, ended) = std::sync::mpsc::channel();
+    let (told, reads) = std::sync::mpsc::channel();
     let (came, kind, kept) = std::thread::scope(|s| {
-        s.spawn(|| {
-            for (&client, ms) in clients.iter().zip([30, 120, 30]) {
-                std::thread::sleep(Duration::from_millis(ms));
-                let _ = end.send(client);
-            }
-        });
-        cold_ends(&ended, &clients, &[])
+        s.spawn(|| ends_come(&end, reads, &ends));
+        // Its reads tell `ends_come` of themselves, and their telling ends as the drain does.
+        let next = move |within| {
+            let read = ended.recv_timeout(within);
+            let _ = told.send(read.is_ok());
+            read
+        };
+        cold_ends(next, &clients, &[])
     });
     drop(idle);
     let came = came.unwrap_or_else(|(came, refused)| panic!("refused with {came:?}: {refused}"));
@@ -1588,7 +1654,12 @@ fn a_drains_ends_are_its_progress_and_its_pass_teaches_their_slowest_gap() {
     let shards_api::Seen::Learned { slowest, .. } = kind.record().seen() else {
         panic!("its pass taught its kind nothing");
     };
-    assert!(slowest >= Duration::from_millis(100), "it taught {slowest:?}");
+    let longest = ends
+        .iter()
+        .map(|&(_, ms)| Duration::from_millis(ms))
+        .max()
+        .unwrap();
+    assert!(slowest >= longest, "it taught {slowest:?}");
     assert!(kept.exists(), "its pass kept nothing at {}", kept.display());
 }
 
@@ -1614,7 +1685,8 @@ fn a_drain_whose_requests_stop_ending_is_refused_and_keeps_nothing() {
                 let _ = end.send(client);
             }
         });
-        cold_ends(&ended, &clients, &[Duration::from_millis(50)])
+        let next = |within| ended.recv_timeout(within);
+        cold_ends(next, &clients, &[Duration::from_millis(50)])
     });
     let took = began.elapsed();
     drop(busy);
@@ -1859,16 +1931,17 @@ fn judged_read(
 /// bound, and past its cold start it is judged each W* of its call site's kind. Red at
 /// f389c8b75 as `red_a_retry_goes_on_while_what_this_test_started_works`: slates_fs.rs'
 /// retry, its test's `START` scaled to 100 ms, gave up on a stand-in busy for a second 0.1 s
-/// in. Do: a stand-in busy for a second, asked after until it has ended, twice from one call
-/// site. Expect: each wait holds until it ends, and the first's end teaches the second's kind.
+/// in. Do: a stand-in busy for a second from its go, sent once a look of its wait has found it
+/// running (as [`a_patient_wait_goes_on_while_its_party_works`]'), asked after until it has
+/// ended, twice from one call site. Expect: each wait holds until it ends, and the first's end
+/// teaches the second's kind.
 #[test]
 fn a_retry_goes_on_while_what_this_test_started_works() {
     let busy = Duration::from_secs(1);
     for round in 0..2 {
-        // Begun before its spawn: the stand-in's busy clock starts as it runs, which can
-        // be before spawn returns here (CI run 43530570785: "it ended 998.689681ms in").
         let began = Instant::now();
-        let mut anchor = stand_in_doing(&format!("busy {}", busy.as_millis()))
+        let mut anchor = stand_in_doing(&format!("go {}", busy.as_millis()))
+            .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::null())
             .spawn()
             .unwrap();
@@ -1882,6 +1955,7 @@ fn a_retry_goes_on_while_what_this_test_started_works() {
                     began.elapsed()
                 );
             }
+            drop(anchor.stdin.take());
             std::thread::sleep(patience.next_look());
         }
         assert!(began.elapsed() >= busy, "it ended {:?} in", began.elapsed());
@@ -2466,8 +2540,9 @@ fn a_first_look_past_w_star_judges_nothing() {
 /// them). Red at 9efde7252, its kind learned from a state there as its wait began. Do: a
 /// state its home's daemon (a busy stand-in) is in already, told `done` at once; then one
 /// that comes after its wait found it missing for 50 ms; then a stream read to an end its
-/// peer had sent, and one its peer sends 50 ms later. Expect: cold after each answer
-/// already there, and learned from each that was waited for (the state's W* its wait's).
+/// peer had sent, and one its peer sends 50 ms after its reader's first read ([`Telling`]).
+/// Expect: cold after each answer already there, and learned from each that was waited for
+/// (the state's W* its wait's).
 #[test]
 fn an_answer_already_there_teaches_nothing() {
     let home = TempDir::new("there");
@@ -2503,10 +2578,13 @@ fn an_answer_already_there_teaches_nothing() {
     let port = listener.as_ref().unwrap().local_addr().unwrap().port();
     for delay in [None, Some(waited)] {
         let (sent, told) = std::sync::mpsc::channel();
+        let (reading, reads) = std::sync::mpsc::channel();
         let serving = listener.take().unwrap();
         let peer = std::thread::spawn(move || {
             let (mut to, _) = serving.accept().unwrap();
-            if let Some(delay) = delay {
+            if let Some(delay) = delay
+                && reads.recv().is_ok()
+            {
                 std::thread::sleep(delay);
             }
             to.write_all(b"x").unwrap();
@@ -2514,7 +2592,7 @@ fn an_answer_already_there_teaches_nothing() {
             sent.send(()).unwrap();
             serving
         });
-        let stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let stream = Telling::to(port, reading);
         if delay.is_none() {
             told.recv().unwrap();
         }
@@ -2540,22 +2618,12 @@ fn an_answer_already_there_teaches_nothing() {
 
 /// [`common::Following::of`] at one call site, its kind made cold as [`cold_patience`]'s is,
 /// with that kind.
-fn one_stream(
-    stream: &std::net::TcpStream,
-) -> (
-    common::Following<'_, std::net::TcpStream>,
-    &'static common::WaitKind,
-) {
+fn one_stream(stream: &Telling) -> (common::Following<'_, Telling>, &'static common::WaitKind) {
     cold_following(stream)
 }
 
 #[track_caller]
-fn cold_following(
-    stream: &std::net::TcpStream,
-) -> (
-    common::Following<'_, std::net::TcpStream>,
-    &'static common::WaitKind,
-) {
+fn cold_following(stream: &Telling) -> (common::Following<'_, Telling>, &'static common::WaitKind) {
     let site = std::panic::Location::caller();
     let file = common::WaitKind::kept_at(site, common::STREAM, "");
     // Removed before the kind's first wait in this process alone: its record is in memory
@@ -2568,6 +2636,49 @@ fn cold_following(
         common::Following::of(stream, None),
         common::WaitKind::awaiting(site, common::STREAM),
     )
+}
+
+/// A stream to a peer of this test's, each of whose reads, once it has returned, is told on
+/// `told`, so that its peer answers as its reader reads ([`moved_answer`],
+/// [`an_answer_already_there_teaches_nothing`]): its peer, saying nothing before its first
+/// read, has that read find nothing, and a quiet it keeps from it is one its reader's wait
+/// saw from its start, however long the look its wait makes before it (`Following`'s first
+/// read comes after its wait's first look). A clock of the peer's own did not do that: a
+/// stream answered 5 ms after its accept was first read past its answer and its end on a
+/// loaded host, its wait never found its answer missing, and it taught nothing (ROOT's run
+/// on a loaded KVM host at 53366451ac, glibc: "the answer before the move taught nothing").
+struct Telling {
+    stream: std::net::TcpStream,
+    told: std::sync::mpsc::Sender<()>,
+}
+
+impl Telling {
+    /// A stream to loopback's `port`, its reads told on `told`.
+    fn to(port: u16, told: std::sync::mpsc::Sender<()>) -> Telling {
+        Telling {
+            stream: std::net::TcpStream::connect(("127.0.0.1", port)).unwrap(),
+            told,
+        }
+    }
+}
+
+impl common::Timed for Telling {
+    fn set_read_timeout(&self, timeout: Option<Duration>) -> std::io::Result<()> {
+        common::Timed::set_read_timeout(&self.stream, timeout)
+    }
+    fn read_now(&self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let read = common::Timed::read_now(&self.stream, buf);
+        let _ = self.told.send(());
+        read
+    }
+}
+
+impl std::io::Read for &Telling {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let read = std::io::Read::read(&mut &self.stream, buf);
+        let _ = self.told.send(());
+        read
+    }
 }
 
 /// A guest's stream (`common::Following`) reads before each look, never judging an answer
@@ -2650,19 +2761,31 @@ fn a_tests_own_vm_processes_are_known_by_their_ids() {
     assert_eq!(run.status, Some(0), "{run}");
 }
 
-/// [`a_tests_own_vm_processes_are_known_by_their_ids`]'s stand-in.
+/// [`a_tests_own_vm_processes_are_known_by_their_ids`]'s stand-in. Each VM process is busy
+/// from its go, sent once a look of its wait has found it running (as
+/// [`a_patient_wait_goes_on_while_its_party_works`]'), so that the first's end teaches the
+/// second's kind however late that look.
 fn own_vms() {
+    let mut taught: Option<Duration> = None;
     for (round, busy) in [Duration::from_millis(100), Duration::from_secs(1)]
         .into_iter()
         .enumerate()
     {
         let began = Instant::now();
-        let mut vm = stand_in_doing(&format!("busy {}", busy.as_millis()))
+        let mut vm = stand_in_doing(&format!("go {}", busy.as_millis()))
+            .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::null())
             .spawn()
             .unwrap();
         let own = common::OwnVm::started(vm.id());
         let mut patience = own_patience();
+        if let Some(first) = taught {
+            assert!(
+                matches!(patience.seen(), shards_api::Seen::Learned { slowest, .. } if slowest >= first),
+                "round {round}: its kind learned no answer of its first round's {first:?}: {:?}",
+                patience.seen()
+            );
+        }
         while vm.try_wait().unwrap().is_none() {
             if !patience.holds() {
                 let _ = vm.kill();
@@ -2673,11 +2796,13 @@ fn own_vms() {
                     patience.account()
                 );
             }
+            drop(vm.stdin.take());
             std::thread::sleep(Duration::from_millis(5));
         }
         patience.done();
         drop(own);
         assert!(began.elapsed() >= busy, "it ended {:?} in", began.elapsed());
+        taught = Some(busy);
     }
 }
 
@@ -2810,10 +2935,10 @@ fn home_stream<'a>(
 /// `a_moved_microvms_published_port_answers_there` refused its read after the move 70.9 ms
 /// in, 34.9 ms without a byte, by the W* of 17.7 ms its read before the move taught, both
 /// read from one closure's call site. Red with both read through one closure, as moved.rs'
-/// were: refused. Do: from two call sites of one helper, read a stream answered 5 ms in,
-/// then one answered after four times the W* the first taught (a loaded host's first answer
-/// is slower than its 5 ms). Expect: the second read to its answer, each kind taught by its
-/// own answer alone.
+/// were: refused. Do: from two call sites of one helper, read a stream answered 5 ms after
+/// its first read, then one answered four times the W* the first taught after its first read
+/// (a loaded host's first answer is slower than its 5 ms; [`Telling`]). Expect: the second
+/// read to its answer, each kind taught by its own answer alone.
 #[test]
 fn a_moved_guests_first_answer_is_a_kind_of_its_own() {
     let (before, warm) = moved_answer(Duration::from_millis(5));
@@ -2829,23 +2954,29 @@ fn a_moved_guests_first_answer_is_a_kind_of_its_own() {
     );
 }
 
-/// What a peer's stream says once it has said nothing for `after`, read through
-/// [`common::Following`] as moved.rs' `ask` reads a published port: its kind its caller's
-/// call site, cold before its read, and what that kind has seen once read.
+/// What a peer's stream says once it has said nothing for `after` from its reader's first
+/// read ([`Telling`]), read through [`common::Following`] as moved.rs' `ask` reads a published
+/// port: its kind its caller's call site, cold before its read, and what that kind has seen
+/// once read.
 #[track_caller]
 fn moved_answer(after: Duration) -> (Vec<u8>, shards_api::Seen) {
     let site = std::panic::Location::caller();
     let _ = std::fs::remove_file(common::WaitKind::kept_at(site, common::STREAM, ""));
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let port = listener.local_addr().unwrap().port();
+    let (told, reads) = std::sync::mpsc::channel();
     let peer = std::thread::spawn(move || {
         let (mut to, _) = listener.accept().unwrap();
-        std::thread::sleep(after);
-        to.write_all(b"x").unwrap();
+        if reads.recv().is_ok() {
+            std::thread::sleep(after);
+            to.write_all(b"x").unwrap();
+        }
     });
-    let stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    let stream = Telling::to(port, told);
     let mut read = Vec::new();
     let got = std::io::Read::read_to_end(&mut common::Following::of(&stream, None), &mut read);
+    // Its telling ends with it: a peer told of no read ends unanswered.
+    drop(stream);
     peer.join().unwrap();
     if let Err(refused) = got {
         panic!("refused {after:?} into its peer's quiet: {refused}");

@@ -3135,9 +3135,11 @@ impl Patience {
 /// their party serves.
 pub const NEXT_END: &str = "a request's next end";
 
-/// Waits for `n` more ends of requests as `ended` brings them, judged by their own progress,
-/// their ends (D209 Part 11), as [`guest_says`] judges a guest by its lines: benches/arrival.rs'
-/// drain of each rate's requests once all of them have arrived.
+/// Waits for `n` more ends of requests, each read by `next`, which waits at most the time it
+/// is given (a channel's `recv_timeout`), judged by their own progress, their ends (D209 Part
+/// 11), as [`guest_says`] judges a guest by its lines: benches/arrival.rs' drain of each rate's
+/// requests once all of them have arrived. Its reads are its caller's, as [`guest_says`]' are,
+/// so that a test can bring each end as its reads find it missing (harness.rs `ends_come`).
 /// - Each end begins a wait for the next, judged as D215's judge judges ([`Wait`]), of one kind
 ///   at its call site ([`NEXT_END`]), whichever rate it drains. Its party is the requests still
 ///   outstanding by their clients (`clients`, less each end's own, `client_of`), what descends
@@ -3155,7 +3157,7 @@ pub const NEXT_END: &str = "a request's next end";
 /// The ends in the order they came; refused, those that came and what its wait said.
 #[track_caller]
 pub fn requests_end<E>(
-    ended: &std::sync::mpsc::Receiver<E>,
+    mut next: impl FnMut(Duration) -> Result<E, std::sync::mpsc::RecvTimeoutError>,
     n: usize,
     clients: &[u32],
     client_of: impl Fn(&E) -> Option<u32>,
@@ -3175,7 +3177,7 @@ pub fn requests_end<E>(
     let mut wait = Wait::on(kind, party(&outstanding), NEXT_END);
     let (mut came, mut slowest) = (Vec::with_capacity(n), None::<Duration>);
     while came.len() < n {
-        match ended.recv_timeout(wait.next_look()) {
+        match next(wait.next_look()) {
             Ok(end) => {
                 if wait.awaited() {
                     let waited = wait.began.elapsed();
@@ -3197,7 +3199,9 @@ pub fn requests_end<E>(
                     Ok(()) => continue,
                 };
                 // One look more, as a refused Patience's: the ends that came as it was refused.
-                came.extend(ended.try_iter());
+                while let Ok(end) = next(Duration::ZERO) {
+                    came.push(end);
+                }
                 return if came.len() < n {
                     Err((came, refused))
                 } else {
