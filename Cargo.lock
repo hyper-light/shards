@@ -1245,6 +1245,7 @@ dependencies = [
  "shards-judge",
  "shards-remote",
  "shards-testdir",
+ "shards-testwait",
  "triomphe",
  "unsize",
  "windows-sys 0.61.2",

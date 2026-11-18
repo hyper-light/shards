@@ -30087,6 +30087,25 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
               remembered path's 1 ms, 300 ms and 1 ms, and a trickle's 2 ms a chunk. Also kept:
               the slower handshake's hold, between the first handshake and its client's probe
               timeout as that run measured them.
+        - *The workspace's tests, swept* (2026-11-18, #36, ROOT: CI green has to hold under load
+          everywhere). The sweep read every sleep, bounded receive or wait, duration literal and
+          deadline in crates/shards/tests and in the tests of vmm, api, ipc, init, image and
+          registry: 804 lines. Each was classed as judged, a poll's interval, a value or virtual
+          time, a case's input, a measurement window, an absence check (which load can only make
+          pass), or a fixed patience that fails its test at expiry. The fixed patiences are
+          ranked by how likely a loaded or nested runner fails them falsely. None of them failed
+          in the 16 CI runs' logs read, whose timing failures were judged waits refusing.
+          - *Batch 1, crates/api's session tests.* They now wait through shards-testwait (a
+            dev-dependency of shards-api), judged on their own threads.
+            - Its feeder's first read and its release (was 1 s each): judged, the feeder a
+              member of its test's party.
+            - A host's first words kept (was 10 s): judged, its keeping thread a member.
+            - The run's end closing its host's channel (was 10 s), and an orchestrator's ledger
+              (was within 120 s): judged with the whole process as their party. The session's
+              reader and its lessor's calls are the session's own threads, of no test's party.
+            - Readiness told to a waiter (was 120 s): judged.
+            - Kept and ruled: `BOUND`, the 120 s patience a test gives the session's own waits
+              (`Shared::wait`, the API's input), which a correct run answers at once.
     - *Rated answers alone teach R* and C*.* Many kept records held R* 0 ns: answers reaped
       before any look read their CPU (`run_ending`'s `try_wait` reaped a quick client between
       paced looks), a floor that refuses nothing. `Seen::Learned` is now `{ slowest, rated:
