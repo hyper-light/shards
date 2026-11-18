@@ -4676,6 +4676,13 @@ impl Party {
                 if let Some(waits) = waits_in(pid) {
                     said.push_str(&format!(", its threads waiting in {waits}"));
                 }
+                // Each thread's state and wait reason, as Windows' listing keeps them: what a
+                // refusal of a party none of whose threads was runnable waited on (ROOT,
+                // 2026-11-18, CI 44189693085's moved.rs and storm refusals).
+                #[cfg(windows)]
+                if let Some(threads) = shards_api::threads_said(pid) {
+                    said.push_str(&format!(", its threads {threads}"));
+                }
                 if watch.ended() {
                     said.push_str(", its end under way");
                 }
@@ -4744,6 +4751,11 @@ fn ending(pid: u32) -> String {
     let threads = shards_api::runnable_threads(pid).map_or_else(String::new, |(runnable, threads)| {
         format!(", {runnable} of {threads} threads runnable")
     });
+    #[cfg(windows)]
+    let threads = match shards_api::threads_said(pid) {
+        Some(said) => format!("{threads}, its threads {said}"),
+        None => threads,
+    };
     match process_status(pid) {
         Some(status) => format!("{status}{threads}"),
         None => format!("its state unread{threads}"),

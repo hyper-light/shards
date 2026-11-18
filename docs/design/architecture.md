@@ -29555,6 +29555,21 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
       its thread is panicking (a cleanup's `Drop`) writes its account to stderr and returns
       a run of no status; a panic while panicking aborts the test binary, all its tests
       with it, as one of context.rs' did.
+    - *A refusal names what each thread of its party was doing* (ROOT's word, 2026-11-18).
+      CI 44189693085's x86_64 Windows refusals of moved.rs:62 and snapshot.rs's storm said of
+      their party "0 of 3 threads runnable" and no more, so whether its threads waited on a
+      peer, a disk or a lock could not be read from them. A wait's account now says, on
+      Windows, each thread of each member by its ID, its state and, waiting, its wait reason
+      (shards-api `threads_said`: `SYSTEM_THREAD_INFORMATION`'s ThreadState and WaitReason from
+      the system's listing, named as WMI's `Win32_Thread` and the WDK's KWAIT_REASON name
+      them, a reason it does not name by its number), read once per member as the account is
+      written, never at a look; Linux and macOS say what they read already (each process's
+      status, its runnable threads, Linux its threads' `wchan`). The same listing, read for
+      named threads of a process (`threads_held`), classes each as a VM process's hold does
+      (`wants_cpu`: ready, running or standby; `pages`): one rule for the product's Windows
+      reading and the tests' parties', whose side lands on the move of the tests' party to
+      its own crate (crates/testwait). Host saturation (GetSystemTimes' idle) is no hold
+      (ROOT, 2026-11-18): the host's, not the party's own (the ruling of 2026-11-13).
     - Red/green (harness.rs, stand-ins, no microVM): `a_first_look_past_w_star_judges_nothing`
       (waits-02), `an_answer_already_there_teaches_nothing` (waits-03),
       `a_daemon_named_by_another_start_is_no_party` and `an_unreaped_daemon_is_gone`

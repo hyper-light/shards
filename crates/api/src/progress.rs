@@ -428,6 +428,41 @@ pub fn runnable_threads(pid: u32) -> Option<(usize, usize)> {
     ))
 }
 
+/// What threads `tids` of process `pid` are doing as one read of the system's whole listing
+/// shows them (Windows, D215): of those it lists, how many want or have a CPU and how many
+/// wait on their host's paging, each classed as a [`Followed`]'s hold classes a VM process's
+/// threads: one rule for this crate's judge and for a waiter that follows threads of its own
+/// process, as the daemon's tests' parties do. Windows keeps a thread's state in that listing
+/// alone, every process's, 13.1 to 13.8 ms a read on jupiter (PM M606): a waiter reads it only
+/// at a look that found its threads ran nothing. None where it could not be read.
+#[cfg(windows)]
+pub fn threads_held(pid: u32, tids: &[u32]) -> Option<ThreadsHeld> {
+    os::threads_held(pid, tids)
+}
+
+/// Each thread of process `pid` as one read of the system's whole listing shows it (Windows,
+/// D215): its ID, its state and, where it waits, its wait reason, as the listing's records keep
+/// them (`SYSTEM_THREAD_INFORMATION`'s ThreadState and WaitReason, named as WMI's
+/// `Win32_Thread` and the WDK's KWAIT_REASON name them). For a refusal's account of its party,
+/// so that it says what each of its threads was doing as it was refused (ROOT, 2026-11-18:
+/// CI 44189693085's moved.rs and snapshot.rs storm refusals said "0 of 3 threads runnable"
+/// and no more). None where the listing could not be read or lists no thread of `pid`.
+#[cfg(windows)]
+pub fn threads_said(pid: u32) -> Option<String> {
+    os::threads_said(pid)
+}
+
+/// What [`threads_held`] read of the threads it was asked of: how many the listing held, how
+/// many of those wanted or had a CPU (ready, running, standby), and how many waited on their
+/// host's paging.
+#[cfg(windows)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ThreadsHeld {
+    pub read: usize,
+    pub runnable: usize,
+    pub paging: usize,
+}
+
 /// Whether a thread runnable in `now` had no CPU at all since `before`: its host kept it
 /// from a CPU through the whole time between the two reads (or it ran less than its OS's
 /// counter shows). A thread that ran any CPU, or that `before` did not see, shows nothing:
@@ -1561,7 +1596,7 @@ mod os {
                 }
                 let (state, reason) = (t.ThreadState, t.WaitReason);
                 threads = threads.saturating_add(1);
-                runnable |= matches!(state, READY | RUNNING | STANDBY);
+                runnable |= wants_cpu(state);
                 paging |= pages(state, reason);
                 suspended = suspended.saturating_add(usize::from(state == WAITING && is_suspension(reason)));
             });
@@ -1844,11 +1879,125 @@ mod os {
         each_thread(&records, |of, t| {
             if of == pid {
                 threads = threads.saturating_add(1);
-                runnable =
-                    runnable.saturating_add(usize::from(matches!(t.ThreadState, READY | RUNNING | STANDBY)));
+                runnable = runnable.saturating_add(usize::from(wants_cpu(t.ThreadState)));
             }
         });
         (threads > 0).then_some((runnable, threads))
+    }
+
+    /// Whether a thread in `state` wants or has a CPU: ready, running or standby (WMI's
+    /// `Win32_Thread`). One rule for each Windows reading of D215's holds ([`Followed::hold`],
+    /// [`runnable_threads`], [`threads_held`]). A thread leaves ready only by running or ending,
+    /// so one its host has kept from a CPU since it last ran is in it still as a look reads it.
+    fn wants_cpu(state: u32) -> bool {
+        matches!(state, READY | RUNNING | STANDBY)
+    }
+
+    /// Each thread of process `pid` as one read of the system's records shows it
+    /// ([`super::threads_said`]): its ID and state, and where it waits, its wait reason.
+    pub(super) fn threads_said(pid: u32) -> Option<String> {
+        let records = records()?;
+        let mut said = Vec::new();
+        each_thread(&records, |of, t| {
+            if of != pid {
+                return;
+            }
+            let tid = t.ClientId.UniqueThread as usize;
+            said.push(match (t.ThreadState, wait_reason(t.WaitReason)) {
+                (WAITING, Some(reason)) => format!("{tid} waiting ({reason})"),
+                (WAITING, None) => format!("{tid} waiting (reason {})", t.WaitReason),
+                (state, _) => format!("{tid} {}", state_name(state)),
+            });
+        });
+        (!said.is_empty()).then(|| said.join(", "))
+    }
+
+    /// A thread's state by WMI's `Win32_Thread` name for it, else its number.
+    fn state_name(state: u32) -> String {
+        match state {
+            READY => "ready".to_string(),
+            RUNNING => "running".to_string(),
+            STANDBY => "standby".to_string(),
+            WAITING => "waiting".to_string(),
+            TRANSITION => "in transition".to_string(),
+            other => format!("in state {other}"),
+        }
+    }
+
+    /// A waiting thread's reason by the WDK's name for it (wdm.h KWAIT_REASON), none for a
+    /// value it does not name.
+    fn wait_reason(reason: u32) -> Option<&'static str> {
+        use windows_sys::Wdk::System::SystemServices as kw;
+        const REASONS: &[(i32, &str)] = &[
+            (kw::Executive, "Executive"),
+            (kw::FreePage, "FreePage"),
+            (kw::PageIn, "PageIn"),
+            (kw::PoolAllocation, "PoolAllocation"),
+            (kw::DelayExecution, "DelayExecution"),
+            (kw::Suspended, "Suspended"),
+            (kw::UserRequest, "UserRequest"),
+            (kw::WrExecutive, "WrExecutive"),
+            (kw::WrFreePage, "WrFreePage"),
+            (kw::WrPageIn, "WrPageIn"),
+            (kw::WrPoolAllocation, "WrPoolAllocation"),
+            (kw::WrDelayExecution, "WrDelayExecution"),
+            (kw::WrSuspended, "WrSuspended"),
+            (kw::WrUserRequest, "WrUserRequest"),
+            (kw::WrQueue, "WrQueue"),
+            (kw::WrLpcReceive, "WrLpcReceive"),
+            (kw::WrLpcReply, "WrLpcReply"),
+            (kw::WrVirtualMemory, "WrVirtualMemory"),
+            (kw::WrPageOut, "WrPageOut"),
+            (kw::WrRendezvous, "WrRendezvous"),
+            (kw::WrKeyedEvent, "WrKeyedEvent"),
+            (kw::WrTerminated, "WrTerminated"),
+            (kw::WrProcessInSwap, "WrProcessInSwap"),
+            (kw::WrCpuRateControl, "WrCpuRateControl"),
+            (kw::WrCalloutStack, "WrCalloutStack"),
+            (kw::WrKernel, "WrKernel"),
+            (kw::WrResource, "WrResource"),
+            (kw::WrPushLock, "WrPushLock"),
+            (kw::WrMutex, "WrMutex"),
+            (kw::WrQuantumEnd, "WrQuantumEnd"),
+            (kw::WrDispatchInt, "WrDispatchInt"),
+            (kw::WrPreempted, "WrPreempted"),
+            (kw::WrYieldExecution, "WrYieldExecution"),
+            (kw::WrFastMutex, "WrFastMutex"),
+            (kw::WrGuardedMutex, "WrGuardedMutex"),
+            (kw::WrRundown, "WrRundown"),
+            (kw::WrAlertByThreadId, "WrAlertByThreadId"),
+            (kw::WrDeferredPreempt, "WrDeferredPreempt"),
+            (kw::WrPhysicalFault, "WrPhysicalFault"),
+            (kw::WrIoRing, "WrIoRing"),
+            (kw::WrMdlCache, "WrMdlCache"),
+        ];
+        let reason = i32::try_from(reason).ok()?;
+        REASONS
+            .iter()
+            .find(|(value, _)| *value == reason)
+            .map(|(_, name)| *name)
+    }
+
+    /// Process `pid`'s threads `tids` as one read of the system's records shows them
+    /// ([`super::threads_held`]), each classed as [`Followed::hold`] classes a member's: wanting
+    /// a CPU ([`wants_cpu`]) or waiting on its host's paging ([`pages`]).
+    pub(super) fn threads_held(pid: u32, tids: &[u32]) -> Option<super::ThreadsHeld> {
+        let records = records()?;
+        let mut held = super::ThreadsHeld::default();
+        each_thread(&records, |of, t| {
+            let tid = u32::try_from(t.ClientId.UniqueThread as usize).unwrap_or(u32::MAX);
+            if of != pid || !tids.contains(&tid) {
+                return;
+            }
+            held.read = held.read.saturating_add(1);
+            held.runnable = held
+                .runnable
+                .saturating_add(usize::from(wants_cpu(t.ThreadState)));
+            held.paging = held
+                .paging
+                .saturating_add(usize::from(pages(t.ThreadState, t.WaitReason)));
+        });
+        Some(held)
     }
 
     /// Whether a thread in `state`, waiting for `reason`, waits on its host's paging: its
