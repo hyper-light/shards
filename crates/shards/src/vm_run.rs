@@ -1673,20 +1673,267 @@ fn arm_input(_args: &[OsString]) -> std::io::Result<InputOwner> {
     Ok(InputOwner::Console)
 }
 
+/// Console input as the thread that forwards it would find it, decided before that thread
+/// starts, without waiting for it ([`pending`]), on every host.
+#[derive(Debug, PartialEq, Eq)]
+enum Pending {
+    /// Ended: no more will come. A first read took nothing, or there is no input at all.
+    Ended,
+    /// Nothing to read yet: the thread waits for it.
+    Waiting,
+    /// What a first read took, which the thread forwards first.
+    Read(usize),
+}
+
+/// What `from` holds before a thread waits on it: where a read would not wait (POSIX's
+/// "ready for reading", [`ready`]), a first read ([`first_read`]) takes it. Input that has
+/// already ended so starts no thread: a bare restore's stdin of /dev/null, as the Firecracker
+/// comparison's restores have, made one that ended at once, its stack unmapped under the page
+/// table of its top, which the stack above it kept (mm/memory.c `free_pgd_range`): a page-table
+/// page mapping nothing in every such VM. Input that is not open has ended; any other refusal
+/// is said by the caller, which starts no thread.
+#[cfg(unix)]
+fn pending(from: &mut (impl Read + std::os::fd::AsRawFd), buf: &mut [u8]) -> std::io::Result<Pending> {
+    match ready(from.as_raw_fd()) {
+        Ok(false) => Ok(Pending::Waiting),
+        Ok(true) => first_read(from, buf),
+        Err(e) if e.raw_os_error() == Some(libc::EBADF) => Ok(Pending::Ended),
+        Err(e) => Err(e),
+    }
+}
+
+/// Whether a read of `fd` would not wait, asked without waiting: poll(2), which Linux answers
+/// for every file (a file without a poll method reads without waiting: fs/select.c
+/// `DEFAULT_POLLMASK`), its POLLNVAL saying that `fd` is not open.
+#[cfg(target_os = "linux")]
+fn ready(fd: std::os::fd::RawFd) -> std::io::Result<bool> {
+    let mut event = libc::pollfd {
+        fd,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    loop {
+        // SAFETY: poll(2) of one pollfd of ours, waiting for nothing.
+        if unsafe { libc::poll(&raw mut event, 1, 0) } >= 0 {
+            break;
+        }
+        let e = std::io::Error::last_os_error();
+        if e.kind() != std::io::ErrorKind::Interrupted {
+            return Err(e);
+        }
+    }
+    if (event.revents & libc::POLLNVAL) != 0 {
+        return Err(std::io::Error::from_raw_os_error(libc::EBADF));
+    }
+    Ok(event.revents != 0)
+}
+
+/// Whether a read of `fd` would not wait, asked without waiting: select(2), which asks a
+/// device's own select routine, where macOS's poll(2) supports no device (poll(2), BUGS: it
+/// answers POLLNVAL for /dev/null and /dev/zero, macOS 26.4, which select(2) answers readable,
+/// and a pipe and a pseudo-terminal alike either way).
+#[cfg(all(unix, not(target_os = "linux")))]
+fn ready(fd: std::os::fd::RawFd) -> std::io::Result<bool> {
+    match usize::try_from(fd) {
+        Err(_) => return Err(std::io::Error::from_raw_os_error(libc::EBADF)),
+        Ok(fd) if fd >= libc::FD_SETSIZE => {
+            return Err(std::io::Error::other(format!(
+                "descriptor {fd} lies past what select(2) takes"
+            )));
+        }
+        Ok(_) => {}
+    }
+    loop {
+        // SAFETY: an fd_set is plain data, all zeros when empty (FD_ZERO's own).
+        let mut set: libc::fd_set = unsafe { std::mem::zeroed() };
+        let mut now = libc::timeval {
+            tv_sec: 0,
+            tv_usec: 0,
+        };
+        // SAFETY: `fd` lies below FD_SETSIZE (above); `set` and `now` are ours, the one
+        // descriptor's set and a wait of nothing.
+        let answered = unsafe {
+            libc::FD_SET(fd, &raw mut set);
+            libc::select(
+                fd + 1,
+                &raw mut set,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &raw mut now,
+            )
+        };
+        if answered >= 0 {
+            // SAFETY: `set` as select(2) left it, `fd` below FD_SETSIZE.
+            return Ok(answered > 0 && unsafe { libc::FD_ISSET(fd, &raw const set) });
+        }
+        let e = std::io::Error::last_os_error();
+        if e.kind() != std::io::ErrorKind::Interrupted {
+            return Err(e);
+        }
+    }
+}
+
+/// [`pending`] on Windows, decided by the kind of input its handle is (GetFileType): a pipe by
+/// what waits in it (PeekNamedPipe, which says ERROR_BROKEN_PIPE once its writer has gone and
+/// nothing is left in it); a file by a first read, which never waits; a console as waiting,
+/// its input typed as it comes; NUL as ended, by its device type ([`device_type`]). Any other
+/// device's input cannot be told without a read that may wait: said, starting no thread. No
+/// handle, or one not open, has ended.
+#[cfg(windows)]
+fn pending(
+    from: &mut (impl Read + std::os::windows::io::AsRawHandle),
+    buf: &mut [u8],
+) -> std::io::Result<Pending> {
+    use windows_sys::Win32::Foundation::ERROR_INVALID_HANDLE;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_TYPE_CHAR, FILE_TYPE_DISK, FILE_TYPE_PIPE, FILE_TYPE_UNKNOWN, GetFileType,
+    };
+    use windows_sys::Win32::System::Console::GetConsoleMode;
+    use windows_sys::Win32::System::Ioctl::FILE_DEVICE_NULL;
+    use windows_sys::Win32::System::Pipes::PeekNamedPipe;
+    let handle = from.as_raw_handle();
+    if handle.is_null() {
+        return Ok(Pending::Ended);
+    }
+    // SAFETY: GetFileType of the handle `from` holds, which says a handle not open as such.
+    match unsafe { GetFileType(handle) } {
+        FILE_TYPE_DISK => first_read(from, buf),
+        FILE_TYPE_PIPE => {
+            let mut waiting = 0u32;
+            // SAFETY: a peek of no bytes at the pipe's end `from` holds, its count ours.
+            let peeked = unsafe {
+                PeekNamedPipe(
+                    handle,
+                    std::ptr::null_mut(),
+                    0,
+                    std::ptr::null_mut(),
+                    &raw mut waiting,
+                    std::ptr::null_mut(),
+                )
+            };
+            if peeked == 0 {
+                let e = std::io::Error::last_os_error();
+                return if e.kind() == std::io::ErrorKind::BrokenPipe {
+                    Ok(Pending::Ended)
+                } else {
+                    Err(e)
+                };
+            }
+            if waiting == 0 {
+                Ok(Pending::Waiting)
+            } else {
+                first_read(from, buf)
+            }
+        }
+        FILE_TYPE_CHAR => {
+            let mut mode = 0u32;
+            // SAFETY: the handle `from` holds, and a mode of ours for the call to fill.
+            if unsafe { GetConsoleMode(handle, &raw mut mode) } != 0 {
+                return Ok(Pending::Waiting);
+            }
+            match device_type(handle)? {
+                FILE_DEVICE_NULL => Ok(Pending::Ended),
+                other => Err(std::io::Error::other(format!(
+                    "its standard input is a device (type {other:#x}) whose input cannot be told without a read that may wait"
+                ))),
+            }
+        }
+        FILE_TYPE_UNKNOWN => {
+            let e = std::io::Error::last_os_error();
+            if e.raw_os_error() == i32::try_from(ERROR_INVALID_HANDLE).ok() {
+                Ok(Pending::Ended)
+            } else {
+                Err(std::io::Error::other(format!(
+                    "its standard input is of a kind Windows does not say: {e}"
+                )))
+            }
+        }
+        other => Err(std::io::Error::other(format!(
+            "its standard input is of kind {other:#x}"
+        ))),
+    }
+}
+
+/// The device type of the file `handle` holds (NtQueryVolumeInformationFile's
+/// FileFsDeviceInformation): FILE_DEVICE_NULL for NUL.
+#[cfg(windows)]
+fn device_type(handle: windows_sys::Win32::Foundation::HANDLE) -> std::io::Result<u32> {
+    use windows_sys::Wdk::Storage::FileSystem::{FileFsDeviceInformation, NtQueryVolumeInformationFile};
+    use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
+    /// FILE_FS_DEVICE_INFORMATION (ntifs.h): the device's type, then its characteristics.
+    #[repr(C)]
+    #[derive(Default)]
+    struct Device {
+        kind: u32,
+        _characteristics: u32,
+    }
+    let mut device = Device::default();
+    // SAFETY: an IO_STATUS_BLOCK is plain data (a status or pointer, and a count), which the
+    // call fills; zero is a valid one.
+    let mut status: IO_STATUS_BLOCK = unsafe { std::mem::zeroed() };
+    let size = u32::try_from(size_of::<Device>()).map_err(std::io::Error::other)?;
+    // SAFETY: the handle the caller holds, and a Device and an IO_STATUS_BLOCK of ours for
+    // the call to fill, of their own sizes.
+    let got = unsafe {
+        NtQueryVolumeInformationFile(
+            handle,
+            &raw mut status,
+            (&raw mut device).cast(),
+            size,
+            FileFsDeviceInformation,
+        )
+    };
+    if got < 0 {
+        // SAFETY: no pointers; an NTSTATUS as Win32 says it.
+        let code = unsafe { windows_sys::Win32::Foundation::RtlNtStatusToDosError(got) };
+        return Err(std::io::Error::from_raw_os_error(code.cast_signed()));
+    }
+    Ok(device.kind)
+}
+
+/// A first read of input that a read does not wait for: nothing is its end, and what it takes
+/// the thread forwards first. Interrupted, it is made again; where another reader of the same
+/// input took what was there first (EAGAIN), more is still to come.
+fn first_read(from: &mut impl Read, buf: &mut [u8]) -> std::io::Result<Pending> {
+    loop {
+        match from.read(buf) {
+            Ok(0) => return Ok(Pending::Ended),
+            Ok(n) => return Ok(Pending::Read(n)),
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => return Ok(Pending::Waiting),
+            Err(e) => return Err(e),
+        }
+    }
+}
+
 fn forward_stdin(handle: vm::Handle) {
+    // As much as a buffer the guest posts takes: the rest waits in stdin.
+    let mut buf = [0u8; shards_vmm::devices::virtio::console::INPUT_AT_ONCE];
+    // Read here, the guest is given it on the thread: the console takes input only as its
+    // guest posts buffers, and this thread waits next for the VM's end.
+    let first = match pending(&mut std::io::stdin(), &mut buf) {
+        Ok(Pending::Ended) => return,
+        Ok(Pending::Waiting) => 0,
+        Ok(Pending::Read(n)) => n,
+        Err(e) => {
+            report(format!("console input unavailable: {e}"));
+            return;
+        }
+    };
     let spawned = std::thread::Builder::new()
         .name("console-in".into())
         .spawn(move || {
             let mut stdin = std::io::stdin().lock();
-            // As much as a buffer the guest posts takes: the rest waits in stdin.
-            let mut buf = [0u8; shards_vmm::devices::virtio::console::INPUT_AT_ONCE];
             let mut typed = Vec::with_capacity(buf.len());
             let mut escape = false;
+            let mut n = first;
             loop {
-                let n = match stdin.read(&mut buf) {
-                    Ok(0) | Err(_) => return,
-                    Ok(n) => n,
-                };
+                if n == 0 {
+                    n = match stdin.read(&mut buf) {
+                        Ok(0) | Err(_) => return,
+                        Ok(n) => n,
+                    };
+                }
                 // What was read goes to the guest at once, its escapes taken out: one
                 // buffer of the guest's for as much as it holds, not one for each byte.
                 typed.clear();
@@ -1704,6 +1951,7 @@ fn forward_stdin(handle: vm::Handle) {
                     escape = !escape && b == 0x01;
                 }
                 handle.console_input(&typed);
+                n = 0;
             }
         });
     if let Err(e) = spawned {
@@ -4504,6 +4752,36 @@ mod lifeline_tests {
             lifeline_open(&reader).unwrap_err().kind(),
             std::io::ErrorKind::BrokenPipe
         );
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod console_input_tests {
+    use super::*;
+
+    /// The null device, whose every read takes nothing.
+    #[cfg(unix)]
+    const NULL: &str = "/dev/null";
+    #[cfg(windows)]
+    const NULL: &str = "NUL";
+
+    /// Console input that has already ended starts no thread (`pending`, which `forward_stdin`
+    /// returns on before it spawns one), on every host: a pipe whose writer has gone, and the
+    /// null device, the stdin of the Firecracker comparison's bare restores. Input still to
+    /// come waits on its thread, and input already there is read for it.
+    #[test]
+    fn console_input_that_has_already_ended_starts_no_thread() {
+        let mut buf = [0u8; 8];
+        let (mut reader, mut writer) = std::io::pipe().unwrap();
+        assert_eq!(pending(&mut reader, &mut buf).unwrap(), Pending::Waiting);
+        writer.write_all(b"ab").unwrap();
+        assert_eq!(pending(&mut reader, &mut buf).unwrap(), Pending::Read(2));
+        assert!(buf.starts_with(b"ab"));
+        drop(writer);
+        assert_eq!(pending(&mut reader, &mut buf).unwrap(), Pending::Ended);
+        let mut null = std::fs::File::open(NULL).unwrap();
+        assert_eq!(pending(&mut null, &mut buf).unwrap(), Pending::Ended);
     }
 }
 
