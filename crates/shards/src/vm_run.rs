@@ -3589,15 +3589,21 @@ impl shards_vmm::platform::Stager for SpawnerStages {
         crate::grant_ask::ranges(link, file, len)
     }
 
+    /// Its end waited for with the link let go: the spawner answers this VM's other asks
+    /// meanwhile, its vsock listener's next pair among them, which a resumed VM's device
+    /// waited for as long as the generation's fsyncs took (D30, D272, amended 2026-11-18).
     fn commit(&self, _dir: &Path, name: &str) -> std::io::Result<()> {
-        let grants = GRANTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let link = grants.as_ref().ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::NotConnected,
-                "no spawner to commit a snapshot through",
-            )
-        })?;
-        crate::grant_ask::commit(link, name)
+        let word = {
+            let grants = GRANTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let link = grants.as_ref().ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::NotConnected,
+                    "no spawner to commit a snapshot through",
+                )
+            })?;
+            crate::grant_ask::commit(link, name)?
+        };
+        crate::grant_ask::durable(&word)
     }
 }
 

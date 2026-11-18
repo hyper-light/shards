@@ -2673,6 +2673,26 @@ audit's "Security and test coverage").
     its spawner holds open, so that the next spawner deletes what a killed one left.
   - Its connections end shut down, then closed: on Windows an exit that closes a socket's
     last reference loses what the peer had not read [PM M199].
+  - *Amended 2026-11-18 (ROOT's ruling; own-38c):* the spawner answers a Windows VM's grants
+    while it commits the VM's snapshot. The commit (D196's `kind::COMMIT`) is made durable on
+    a thread of the spawner's apart from the grants link's loop (grant_answer.rs
+    `commit_apart`), which answers `GRANTED` as it begins with a pipe of the commit's own,
+    on which the thread says its end, `GRANTED` once the generation is in place or `ERR` and
+    why; the VM waits on that pipe with the link let go (vm_run.rs `SpawnerStages::commit`,
+    grant_ask.rs `durable`). Committed in the loop, it held every grant the VM asked
+    meanwhile, pairs and files alike, and the VM asks them with the link held, so a resumed
+    VM's vsock device, which asks for its listener's next pair, stood still for the fsyncs:
+    CI 44189693085's windows-2025 storm, its round across the snapshot without a byte for
+    900 ms past a W* of 466 ms, and jupiter at a5369bd051, "snapshot made durable in
+    52013 us", every grant held that long. What waits on the generation's being durable
+    waits as before: the VM's save returns, logs it durable and, told to stop, stops only
+    on the commit's word; the directory is given up before any ask the VM makes after it
+    (the loop hears of the end before the VM does); and the spawner's answers return to its
+    caller, the CLI's broker and the daemon's launch, only once every commit it began has
+    ended (`std::thread::scope`). Red test: grant_answer.rs
+    `a_grant_asked_while_a_snapshot_commits_is_answered_before_the_commit_ends`, a stand-in
+    commit held open, the VM's next ask answered before it ends; red with the commit made in
+    the loop (lanes/redgreen/own-38c-commit-grants.patch).
   - Tested on real VMs: `the_vm_process_is_confined` reads each of these from the running
     VM process as Windows reports it, and its end with its killed spawner; the `vsock`
     tests run through its spawner.
@@ -40602,10 +40622,11 @@ finds nothing.
   waited for its packet, vsock-pipes-port-cancel). Owed, ROOT's: both red, then green, on WHP;
   whether a write named an event is cancelled as its thread ends, which only a device worker
   that outlives its pauses would cure; and the storm across its snapshot on jupiter. Found
-  beside it, not changed here: after a resume the worker asks the spawner for a pair over the
-  grants link, which the snapshot's commit holds while the spawner makes the generation
-  durable (vm_run.rs `SpawnerStages::commit`, after `go_on`), so the whole device waits that
-  long; CI 44189693085's resumed round, no byte for 900 ms past a W* of 466 ms, fits it.
+  beside it: after a resume the worker asked the spawner for a pair over the grants link,
+  which the snapshot's commit held while the spawner made the generation durable (vm_run.rs
+  `SpawnerStages::commit`, after `go_on`), so the whole device waited that long; CI
+  44189693085's resumed round, no byte for 900 ms past a W* of 466 ms, fits it. The spawner
+  now commits apart from the link (D30, amended 2026-11-18).
 - *Dials* go through the dialer as before (S3's spawner); with none, the muxer opens the
   host port's pair itself, waiting for nothing (`shards_ipc::vsock_open` to now): a taken pair
   refuses at once, as a socket's full backlog does, rather than stall the device.

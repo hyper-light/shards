@@ -558,20 +558,54 @@ pub fn ranges(link: &crate::grant::Link, file: &std::fs::File, len: u64) -> std:
 }
 
 /// Has the spawner on `link` make generation `name`, which this VM filled, durable and the
-/// one in use (`kind::COMMIT`, D196).
+/// one in use (`kind::COMMIT`, D196): answered as the commit begins, with the read end of the
+/// pipe the spawner says its end on ([`durable`]), so that the link answers this VM's other
+/// asks while the generation is made durable (D30, D272, amended 2026-11-18).
 #[cfg(windows)]
-pub fn commit(link: &crate::grant::Link, name: &str) -> std::io::Result<()> {
+pub fn commit(link: &crate::grant::Link, name: &str) -> std::io::Result<std::fs::File> {
     use shards_ipc::kind;
+    use std::os::windows::io::FromRawHandle as _;
     shards_ipc::write_message(&link.to, kind::COMMIT, name.as_bytes())?;
     let answer = shards_ipc::read_message(&link.from)?
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::BrokenPipe, "the spawner went"))?;
     match answer.kind {
-        kind::GRANTED => Ok(()),
+        kind::GRANTED => {
+            let value = <[u8; 8]>::try_from(answer.payload.as_slice())
+                .ok()
+                .and_then(|value| usize::try_from(u64::from_le_bytes(value)).ok())
+                .filter(|&value| value != 0)
+                .ok_or_else(|| std::io::Error::other("a commit answered with no word to wait on"))?;
+            // SAFETY: a handle the spawner duplicated into this process for this commit alone,
+            // owned from here on.
+            Ok(unsafe { std::fs::File::from_raw_handle(value as std::os::windows::io::RawHandle) })
+        }
         kind::ERR => Err(std::io::Error::other(
             String::from_utf8_lossy(&answer.payload).into_owned(),
         )),
         other => Err(std::io::Error::other(format!(
             "the spawner answered a commit with message kind {other}"
+        ))),
+    }
+}
+
+/// The end of a commit, as the spawner says it on `word` ([`commit`]): `GRANTED` once its
+/// generation is durable and in use, or `ERR` and why not.
+#[cfg(windows)]
+pub fn durable(word: &std::fs::File) -> std::io::Result<()> {
+    use shards_ipc::kind;
+    let said = shards_ipc::read_message(word)?.ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::BrokenPipe,
+            "the spawner went before its commit ended",
+        )
+    })?;
+    match said.kind {
+        kind::GRANTED => Ok(()),
+        kind::ERR => Err(std::io::Error::other(
+            String::from_utf8_lossy(&said.payload).into_owned(),
+        )),
+        other => Err(std::io::Error::other(format!(
+            "the spawner ended a commit with message kind {other}"
         ))),
     }
 }
