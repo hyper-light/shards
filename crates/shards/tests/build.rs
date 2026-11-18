@@ -7124,25 +7124,55 @@ fn build_cache_usage_lists_every_record() {
         "ERROR: --format and --verbose cannot be used together\n"
     );
     // A cache a running step holds: in use, its size 0B.
-    std::thread::scope(|s| {
-        let held = s.spawn(|| build("hold", "\"write:/c/g=2\", \"sleep:20000\""));
-        let mut patience = Patience::of(&home);
-        let in_use = loop {
-            if let Some(r) = records(&["--filter", "type=exec.cachemount"])
-                .into_iter()
-                .find(|r| r["Reclaimable"] == false)
-            {
-                patience.done();
-                break r;
-            }
-            assert!(patience.holds(), "no step held the cache");
-            std::thread::sleep(patience.next_look());
-        };
-        assert_eq!(in_use["Size"], "0B", "{in_use}");
-        assert_eq!(in_use["ID"], mounts[0]["ID"]);
-        let held = held.join().unwrap();
-        assert_eq!(held.status, Some(0), "{}", held.stderr);
-    });
+    let hold = context(
+        "du-hold",
+        &format!(
+            "FROM {image}\nUSER root\nRUN --mount=type=cache,target=/c,id=du [\"/bin/testguest\", \"fs\", \"write:/c/g=2\", \"sleep:20000\"]\n"
+        ),
+    );
+    let said = home.join("hold.stderr");
+    let mut held = common::command()
+        .args(["build", "--progress=plain", hold.to_str().unwrap()])
+        .envs(env.iter().copied())
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::fs::File::create(&said).unwrap())
+        .spawn()
+        .unwrap();
+    // Waited for while that build's client goes on, as well as its daemon and their microVMs
+    // (D215: a wait whose answer is another process's run follows that process). Its client
+    // reads its context and asks its daemon before any of them holds the cache, and a wait on
+    // the daemon alone took that time for its party's stillness (CI 44245219858, x86_64 gnu:
+    // refused 610 ms in, its daemon asleep and no microVM yet, past a W* of 557.78 ms).
+    let mut patience = Patience::client(held.id(), &home);
+    let in_use = loop {
+        if let Some(r) = records(&["--filter", "type=exec.cachemount"])
+            .into_iter()
+            .find(|r| r["Reclaimable"] == false)
+        {
+            patience.done();
+            break r;
+        }
+        assert!(patience.holds(), "no step held the cache");
+        std::thread::sleep(patience.next_look());
+    };
+    assert_eq!(in_use["Size"], "0B", "{in_use}");
+    assert_eq!(in_use["ID"], mounts[0]["ID"]);
+    // Its end, waited for while its client goes on.
+    let mut ending = Patience::client(held.id(), &home);
+    let ended = loop {
+        if let Some(status) = held.try_wait().unwrap() {
+            ending.done();
+            break status;
+        }
+        assert!(ending.holds(), "the build holding the cache never ended");
+        std::thread::sleep(ending.next_look());
+    };
+    assert!(
+        ended.success(),
+        "{ended:?}\n{}",
+        std::fs::read_to_string(&said).unwrap_or_default()
+    );
     // Pruned: none left, and totals of nothing.
     ok(&["builder", "prune", "-af"]);
     assert_eq!(
