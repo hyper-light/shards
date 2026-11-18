@@ -1144,6 +1144,7 @@ impl Handler for Service {
 #[allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 mod tests {
     use std::sync::mpsc;
+    use std::time::{Duration, Instant};
 
     use shards_testwait::{party, receive, waited};
 
@@ -1627,25 +1628,36 @@ mod tests {
     }
 
     /// An owner's subscription at `offset`, made again while the endpoint still holds a
-    /// connection it has not let go of, told its first record goes at `at`.
+    /// connection it has not let go of, every RTT sample of which came within `life`, told its
+    /// first record goes at `at`.
     ///
-    /// Refused while its endpoint holds that connection, which it asks for an answer: its
-    /// party waited on until still a whole W* past every deadline it waits until (D215's
-    /// stillness), that probe's window among them, after which the next attempt takes the place
-    /// (D180). A refusal after that is the place never let go.
-    fn subscribed(owner: &Identity, server: Fingerprint, address: SocketAddr, offset: u64, at: u64) -> Live {
-        let mut refused = false;
+    /// Refused while its endpoint holds that connection, which it asks for an answer: unheard
+    /// past its probe timeout since (D180), its place is the next attempt's, made past that time
+    /// as `life` bounds it (`probe_timeout_within`). A refusal after that is the place never let
+    /// go. Before, its party's stillness, which its endpoint's probes of the connection gone
+    /// never let come (CI 44227612442, aarch64 gnu: held to the step's limit).
+    fn subscribed(
+        owner: &Identity,
+        server: Fingerprint,
+        address: SocketAddr,
+        offset: u64,
+        at: u64,
+        life: Duration,
+    ) -> Live {
+        let mut due: Option<Instant> = None;
         loop {
+            if let Some(due) = due {
+                std::thread::sleep(due.saturating_duration_since(Instant::now()));
+            }
             let live = Live::connect(owner, server, address, offset);
             match live.hear() {
                 Heard::Said(Said::Taken { accepted, .. }) => {
                     assert_eq!(accepted, at);
                     return live;
                 }
-                Heard::Lost(_) if !refused => {
-                    refused = true;
+                Heard::Lost(_) if due.is_none() => {
                     drop(live);
-                    waited(|| false).unwrap_err();
+                    due = Some(Instant::now() + crate::net::probe_timeout_within(life));
                 }
                 other => panic!("no subscription: {other:?}"),
             }
@@ -1707,7 +1719,9 @@ mod tests {
 
         // The endpoint takes one connection at a time, and the stranger's, refused at its
         // handshake and closed, holds no place: the owner is taken at its first attempt, as the
-        // coordinator's real-VM run (tests/managed_output/member_stdin.rs) makes it.
+        // coordinator's real-VM run (tests/managed_output/member_stdin.rs) makes it. Every RTT
+        // sample its endpoint takes of it comes within its life.
+        let lived = Instant::now();
         let live = Live::connect(&owner, server.fingerprint(), address, 0);
         assert_eq!(
             live.taken(),
@@ -1734,11 +1748,19 @@ mod tests {
         gate.send(()).unwrap();
         assert_eq!(receive("the member was relayed nothing", &records), second);
         live.vanish();
+        let life = lived.elapsed();
         let at = at + second.len() as u64;
         // The endpoint finds the vanished owner gone as the next contends for its one place,
         // each connection holding one asked for an answer (D180's liveness at use); until then
         // a second connection is refused, as an output's is.
-        let live = subscribed(&owner, server.fingerprint(), address, first.len() as u64, at);
+        let live = subscribed(
+            &owner,
+            server.fingerprint(),
+            address,
+            first.len() as u64,
+            at,
+            life,
+        );
         live.send(end(at, 0).to_vec());
         match live.hear() {
             Heard::Said(Said::Ended { written, end }) => {

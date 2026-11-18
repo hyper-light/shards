@@ -1417,6 +1417,12 @@ impl<H: Handler> Driver<H> {
             .map_err(|_| Error::new("no memory for the endpoint datagram"))?;
         datagram.resize(DATAGRAM, 0);
         let mut last: Option<Turn> = None;
+        // Under test, whether its wait last woke for its own timer alone, nothing taken in, and
+        // its clock's count as it woke: the turn that follows is its own clock's, no progress of
+        // its party's (shards-testwait's `own_timer_since`), unless its handler's own time came
+        // in it. And how many of its waits in a row so woke, its probes unanswered.
+        #[cfg(test)]
+        let (mut own_timer, mut mark, mut unanswered) = (false, None, 0u32);
         loop {
             let now = Instant::now();
             let cpu = thread_cpu();
@@ -1443,6 +1449,11 @@ impl<H: Handler> Driver<H> {
                 let (mut io, handler) = self.io(now);
                 handler.timeout(&mut io, now);
                 self.client = io.client;
+                #[cfg(test)]
+                {
+                    own_timer = false;
+                    unanswered = 0;
+                }
             }
             self.timers(now);
             self.expire(now);
@@ -1481,14 +1492,39 @@ impl<H: Handler> Driver<H> {
             let looked = Instant::now();
             let wait = next.map(|at| whole_ms(at.saturating_duration_since(looked)));
             let planned = wait.filter(|w| !w.is_zero()).and_then(|w| looked.checked_add(w));
-            // Under test, its timer is its party's next progress, scheduled, for as long as it
-            // sleeps on it: a test's judged wait on a driver asleep until then has not stalled
-            // before it (shards-testwait's `Waiting`).
+            // Under test: a turn of its own timer alone told its party none of its run; and its
+            // next judgment, where one is due (its handler's own time, a handshake's window, a
+            // look at a send that waits, a closed connection's drain), is its party's next
+            // progress, scheduled, so that a test's judged wait on it has not stalled before it
+            // (shards-testwait's `Waiting`). So are its transport's own timers (retransmissions
+            // and probes, RFC 9002 §6.2), whose datagrams may bring its peer's answer, until
+            // [`PERSISTENT_CONGESTION_THRESHOLD`] of its waits in a row woke for its own timer
+            // alone: a path silent through that many probe timeouts lost all it was sent (§7.6),
+            // and a peer gone is probed for ever, which held such a wait for ever (ROOT,
+            // 2026-11-18, #36; CI 44227612442). Never its keep-alives, which judge nothing.
             #[cfg(test)]
-            let waiting = shards_testwait::Waiting::until(planned);
+            if own_timer {
+                shards_testwait::party::own_timer_since(mark);
+            }
+            #[cfg(test)]
+            let judged = self.next_judgment(unanswered < PERSISTENT_CONGESTION_THRESHOLD);
+            #[cfg(test)]
+            let waiting = shards_testwait::Waiting::until(judged);
             let ready = readable(&self.socket, &self.wake, wait);
             #[cfg(test)]
             drop(waiting);
+            // Woken by its timer alone where neither a datagram nor a wake came: a wait a signal
+            // cut short counts as one that took something in.
+            #[cfg(test)]
+            {
+                own_timer = matches!(ready, Ok((false, false)));
+                mark = own_timer.then(shards_testwait::party::mark).flatten();
+                unanswered = if own_timer {
+                    unanswered.saturating_add(1)
+                } else {
+                    0
+                };
+            }
             let back = Instant::now();
             // Waited as planned until its timer, or until what came; past its timer, absent.
             turn.blocked = planned
@@ -2102,6 +2138,34 @@ impl<H: Handler> Driver<H> {
         }
     }
 
+    /// Under test, when its next judgment is due: its handler's own time; an open connection's
+    /// handshake window, or its look at a send that waits, as [`next_timer`](Self::next_timer)
+    /// has them; and a closed one's end, its drain (RFC 9000 §10.2: three probe timeouts, set
+    /// once as it closes, its only timer then). Where it is `probing`, an open connection's
+    /// transport timers too (`poll_timeout`: its retransmissions and probes, RFC 9002 §6.2),
+    /// whose datagrams may bring its peer's answer; never its keep-alives, which judge nothing
+    /// and, answered, plan another for ever. With no idle timeout (this crate's transports set
+    /// none, D180), no transport timer of an open connection ends it.
+    #[cfg(test)]
+    fn next_judgment(&mut self, probing: bool) -> Option<Instant> {
+        let judged = self
+            .conns
+            .values_mut()
+            .filter_map(|c| {
+                if c.quic.is_closed() {
+                    return c.quic.poll_timeout();
+                }
+                let probe = probing.then(|| c.quic.poll_timeout()).flatten();
+                let look = c.connected.then(|| c.liveness.next()).flatten();
+                [probe, c.liveness.due(), look].into_iter().flatten().min()
+            })
+            .min();
+        match (judged, self.handler.due()) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
+    }
+
     fn next_timer(&mut self) -> Option<Instant> {
         let lost = self.lost;
         self.conns
@@ -2442,6 +2506,23 @@ fn keep_within(lost: Option<Duration>, idle: Option<Duration>) -> Option<Duratio
         (Some(a), Some(b)) => Some(a.min(b)),
         (a, b) => a.or(b),
     }
+}
+
+/// The longest probe timeout an endpoint holds a connection to (RFC 9002 §6.2.1, its
+/// application data's, as [`Liveness::unanswering`] judges an established one) whose every RTT
+/// sample came within `rtt`: before any, the cold one with its peer's `max_ack_delay`; past one,
+/// its smoothed RTT (no more than `rtt`), four times its variation (no more than `rtt` either,
+/// each sample within `rtt` of the smoothed one, §5.3) or kGranularity's 1 ms (§6.1.2), and its
+/// peer's `max_ack_delay`: RFC 9000 §18.2's default of 25 ms, which its transport keeps
+/// (`tls::transport` sets none). A test's bound on its holder's probe timeout, past which a
+/// newcomer takes its place (D180): this crate's tests', net.rs's and managed's.
+#[cfg(test)]
+pub(crate) fn probe_timeout_within(rtt: Duration) -> Duration {
+    let max_ack_delay = Duration::from_millis(25);
+    let sampled = rtt.saturating_add(rtt.saturating_mul(4).max(Duration::from_millis(1)));
+    crate::tls::Known::COLD_PTO
+        .max(sampled)
+        .saturating_add(max_ack_delay)
 }
 
 #[cfg(test)]
@@ -3264,21 +3345,6 @@ mod tests {
             }
             after();
         }
-    }
-
-    /// The longest probe timeout an endpoint holds a connection to (RFC 9002 §6.2.1, its
-    /// application data's, as [`Liveness::unanswering`] judges an established one) whose every
-    /// RTT sample came within `rtt`: before any, the cold one with its peer's `max_ack_delay`;
-    /// past one, its smoothed RTT (no more than `rtt`), four times its variation (no more than
-    /// `rtt` either, each sample within `rtt` of the smoothed one, §5.3) or kGranularity's 1 ms
-    /// (§6.1.2), and its peer's `max_ack_delay`: RFC 9000 §18.2's default of 25 ms, which its
-    /// transport keeps (`tls::transport` sets none).
-    fn probe_timeout_within(rtt: Duration) -> Duration {
-        let max_ack_delay = ms(25);
-        let sampled = rtt.saturating_add(rtt.saturating_mul(4).max(ms(1)));
-        crate::tls::Known::COLD_PTO
-            .max(sampled)
-            .saturating_add(max_ack_delay)
     }
 
     /// A bounded endpoint's one place, held by an established connection (step 5's output and

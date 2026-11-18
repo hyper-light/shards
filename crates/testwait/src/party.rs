@@ -144,6 +144,26 @@ pub(crate) fn waited(id: u64, cpu: u64) {
     }
 }
 
+/// What this thread's clock has counted, as its party reads it, where it is one of its
+/// party's members: a mark for [`own_timer_since`].
+pub fn mark() -> Option<u64> {
+    let key = KEY.with(Cell::get)?;
+    let id = PARTY.with(Cell::get).0;
+    parties().get(&id)?.members.get(&key)?.0.ran()
+}
+
+/// This thread, one of its party's members, ran what its clock counted since `mark` on its own
+/// timer alone: a turn that took nothing in, of no peer's and no caller's (a driver's
+/// retransmissions, probes and keep-alives). That is no progress of its party's: a wait on
+/// what it serves is not held by its own clock, which a driver probing a vanished peer keeps
+/// for ever (ROOT, 2026-11-18, #36; CI 44227612442, aarch64 gnu: two of shards-remote's tests
+/// held to the step's limit).
+pub fn own_timer_since(mark: Option<u64>) {
+    if let (Some(from), Some(now)) = (mark, self::mark()) {
+        waited(PARTY.with(Cell::get).0, now.saturating_sub(from));
+    }
+}
+
 /// This thread as a member of party `party`, from its start to its end, when it adds
 /// what it ran to what its party's members that ended ran.
 struct Member {

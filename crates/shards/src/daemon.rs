@@ -18738,13 +18738,15 @@ mod tests {
                 "an exec its microVM never answered was waited for with no end: {told:?}"
             );
             assert_eq!(status, 1, "{err}");
+            // Its stall's account of its party's threads (`Stall::account`), where its OS's
+            // listing read them (Linux, macOS, Windows): said between its wait and its end.
+            let waited = " into the wait (the least a microVM ran and still answered: 50µs in 50ms)";
+            let (_, after) = err.split_once(waited).unwrap_or_default();
+            let end = ", so its metrics were not read\n";
             assert!(
                 err.starts_with("shards: read metrics: stalled: its microVM ran no CPU in ")
                     && err.contains(" past the slowest answer seen (50ms), ")
-                    && err.ends_with(
-                        " into the wait (the least a microVM ran and still answered: 50µs in \
-                         50ms), so its metrics were not read\n"
-                    ),
+                    && (after == end || (after.starts_with("; its threads: ") && after.ends_with(end))),
                 "{err}"
             );
             say(&vm, kind::DONE, &[0]);

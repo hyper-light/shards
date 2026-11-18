@@ -1941,9 +1941,10 @@ mod tests {
     /// says nothing on is no idle connection), then given one record: neither side has an idle
     /// timeout or a keep-alive to hold it (D180's liveness at use), it lives through the
     /// silence, and carries the record whole. Its silence is no window of the test's: each
-    /// driver's timer is its party's deadline (shards-testwait's `Waiting`), so that a timer of
-    /// either side's that would end a quiet connection, an idle timeout's or a keep-alive's,
-    /// has fired before its wait on its party's stillness ends.
+    /// driver's next judgment is its party's deadline (shards-testwait's `Waiting`), so that a
+    /// look of either side's that would end a quiet connection has come before its wait on its
+    /// party's stillness ends; and neither side's transport has a timer that ends one, with no
+    /// idle timeout ([`transport_of`], `tls::transport`).
     #[test]
     fn a_quiet_subscription_lives_with_no_idle_timeout_or_keep_alive() {
         let pair = Pair::subscribed();
@@ -1987,6 +1988,8 @@ mod tests {
     /// takes that long to be answered (3.2-3.4 s on adas-mac-studio.local).
     #[test]
     fn a_vanished_owners_place_goes_to_its_successor_as_it_dials() {
+        // Every RTT sample its endpoint takes of its owner comes within its owner's life.
+        let lived = Instant::now();
         let mut pair = Pair::subscribed();
         // A record first, consumed: its endpoint has seen its owner answer, and so has a window
         // to judge it by (a holder whose path showed no answer never stalls, D180's cold start;
@@ -2011,12 +2014,17 @@ mod tests {
         assert!(consumed.is_ok(), "{consumed:?}");
         pair.owner.send(Command::Handler(Ask::Vanish)).unwrap();
         pair.owner_driver.take().unwrap().join().unwrap().unwrap();
+        let life = lived.elapsed();
         let mut bytes = pair.producer.take_buffer().unwrap().unwrap();
         bytes.extend_from_slice(b"to nobody\n");
         pair.producer.submit(bytes).unwrap();
         let start = Instant::now();
         let mut refused = 0;
+        let mut due: Option<Instant> = None;
         let heard = loop {
+            if let Some(due) = due {
+                std::thread::sleep(due.saturating_duration_since(Instant::now()));
+            }
             let (hears, heard) = mpsc::channel();
             let config = client_config(&pair.owner_identity, pair.server, admitted()).unwrap();
             let (mut driver, asks) = Driver::bind_bounded(
@@ -2044,13 +2052,14 @@ mod tests {
             running.join().unwrap().unwrap();
             match got {
                 // Refused while its endpoint still holds the vanished owner's place, which it
-                // asks for an answer (a PING): its party waited on until still a whole W* past
-                // every deadline it waits until (D215's stillness), that probe's window and its
-                // hold of this attempt's second Initial among them, after which the next attempt
-                // takes the place (D180). A refusal after that is the place never let go.
+                // asks for an answer (a PING): unheard past its probe timeout since (D180), its
+                // place is the next attempt's, made past that time as its owner's life bounds it
+                // (`probe_timeout_within`). A refusal after that is the place never let go.
+                // Before, its party's stillness, which its endpoint's probes of its vanished owner
+                // never let come (CI 44227612442, aarch64 gnu: held to the step's limit).
                 Ok(Heard::Lost(_)) if refused == 0 => {
                     refused += 1;
-                    waited(|| false).unwrap_err();
+                    due = Some(Instant::now() + crate::net::probe_timeout_within(life));
                 }
                 other => break other,
             }

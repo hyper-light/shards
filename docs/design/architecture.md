@@ -30041,7 +30041,7 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
           (control.rs had 10 s, its controller's hearing 20 s, which CI's loaded runners
           outran). Under test, its driver (net.rs) registers its planned timer as its party's
           deadline while it sleeps on it, so that a party asleep on its loss or acknowledgement
-          timer is not refused before it. Its control tests' stand-in controller runs the product
+          timer is not refused before it (bounded since: *A driver's progress*, below). Its control tests' stand-in controller runs the product
           controller's liveness (no idle timeout and no keep-alive, `managed::transport_of`,
           D180): hyper-quic's default 30 s idle timeout, negotiated with the endpoint, put
           keep-alives on both ends, which a judged wait reads as progress, so that a stuck
@@ -30117,9 +30117,45 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
           is held (managed.rs, managed/input.rs) waits on its party's stillness, the
           endpoint's probe of the holder and its hold of the attempt's second Initial among
           its deadlines, and its next attempt must take the place (D180): no 100 ms pace, no
-          30 s window. The single-stream endpoint lets a frame that came as its host let its
+          30 s window (its wait derived since: *A driver's progress*, below). The single-stream endpoint lets a frame that came as its host let its
           input go pass as the control endpoint does (`Service::refusal`), its owner's
           connection closed by the revocation's own word, not `Protocol`.
+        - *A driver's progress* (2026-11-18, #36, ROOT: CI 44227612442 at 7ca9f467e2,
+          aarch64-unknown-linux-gnu, job 134545100447). Two of shards-remote's tests held their
+          step to its limit: managed.rs `a_vanished_owners_place_goes_to_its_successor_as_it_dials`
+          and managed/input.rs's successor (`subscribed`). Neither awaited event was missing,
+          and no party was busy with the awaited work. Each settled on its party's stillness
+          after a refusal (`waited(|| false)`), and the stillness never came. The endpoint's
+          driver probed the vanished holder it had asked for an answer, its probe timeouts
+          backed off (RFC 9002 §6.2.1) and never given up, as no idle timeout ends a connection
+          of this crate's transports (D180). Each probe's turn was read as its party's run, and
+          each next probe registered as its party's deadline, before which no wait is judged.
+          - *Its progress.* A turn in which a driver takes something in (a peer's datagram, or a
+            caller's command and its wake), or in which its handler's own time comes. A turn its
+            wait woke for on its own timer alone is its own clock's, as a member's run while it
+            waits judged is (`waited`): its retransmissions, probes and keep-alives are no run
+            of its party's (shards-testwait `party::own_timer_since`).
+          - *Its deadlines.* Its judgments: its handler's own time, an open connection's
+            handshake window (`Liveness::due`) or its look at a send that waits
+            (`Liveness::next`), and a closed connection's drain (RFC 9000 §10.2: three probe
+            timeouts, set once as it closes). Its transport's own timers (`poll_timeout`) too,
+            whose retransmissions may bring a live peer's answer after a datagram was lost, until
+            `PERSISTENT_CONGESTION_THRESHOLD` (3) of its waits in a row woke for its own timer
+            alone. A path silent through that many probe timeouts lost all it was sent (RFC 9002
+            §7.6: PTO, 2 PTO and 4 PTO, the 7 of D180's cold window). From then on, until it
+            takes something in or its handler's own time comes, its judgments alone. Never its
+            keep-alives, which judge nothing and, answered, would plan another for ever.
+          - *A successor's wait, derived.* Refused while the place is held, a successor makes its
+            next attempt past its holder's probe timeout from that refusal, bounded from the
+            holder's life (`net::probe_timeout_within`: every RTT sample its endpoint took of
+            the holder came within it), as net.rs's newcomers do (item 4). That attempt takes
+            the place, and a refusal of it fails the test (D180).
+          - The quiet subscription still waits on its party's stillness. Its drivers' transports
+            have no idle timeout, so no timer of theirs ends a quiet connection. What could, a
+            look of their liveness, is its party's deadline.
+          - Red (lanes/redgreen/remote-vanished-probes.patch): at each test's first refusal, a
+            wait for an answer that never comes, while the endpoint probes the vanished holder.
+            Refused with its account, never held (before, CI's hang).
         - *net.rs's numbers, ruled (R03).*
           - Judged now: `next_heard` (was 60 s), `take`'s poll (was 60 s), the wake's read (was
             a 10 s read timeout), a hand's wait for its server's flight (`Hand::answers`, was a
