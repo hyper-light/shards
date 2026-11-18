@@ -700,15 +700,13 @@ fn the_runs_one_log_cap_is_said_by_logs_and_by_a_lane_from_the_oldest_and_holds_
             });
             assert_eq!(owned as u64, each, "agent a's owned output");
 
-            // Whose logs the cap cut, by its record of each (`log.capped`).
+            // Whose logs the cap cut, by its record of each (`log.capped`), read as the cap reads
+            // it (cap.rs `capped`): its newest version, which on Windows is all there is.
             let capped: Vec<u32> = [A, B]
                 .into_iter()
                 .filter(|member| {
-                    run.dir
-                        .join("members")
-                        .join(member.to_string())
-                        .join("log.capped")
-                        .exists()
+                    let dir = run.dir.join("members").join(member.to_string());
+                    common::newest(&dir, "log.capped").exists()
                 })
                 .collect();
             assert!(

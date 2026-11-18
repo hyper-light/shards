@@ -415,16 +415,21 @@ pub mod terminal;
 #[path = "terminal_windows.rs"]
 pub mod terminal;
 
-/// The file `name` of the snapshot generation `dir` points at, as the store reads both:
-/// its pointer, and the file's newest version, which on Windows a file written after its
-/// generation was committed (its working set) lands as (platform `write_in`); the name
-/// itself where none has.
-pub fn snapshot_file(dir: &Path, name: &str) -> PathBuf {
-    let generation = shards_vmm::snapshot::generation(dir).unwrap();
-    let newest = shards_vmm::platform::open_dir(&generation)
+/// The file `name` in `dir` as its readers take it: its newest version, which on Windows a
+/// file written whole lands as (platform `write_in`: `name.~N`, never `name` itself, PM
+/// M345); the name itself where none has.
+pub fn newest(dir: &Path, name: &str) -> PathBuf {
+    let newest = shards_vmm::platform::open_dir(dir)
         .and_then(|d| shards_vmm::platform::newest_in(&d, name))
         .unwrap_or_else(|_| name.to_string());
-    generation.join(newest)
+    dir.join(newest)
+}
+
+/// The file `name` of the snapshot generation `dir` points at, as the store reads both: its
+/// pointer, and the file's newest version ([`newest`]), as a file written after its
+/// generation was committed (its working set) lands on Windows.
+pub fn snapshot_file(dir: &Path, name: &str) -> PathBuf {
+    newest(&shards_vmm::snapshot::generation(dir).unwrap(), name)
 }
 
 /// Plan step 33's leak scan (docs/research/measurements/s33-leak-scan), on what it scans:
