@@ -2069,19 +2069,7 @@ mod tests {
                                 let mut sink = [0u8; 4096];
                                 while matches!(tcp.read(&mut sink), Ok(n) if n > 0) {}
                             } else {
-                                // Go's server reads what it is sent before it answers, and
-                                // so is not reset: Winsock resets a socket closed with bytes
-                                // unread, and its peer may then lose the answer.
-                                let mut header = [0u8; 5];
-                                if tcp.read_exact(&mut header).is_ok() {
-                                    let len = usize::from(u16::from_be_bytes([header[3], header[4]]));
-                                    let mut record = vec![0u8; len];
-                                    let _ = tcp.read_exact(&mut record);
-                                }
-                                let _ = tcp.write_all(crate::testing::GO_BAD_REQUEST);
-                                let _ = tcp.shutdown(std::net::Shutdown::Write);
-                                let mut sink = [0u8; 4096];
-                                while matches!(tcp.read(&mut sink), Ok(n) if n > 0) {}
+                                crate::testing::answered_tls_as_go(&tcp);
                             }
                             return;
                         }
@@ -2147,16 +2135,7 @@ mod tests {
                     let mut first = [0u8; 1];
                     if tcp.peek(&mut first).is_ok_and(|n| n == 1) && first[0] == 0x16 {
                         seen.fetch_add(1, Ordering::SeqCst);
-                        let mut header = [0u8; 5];
-                        if tcp.read_exact(&mut header).is_ok() {
-                            let len = usize::from(u16::from_be_bytes([header[3], header[4]]));
-                            let mut record = vec![0u8; len];
-                            let _ = tcp.read_exact(&mut record);
-                        }
-                        let _ = tcp.write_all(crate::testing::GO_BAD_REQUEST);
-                        let _ = tcp.shutdown(std::net::Shutdown::Write);
-                        let mut sink = [0u8; 4096];
-                        while matches!(tcp.read(&mut sink), Ok(n) if n > 0) {}
+                        crate::testing::answered_tls_as_go(&tcp);
                         return;
                     }
                     loop {
@@ -3754,9 +3733,7 @@ mod tests {
                     let (asked, body) = (asked.clone(), body.clone());
                     served.push(std::thread::spawn(move || {
                         // Asked in TLS first, it answers as a plain registry does (testing.rs).
-                        let mut first = [0u8; 1];
-                        if tcp.peek(&mut first).is_ok_and(|n| n == 1) && first[0] == 0x16 {
-                            let _ = tcp.write_all(crate::testing::GO_BAD_REQUEST);
+                        if crate::testing::answered_tls_as_go(&tcp) {
                             return;
                         }
                         let mut reader = BufReader::new(tcp.try_clone().unwrap());

@@ -246,10 +246,8 @@ pub(crate) fn route(
                 // Its reads wait as its client's connection lives: the client's end, or the
                 // server's drop, which ends the connection ([`crate::http::end`]), ends each.
                 // A plain server asked for TLS answers as Go's net/http answers a request
-                // it cannot read, as a registry does (server.go, publicErr).
-                let mut first = [0u8; 1];
-                if tls.is_none() && tcp.peek(&mut first).is_ok_and(|n| n == 1) && first[0] == 0x16 {
-                    let _ = (&tcp).write_all(GO_BAD_REQUEST);
+                // it cannot read, as a registry does ([`answered_tls_as_go`]).
+                if tls.is_none() && answered_tls_as_go(&tcp) {
                     return;
                 }
                 let mut io: Box<dyn Io> = match &tls {
@@ -287,6 +285,32 @@ pub(crate) fn route(
 /// What Go's net/http writes to a connection whose request it cannot read.
 pub(crate) const GO_BAD_REQUEST: &[u8] =
     b"HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\n400 Bad Request";
+
+/// Answers a client that opened with TLS as Go's net/http answers a request it cannot read
+/// (server.go, publicErr), where `tcp`'s first byte is a TLS handshake record's: the hello
+/// read first, as Go reads what it is sent before it answers ([`GO_BAD_REQUEST`]), its end
+/// said, and what the client sends read until it closes, so that the connection never closes
+/// with a byte unread. A close with bytes unread resets it (RFC 1122 §4.2.2.13), and a reset
+/// can lose its peer the answer: on Windows a client's handshake then reads os error 10054
+/// where "server gave HTTP response to HTTPS client" was due. Whether it did.
+pub(crate) fn answered_tls_as_go(tcp: &TcpStream) -> bool {
+    let mut first = [0u8; 1];
+    if !(tcp.peek(&mut first).is_ok_and(|n| n == 1) && first[0] == 0x16) {
+        return false;
+    }
+    let mut tcp = tcp;
+    let mut header = [0u8; 5];
+    if tcp.read_exact(&mut header).is_ok() {
+        let len = usize::from(u16::from_be_bytes([header[3], header[4]]));
+        let mut record = vec![0u8; len];
+        let _ = tcp.read_exact(&mut record);
+    }
+    let _ = tcp.write_all(GO_BAD_REQUEST);
+    let _ = tcp.shutdown(Shutdown::Write);
+    let mut sink = [0u8; 4096];
+    while matches!(tcp.read(&mut sink), Ok(n) if n > 0) {}
+    true
+}
 
 /// A request's head, as a test server reads it.
 pub(crate) fn parse(text: &str) -> Seen {
