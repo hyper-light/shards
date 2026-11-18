@@ -732,6 +732,18 @@ impl Service {
         matches!(*lock(&self.shared), Slot::Ended { .. })
     }
 
+    /// Its lane is over: its input ended, or was let go by its host (revoked, or no room for
+    /// it, D252). What its subscriber sent before it heard is let go with the lane, never its
+    /// error: a record in flight as its host let the input go is no frame sent amiss (CI
+    /// 44189693085, windows-2022: an MCP connection's stdin, aborted by its host as its
+    /// endpoint read its controller's record, closed the whole connection, `Protocol`).
+    pub(crate) fn over(&self) -> bool {
+        matches!(
+            *lock(&self.shared),
+            Slot::Ended { .. } | Slot::Revoked | Slot::NoRoom
+        )
+    }
+
     /// Its subscriber has been told the input's end, all of it, and its stream finished.
     pub(crate) fn said_its_end(&self) -> bool {
         self.finished
@@ -1373,6 +1385,27 @@ mod tests {
         feed(service, &end(0, EIO)).unwrap();
         control.ended(0, InputEnd::Closed);
         assert!(matches!(control.state(), State::Ended { written: 3, .. }));
+    }
+
+    /// A record its owner sent before it heard its input let go, by its host's abort or for no
+    /// room (D252), finds the input's lane over, as one sent after its input ended does: its
+    /// reader lets it go with the lane, and no endpoint closes its owner's connection for it
+    /// (CI 44189693085, windows-2022: control.rs's
+    /// `an_inputs_try_says_none_until_its_room_end_or_fault_rings_the_wake`, its MCP stdin
+    /// aborted as its endpoint read the controller's record, was closed `Protocol`, not told
+    /// `Revoked`). Red where only an ended input's lane is over.
+    #[test]
+    fn a_record_in_flight_as_its_input_is_let_go_finds_its_lane_over() {
+        for let_go in [Control::abort as fn(&Control), Control::no_room] {
+            let (mut endpoint, _relay, control) = bound();
+            let service = endpoint.driver.handler_mut();
+            service.state = Subscription::Connecting(CONN);
+            feed(service, &subscribe(scope(), 0)).unwrap();
+            assert!(!service.over(), "an open input's lane is not over");
+            let_go(&control);
+            assert_eq!(feed(service, &record_frame(0, b"first")), Err(Reason::Protocol));
+            assert!(service.over(), "its lane over: what still comes of it is let go");
+        }
     }
 
     #[test]

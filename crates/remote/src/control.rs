@@ -1294,8 +1294,9 @@ impl Lanes {
 }
 
 /// What a lane's reading leaves it: open; ended by its controller (its FIN or its reset), the
-/// lane abandoned both ways; over, its input having ended, so that what its controller sends
-/// is let go while the end is told; or refused, its controller having sent what the lane's
+/// lane abandoned both ways; over, its input having ended or been let go by its host
+/// (`input::Service::over`), so that what its controller sent before it heard is let go while
+/// the end or the revocation is told; or refused, its controller having sent what the lane's
 /// protocol refuses, which closes its connection as step 5's endpoints close their owner's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum After {
@@ -1389,7 +1390,7 @@ impl Handler for Lanes {
                 .map(|output| after(output.read(io, conn, stream), false)),
             Serves::Input(at) => self.inputs.get_mut(at).map(|input| {
                 let read = input.read(io, conn, stream);
-                after(read, input.ended())
+                after(read, input.over())
             }),
         };
         match read {
