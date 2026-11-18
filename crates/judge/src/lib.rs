@@ -215,8 +215,9 @@ pub struct Rated {
 /// least rate and most work are that one answer, so two is the fewest with any spread. A
 /// derivation, not a tuning (D215, ROOT's ruling of 2026-11-17: four waits, each refused
 /// past a kind one answer had taught, on CI's loaded x86_64 runners, live and progressing,
-/// one with its answer already printed).
-const SPREAD: u64 = 2;
+/// one with its answer already printed). A teardown's C* refuses by the same count (D217,
+/// the daemon's `ends`).
+pub const SPREAD: u64 = 2;
 
 /// The due looks within which a wait whose party is still throughout is refused, its judge
 /// unheld: its first may find its party's baseline or its caller's own first run

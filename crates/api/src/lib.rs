@@ -69,7 +69,7 @@ pub use native::{
 };
 pub use physical::{GpuName, GpuProbe, GpuProbeError, PhysicalGpu, PhysicalGpuError, ResolvedGpu};
 pub use progress::{Awaited, Bound, Follow, Followed, Unfollowed, Watch, runnable_threads};
-pub use shards_judge::{Found, Judge, LOOKS_TO_REFUSE, Rate, Rated, Record, Seen, Span, Stall};
+pub use shards_judge::{Found, Judge, LOOKS_TO_REFUSE, Rate, Rated, Record, SPREAD, Seen, Span, Stall};
 #[cfg(windows)]
 pub use shards_judge::{ThreadsHeld, threads_held, threads_said};
 

@@ -507,6 +507,14 @@ static LOGGED: AtomicU64 = AtomicU64::new(0);
 static WAITED_PAST_MOST: Mutex<std::collections::BTreeMap<u32, u32>> =
     Mutex::new(std::collections::BTreeMap::new());
 
+/// How many of each microVM's teardown's slice looks found its VM process past the most work
+/// any teardown took (C*) and went on, by its ID, as its kill goes on (`end_all`): a test of
+/// the bound reads none, the first such look giving it up, where its red reaches
+/// `LOOKS_TO_REFUSE` (D217).
+#[cfg(test)]
+static TEARDOWN_WENT_PAST_MOST: Mutex<std::collections::BTreeMap<String, u32>> =
+    Mutex::new(std::collections::BTreeMap::new());
+
 /// The setup entry carrying a microVM's own engine's token (D181), `engine=` and its bytes in
 /// lowercase hex, which init makes its command's socket by.
 fn engine_entry(token: &[u8; shards_abi::run::TOKEN]) -> Vec<u8> {
@@ -8100,7 +8108,17 @@ impl<D: Disk> Daemon<D> {
                 };
                 match &mut stop.killed {
                     Some(teardown) => {
-                        if teardown.goes_on().is_some() {
+                        let went = teardown.goes_on().is_some();
+                        // More work than any teardown took (C*), its command not ended: given
+                        // up whatever its rate (D217, ROOT's ruling of 2026-11-18). Its work
+                        // unread, the bound takes nothing from this look, and says why.
+                        let past = teardown.past(self.ends.most_work()).unwrap_or_else(|why| {
+                            log(format!(
+                                "container {id}: its teardown's work unread, judged by its stillness alone at this look: {why}"
+                            ));
+                            None
+                        });
+                        if went && past.is_none() {
                             // Its guest still at its end: another slice.
                             shards_vmm::stage!("container {id}: its guest's teardown goes on: another slice");
                             stop.next = self
@@ -8110,10 +8128,18 @@ impl<D: Disk> Daemon<D> {
                             continue;
                         }
                         if let Some(vm) = &stop.vm {
+                            let why = match past {
+                                Some((work, most)) => format!(
+                                    "its microVM having run {work:?} of CPU since its SIGKILL, more than any teardown took ({most:?})"
+                                ),
+                                None => format!(
+                                    "its microVM gone on with nothing of its end for {:?}",
+                                    // Its deadline came: the home has a slice.
+                                    self.ends.slice(ends::End::Teardown).unwrap_or_default()
+                                ),
+                            };
                             log(format!(
-                                "container {id}: its command not ended as the daemon stops, its microVM gone on with nothing of its end for {:?}: its microVM killed",
-                                // Its deadline came: the home has a slice.
-                                self.ends.slice(ends::End::Teardown).unwrap_or_default()
+                                "container {id}: its command not ended as the daemon stops, {why}: its microVM killed"
                             ));
                             let _ = vm.kill(shards_ipc::signal::SIGKILL);
                         }
@@ -12697,6 +12723,79 @@ mod tests {
             say(&vm, kind::DONE, &[137]);
             let (status, out, err) = joined(asked);
             assert_eq!((status, out.as_str(), err.as_str()), (0, "joiner\n", ""));
+            let _ = joined(starting.run);
+        });
+    }
+
+    /// A teardown that has done more work than any teardown took (C*), its command never
+    /// ended, is given up and its microVM killed, whatever its rate (D217 by D215's rule for
+    /// starts, (b); ROOT's ruling of 2026-11-18): CI 44245219858's nine VMs, their guests
+    /// spinning, ran at their host's share for 348 s, followed for as long, and the stop of
+    /// their daemon with them. This home's slices are learned short, and its teardowns' C*
+    /// taught twice by teardowns of a millisecond, so that a stand-in spinning a CPU through
+    /// its SIGKILL, as a guest stuck in its kernel spins, passes it within a slice or two: the
+    /// green's kill ends by its follow alone, at its first slice look past C*. Its red
+    /// (lanes/redgreen/own-38g-teardown-work.patch, the bound unread) follows that teardown
+    /// for ever, going on at each such look, which it counts (`TEARDOWN_WENT_PAST_MOST`); once
+    /// LOOKS_TO_REFUSE of them have, the test says its command's end: the red's kill hears
+    /// it, its microVM never killed. The follow's own looks, never the test's beside them
+    /// (CI 44268931283, the start judge's test). No count of the test's own.
+    #[cfg(unix)]
+    #[test]
+    fn a_teardown_past_c_star_without_its_end_has_its_microvm_killed() {
+        let t = Test::new("teardown-work");
+        t.run(|t| {
+            // This home's slices, learned of ends that took 50 ms, and its C*, of two.
+            let slice = Duration::from_millis(50);
+            t.daemon.ends.learn(super::ends::End::Teardown, slice);
+            t.daemon.ends.learn(super::ends::End::Exit, slice);
+            let most = Duration::from_millis(1);
+            t.daemon.ends.learn_work(most);
+            t.daemon.ends.learn_work(most);
+            assert_eq!(t.daemon.ends.most_work(), Some(most));
+            let id = t.create("spinner");
+            let starting = t.start(&id);
+            let (mut ready, vm) = t.warm_vm(None);
+            // Its VM a stand-in spinning a CPU, whatever its SIGKILL.
+            let spinner = Arc::new(
+                shards_ipc::spawn(
+                    Path::new("/bin/sh"),
+                    &[OsStr::new("-c"), OsStr::new("while :; do :; done")],
+                    &[],
+                    false,
+                )
+                .unwrap(),
+            );
+            lock(&t.vms).push(spinner.clone());
+            ready.vm = spinner.clone();
+            ready.pooled = None;
+            starting.warm.send(ready).unwrap();
+            assert_eq!(heard(&vm).0, kind::RUN);
+            say(&vm, kind::TAKEN, &[]);
+            say(&vm, kind::STARTED, &[]);
+            t.until("the run started", |d| {
+                lock(&d.containers)
+                    .get(&id)
+                    .is_some_and(|c| c.state == Life::Running)
+            });
+            let asked = t.asking(&["kill", "spinner"]);
+            assert_eq!(heard(&vm), signal(9));
+            let went_past_most = || lock(&TEARDOWN_WENT_PAST_MOST).get(&id).copied().unwrap_or(0);
+            while !asked.is_finished() && went_past_most() < shards_api::LOOKS_TO_REFUSE {
+                std::thread::sleep(slice);
+            }
+            // The red's: its teardown followed on past C*, its command's end said now.
+            let held = !asked.is_finished();
+            if held {
+                say(&vm, kind::DONE, &[137]);
+            }
+            let (status, out, err) = joined(asked);
+            assert!(
+                !held,
+                "a teardown past C* not given up: followed on at {} looks past it",
+                went_past_most()
+            );
+            assert_eq!((status, out.as_str(), err.as_str()), (0, "spinner\n", ""));
             let _ = joined(starting.run);
         });
     }

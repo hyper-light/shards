@@ -2157,7 +2157,29 @@ impl<D: crate::containers::Disk> Daemon<D> {
                             (e.followed, e.since) = (teardown, Instant::now());
                         }
                         Phase::Killed | Phase::Escalated => {
-                            if let Some(look) = e.followed.goes_on() {
+                            let went = e.followed.goes_on();
+                            // More work than any teardown took (C*), its command not ended:
+                            // given up whatever its rate (D217, ROOT's ruling of 2026-11-18). Its
+                            // work unread, the bound takes nothing from this look, and says why.
+                            let past = e.followed.past(self.ends.most_work()).unwrap_or_else(|why| {
+                                super::log(format!(
+                                    "container {}: its teardown's work unread, judged by its stillness alone at this look: {why}",
+                                    e.id
+                                ));
+                                None
+                            });
+                            if let (Some(look), None) = (&went, past) {
+                                // A look past C* that went on: the bound's red alone makes one
+                                // (`TEARDOWN_WENT_PAST_MOST`).
+                                #[cfg(test)]
+                                if let (Ok(Some(work)), Some(most)) =
+                                    (e.followed.work(), self.ends.most_work())
+                                    && work > most
+                                {
+                                    *lock(&super::TEARDOWN_WENT_PAST_MOST)
+                                        .entry(e.id.clone())
+                                        .or_default() += 1;
+                                }
                                 // Its guest is still at its end: another slice.
                                 super::log(format!(
                                     "container {}: its command not yet ended {:?} after SIGKILL, its microVM going on with its end: {look}",
@@ -2173,12 +2195,20 @@ impl<D: crate::containers::Disk> Daemon<D> {
                             // teardown followed in its provider's VM again.
                             let (socket, vm, provider) = match lock(&self.runs).get(&e.id) {
                                 Some(RunState::Tracked(t)) if t.joined.is_none() => {
+                                    let why = match past {
+                                        Some((work, most)) => format!(
+                                            "its microVM having run {work:?} of CPU since its SIGKILL, more than any teardown took ({most:?})"
+                                        ),
+                                        None => format!(
+                                            "its microVM gone on with nothing of its end for {:?}",
+                                            // Its deadline came: the home has a slice.
+                                            self.ends.slice(End::Teardown).unwrap_or_default()
+                                        ),
+                                    };
                                     super::log(format!(
-                                        "container {}: its command not ended {:?} after it was signalled, its microVM gone on with nothing of its end for {:?}: its microVM killed",
+                                        "container {}: its command not ended {:?} after it was signalled, {why}: its microVM killed",
                                         e.id,
                                         Duration::from_secs(e.since.elapsed().as_secs()),
-                                        // Its deadline came: the home has a slice.
-                                        self.ends.slice(End::Teardown).unwrap_or_default()
                                     ));
                                     if let Err(err) = t.vm.kill(shards_ipc::signal::SIGKILL) {
                                         super::log(format!("container {}: killing its microVM: {err}", e.id));
@@ -2285,7 +2315,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 let Some(k) = going.iter().position(|e| e.index as u64 == token) else {
                     continue;
                 };
-                let gone = going.swap_remove(k);
+                let mut gone = going.swap_remove(k);
                 let _ = poller.remove(&gone.told);
                 let mut byte = [0u8; 1];
                 let ended = matches!((&gone.told).read(&mut byte), Ok(1));
@@ -2302,6 +2332,19 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 if let Some(kind) = kind {
                     self.ends.learn(kind, woke.saturating_duration_since(gone.since));
                     learned = true;
+                }
+                // A teardown in its own microVM teaches C*, its VM process's work read through
+                // its end (D217); a joiner's provider's runs its own command too. One whose work
+                // could not be read teaches nothing, and says why.
+                if ended && matches!(gone.phase, Phase::Killed | Phase::Escalated) {
+                    match gone.followed.worked() {
+                        Ok(Some(work)) => self.ends.learn_work(work),
+                        Ok(None) => {}
+                        Err(why) => super::log(format!(
+                            "container {}: its teardown's work unread at its end, teaching nothing: {why}",
+                            gone.id
+                        )),
+                    }
                 }
                 done(
                     gone.index,

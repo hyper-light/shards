@@ -10588,6 +10588,46 @@ user's host as Docker's.
     `daemon::tests::a_joiners_kill_hears_its_end_while_its_providers_vm_works` (the end
     comes twenty learned slices past SIGKILL, the provider spinning). Red:
     lanes/redgreen/own-35d-joiner-end.patch.
+- **A teardown past the most work any took is given up** (ROOT's ruling of 2026-11-18, (b2),
+  goal 1453357d; D215's rule for starts, (b), applied to teardowns). Any CPU at all was a
+  teardown going on, so a microVM whose guest spins through its SIGKILL was followed for
+  ever, and a stop with it: CI 44245219858's nine VMs (firecracker job, Intel Xeon 6975P-C
+  under EC2's nested KVM), their guests spinning at their host's share for 348 s, never
+  ended, and `daemon stop` followed them past the arrival bench's 60 s.
+  - *The bound.* Each microVM's teardown is followed from its SIGKILL by its own VM process's
+    CPU (`Followed::work`, D215's readers). Once that work is more than any teardown of this
+    home's took (C*, `Ends::most_work`) at a slice's look, it is given up whatever its rate,
+    and its VM process killed: SIGKILL ends it whatever its guest does (`end_all`'s
+    `Followed::past`; the daemon's own stop the same). Stillness gives up as before. A
+    joiner's teardown is its provider's to follow (the bullet above): its provider's CPU is
+    its own command's too, so it is no measure of the joiner's teardown and has no C*. A VM
+    process that could not be read as its follow began has its work unread, never none: each
+    slice's look says so in the daemon's log, and the bound takes nothing from it, the
+    teardown judged by its stillness alone at that look; one whose work could not be read at
+    its end teaches nothing, said so (the person's rule of 2026-11-18: no fallbacks).
+  - *C*, learned.* A teardown in its own microVM teaches its work, read through its end: its
+    VM process looked at once more as its command's end is heard (`Followed::worked`), none
+    where it could not be read. The home keeps it beside its slices (`teardown-work NS
+    ANSWERS`), the most work and how many teardowns taught it, merged as D215 merges a
+    kind's (the more of two counts, never their sum). It bounds nothing until two have
+    taught it (`shards_api::SPREAD`, D215's derivation: one teardown's most work is that
+    one's); a teardown whose work read none teaches nothing (D215: no work holds no bound,
+    as a Windows tick read none). No number is chosen: C* is the host's own, and a home with
+    none follows its teardowns by their liveness and stillness alone, as before.
+  - *What it costs.* A teardown that needs more work than any before it took, a guest
+    freeing more memory than ever, is given up and its microVM killed, losing what its guest
+    had yet to write back (the decision's own reason for following, above), where it was
+    followed for as long as it ran. Its kill kept no C*: the next home's bound is the same.
+  - Tests: `daemon::ends::tests::a_teardowns_work_teaches_its_c_star_kept_in_its_home` (two
+    teaching, a zero ignored, kept and read back, a record not read whole none) and
+    `a_teardown_past_c_star_is_said_past_it_and_a_providers_never`; and
+    `daemon::tests::a_teardown_past_c_star_without_its_end_has_its_microvm_killed` (a
+    stand-in spinning a CPU through its SIGKILL, C* taught twice by a millisecond: its
+    microVM killed, the kill answered; its red, followed for ever, ended by the test once
+    `LOOKS_TO_REFUSE` of the follow's own looks past C* went on). Red:
+    lanes/redgreen/own-38g-teardown-work.patch (the bound unread). Written, not built or run
+    (the lane's rule). Owed (ROOT): those tests, clippy on every target, and the real-VM
+    stop and kill tests on HVF, KVM and WHP.
 - **A network or share process is followed the same way** (2026-11-13, PM M546; the
   person's ruling: a wait follows the party's liveness and progress, then the slowest
   answer seen). Once its VM has gone and its spawner holds nothing of it, it goes as its
