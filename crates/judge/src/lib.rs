@@ -56,8 +56,9 @@ impl Rate {
 
 /// What a wait that follows its party found as it refused it
 /// (shards-api's `Refusal::Stalled`). Kept in nanoseconds, each past u64's (584
-/// years) its most, and its kind's rates boxed apart, so that a refusal is no larger for
-/// them (clippy's `result_large_err` over a pair of refusals, crates/api/tests/sim.rs).
+/// years) its most, and its kind's rates and its threads' account boxed apart, so that a
+/// refusal is no larger for them (clippy's `result_large_err` over a pair of refusals,
+/// crates/api/tests/sim.rs).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Stall {
     waited: u64,
@@ -66,6 +67,8 @@ pub struct Stall {
     /// Its kind's R* and C* where an answer of it was rated, and its own rate where it was
     /// refused for running below R* ([`Stall::rate`]).
     rates: Option<Box<Rates>>,
+    /// Its party's threads as its caller read them as it refused it ([`Stall::said`]).
+    threads: Option<Box<str>>,
 }
 
 /// A [`Stall`]'s rates, in nanoseconds: R*'s CPU and wall, C*, and its own rate's CPU and
@@ -101,7 +104,33 @@ impl Stall {
                     rate: None,
                 })
             }),
+            threads: None,
         }
+    }
+
+    /// It, with its party's threads as `threads` says them, read as it was refused: each
+    /// one's state and, where it waits, on what, as its OS keeps them (Windows: its state and
+    /// wait reason, as `threads_said` reads them; Linux: its state and the kernel function it
+    /// sleeps in; macOS: its run state), so that a refusal says what its party was doing, never
+    /// at a look (ROOT, 2026-11-18: CI 44189693085's Windows refusals said "0 of 3 threads
+    /// runnable" and no more). None where its caller read none.
+    #[must_use]
+    pub fn said(mut self, threads: Option<String>) -> Stall {
+        self.threads = threads.map(String::into_boxed_str);
+        self
+    }
+
+    /// Its party's threads as they were read as it was refused ([`Stall::said`]).
+    pub fn threads(&self) -> Option<&str> {
+        self.threads.as_deref()
+    }
+
+    /// Its threads' account as a refusal's sentence ends with it, after its times: "; its
+    /// threads: " and what each was doing ([`Stall::threads`]); nothing where none was read.
+    /// One clause for every refusal that says a stall.
+    pub fn account(&self) -> String {
+        self.threads()
+            .map_or_else(String::new, |threads| format!("; its threads: {threads}"))
     }
 
     /// A wait refused for running below R*: `rate` its work over its unheld time, more work
@@ -624,6 +653,25 @@ impl<'a> Judge<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A stall says its party's threads as its caller read them as it refused it, and none
+    /// where its caller read none: the account rides with the stall, apart from its times.
+    #[test]
+    fn a_stall_says_its_partys_threads_as_they_were_read() {
+        let record = Record::new();
+        record.teach(Duration::from_millis(1), Duration::ZERO);
+        let now = Instant::now();
+        let stall = record
+            .stalled(now.checked_sub(Duration::from_millis(5)).unwrap(), now)
+            .unwrap();
+        assert_eq!(stall.threads(), None, "unread until its caller says them");
+        let said = stall
+            .clone()
+            .said(Some("7 waiting (WrUserRequest), 9 ready".into()));
+        assert_eq!(said.threads(), Some("7 waiting (WrUserRequest), 9 ready"));
+        assert_eq!((said.waited(), said.over()), (stall.waited(), stall.over()));
+        assert_eq!(said.said(None).threads(), None);
+    }
 
     /// A rate is less than another's as cross-multiplication says, with no float: equal
     /// rates are neither below the other, none at all is below any, and a duration past

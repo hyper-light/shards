@@ -366,10 +366,11 @@ impl<D: crate::containers::Disk> Daemon<D> {
             };
             followed.look().map_err(|why| match why {
                 shards_api::Unfollowed::Stalled(stall) => format!(
-                    "its VM ran nothing of its start for {:?}, past the slowest hold seen ({:?}), {:?} after it began",
+                    "its VM ran nothing of its start for {:?}, past the slowest hold seen ({:?}), {:?} after it began{}",
                     stall.over(),
                     stall.slowest(),
-                    began.elapsed()
+                    began.elapsed(),
+                    stall.account()
                 ),
                 shards_api::Unfollowed::Process { failure, .. } => {
                     format!("its VM's process could not be read: {failure}")

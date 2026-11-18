@@ -9955,10 +9955,11 @@ fn grant(
             };
             followed.look().map_err(|why| match why {
                 shards_api::Unfollowed::Stalled(stall) => format!(
-                    "VM {pid} asked nothing after {sent} messages: it ran nothing for {:?}, past the slowest request seen ({:?}), {:?} into its wait",
+                    "VM {pid} asked nothing after {sent} messages: it ran nothing for {:?}, past the slowest request seen ({:?}), {:?} into its wait{}",
                     stall.over(),
                     stall.slowest(),
-                    began.elapsed()
+                    began.elapsed(),
+                    stall.account()
                 ),
                 shards_api::Unfollowed::Process { failure, .. } => {
                     format!("VM {pid}: its process could not be read: {failure}")
@@ -10144,10 +10145,11 @@ fn ready(socket: &UnixStream, pid: u32, record: &shards_api::Record) -> Result<(
         };
         followed.look().map_err(|why| match why {
             shards_api::Unfollowed::Stalled(stall) => NotReady::Refused(format!(
-                "VM {pid} was not ready: it ran nothing for {:?}, past the slowest start seen ({:?}), {:?} after it began",
+                "VM {pid} was not ready: it ran nothing for {:?}, past the slowest start seen ({:?}), {:?} after it began{}",
                 stall.over(),
                 stall.slowest(),
-                into()
+                into(),
+                stall.account()
             )),
             shards_api::Unfollowed::Process { failure, .. } => NotReady::Failed(format!(
                 "VM {pid} was not ready: its process could not be read: {failure}"

@@ -406,6 +406,21 @@ pub struct Watch {
 /// in nanoseconds, and whether it was runnable on no CPU or running ([`Watch::starved`]).
 pub(crate) type Threads = std::collections::BTreeMap<u64, (u64, bool)>;
 
+/// Each thread of process `pid` as its OS keeps it, for a refusal's account of its party
+/// (`Stall::said`): Windows its state and wait reason (the system's listing, shards-judge's
+/// `threads_said`), Linux its state and the kernel function it sleeps in, macOS its run
+/// state. None where they could not be read.
+fn threads_account(pid: u32) -> Option<String> {
+    #[cfg(windows)]
+    {
+        shards_judge::threads_said(pid)
+    }
+    #[cfg(unix)]
+    {
+        os::threads_said(pid)
+    }
+}
+
 /// How many of process `pid`'s threads are runnable (running, or waiting for a CPU), of how
 /// many, as [`Watch::starved`] reads them (on Windows, the system's whole listing, as a
 /// [`Followed`]'s hold reads it): for a waiter's account of its party, so that a refusal
@@ -708,7 +723,11 @@ impl<'a> Follow<'a> {
             own: Duration::ZERO,
             work,
         };
-        let judged = self.judge.found_over(found, span).map_err(Unfollowed::Stalled);
+        // Refused, its party's threads read once, as it is: what each was doing.
+        let judged = self
+            .judge
+            .found_over(found, span)
+            .map_err(|stall| Unfollowed::Stalled(stall.said(threads_account(pid))));
         let hold = self.watch.hold;
         self.schedule(&hold, Instant::now());
         judged
@@ -994,6 +1013,31 @@ mod os {
             threads.insert(tid, (ran, state == b'R'));
         }
         Some(threads)
+    }
+
+    /// Each thread of process `pid` as its task's files show it ([`super::threads_account`]):
+    /// its ID, its state (`/proc/<pid>/task/<tid>/stat` field 3, proc(5)), and, not running,
+    /// the kernel function it sleeps in (its `wchan`; "0" where it names none). None where its
+    /// tasks cannot be listed or none of them read.
+    pub(super) fn threads_said(pid: u32) -> Option<String> {
+        let mut said = Vec::new();
+        for task in std::fs::read_dir(format!("/proc/{pid}/task")).ok()?.flatten() {
+            let Some(tid) = task.file_name().to_str().and_then(|tid| tid.parse::<u64>().ok()) else {
+                continue;
+            };
+            let dir = task.path();
+            let Some(state) = std::fs::read(dir.join("stat")).ok().and_then(|stat| state(&stat)) else {
+                continue;
+            };
+            let waits = std::fs::read_to_string(dir.join("wchan"))
+                .ok()
+                .filter(|waits| state != b'R' && !waits.is_empty() && waits != "0");
+            said.push(match waits {
+                Some(waits) => format!("{tid} {} in {waits}", char::from(state)),
+                None => format!("{tid} {}", char::from(state)),
+            });
+        }
+        (!said.is_empty()).then(|| said.join(", "))
     }
 
     /// A task's run-queue wait in nanoseconds, its `schedstat`'s second field; none where it
@@ -1300,6 +1344,29 @@ mod os {
     /// not be read, as of a thread that ended since it was listed.
     fn run_state(id: libc::c_int, handle: u64) -> Option<libc::c_int> {
         thread_info(id, handle).map(|info| info.pth_run_state)
+    }
+
+    /// Each thread of process `pid` as `PROC_PIDTHREADINFO` shows it
+    /// ([`super::threads_account`]): its handle and its run state (`pth_run_state`, mach's
+    /// TH_STATE_*). macOS keeps no wait reason another process may read. None where its threads
+    /// cannot be listed or none of them read.
+    pub(super) fn threads_said(pid: u32) -> Option<String> {
+        let id = libc::c_int::try_from(pid).ok()?;
+        let said: Vec<String> = threads(id)?
+            .into_iter()
+            .filter_map(|handle| {
+                let state = match run_state(id, handle)? {
+                    libc::TH_STATE_RUNNING => "running".to_string(),
+                    libc::TH_STATE_STOPPED => "stopped".to_string(),
+                    libc::TH_STATE_WAITING => "waiting".to_string(),
+                    libc::TH_STATE_UNINTERRUPTIBLE => "waiting uninterruptibly".to_string(),
+                    libc::TH_STATE_HALTED => "halted".to_string(),
+                    other => format!("in state {other}"),
+                };
+                Some(format!("{handle:#x} {state}"))
+            })
+            .collect();
+        (!said.is_empty()).then(|| said.join(", "))
     }
 
     fn rusage(pid: u32) -> Result<Option<libc::rusage_info_v0>, ProcessFailure> {
@@ -2065,6 +2132,8 @@ mod tests {
         };
         assert_eq!(stall.slowest(), slowest);
         assert!(stall.over() >= slowest, "{stall:?}");
+        // Its threads said as it was refused: what each was doing (ROOT, 2026-11-18).
+        assert!(stall.threads().is_some_and(|said| !said.is_empty()), "{stall:?}");
         let busy = std::sync::atomic::AtomicBool::new(true);
         std::thread::scope(|s| {
             s.spawn(|| {

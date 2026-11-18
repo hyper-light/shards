@@ -741,14 +741,15 @@ impl std::fmt::Display for Refusal {
                     "the guest's VM process ran too slowly to be answering: {:?} into the wait, {:?} \
                  of CPU in the {:?} it was seen to run, below the least a VM process ran here and \
                  still answered ({:?} in {:?}) and more than any answer took ({:?}), past the \
-                 slowest answer seen ({:?})",
+                 slowest answer seen ({:?}){}",
                     stall.waited(),
                     rate.cpu,
                     rate.over,
                     least.cpu,
                     least.over,
                     stall.most().unwrap_or_default(),
-                    stall.slowest()
+                    stall.slowest(),
+                    stall.account()
                 )
             }
             Refusal::Stalled(stall) => write!(
@@ -765,7 +766,8 @@ impl std::fmt::Display for Refusal {
                         least.cpu, least.over
                     )
                 )
-            ),
+            )
+            .and_then(|()| f.write_str(&stall.account())),
             Refusal::Rate(why) => write!(f, "the guest's rate: {why}"),
             Refusal::HostUse(broken) => write!(f, "the guest's use: its VM process answered {broken}"),
             Refusal::Release(why) => write!(f, "the VM's AppContainers: {why}"),

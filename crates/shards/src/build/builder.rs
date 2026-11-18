@@ -639,10 +639,11 @@ fn dialed(vm: &shards_ipc::Child, listener: &UnixListener) -> Result<UnixStream,
                             }
                             return Err(format!(
                                 "the builder did not start: it ran nothing for {:?}, past the \
-                                 slowest boot seen ({:?}), {:?} after it began",
+                                 slowest boot seen ({:?}), {:?} after it began{}",
                                 stall.over(),
                                 stall.slowest(),
-                                began.elapsed()
+                                began.elapsed(),
+                                stall.account()
                             ));
                         }
                         // Unreadable while it lives: never taken for no progress.
@@ -1605,9 +1606,10 @@ impl Drop for Builder {
         super::end(&self.conn);
         if let VmEnd::Stalled(stall) = follow_to_end(&self.vm, &ENDED) {
             shards_vmm::debug!(
-                "the builder's VM ran nothing over {:?} after its guest was told to power off, past the slowest builder end seen, {:?}: killed",
+                "the builder's VM ran nothing over {:?} after its guest was told to power off, past the slowest builder end seen, {:?}: killed{}",
                 stall.over(),
-                stall.slowest()
+                stall.slowest(),
+                stall.account()
             );
         }
         // The network process goes with its VM; its directory, a field, after this.

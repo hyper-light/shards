@@ -118,7 +118,7 @@ impl std::fmt::Display for Cut {
             Cut::Stalled(stall) => write!(
                 f,
                 "its microVM ran no CPU in {:?} past the slowest answer seen ({:?}), {:?} into the \
-                 wait ({})",
+                 wait ({}){}",
                 stall.over(),
                 stall.slowest(),
                 stall.waited(),
@@ -128,7 +128,8 @@ impl std::fmt::Display for Cut {
                         "the least a microVM ran and still answered: {:?} in {:?}",
                         least.cpu, least.over
                     )
-                )
+                ),
+                stall.account()
             ),
             Cut::Unread { pid, failure } => {
                 write!(f, "its microVM's process {pid} could not be read: {failure}")
@@ -1051,10 +1052,11 @@ impl std::fmt::Display for Stalled {
         match &self.0 {
             Cut::Stalled(stall) => write!(
                 f,
-                "its process ran no CPU in {:?} past the slowest answer seen ({:?}), {:?} into the wait",
+                "its process ran no CPU in {:?} past the slowest answer seen ({:?}), {:?} into the wait{}",
                 stall.over(),
                 stall.slowest(),
-                stall.waited()
+                stall.waited(),
+                stall.account()
             ),
             other => write!(f, "{other}"),
         }
