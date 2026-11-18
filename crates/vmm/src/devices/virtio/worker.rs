@@ -96,22 +96,8 @@ where
     R: Send + 'static,
 {
     let (give, take) = mpsc::sync_channel(1);
-    let builder = thread::Builder::new().name(name.into());
-    #[cfg(test)]
-    let builder = if REFUSE.get() {
-        builder.stack_size(REFUSED_STACK)
-    } else {
-        builder
-    };
-    let thread = match builder.spawn(move || {
-        // It answers its guest as it is asked, however busy its host (PM M317).
-        let _prioritized = match crate::platform::prioritize_device_thread() {
-            Ok(prioritized) => Some(prioritized),
-            Err(e) => {
-                debug!("a device worker runs at its default policy: {e}");
-                None
-            }
-        };
+    let thread = match builder(name).spawn(move || {
+        let _prioritized = prioritized();
         take.recv().ok().and_then(body)
     }) {
         Ok(thread) => thread,
@@ -121,6 +107,103 @@ where
     match give.send(payload) {
         Ok(()) => Ok(thread),
         Err(mpsc::SendError(payload)) => Err((format!("the {name} worker ended before it began"), payload)),
+    }
+}
+
+/// A device worker's thread: named `name`; on a test's thread that refuses its spawns
+/// ([`REFUSE`]), one the system refuses.
+fn builder(name: &str) -> thread::Builder {
+    let builder = thread::Builder::new().name(name.into());
+    #[cfg(test)]
+    let builder = if REFUSE.get() {
+        builder.stack_size(REFUSED_STACK)
+    } else {
+        builder
+    };
+    builder
+}
+
+/// The calling worker's thread prioritized as a device's, so that it answers its guest as it
+/// is asked, however busy its host (PM M317); at its default policy where the system will not.
+fn prioritized() -> Option<impl Sized> {
+    match crate::platform::prioritize_device_thread() {
+        Ok(prioritized) => Some(prioritized),
+        Err(e) => {
+            debug!("a device worker runs at its default policy: {e}");
+            None
+        }
+    }
+}
+
+/// A device's worker thread that lasts as long as the device (D272, amended 2026-11-18): it
+/// runs its body on each payload handed to it ([`Lasting::run`]), one at a time, hands each
+/// result back ([`Lasting::back`]), and waits for the next, so that what a payload's calls
+/// leave under way outlasts the payload. Windows cancels the calls a thread made as the thread
+/// ends ("When a thread exits, the I/Os associated with the thread must be cancelled", Windows
+/// Internals, Microsoft Press), and a vsock device's pipes keep calls under way across its
+/// pauses.
+pub struct Lasting<P, R> {
+    thread: JoinHandle<()>,
+    give: mpsc::Sender<P>,
+    back: mpsc::Receiver<R>,
+}
+
+impl<P: Send + 'static, R: Send + 'static> Lasting<P, R> {
+    /// Spawns thread `name`, which runs `body` on `first`, then on each payload [`run`]
+    /// hands it. A thread the system refuses gives `first` back with the error, as
+    /// [`spawn`]'s does.
+    ///
+    /// [`run`]: Lasting::run
+    pub fn spawn(
+        name: &str,
+        first: P,
+        mut body: impl FnMut(P) -> R + Send + 'static,
+    ) -> Result<Lasting<P, R>, (String, P)> {
+        let (give, take) = mpsc::channel::<P>();
+        let (done, back) = mpsc::channel::<R>();
+        let thread = match builder(name).spawn(move || {
+            let _prioritized = prioritized();
+            while let Ok(payload) = take.recv() {
+                if done.send(body(payload)).is_err() {
+                    return;
+                }
+            }
+        }) {
+            Ok(thread) => thread,
+            Err(e) => return Err((format!("spawning the {name} worker: {e}"), first)),
+        };
+        match give.send(first) {
+            Ok(()) => Ok(Lasting { thread, give, back }),
+            Err(mpsc::SendError(first)) => Err((format!("the {name} worker ended before it began"), first)),
+        }
+    }
+
+    /// Hands it its next payload, which it runs once it has handed back the last; one whose
+    /// thread has ended (its body panicked) gives the payload back.
+    pub fn run(&self, payload: P) -> Result<(), P> {
+        self.give
+            .send(payload)
+            .map_err(|mpsc::SendError(payload)| payload)
+    }
+
+    /// What the payload it runs comes to, waited for; none where its thread has ended.
+    pub fn back(&self) -> Option<R> {
+        self.back.recv().ok()
+    }
+
+    /// The thread that runs every payload, for a test's look at which thread that is.
+    #[cfg(test)]
+    pub fn thread(&self) -> &Thread {
+        self.thread.thread()
+    }
+
+    /// Ends its thread once it has handed back what it runs, and waits for its end.
+    pub fn end(self) {
+        let Lasting { thread, give, back } = self;
+        drop((give, back));
+        if thread.join().is_err() {
+            warn!("a virtio worker ended abnormally");
+        }
     }
 }
 
@@ -139,6 +222,29 @@ const REFUSED_STACK: usize = 1 << 56;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A lasting worker runs every payload on its one thread, one after another, each result
+    /// handed back as it ends; one the system refuses gives its first payload back (D272,
+    /// amended 2026-11-18).
+    #[test]
+    fn a_lasting_worker_runs_every_payload_on_its_one_thread() {
+        REFUSE.set(true);
+        let refused = Lasting::spawn("refused", 7u8, |n: u8| (n, thread::current().id()));
+        REFUSE.set(false);
+        let (why, first) = refused.err().unwrap();
+        assert_eq!(first, 7);
+        assert!(why.starts_with("spawning the refused worker: "), "{why}");
+        let lasting = Lasting::spawn("lasting", 1u8, |n: u8| (n, thread::current().id()))
+            .ok()
+            .unwrap();
+        let (n, its) = lasting.back().unwrap();
+        assert_eq!((n, its), (1, lasting.thread().id()));
+        for n in 2..5u8 {
+            assert!(lasting.run(n).is_ok());
+            assert_eq!(lasting.back(), Some((n, its)), "payload {n} on another thread");
+        }
+        lasting.end();
+    }
 
     /// A thread the system refuses gives its payload back, whole, with why; a thread it
     /// makes runs on it.

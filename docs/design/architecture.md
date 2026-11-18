@@ -40695,18 +40695,26 @@ finds nothing.
   The pair was then `Broken` (ERROR_OPERATION_ABORTED) and replaced, though its instances
   still listened (npfs statesup.c `NpCancelListeningQueueIrp` leaves its instance listening),
   cutting off a client that had opened them; a read so cancelled was taken for its
-  connection's failure, its guest reset and its host's writes refused, ERROR_NO_DATA. A
-  connect or read that this code did not cancel and that ends ERROR_OPERATION_ABORTED moved
-  nothing (npfs datasup.c `NpCancelDataQueueIrp`: a read waits queued only while no byte
-  has reached it), and is made again (`platform::windows_pipes` `ISSUER_ENDED`); the way
-  down's watch too. A write so cancelled could not be (M603). Red tests:
-  `a_pair_whose_thread_has_ended_still_lets_its_client_in` (connects, by Microsoft's own
-  account of thread-bound calls) and `a_connections_read_made_by_a_thread_that_has_ended_goes_on`
-  (red where Windows queues an associated handle's read named an event to its thread, as the
-  completion port's probe suggests: its event's call was ended at once where the port's alone
-  waited for its packet, vsock-pipes-port-cancel). Owed, ROOT's: both red, then green, on WHP;
-  whether a write named an event is cancelled as its thread ends, which only a device worker
-  that outlives its pauses would cure; and the storm across its snapshot on jupiter. Found
+  connection's failure, its guest reset and its host's writes refused, ERROR_NO_DATA. First
+  cured by making such a connect or read again (2176151253: nothing had moved, npfs datasup.c
+  `NpCancelDataQueueIrp`), which a write cannot be (M603); the muxer's tests of a connect, a
+  read and a write made by a thread that then ends (2176151253, 920ec24184) are the evidence
+  of what Windows cancels, red with the calls not made again. *Then cured at the root:* the
+  device's worker lasts as long as the device (`devices::virtio::worker::Lasting`): a pause
+  takes its session back and the thread waits; a resume, a reset's next activation and every
+  start hand the session to the same thread; only the device's drop ends it, after its
+  session. So no call the device's sockets make is made by a thread that ends while the
+  device lives, connects, reads and writes alike, and the calls made again went with it (no
+  legacy paths). The first pair's connects are made by the thread that builds the machine
+  (`machine::build` on `run`'s and `restore`'s calling thread, which supervises the VM to
+  its end). What a pause needs of the worker holds parked: the snapshot reads the queues and
+  the muxer's ports only once the session is handed back, the worker then touching neither,
+  nor the guest's memory; a pipe's call under way moves bytes only between its pipe and its
+  connection's own buffer (`platform::Pipes`), never the guest's memory, and nothing saved
+  reads that buffer. Red test: `vsock::tests::a_paused_devices_worker_resumes_on_its_own_thread`
+  (any host), the resumed session on the thread it paused on; red with the worker ended at a
+  pause (lanes/redgreen/own-38c-lasting-worker.patch). Owed, ROOT's: the write test's run at
+  920ec24184; the storm across its snapshot on jupiter. Found
   beside it: after a resume the worker asked the spawner for a pair over the grants link,
   which the snapshot's commit held while the spawner made the generation durable (vm_run.rs
   `SpawnerStages::commit`, after `go_on`), so the whole device waited that long; CI

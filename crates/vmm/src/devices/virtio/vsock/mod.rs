@@ -17,7 +17,7 @@ use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread::{self, JoinHandle};
+use std::thread;
 
 use super::queue::{Chain, Queue, QueueError, with};
 use super::{Activation, DeviceInterrupt, VirtioDevice, feature};
@@ -294,9 +294,26 @@ struct Session {
     muxer: Muxer,
 }
 
-struct Worker {
-    thread: JoinHandle<Option<Session>>,
+/// A session as the device's worker runs it: its queues and sockets, the guest's memory and
+/// interrupt its activation gave, and the stop it runs until.
+struct Running {
+    session: Session,
+    memory: Arc<GuestMemory>,
+    interrupt: Arc<DeviceInterrupt>,
     stop: Arc<AtomicBool>,
+}
+
+/// The device's worker (D272, amended 2026-11-18): one thread for the device's life, which
+/// runs each session handed to it until its stop, hands it back, and waits for the next, as a
+/// pause, a reset and each resume and activation hand them. Its sockets' calls under way are
+/// the thread's: ended at each pause, Windows cancelled them, and a pipe's write so cancelled
+/// says nothing of what its reader took (M603). Paused, the thread holds nothing: the session,
+/// its queues and its sockets are the device's, and a pipe's call under way moves bytes only
+/// between its pipe and its connection's own buffer, never the guest's memory.
+struct Worker {
+    lasting: super::worker::Lasting<Running, Session>,
+    /// The stop of the session it runs; none while it waits for one.
+    running: Option<Arc<AtomicBool>>,
 }
 
 pub struct Vsock {
@@ -344,25 +361,46 @@ impl Vsock {
         })
     }
 
-    /// Starts the worker on `session`; if it cannot, the session waits paused, as a
-    /// snapshot's pause leaves it, for a resume or a reset.
+    /// Runs `session` on the worker, its thread made the first time; if it cannot be, the
+    /// session waits paused, as a snapshot's pause leaves it, for a resume or a reset.
     fn start(&mut self, session: Session) -> Result<(), String> {
         let Some((memory, interrupt)) = self.context.clone() else {
             self.park(session);
             return Err("virtio-vsock started before activation".into());
         };
         let stop = Arc::new(AtomicBool::new(false));
-        let (flag, waker) = (stop.clone(), self.waker.clone());
-        let spawned = super::worker::spawn("virtio-vsock", session, move |session| {
-            Some(run(session, &memory, &interrupt, &waker, &flag))
-        });
-        match spawned {
-            Ok(thread) => {
-                self.worker = Some(Worker { thread, stop });
+        let running = Running {
+            session,
+            memory,
+            interrupt,
+            stop: stop.clone(),
+        };
+        // Its thread, waiting for it; one whose thread has ended gives it back.
+        let handed = match &self.worker {
+            Some(worker) => worker.lasting.run(running),
+            None => Err(running),
+        };
+        let running = match handed {
+            Ok(()) => {
+                if let Some(worker) = &mut self.worker {
+                    worker.running = Some(stop);
+                }
+                return Ok(());
+            }
+            Err(running) => running,
+        };
+        let waker = self.waker.clone();
+        let body = move |r: Running| run(r.session, &r.memory, &r.interrupt, &waker, &r.stop);
+        match super::worker::Lasting::spawn("virtio-vsock", running, body) {
+            Ok(lasting) => {
+                self.worker = Some(Worker {
+                    lasting,
+                    running: Some(stop),
+                });
                 Ok(())
             }
-            Err((e, session)) => {
-                self.park(session);
+            Err((e, running)) => {
+                self.park(running.session);
                 Err(e)
             }
         }
@@ -374,18 +412,18 @@ impl Vsock {
         self.muxer = Some(session.muxer);
     }
 
-    /// Stops the worker at a boundary between packets and takes back its session.
+    /// Stops the session the worker runs at a boundary between packets and takes it back;
+    /// the worker's thread waits for the next.
     fn stop(&mut self) -> Option<Session> {
-        let w = self.worker.take()?;
-        w.stop.store(true, Ordering::Release);
+        let stop = self.worker.as_mut()?.running.take()?;
+        stop.store(true, Ordering::Release);
         self.waker.wake();
-        match w.thread.join() {
-            Ok(s) => s,
-            Err(_) => {
-                warn!("virtio-vsock worker ended abnormally");
-                None
-            }
+        let back = self.worker.as_ref().and_then(|worker| worker.lasting.back());
+        if back.is_none() {
+            warn!("virtio-vsock worker ended abnormally");
+            self.worker = None;
         }
+        back
     }
 }
 
@@ -502,8 +540,12 @@ impl VirtioDevice for Vsock {
 }
 
 impl Drop for Vsock {
+    /// Its session first, its sockets dropped with it, then the worker's thread.
     fn drop(&mut self) {
-        self.stop();
+        let _ = self.stop();
+        if let Some(worker) = self.worker.take() {
+            worker.lasting.end();
+        }
     }
 }
 
@@ -844,19 +886,9 @@ mod tests {
         (mem, session, dir)
     }
 
-    /// An activation, and a resume after a snapshot's pause, whose worker the system
-    /// refuses fail alone: the device keeps its sockets, which still take connections, and
-    /// its paused queues, and the next activation or resume runs (review 1.14). Before,
-    /// the sockets closed with the refused thread, and the device was "activated twice"
-    /// from then on.
-    #[test]
-    fn a_refused_worker_leaves_the_device_whole() {
-        let dir_guard = shards_testdir::TempDir::new("vsock-refused").unwrap();
-        let dir = dir_guard.join("v");
-        let _ = std::fs::remove_file(&dir);
-        let mem = Arc::new(GuestMemory::anonymous(&[(BASE, 1 << 20)]).unwrap());
-        let irq = Arc::new(DeviceInterrupt::new(Arc::new(Line)));
-        let activation = || Activation {
+    /// An activation of the device's three queues over `mem`, its interrupt `irq`.
+    fn activation(mem: &Arc<GuestMemory>, irq: &Arc<DeviceInterrupt>) -> Activation {
+        Activation {
             memory: mem.clone(),
             queues: [RX, TX, 2]
                 .map(|q| {
@@ -867,16 +899,31 @@ mod tests {
                         used: used(q),
                         ready: true,
                     };
-                    Queue::new(cfg, SIZE, &mem, feature::VERSION_1).unwrap()
+                    Queue::new(cfg, SIZE, mem, feature::VERSION_1).unwrap()
                 })
                 .into(),
             interrupt: irq.clone(),
             features: feature::VERSION_1,
             restored: false,
-        };
+        }
+    }
+
+    /// An activation whose worker the system refuses fails alone: the device keeps its
+    /// sockets, which still take connections, and the next activation runs (review 1.14).
+    /// Before, the sockets closed with the refused thread, and the device was "activated
+    /// twice" from then on. Its worker made, a resume after a snapshot's pause makes none,
+    /// which the system could refuse: the paused session is handed to the thread it paused on
+    /// (D272, amended 2026-11-18).
+    #[test]
+    fn a_refused_worker_leaves_the_device_whole() {
+        let dir_guard = shards_testdir::TempDir::new("vsock-refused").unwrap();
+        let dir = dir_guard.join("v");
+        let _ = std::fs::remove_file(&dir);
+        let mem = Arc::new(GuestMemory::anonymous(&[(BASE, 1 << 20)]).unwrap());
+        let irq = Arc::new(DeviceInterrupt::new(Arc::new(Line)));
         let mut vsock = Vsock::new(crate::vm::VsockHost::at(dir.clone()), 3).unwrap();
         super::super::worker::REFUSE.set(true);
-        let refused = vsock.activate(activation());
+        let refused = vsock.activate(activation(&mem, &irq));
         super::super::worker::REFUSE.set(false);
         assert!(
             refused
@@ -890,23 +937,54 @@ mod tests {
         // On Windows its pipes, which its listener named at the path (D272).
         #[cfg(windows)]
         drop(shards_ipc::vsock_open(&dir, Some(Instant::now() + Duration::from_secs(10))).unwrap());
-        vsock.activate(activation()).unwrap();
+        vsock.activate(activation(&mem, &irq)).unwrap();
         assert!(vsock.worker.is_some());
         let states = vsock.pause();
         assert_eq!(states.len(), 3);
-        super::super::worker::REFUSE.set(true);
-        assert!(vsock.resume().is_err());
-        super::super::worker::REFUSE.set(false);
-        assert!(vsock.worker.is_none() && vsock.paused.is_some() && vsock.muxer.is_some());
+        assert!(vsock.paused.is_some() && vsock.muxer.is_some());
         #[cfg(unix)]
         crate::platform::UnixStream::connect(&dir).unwrap();
         assert_eq!(vsock.pause().len(), 3, "paused still");
-        vsock.resume().unwrap();
+        super::super::worker::REFUSE.set(true);
+        let resumed = vsock.resume();
+        super::super::worker::REFUSE.set(false);
+        resumed.unwrap();
         assert!(vsock.worker.is_some() && vsock.paused.is_none());
         // On Windows a client waits for the listener's next pair, made by a worker as it takes
         // the last (D272): kept, it lets one in once the device runs again.
         #[cfg(windows)]
         drop(shards_ipc::vsock_open(&dir, Some(Instant::now() + Duration::from_secs(10))).unwrap());
+        drop(vsock);
+        let _ = std::fs::remove_file(&dir);
+    }
+
+    /// A paused device resumes on the worker thread it paused on, every time (D272, amended
+    /// 2026-11-18): one thread for the device's life, its session handed back at each pause and
+    /// handed to it again at the resume, so that a call its sockets made, which Windows cancels
+    /// as the thread that made it ends, outlasts the pause. Ended at each pause, as it was, its
+    /// pipes' calls under way were cancelled: a pair's connects, a connection's read, and its
+    /// write, which says nothing of what its reader took (M603). Red with the worker ended at a
+    /// pause.
+    #[test]
+    fn a_paused_devices_worker_resumes_on_its_own_thread() {
+        let dir_guard = shards_testdir::TempDir::new("vsock-lasting").unwrap();
+        let dir = dir_guard.join("v");
+        let mem = Arc::new(GuestMemory::anonymous(&[(BASE, 1 << 20)]).unwrap());
+        let irq = Arc::new(DeviceInterrupt::new(Arc::new(Line)));
+        let mut vsock = Vsock::new(crate::vm::VsockHost::at(dir.clone()), 3).unwrap();
+        vsock.activate(activation(&mem, &irq)).unwrap();
+        let thread = |v: &Vsock| v.worker.as_ref().map(|w| w.lasting.thread().id());
+        let first = thread(&vsock);
+        assert!(first.is_some());
+        for _ in 0..3 {
+            assert_eq!(vsock.pause().len(), 3);
+            assert!(
+                vsock.paused.is_some() && vsock.muxer.is_some(),
+                "its session handed back"
+            );
+            vsock.resume().unwrap();
+            assert_eq!(thread(&vsock), first, "resumed on another thread");
+        }
         drop(vsock);
         let _ = std::fs::remove_file(&dir);
     }
