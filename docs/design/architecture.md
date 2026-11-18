@@ -42978,7 +42978,7 @@ through shards-api's image boot (D231), whose `ImageSpec::shares` name host dire
   came whole on its links socket before the request, each a socket, as many as asked; on Windows
   each value checked as `cli::served_pipe` checks `--slates-fs-handle`'s and owned), counts their
   slots into its microVM's shape (`run::Shape::shares`, so its template has them, D25), and gives
-  each the slot after the run's own shares' (`hosted::serve`: its setup entry
+  each the slot after the run's own shares' (`hosted::served_slots`: its setup entry
   `volume=shards{i}\0{place}\0{ro,noexec}\0` as a bind's, its place absolute, not `/`, and none a
   share or volume takes, refused `Request` in a bind's words). Members are given it as a share's
   are (`share_members`).
