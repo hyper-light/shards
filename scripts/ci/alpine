@@ -23,9 +23,13 @@ gpu=()
 if [ "$MUSL_CI" = release ]; then gpu=(-e SHARDS_GPU_LIBS=/work/target/gpu-libs); fi
 home="$RUNNER_TEMP/alpine-home"
 mkdir -p "$home"
+# The tests' files on the checkout's own disk, the runner's: the container's /tmp is its
+# overlay, which no disk of counters lies beneath (D286: a declared write's volume read by its
+# device's), and whose upper layer is a host path the container cannot see.
+mkdir -p "$PWD/target/tmp"
 status=0
 docker run --rm ${kvm[@]+"${kvm[@]}"} -v "$PWD:/work" -v "$home:/home/shards" -w /work \
-	-e TARGET -e MUSL_CI -e SHARDS_REQUIRE_VMS="$require" ${gpu[@]+"${gpu[@]}"} \
+	-e TARGET -e MUSL_CI -e SHARDS_REQUIRE_VMS="$require" -e TMPDIR=/work/target/tmp ${gpu[@]+"${gpu[@]}"} \
 	-e CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=cc \
 	-e CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=cc \
 	"$MUSL_IMAGE" scripts/musl-ci || status=$?

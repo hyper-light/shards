@@ -1632,12 +1632,26 @@ mod os {
             } else {
                 source
                     .filter(|source| source.starts_with('/'))
-                    .and_then(|source| std::fs::metadata(unescaped(source)).ok())
-                    .filter(|node| node.file_type().is_block_device())
-                    .map(|node| node.rdev())
+                    .map(unescaped)
+                    .and_then(|source| match std::fs::metadata(&source) {
+                        Ok(node) => node.file_type().is_block_device().then(|| node.rdev()),
+                        // Its node absent from this process's /dev, as a container's holds
+                        // none of its host's disks: its number by its name, from sysfs, which
+                        // the container sees.
+                        Err(_) => block_number(source.file_name()?),
+                    })
             };
             at = beneath.ok_or(super::Unread::NoDevice)?;
         }
+    }
+
+    /// A block device's number by its name (`/sys/class/block/<name>/dev`, "MAJOR:MINOR",
+    /// Documentation/ABI/stable/sysfs-block): a mount's source whose node this process cannot
+    /// see. None where sysfs names no such device.
+    fn block_number(name: &std::ffi::OsStr) -> Option<u64> {
+        let text = std::fs::read_to_string(Path::new("/sys/class/block").join(name).join("dev")).ok()?;
+        let (major, minor) = text.trim().split_once(':')?;
+        Some(libc::makedev(major.parse().ok()?, minor.parse().ok()?))
     }
 
     /// A mount table's field as its path: proc(5)'s octal escapes (`\040` for a space, `\011`,
