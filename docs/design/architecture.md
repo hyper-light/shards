@@ -30753,6 +30753,37 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
         (40 looks unrefused on one answer, refused at look 16 on two). The rate tests above,
         judge.rs' and progress.rs `a_rate_bound_refuses_only_a_ticking_sleeper`, now teach
         their kinds twice; harness.rs' teaches three. Written, not run (ROOT's runs owed).
+    - *A start is refused past C*, whatever its rate* (amended 2026-11-18, ROOT's ruling;
+      own-38f; CI 44245219858's firecracker job 134607323698, Intel Xeon 6975P-C under
+      KVMKVMKVM).
+      - *Why.* At the arrival bench's rate 40, nine VMs (111973 to 112475) came up just as
+        their host stopped refusing entries (D261) and never said READY. Each kept its four
+        vCPU threads runnable, none halted, at its host's fair share of a CPU (+10.4 s in
+        43 s, +86.8 s in 348 s), its page faults flat (+6 in 87 s). Their rate stayed above
+        R*, so `Bound::Rate` held them for ever. The 14 runs waiting on them waited for ever
+        too, the bench's wait was refused, and `daemon stop` followed them past its 60 s.
+      - *The rule.* A READY is an answer of bounded work: no time spent working brings it
+        nearer. `Bound::Work` (`Judge::by_work`) refuses a party seen to run unheld a whole
+        window whose work since its start is more than any answer of its kind took (C*), once
+        two answers have taught it, whatever its rate. Stillness refuses as before. The
+        daemon's start judge (`ready`) takes it, and says the refusal's work, its unheld
+        time and C*.
+      - *Its account.* Every refusal of a followed VM process now says, on Linux, each of
+        its threads' user, system and guest ticks at its look before and at its last (proc(5)
+        task stat fields 14, 15 and 43), and its host's steal grown between them (/proc/stat's
+        `cpu` line). So the next such refusal tells a vCPU running its guest from one running
+        its host's kernel, and a host whose own hypervisor held it. Owed (R14): these reads,
+        made at every Linux look so that two are at hand, double a look's per-thread stat
+        reads; unmeasured.
+      - *Owed.* The guest's printk ring (D261's `Handle::console_said`) at a start's give-up:
+        only its VM process can read it, and a warm VM's process ends unasked. That needs the
+        VM process to read the ring as its daemon gives it up.
+      - *The limit.* A start that does more work than any start before it and would have
+        been ready is refused. The record keeps the most a start took on this host class
+        across runs, so only a start past all of those is.
+      - *Held by* judge `a_busy_wait_judged_by_its_work_is_refused_past_c_star` and daemon
+        `a_start_that_works_past_c_star_without_ready_is_given_up`. Red:
+        lanes/redgreen/own-38f-startwork.patch.
     - A look at a process whose exit is under way (a zombie; on Windows, a process of its
       tree that exited since) judges nothing. Its end is the wait's answer, and wins over a
       refusal it races.

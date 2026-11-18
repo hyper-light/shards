@@ -10394,7 +10394,10 @@ fn readable_within(socket: &UnixStream, wait: Option<Duration>) -> bool {
 /// running a CPU flat out (the parity plan's step 10). Followed by D215's judge on `record`,
 /// this daemon's VMs' starts (`Answers::ready`): before its first, its liveness alone, its
 /// socket's end; then past W*, the slowest start seen, looked at each W* and given up on
-/// where a whole W* shows it ran no CPU, its host not the reason. Its READY teaches the
+/// where a whole W* shows it ran no CPU, its host not the reason, or where it has done more
+/// work than any start took (C*), whatever its rate (`Bound::Work`, D215 amended 2026-11-18:
+/// CI 44245219858's VMs that ran at their host's share for 348 s, never ready, held the runs
+/// and the stop that waited on them). Its READY teaches the
 /// record, but one there as the wait begins, which was waited for not at all (D222's wait of
 /// nothing): on macOS the wait begins once the VM has its grants, which a quick restore can
 /// end with its READY said, and as a sample, its W* of next to nothing would have each later
@@ -10411,7 +10414,7 @@ fn ready(socket: &UnixStream, pid: u32, record: &shards_api::Record) -> Result<(
         .then(|| shards_api::Followed::of_pid(pid).ok().flatten())
         .flatten()
         .and_then(|followed| {
-            shards_api::Follow::begin(record, followed, shards_api::Bound::Rate)
+            shards_api::Follow::begin(record, followed, shards_api::Bound::Work)
                 .ok()
                 .flatten()
         });
@@ -10429,13 +10432,26 @@ fn ready(socket: &UnixStream, pid: u32, record: &shards_api::Record) -> Result<(
             continue;
         };
         followed.look().map_err(|why| match why {
-            shards_api::Unfollowed::Stalled(stall) => NotReady::Refused(format!(
-                "VM {pid} was not ready: it ran nothing for {:?}, past the slowest start seen ({:?}), {:?} after it began{}",
-                stall.over(),
-                stall.slowest(),
-                into(),
-                stall.account()
-            )),
+            // A start ends in READY, work no time spent working brings nearer: one that has
+            // done more than any start took (C*) is given up on, whatever its rate (D215).
+            shards_api::Unfollowed::Stalled(stall) => NotReady::Refused(match stall.rate() {
+                Some(rate) => format!(
+                    "VM {pid} was not ready: it ran {:?} of CPU in the {:?} it was seen to run unheld, more than any start took ({:?}), past the slowest start seen ({:?}), {:?} after it began{}",
+                    rate.cpu,
+                    rate.over,
+                    stall.most().unwrap_or_default(),
+                    stall.slowest(),
+                    into(),
+                    stall.account()
+                ),
+                None => format!(
+                    "VM {pid} was not ready: it ran nothing for {:?}, past the slowest start seen ({:?}), {:?} after it began{}",
+                    stall.over(),
+                    stall.slowest(),
+                    into(),
+                    stall.account()
+                ),
+            }),
             shards_api::Unfollowed::Process { failure, .. } => NotReady::Failed(format!(
                 "VM {pid} was not ready: its process could not be read: {failure}"
             )),
@@ -10941,6 +10957,64 @@ mod tests {
         assert!(refused.to_string().contains("ran nothing for"), "{refused}");
         let _ = asleep.kill(shards_ipc::signal::SIGKILL);
         let _ = asleep.wait();
+    }
+
+    /// A start that runs and never says READY is given up once it has done more work than any
+    /// start took (C*), whatever its rate (`Bound::Work`, D215 amended 2026-11-18): CI
+    /// 44245219858's nine VMs ran at their 4-CPU host's share for 348 s, never ready, above R*,
+    /// held for ever, and the runs and the stop that waited on them with them. Its kind taught
+    /// twice, one start at a CPU's two-hundredth (R*) and one of 50 ms (C*), so that the
+    /// stand-in, however its host shares its CPU, runs above R*. The green's wait ends by its
+    /// judge alone. The red's (lanes/redgreen/own-38f-startwork.patch, `Bound::Rate`) never
+    /// does: that is its bug. So the test reads the stand-in's work itself, a W* apart, and
+    /// once LOOKS_TO_REFUSE of its looks have found that work past C* and grown since the one
+    /// before, each a look at which the work judge refuses, closes its socket: the red's
+    /// wait ends then, not refused. No count of the test's own: W*, C* and the looks are the
+    /// record's and the judge's.
+    #[cfg(unix)]
+    #[test]
+    fn a_start_that_works_past_c_star_without_ready_is_given_up() {
+        let slowest = Duration::from_millis(200);
+        let record = shards_api::Record::new();
+        record.teach(slowest, Duration::from_millis(1));
+        record.teach(slowest, Duration::from_millis(50));
+        let busy = shards_ipc::spawn(
+            Path::new("/bin/sh"),
+            &[OsStr::new("-c"), OsStr::new("while :; do :; done")],
+            &[],
+            false,
+        )
+        .unwrap();
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        let followed = shards_api::Followed::of_pid(busy.id()).unwrap().unwrap();
+        let mut watch = shards_api::Watch::of(followed).unwrap().unwrap();
+        let (from, most) = (watch.cpu(), Duration::from_millis(50));
+        let waited = std::thread::scope(|s| {
+            let waiting = party::spawn_in(s, || ready(&ours, busy.id(), &record));
+            // Each look of the stand-in's own a W* apart at which its work, grown since the
+            // look before, is past C*: one at which the work judge, by then, refuses.
+            let (mut past, mut last) = (0, from);
+            while !waiting.is_finished() && past < shards_api::LOOKS_TO_REFUSE {
+                std::thread::sleep(slowest);
+                let _ = watch.look().unwrap();
+                let cpu = watch.cpu();
+                if cpu.saturating_sub(from) > most && cpu > last {
+                    past += 1;
+                }
+                last = cpu;
+            }
+            // Its socket closed: a wait still under way ends, its VM ended before it was ready.
+            drop(theirs);
+            waiting.join().unwrap()
+        });
+        let _ = busy.kill(shards_ipc::signal::SIGKILL);
+        let _ = busy.wait();
+        let refused = waited.unwrap_err();
+        assert!(matches!(refused, NotReady::Refused(_)), "{refused}");
+        assert!(
+            refused.to_string().contains("more than any start took"),
+            "{refused}"
+        );
     }
 
     /// A READY there as its wait begins was waited for not at all: it is taken, and teaches

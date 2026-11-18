@@ -448,6 +448,9 @@ pub struct Judge<'a> {
     /// it (an answer quicker than one look, or than its counters' least step) is looked at
     /// no more often, and refuses over no shorter a window, than its looks can resolve.
     floor: Duration,
+    /// Whether its party is refused for its work alone ([`by_work`](Self::by_work)): past
+    /// C*, whatever its rate.
+    by_work: bool,
 }
 
 impl<'a> Judge<'a> {
@@ -466,7 +469,20 @@ impl<'a> Judge<'a> {
             unheld: Duration::ZERO,
             unsure: false,
             floor: Duration::ZERO,
+            by_work: false,
         }
+    }
+
+    /// It, refusing a party that progressed for its work alone: seen to run unheld a whole
+    /// window, its work since its start more than any answer of its kind took (C*), once
+    /// [`SPREAD`] answers have taught it, whatever its rate. For an answer of bounded work
+    /// that no time spent working brings nearer, a VM's READY (D215 amended 2026-11-18, CI
+    /// 44245219858: nine VMs ran at their host's fair share for 348 s, never ready, their rate
+    /// above R*, so held for ever, and with them the runs and the stop that waited on them).
+    #[must_use]
+    pub fn by_work(mut self) -> Judge<'a> {
+        self.by_work = true;
+        self
     }
 
     /// What its judging stands on now, for its caller's account: the time its party has been
@@ -596,7 +612,8 @@ impl<'a> Judge<'a> {
     /// their work alike and their wall not, would be refused for its first answer slower than
     /// all before, its rate then below all before. Its work in windows its looks could not
     /// vouch for counts, their time does not: a doubt raises its rate, never lowers it. A kind
-    /// no rated answer taught ([`Rated`]) has no floor.
+    /// no rated answer taught ([`Rated`]) has no floor. A judge [`by_work`](Self::by_work)
+    /// refuses past C* whatever the rate.
     fn slower_than_any_answer(
         &self,
         work: Option<Duration>,
@@ -611,7 +628,8 @@ impl<'a> Judge<'a> {
             cpu,
             over: self.unheld,
         };
-        if rated.answers < SPREAD || self.unheld < window || !rate.below(&rated.least) || cpu <= rated.most {
+        let slow = self.by_work || rate.below(&rated.least);
+        if rated.answers < SPREAD || self.unheld < window || !slow || cpu <= rated.most {
             return Ok(());
         }
         Err(Stall::slow(now.saturating_duration_since(self.began), rate, seen))
@@ -1291,6 +1309,25 @@ mod tests {
         record.teach(ms(30), ms(36));
         let mut judge = Judge::begin(&record);
         assert!(ticking_until_refused(&mut judge, ms(30), |n| Some(ms(36) * n)).is_none());
+    }
+
+    /// A judge by its party's work alone ([`Judge::by_work`]) refuses the party
+    /// `a_busy_wait_past_w_star_goes_on` keeps, at R* throughout, at the first due look at
+    /// which its work passes C*, and not at the look before: an answer of bounded work that
+    /// no time spent working brings nearer, a VM's READY (D215 amended 2026-11-18; CI
+    /// 44245219858, nine VMs at their host's fair share for 348 s, never ready). Its kind
+    /// taught twice ([`SPREAD`]).
+    #[test]
+    fn a_busy_wait_judged_by_its_work_is_refused_past_c_star() {
+        let ms = Duration::from_millis;
+        let record = Record::new();
+        record.teach(ms(30), ms(36));
+        record.teach(ms(30), ms(36));
+        let mut judge = Judge::begin(&record).by_work();
+        let (n, stall) = ticking_until_refused(&mut judge, ms(30), |n| Some(ms(36) * n)).unwrap();
+        assert_eq!(n, 2, "{stall:?}");
+        assert_eq!(stall.rate().map(|rate| rate.cpu), Some(ms(72)));
+        assert_eq!(stall.most(), Some(ms(36)));
     }
 
     /// A party past W* below R* that has not done the work an answer took (C*) goes on: its

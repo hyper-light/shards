@@ -460,6 +460,12 @@ pub struct Watch {
     /// its kernel read them, and when (`os::idle`): unused by the rule, said in its reading.
     #[cfg(target_os = "linux")]
     idle: Option<(Instant, Vec<u64>)>,
+    /// Linux: its threads' user, system and guest ticks and its host's steal, as its last
+    /// look and the look before read them (`os::times`): for a refusal's account, which then
+    /// says whether a VM's vCPUs ran its guest, their kernel, or nothing (D215, ROOT's ruling
+    /// of 2026-11-18; CI 44245219858's VMs that ran at their host's share, never ready).
+    #[cfg(target_os = "linux")]
+    times: [Option<os::Times>; 2],
 }
 
 /// A process's threads as one read saw them, each by its OS's ID for it: its own CPU time,
@@ -484,10 +490,15 @@ fn threads_account(pid: u32) -> Option<String> {
 /// [`threads_account`] of process `pid`, with what `watch`'s last look read of its host's
 /// work for a thread of it waiting in its kernel ([`Watch::kernel`]).
 fn account_of(pid: u32, watch: &Watch) -> Option<String> {
-    match (threads_account(pid), watch.kernel()) {
-        (Some(threads), Some(kernel)) => Some(format!("{threads}; {kernel}")),
-        (threads, kernel) => threads.or_else(|| kernel.map(str::to_string)),
-    }
+    #[cfg(target_os = "linux")]
+    let times = os::times_said(&watch.times);
+    #[cfg(not(target_os = "linux"))]
+    let times: Option<String> = None;
+    let said: Vec<String> = [threads_account(pid), watch.kernel().map(str::to_string), times]
+        .into_iter()
+        .flatten()
+        .collect();
+    (!said.is_empty()).then(|| said.join("; "))
 }
 
 /// How many of process `pid`'s threads are runnable (running, or waiting for a CPU), of how
@@ -542,6 +553,8 @@ impl Watch {
             kernel: None,
             #[cfg(target_os = "linux")]
             idle: None,
+            #[cfg(target_os = "linux")]
+            times: [None, None],
         }))
     }
 
@@ -600,6 +613,8 @@ impl Watch {
                 kernel.push_str(&format!(", {read}"));
             }
             self.idle = now;
+            let last = self.times[1].take();
+            self.times = [last, os::times(self.followed.pid())];
         }
         let ran = look.ran_since(&before);
         // A diagnosis of what Windows shows of a VM process a look finds ran nothing since the
@@ -678,6 +693,11 @@ pub enum Bound {
     /// is still a whole W*, and where it ticks on past W* below R* having done more than C*
     /// (b24's shape: a guest asleep on an event that never comes).
     Rate,
+    /// A reply of bounded work that no time spent working brings nearer (a VM's READY):
+    /// refused as [`Rate`](Self::Rate) is, and past W* once it has done more than C*,
+    /// whatever its rate (`Judge::by_work`; D215 amended 2026-11-18, CI 44245219858: nine
+    /// VMs ran at their host's fair share for 348 s, never ready, above R*, and were held).
+    Work,
     /// An end that comes when its work does (a user's command, a build, a guest's first
     /// listener after its own start): refused only where it is still a whole W*. A guest
     /// asleep by design (`sleep 3600`) ticks on, its caller's to end.
@@ -711,7 +731,11 @@ impl<'a> Follow<'a> {
         followed: Followed,
         bound: Bound,
     ) -> Result<Option<Follow<'a>>, Unfollowed> {
-        let mut judge = Judge::begin(record);
+        let judge = Judge::begin(record);
+        let mut judge = match bound {
+            Bound::Work => judge.by_work(),
+            Bound::Rate | Bound::Stillness => judge,
+        };
         let (pid, started) = (followed.pid(), followed.started());
         let began = Instant::now();
         let watched = Watch::of(followed).map_err(|failure| Unfollowed::Process {
@@ -768,7 +792,7 @@ impl<'a> Follow<'a> {
     /// paging waits are read at its due looks.
     fn schedule(&mut self, hold: &Hold, at: Instant) {
         let blocked = !hold.runnable && hold.io.waited.is_none();
-        self.sample = (cfg!(unix) && self.bound == Bound::Rate && blocked && !self.held)
+        self.sample = (cfg!(unix) && self.bound != Bound::Stillness && blocked && !self.held)
             .then(|| at.checked_add(self.judge.resolved()))
             .flatten();
     }
@@ -806,7 +830,7 @@ impl<'a> Follow<'a> {
         // every sample since the look before, vouches for its window; its threads read only
         // then.
         let held = std::mem::take(&mut self.held);
-        let work = (self.bound == Bound::Rate && !held && {
+        let work = (self.bound != Bound::Stillness && !held && {
             let starved = self.watch.starved();
             self.watch.vouched_by(found, starved)
         })
@@ -1182,6 +1206,66 @@ mod os {
     fn frozen(dir: &Path) -> bool {
         std::fs::read_to_string(dir.join("cgroup.events"))
             .is_ok_and(|events| events.lines().any(|line| line.trim() == "frozen 1"))
+    }
+
+    /// Each thread of a process's user, system and guest time so far, in USER_HZ ticks, by its
+    /// ID (proc(5) /proc/<pid>/task/<tid>/stat fields 14, 15 and 43), and its host's time
+    /// stolen by the hypervisor it runs under (/proc/stat's `cpu` line's eighth value).
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub(super) struct Times {
+        threads: Vec<(u32, [u64; 3])>,
+        steal: Option<u64>,
+    }
+
+    /// Process `pid`'s [`Times`] now; none where none of its threads could be read.
+    pub(super) fn times(pid: u32) -> Option<Times> {
+        let mut threads = Vec::new();
+        for task in std::fs::read_dir(format!("/proc/{pid}/task")).ok()?.flatten() {
+            let Some(tid) = task.file_name().to_str().and_then(|t| t.parse::<u32>().ok()) else {
+                continue;
+            };
+            let Ok(stat) = std::fs::read(task.path().join("stat")) else {
+                continue;
+            };
+            if let (Some(user), Some(system), Some(guest)) =
+                (field(&stat, 14), field(&stat, 15), field(&stat, 43))
+            {
+                threads.push((tid, [user, system, guest]));
+            }
+        }
+        threads.sort_unstable();
+        let steal = std::fs::read_to_string("/proc/stat").ok().and_then(|text| {
+            let line = text.lines().find(|line| line.starts_with("cpu "))?;
+            line.split_ascii_whitespace().nth(8)?.parse().ok()
+        });
+        (!threads.is_empty()).then_some(Times { threads, steal })
+    }
+
+    /// What `times`, its look before's and its last's, say for an account: each thread's
+    /// user, system and guest ticks at each, and its host's steal grown between them; none
+    /// where its last read none.
+    pub(super) fn times_said(times: &[Option<Times>; 2]) -> Option<String> {
+        let [before, last] = times;
+        let last = last.as_ref()?;
+        let at = |tid: u32| {
+            before
+                .as_ref()
+                .and_then(|b| b.threads.iter().find(|(t, _)| *t == tid))
+                .map_or_else(|| "unread".to_string(), |(_, [u, s, g])| format!("{u}/{s}/{g}"))
+        };
+        let threads: Vec<String> = last
+            .threads
+            .iter()
+            .map(|(tid, [u, s, g])| format!("{tid} {} -> {u}/{s}/{g}", at(*tid)))
+            .collect();
+        let steal = match (before.as_ref().and_then(|b| b.steal), last.steal) {
+            (Some(b), Some(n)) => format!("its host's steal +{} ticks", n.saturating_sub(b)),
+            _ => "its host's steal unread".to_string(),
+        };
+        Some(format!(
+            "its threads' user/system/guest ticks at its look before -> its last: {}; {steal}",
+            threads.join(", ")
+        ))
     }
 
     /// Each CPU's idle and iowait time so far, in USER_HZ ticks: /proc/stat's `cpuN` lines'
