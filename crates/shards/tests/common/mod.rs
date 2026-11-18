@@ -4777,7 +4777,11 @@ impl Party {
                 }
                 (Ok(Found::Held), _) if looked.found == Found::Still => {
                     looked.found = Found::Held;
-                    looked.what = format!("its host held process {pid} from running");
+                    // A thread of it in its kernel: the reading that held it (D215, R-D).
+                    looked.what = match watch.kernel() {
+                        Some(kernel) => format!("its host held process {pid}, {kernel}"),
+                        None => format!("its host held process {pid} from running"),
+                    };
                 }
                 (Ok(Found::Still), _) if watch.stopped() && looked.found == Found::Still => {
                     looked.found = Found::Held;
@@ -4890,6 +4894,11 @@ impl Party {
                 }
                 if let Some(waits) = waits_in(pid) {
                     said.push_str(&format!(", its threads waiting in {waits}"));
+                }
+                // What its last look read of its host's work for a thread of it in its kernel,
+                // by which that look held it or found it still (D215, R-D).
+                if let Some(kernel) = watch.kernel() {
+                    said.push_str(&format!(", {kernel}"));
                 }
                 // Each thread's state and wait reason, as Windows' listing keeps them: what a
                 // refusal of a party none of whose threads was runnable waited on (ROOT,

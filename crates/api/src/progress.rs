@@ -162,6 +162,10 @@ struct Hold {
     /// that no count of its process's shows, as against a wait no device is serving, a dead
     /// NFS mount's, which is still.
     disks: Option<u64>,
+    /// Linux: its host's CPU and memory stalls so far ([`Stalls`]), read where a thread of it
+    /// waited in its kernel as it was looked at, as `disks` is. None elsewhere, and where the
+    /// kernel keeps no pressure record (no CONFIG_PSI, or `psi=0`).
+    stalls: Option<Stalls>,
     /// The scheduler's own count of its threads' wait for a CPU.
     #[cfg(unix)]
     queued: Queued,
@@ -208,6 +212,27 @@ impl Io {
     }
 }
 
+/// Its host's pressure totals, in microseconds, each the `some` line's `total` of
+/// /proc/pressure (Documentation/accounting/psi.rst: "the share of time in which at least
+/// some tasks are stalled on a given resource"): `cpu` grows while more of its tasks are
+/// runnable than run on a CPU, `memory` while any of them stalls on memory (v6.18
+/// kernel/sched/psi.c:243-262, `test_states`). A thread waiting in its kernel waits on its
+/// kernel's work: a journal's commit, which first waits for every open handle of its
+/// transaction (fs/jbd2/commit.c:454, transaction.c:816-844) and for its own thread to get a
+/// CPU, or a folio's or buffer's lock another task holds (mm/filemap.c:1251, fs/buffer.c:
+/// 121-124), none of it I/O its host's devices show. Growth of either says such work waited
+/// for its host's CPUs or memory (D215, R-D: CI 44227612442's ten refusals, each with a thread
+/// in `jbd2_log_wait_commit`, `folio_wait_bit_common` or `__wait_on_buffer`, its host's
+/// devices idle between two looks). Its I/O line is not read: a thread that waits on a folio
+/// or a buffer waits in `io_schedule`, its own I/O wait, so it would hold itself. Read on
+/// Linux alone, which keeps the record; judged on every host, so that its tests run on each.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Stalls {
+    cpu: u64,
+    memory: u64,
+}
+
 /// What a look read of a process's threads' wait for a CPU, as its scheduler counts it: only
 /// its growth is read, and only of a look that found it ran no CPU.
 #[cfg(unix)]
@@ -231,7 +256,8 @@ enum Queued {
 impl Hold {
     /// Whether its host held it since the look that saw `before`: a thread of it runnable
     /// now; or a thread of it waiting uninterruptibly in its kernel now, its host's disks
-    /// having completed I/O since the look before ([`disks`](Self::disks)); or its threads'
+    /// having completed I/O since the look before ([`disks`](Self::disks)), or its host's
+    /// tasks having waited for a CPU or stalled on memory ([`Stalls`]); or its threads'
     /// wait for a CPU grown since; or (Linux) its own cgroup's pressure; or its host's
     /// storage's work for it ([`Io`]).
     ///
@@ -258,14 +284,40 @@ impl Hold {
         let pressed = matches!((before.pressure, self.pressure), (Some(b), Some(n)) if n > b);
         #[cfg(not(target_os = "linux"))]
         let pressed = false;
-        let in_kernel =
-            self.uninterruptible && matches!((before.disks, self.disks), (Some(b), Some(n)) if n > b);
+        let in_kernel = self.uninterruptible
+            && (matches!((before.disks, self.disks), (Some(b), Some(n)) if n > b)
+                || matches!((before.stalls, self.stalls), (Some(b), Some(n)) if n.cpu > b.cpu || n.memory > b.memory));
         self.runnable || in_kernel || queued || pressed || self.io.grown_since(&before.io)
     }
 
     /// Whether a thread of it waited uninterruptibly in its kernel as it was looked at.
     fn in_kernel(&self) -> bool {
         self.uninterruptible
+    }
+
+    /// What a look that found a thread of it in its kernel read of its host's work since the
+    /// look that saw `before`, by which [`held_since`](Self::held_since) decided: its devices'
+    /// work, and its host's CPU and memory stalls; none where no thread of it waited there.
+    fn kernel_since(&self, before: &Hold) -> Option<String> {
+        if !self.uninterruptible {
+            return None;
+        }
+        let devices = match (before.disks, self.disks) {
+            (Some(b), Some(n)) => format!("its host's devices' work +{}", n.saturating_sub(b)),
+            _ => "its host's devices' work unread before".to_string(),
+        };
+        let stalls = match (before.stalls, self.stalls) {
+            (Some(b), Some(n)) => format!(
+                "CPU some +{}us, memory some +{}us",
+                n.cpu.saturating_sub(b.cpu),
+                n.memory.saturating_sub(b.memory)
+            ),
+            (_, None) => "no pressure record (no CONFIG_PSI, or psi=0): its devices alone decide".to_string(),
+            (None, Some(_)) => "its host's pressure unread before".to_string(),
+        };
+        Some(format!(
+            "in its kernel, since its look before: {devices}, {stalls}"
+        ))
     }
 }
 
@@ -401,6 +453,13 @@ pub struct Watch {
     /// Whether its host's storage worked for it between the look before and the last
     /// ([`Io::grown_since`]).
     stored: bool,
+    /// What its last look read of its host's work for a thread of it waiting in its kernel
+    /// ([`Hold::kernel_since`]): for a refusal's or a hold's account (D215, R-D).
+    kernel: Option<String>,
+    /// Linux: each CPU's idle and iowait ticks as the last look that found a thread of it in
+    /// its kernel read them, and when (`os::idle`): unused by the rule, said in its reading.
+    #[cfg(target_os = "linux")]
+    idle: Option<(Instant, Vec<u64>)>,
 }
 
 /// A process's threads as one read saw them, each by its OS's ID for it: its own CPU time,
@@ -419,6 +478,15 @@ fn threads_account(pid: u32) -> Option<String> {
     #[cfg(unix)]
     {
         os::threads_said(pid)
+    }
+}
+
+/// [`threads_account`] of process `pid`, with what `watch`'s last look read of its host's
+/// work for a thread of it waiting in its kernel ([`Watch::kernel`]).
+fn account_of(pid: u32, watch: &Watch) -> Option<String> {
+    match (threads_account(pid), watch.kernel()) {
+        (Some(threads), Some(kernel)) => Some(format!("{threads}; {kernel}")),
+        (threads, kernel) => threads.or_else(|| kernel.map(str::to_string)),
     }
 }
 
@@ -471,6 +539,9 @@ impl Watch {
             resolution,
             threads: None,
             stored: false,
+            kernel: None,
+            #[cfg(target_os = "linux")]
+            idle: None,
         }))
     }
 
@@ -513,6 +584,23 @@ impl Watch {
         let before = std::mem::replace(&mut self.last, look);
         let hold = std::mem::replace(&mut self.hold, self.followed.hold());
         self.stored = self.hold.io.grown_since(&hold.io);
+        self.kernel = self.hold.kernel_since(&hold);
+        // Each CPU's idle and iowait ticks since the look before, beside the stalls: unused by
+        // the rule, the data for a bound on it (D215, R-D, ROOT's ruling of 2026-11-18).
+        #[cfg(target_os = "linux")]
+        {
+            let (before, now) = (self.idle.take(), self.kernel.is_some().then(os::idle).flatten());
+            if let (Some(kernel), Some((at, cpus))) = (self.kernel.as_mut(), now.as_ref()) {
+                let read = match &before {
+                    Some((then, was)) => {
+                        os::idle_since(was, cpus, at.saturating_duration_since(*then), os::stat_tick())
+                    }
+                    None => "each CPU's idle+iowait unread before".to_string(),
+                };
+                kernel.push_str(&format!(", {read}"));
+            }
+            self.idle = now;
+        }
         let ran = look.ran_since(&before);
         // A diagnosis of what Windows shows of a VM process a look finds ran nothing since the
         // look before, the look that may cut it (W2: one inside WHP's partition calls, cut as
@@ -528,6 +616,12 @@ impl Watch {
             return Ok(Found::Held);
         }
         Ok(found)
+    }
+
+    /// What its last look read of its host's work for a thread of it waiting in its kernel,
+    /// by which that look found it held or still (D215, R-D): none where none waited there.
+    pub fn kernel(&self) -> Option<&str> {
+        self.kernel.as_deref()
     }
 
     /// The CPU time its process's threads have had by the look before.
@@ -728,7 +822,7 @@ impl<'a> Follow<'a> {
         let judged = self
             .judge
             .found_over(found, span)
-            .map_err(|stall| Unfollowed::Stalled(stall.said(threads_account(pid))));
+            .map_err(|stall| Unfollowed::Stalled(stall.said(account_of(pid, &self.watch))));
         let hold = self.watch.hold;
         self.schedule(&hold, Instant::now());
         judged
@@ -901,6 +995,7 @@ mod os {
         }
         if hold.uninterruptible {
             hold.disks = disks();
+            hold.stalls = stalls();
         }
         if let Some((dir, root)) = cgroup(pid) {
             hold.stopped |= frozen(&dir);
@@ -1089,6 +1184,67 @@ mod os {
             .is_ok_and(|events| events.lines().any(|line| line.trim() == "frozen 1"))
     }
 
+    /// Each CPU's idle and iowait time so far, in USER_HZ ticks: /proc/stat's `cpuN` lines'
+    /// fourth and fifth fields (fs/proc/stat.c), read with when; none where unread.
+    pub(super) fn idle() -> Option<(std::time::Instant, Vec<u64>)> {
+        let text = std::fs::read_to_string("/proc/stat").ok()?;
+        let at = std::time::Instant::now();
+        let cpus: Vec<u64> = text
+            .lines()
+            .filter(|line| {
+                line.strip_prefix("cpu")
+                    .is_some_and(|n| n.starts_with(|c: char| c.is_ascii_digit()))
+            })
+            .map(|line| {
+                let fields: Vec<u64> = line
+                    .split_ascii_whitespace()
+                    .skip(1)
+                    .filter_map(|n| n.parse().ok())
+                    .collect();
+                let field = |i: usize| fields.get(i).copied().unwrap_or(0);
+                field(3).saturating_add(field(4))
+            })
+            .collect();
+        (!cpus.is_empty()).then_some((at, cpus))
+    }
+
+    /// The length of one of /proc/stat's ticks (`_SC_CLK_TCK`, USER_HZ), apart from the
+    /// kernel's own tick (`tick`); none where unread.
+    pub(super) fn stat_tick() -> Option<Duration> {
+        // SAFETY: sysconf(3) of a name, which reads nothing of this process's memory.
+        let hz = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+        u64::try_from(hz)
+            .ok()
+            .filter(|hz| *hz > 0)
+            .map(|hz| Duration::from_nanos(1_000_000_000 / hz))
+    }
+
+    /// Each CPU's idle+iowait ticks grown from `was` to `now` over `elapsed`, for a reading:
+    /// "under a tick" where `elapsed` is shorter than one of them, as no count could show it.
+    pub(super) fn idle_since(was: &[u64], now: &[u64], elapsed: Duration, tick: Option<Duration>) -> String {
+        if tick.is_none_or(|tick| elapsed < tick) {
+            return format!("each CPU's idle+iowait under a tick ({elapsed:?})");
+        }
+        let grown: Vec<String> = now
+            .iter()
+            .zip(was.iter().chain(std::iter::repeat(&0)))
+            .map(|(n, b)| format!("+{}", n.saturating_sub(*b)))
+            .collect();
+        format!(
+            "each CPU's idle+iowait ticks {} over {elapsed:?}",
+            grown.join(",")
+        )
+    }
+
+    /// Its host's CPU and memory `some` totals ([`Stalls`](super::Stalls)): none where either
+    /// cannot be read, as where the kernel keeps no pressure record (no CONFIG_PSI, or `psi=0`).
+    fn stalls() -> Option<super::Stalls> {
+        Some(super::Stalls {
+            cpu: some_total(Path::new("/proc/pressure/cpu"))?,
+            memory: some_total(Path::new("/proc/pressure/memory"))?,
+        })
+    }
+
     /// A pressure file's `some` line's `total`, in microseconds.
     fn some_total(file: &Path) -> Option<u64> {
         let text = std::fs::read_to_string(file).ok()?;
@@ -1260,6 +1416,7 @@ mod os {
             runnable: states.contains(&libc::TH_STATE_RUNNING),
             uninterruptible,
             disks: uninterruptible.then(shards_apple::storage::completed).flatten(),
+            stalls: None,
             stopped: status(id) == Some(libc::SSTOP),
             io: super::Io {
                 done: usage.map(|u| {
@@ -1638,6 +1795,7 @@ mod os {
                 stopped: threads > 0 && suspended == threads,
                 uninterruptible: paging,
                 disks: paging.then(disks).flatten(),
+                stalls: None,
                 io: super::Io {
                     done: self.io_done(),
                     waited: None,
@@ -2319,6 +2477,7 @@ mod tests {
             stopped,
             uninterruptible: false,
             disks: None,
+            stalls: None,
             #[cfg(unix)]
             queued: Queued::Unread,
             #[cfg(target_os = "linux")]
@@ -2365,6 +2524,88 @@ mod tests {
             );
             assert_eq!(found(false, false, &waited(11), &stopped), Found::Still);
         }
+    }
+
+    /// A reading's CPU idle (D215, R-D): each CPU's idle+iowait ticks grown since the look
+    /// before, and a window shorter than one tick said as such, as no count could show it.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_readings_cpu_idle_is_said_per_cpu_and_under_a_tick_as_such() {
+        let tick = Some(Duration::from_millis(10));
+        assert_eq!(
+            os::idle_since(&[5, 9], &[5, 12], Duration::from_millis(15), tick),
+            "each CPU's idle+iowait ticks +0,+3 over 15ms"
+        );
+        assert_eq!(
+            os::idle_since(&[5, 9], &[5, 9], Duration::from_millis(4), tick),
+            "each CPU's idle+iowait under a tick (4ms)"
+        );
+    }
+
+    /// A thread waiting uninterruptibly in its kernel is held where its host's devices worked
+    /// since the look before, as before, and where its host's tasks waited for a CPU or stalled
+    /// on memory meanwhile (D215, R-D): a journal's commit that waits for its own thread's CPU,
+    /// or for the open handles of its transaction, shows no I/O on any device, as CI
+    /// 44227612442's ten refused builds and commit found it, each with a thread in
+    /// `jbd2_log_wait_commit`, `folio_wait_bit_common` or `__wait_on_buffer`. With none of
+    /// those grown it is still, as a dead mount's wait is; and where its host keeps no pressure
+    /// record, its devices alone decide, as before. Each look's reading says which decided.
+    #[test]
+    fn a_wait_in_its_kernel_is_held_by_its_hosts_cpu_and_memory_stalls() {
+        let waiting = |disks, stalls: Option<(u64, u64)>| Hold {
+            uninterruptible: true,
+            disks: Some(disks),
+            stalls: stalls.map(|(cpu, memory)| Stalls { cpu, memory }),
+            ..Hold::default()
+        };
+        let before = waiting(7, Some((100, 50)));
+        assert_eq!(
+            found(false, false, &before, &waiting(7, Some((100, 50)))),
+            Found::Still
+        );
+        assert_eq!(
+            found(false, false, &before, &waiting(7, Some((101, 50)))),
+            Found::Held,
+            "CPU some alone"
+        );
+        assert_eq!(
+            found(false, false, &before, &waiting(7, Some((100, 51)))),
+            Found::Held,
+            "memory some alone"
+        );
+        assert_eq!(
+            found(false, false, &before, &waiting(8, Some((100, 50)))),
+            Found::Held,
+            "its devices alone"
+        );
+        // No pressure record: its devices alone decide.
+        let unrecorded = waiting(7, None);
+        assert_eq!(found(false, false, &unrecorded, &waiting(7, None)), Found::Still);
+        assert_eq!(found(false, false, &unrecorded, &waiting(8, None)), Found::Held);
+        assert_eq!(
+            found(false, false, &unrecorded, &waiting(7, Some((900, 900)))),
+            Found::Still,
+            "none read before"
+        );
+        // A sleeper's are no hold of its: only a thread in its kernel waits on its kernel.
+        let sleeping = |cpu| Hold {
+            stalls: Some(Stalls { cpu, memory: 0 }),
+            ..Hold::default()
+        };
+        assert_eq!(found(false, false, &sleeping(1), &sleeping(2)), Found::Still);
+        assert_eq!(
+            waiting(8, Some((101, 51))).kernel_since(&before).as_deref(),
+            Some(
+                "in its kernel, since its look before: its host's devices' work +1, CPU some +1us, memory some +1us"
+            )
+        );
+        assert_eq!(
+            waiting(7, None).kernel_since(&unrecorded).as_deref(),
+            Some(
+                "in its kernel, since its look before: its host's devices' work +0, no pressure record (no CONFIG_PSI, or psi=0): its devices alone decide"
+            )
+        );
+        assert_eq!(sleeping(2).kernel_since(&sleeping(1)), None);
     }
 
     /// A look that finds a thread of its party waiting uninterruptibly in its kernel, its host

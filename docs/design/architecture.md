@@ -29925,6 +29925,84 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
             window, its host's disks idle or not (`progress::vouches`, `Follow::sampled`).
             Leaving a window out of the rate refuses nothing, and a party stuck so that runs
             nothing is refused by stillness.
+          - *R-D, amended 2026-11-18* (ROOT's ruling; own-38e, with own-35b; CI 44227612442's
+            x86_64 gnu job 134545100614). A thread in its kernel is held too where, since the
+            look before, its host's CPU or memory `some` total grew (`Hold::stalls`).
+            - These are Linux's /proc/pressure/cpu and /proc/pressure/memory. They are read
+              only at a look that finds a thread in its kernel, as the devices' count is.
+            - PSI's `some` is "the share of time in which at least some tasks are stalled on a
+              given resource" (Documentation/accounting/psi.rst). v6.18
+              kernel/sched/psi.c:243-262 counts CPU `some` while more tasks are runnable than
+              run on a CPU, and memory `some` while any task stalls on memory.
+            - Why: that run had ten refusals: seven build.rs builds, api_image.rs's build,
+              moved.rs's create and containers.rs's commit.
+              - Each found a thread in `D`, in `jbd2_log_wait_commit`,
+                `folio_wait_bit_common` or `__wait_on_buffer` (the image store's fsyncs,
+                crates/image/src/store.rs).
+              - Their host's devices were idle between two looks a few ms apart. W* was 15 to
+                50 ms, learned on unloaded runners.
+              - A journal commit first waits for every open handle of its transaction
+                (fs/jbd2/commit.c:454, transaction.c:816-844), and for its own thread's CPU.
+                A folio's or buffer's lock waits on its holder (mm/filemap.c:1251,
+                fs/buffer.c:121-124). That is kernel work no device shows, held up by the
+                host's CPUs or memory.
+              - Why a waiter in `D` sees idle devices (v6.18). A task's plugged block I/O
+                reaches its device only when the task sleeps: `schedule` flushes the plug,
+                through `sched_submit_work`, only for a task that is not running
+                (kernel/sched/core.c:7024-7025, :6990). A task preempted, or yielding at
+                `cond_resched` (:7455-7458, `__schedule(SM_PREEMPT)` at :7113), keeps its
+                plug until it runs again.
+              - A journal commit shadows each metadata buffer (fs/jbd2/journal.c:430) and
+                submits its journal write under one plug (fs/jbd2/commit.c:550-788, the
+                write at :726, a `cond_resched` at :729). The shadow clears only when that
+                write ends (commit.c:42), and `do_get_write_access` waits for it
+                uninterruptibly (fs/jbd2/transaction.c:1092).
+              - Writeback throttling (wbt) counts a write from `rq_qos_throttle`
+                (block/blk-mq.c:3042, :3089), before it is plugged (:3222). So a writer
+                throttled in `rq_qos_wait` (block/blk-rq-qos.c:275-276, uninterruptible) can
+                wait on writes still in another task's plug. A folio's lock or writeback
+                is held over its reader's or writer's plugged I/O too (mm/readahead.c:160-176,
+                fs/ext4/inode.c:2862-2986).
+              - So while the submitter waits for a CPU, its waiters are in `D` and no device
+                shows work. That wait for a CPU is what CPU `some` counts. CI 44227612442's
+                x86_64 musl job (134545100600) refused three more such waits: a build's
+                client in `rq_qos_wait`, 411 ms since it last ran; `configure disk`'s
+                client in `folio_wait_bit_common`; and, in a refusal's own account, a
+                daemon with two of its threads in `do_get_write_access`.
+            - I/O `some` is not read: a folio's or buffer's waiter waits in `io_schedule`, its
+              own I/O stall, and would hold itself.
+            - The limit, accepted: on a host whose CPU or memory pressure grows at every look,
+              a wait in a kernel on work that never comes (a dead mount's) is held rather than
+              refused, until its job's own bound. So is a thrashing refault's waiter, which is
+              its own memory stall (mm/filemap.c:1262-1265, `psi_memstall_enter`; own-35b).
+              The tests have no network and no dead mounts, and a false refusal fails CI on
+              every loaded runner.
+            - Where the kernel keeps no pressure record (no CONFIG_PSI, or `psi=0`), the
+              devices alone decide, as before. macOS and Windows keep none, and are unchanged.
+            - Each look that finds a thread in its kernel says what it read since the look
+              before (`Watch::kernel`): its devices' work and the CPU and memory `some`
+              deltas, or that no pressure record is kept. A hold's words say it, and so does
+              a refusal's account, beside each thread's `wchan`. Each later hold or refusal
+              then names the reading that decided it: R-D's after-evidence (R10).
+            - Also read, and unused by the rule: each CPU's idle and iowait (ROOT's ruling of
+              2026-11-18 on own-35b's bound).
+              - At each look that finds a thread in its kernel, /proc/stat's per-CPU idle and
+                iowait are read, in USER_HZ ticks (fs/proc/stat.c). Their deltas since the look
+                before go in the reading, beside the PSI deltas. A window shorter than one
+                tick is said to be "under a tick", as no count could show it.
+              - They are the data that settles own-35b's bound after the tag. That bound would
+                hold a thread in its kernel only where no CPU was idle over the window. cpuidle
+                residency cannot say it, as it is added only as a CPU leaves idle
+                (drivers/cpuidle/cpuidle.c:306).
+              - Any growth is kept until then. A journal commit waits for every open handle
+                of its transaction (transaction.c:816-844), whose holder may be busy on a CPU,
+                not starved. A saturation bound would refuse those waits on a busy runner
+                whose CPUs are not all full, and a false refusal fails CI on every loaded
+                runner.
+            - Tests: `progress::tests::a_wait_in_its_kernel_is_held_by_its_hosts_cpu_and_memory_stalls`,
+              and on Linux `a_readings_cpu_idle_is_said_per_cpu_and_under_a_tick_as_such`.
+              Red: lanes/redgreen/own-38e-rd.patch. Owed first (R09): run 44243183339
+              (budget-e2e, build.rs in full on 8 ubuntu-24.04 runners) shows the symptom.
           - Windows, amended 2026-11-17 (kiln goal b2124227, lane ci-storms-judge; ROOT's
             brief: count Windows' hold only while its host shows progress, as Linux's and
             macOS's now are). A flush still shows by no wait reason (`Executive`, a pipe
