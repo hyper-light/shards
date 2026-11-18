@@ -13957,9 +13957,10 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
       - *Cold* (none seen on the host). The give-back so far is the slowest seen: it ends
         once no fall has come for as long as from the wait's start to its last fall, counted
         from the last look that found its host holding the VM process. Before its first fall
-        it waits on it for as long as the VM process lives. Begun before the free, its first
-        fall spans the free and the guest's whole delay before it reports, which each later
-        pass only waits again: longer than the gap after it.
+        it waited on it for as long as the VM process lived, which *Nothing fallen* (below)
+        ends. Begun before the free, its first fall spans the free and the guest's whole delay
+        before it reports, which each later pass only waits again: longer than the gap after
+        it.
       - *Then.* Its resident memory then is the idle the test measures from. A VM process gone
         as it gives back fails the test. Nothing teaches W* where no fall came.
       - *A fall* (amended 2026-11-17, goal fb3528f9, under ROOT's ruling that the test's
@@ -13992,15 +13993,61 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
         - So containers.rs' cold-memory test has its guest report what waits at once
           (`page_reporting.flush`, resources/kernel/patches/0005) before it settles: its
           provider privileged, whose /sys init leaves writable (setup.rs `privileged`), the
-          parameter root's. `Falling` still follows the falls the flush brings.
+          parameter root's. `Falling` follows the fall the flush brings, begun once the GiB is
+          freed (*Nothing fallen*, below).
         - Owed after the tag (ROOT's ruling): at D188's word, a guest reports at once what
           it holds free, not only after it reclaimed files (init run.rs `reclaim_files`).
+      - *Nothing fallen* (amended 2026-11-18, #36, ROOT's ruling: every wait ends; an idle
+        party whose memory is not falling is refused with its account, as D215's judge
+        refuses a still one).
+        - With the flush, the test hung 54 min on macOS arm64 (ROOT's run at a5b586919a; the
+          test, its daemon and its VM process at 0 % CPU; the test's thread asleep between
+          `Falling::settled`'s looks; samples and the home's log kept in
+          g121-tmp/macq/hang-giveback). `Falling` began before the alloc-free and first looked
+          after the flush. The flush reports pass after pass, each answered only once its host
+          has given the blocks back (virtio/balloon.rs `answer`, memory.rs `discard`:
+          MADV_DONTNEED on Linux, a fresh mapping over them on macOS, decommit and commit on
+          Windows, each before the answer). So the GiB rose and fell back between its two
+          looks: the VM process held 307.4 MB, its peak 1.3 GB. It saw no fall, and cold, its
+          call site a new kind on every host, it waited for a first fall for as long as the VM
+          process lived. Read from the code and the samples; the settle's own line, which says
+          whether anything fell, was never reached.
+        - So `Falling` begins once the GiB is freed and still held, before the flush, and its
+          first look finds the fall the flush brings.
+        - And a cold settle that finds nothing fallen ends: once `LOOKS_TO_REFUSE` of its
+          looks in a row, each paced as D215 paces looks (`sqrt(2 c w)`), found its VM process
+          still, its memory where it was and its host not holding it
+          (`common::Falling::cold_over`, the count `Wait::stills`). That is the count by which
+          a cold E2E wait finds its party gone (D215). Its CPU stays its liveness alone, as an
+          idle guest's ticks give nothing back. It says so on stderr with its account, and
+          teaches nothing. A learned settle ends at its judge's refusal, fallen or not, as
+          before. No number is added.
+        - Its caller's part: it begins with what it gives back still held, and settles once
+          that give-back has begun (a guest's flush answered, a stand-in's word that it freed),
+          so its first look finds its first fall. A first fall later than its first few looks
+          is no part of it. Left to a guest's own passes, a cold settle ended between them
+          (*A pass already due*).
+        - Tests: tests/harness.rs `a_cold_settle_ends_by_what_its_looks_found` (the rule, its
+          looks' findings given) and `a_give_back_with_nothing_fallen_ends_and_teaches_nothing`
+          (a stand-in at rest, settled twice from one call site, its kind made cold first: each
+          over, the second still cold). Red: lanes/redgreen/own-35g-falling-ends.patch, nothing
+          fallen never over, as before: the rule's test fails. The stand-in's test would hang
+          under it, so the red runs the rule's test alone.
+        - Written, not built or run (the lane's rule). Owed (ROOT): those tests, the falls test
+          below, containers.rs' cold-memory test on HVF, KVM (x86_64 and arm64) and WHP, and
+          clippy on every target.
+        - Open, for ROOT's ruling (the person's rule of 2026-11-18: no fallbacks): the flush
+          itself (patch 0005 `page_reporting_flush_set`) stops after 64 passes and answers 0
+          whether or not anything still waits, a chosen number, silent where it binds. The
+          test cannot tell a whole flush from a cut one, and the pass that follows a cut one
+          (`PAGE_REPORTING_DELAY` on) can fall after a cold settle has ended, as in *A pass
+          already due*.
       - No 500 ms, 4 MiB or 128 MiB is left. tests/harness.rs
         `a_give_back_is_followed_while_its_memory_falls` holds it to a stand-in that unmaps
-        four 32 MiB regions 200 ms of busy CPU apart, the first 400 ms in. Twice from one call
-        site, each round ends with all four gone (midway between three and four regions
-        below its peak), and the second begins with its kind learned of a give-back at
-        least 1 s long.
+        four 32 MiB regions 200 ms of busy CPU apart, the first 400 ms in, settled once it says
+        it freed the first. Twice from one call site, each round ends with all four gone
+        (midway between three and four regions below its peak), and the second begins with its
+        kind learned of a give-back at least 1 s long.
     - The update stress's `STALLED` (5 s) was a copy of init's plug.rs constant, which init
       no longer has: its grower follows a rule learned in its guest (D137's *Asked again on
       what its guest has seen*). The guest's own slowest is not the test's to know, so each
@@ -30976,6 +31023,13 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
             far), as a still party is refused only at that many judged looks.
           - Test: harness.rs `a_homes_patience_follows_its_daemon_past_its_record`. Red
             (cold-wait.patch's second command): refused at its first look, its daemon alive.
+          - One cold E2E wait is refused while its party lives (2026-11-18, #36, ROOT: every
+            wait ends): a give-back's settle (`common::Falling`), its progress its VM process's
+            memory falling and its CPU that process's liveness alone. With nothing fallen it
+            followed that liveness, and so its whole life, as its first fall had come and gone
+            unseen (D209 Part 4, *Nothing fallen*: 54 min on macOS). Now `LOOKS_TO_REFUSE` of its
+            looks in a row that find its process still, paced so, end it, the count by which a
+            party is found gone above. Tests and red: D209 Part 4.
         - *crates/remote's other tests, judged* (2026-11-17, #36, ROOT's batch): control/unix.rs,
           control/drive.rs, managed.rs and managed/input.rs wait through shards-testwait as
           control.rs's do, and the product's threads (unix.rs's socket lanes, server.rs's and

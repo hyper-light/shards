@@ -4065,20 +4065,24 @@ fn what_a_microvm_holds_cold_is_given_back_at_its_hosts_word() {
     // Its microVM grown first, as the group's test grows its own: a run's grower plugs for
     // what its runs touch, not for what they read (D148), and jupiter's guest kept 107 MiB of
     // four reads (PM M391). What it touched and freed given back (D151) before it is idle:
-    // idle once its give-back has ended (`Falling`, D209 Part 4), followed from before the
-    // free. A second read of a file its guest's kernel finds the first's still holding makes
-    // its pages active, which a give-back takes none of (`reclaim_cold`, `inactive_file`),
-    // and an idle measured as it went on giving back had the file read twice and gave back
-    // nothing of it on Fedora, once in 6. What it freed is reported at once before idle is
-    // read, as a template's init and a builder's report theirs (`page_reporting.flush`,
-    // resources/kernel/patches/0005, root's alone): a pass already due as it freed the GiB
-    // brought the first fall in sooner than the kernel's two seconds between passes, the
-    // settle ended between them, and the read took the guest's free pages not yet reported,
-    // which its host still held (CI 44007524337, 44138098584 and 44282442232 on x86_64 Linux:
-    // its last fall 1.8 s in, then 30 MiB more after the read, or 122 and 130 MiB less).
-    let falling = Falling::begin(pid);
+    // idle once its give-back has ended (`Falling`, D209 Part 4). A second read of a file its
+    // guest's kernel finds the first's still holding makes its pages active, which a
+    // give-back takes none of (`reclaim_cold`, `inactive_file`), and an idle measured as it
+    // went on giving back had the file read twice and gave back nothing of it on Fedora,
+    // once in 6. What it freed is reported at once before idle is read, as a template's init
+    // and a builder's report theirs (`page_reporting.flush`, resources/kernel/patches/0005,
+    // root's alone): a pass already due as it freed the GiB brought the first fall in sooner
+    // than the kernel's two seconds between passes, the settle ended between them, and the
+    // read took the guest's free pages not yet reported, which its host still held (CI
+    // 44007524337, 44138098584 and 44282442232 on x86_64 Linux: its last fall 1.8 s in, then
+    // 30 MiB more after the read, or 122 and 130 MiB less).
     let grown = shards(&["exec", "prov", "/bin/testguest", "alloc-free", "1024", "0"]);
     assert_eq!(grown.status, Some(0), "{grown}");
+    // Followed from here, the GiB freed and still held, so that its first look finds the fall
+    // its report brings: followed from before the free, it first looked once the report had
+    // given the GiB back, found nothing fallen, and waited for a fall come and gone between
+    // its looks for as long as the microVM lived (macOS arm64, a5b586919a: 54 minutes).
+    let falling = Falling::begin(pid);
     let reported = shards(&[
         "exec",
         "-u",

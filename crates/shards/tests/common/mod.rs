@@ -3239,28 +3239,24 @@ pub const REPORTED: u64 = 2 << 20;
 /// give nothing back), and whose kind, its caller's site, learns W*, the slowest give-back
 /// seen: from the wait's start to its last fall. Learned, its judge's refusal, a whole W*
 /// with no fall and its host not holding it, is the give-back's end; W* spans each gap
-/// between falls of a give-back as long as the slowest. Cold, none seen on this host, the
-/// give-back so far is the slowest seen: it ends once no fall has come for as long as from
-/// its start to its last fall, its host's holds not counted, and none ends before its first
-/// fall, which it waits on for as long as the process lives. Begun before what it gives
-/// back is freed, its first fall spans the free and its guest's whole wait before it
-/// reports (mm/page_reporting.c `PAGE_REPORTING_DELAY`, D151), which each later report
-/// only waits again; but not where a pass was already due as the free came, as a free asks
-/// for none while one is (`__page_reporting_request`): its first fall then comes sooner
-/// than that delay, and a cold settle can end between passes, each at most
-/// `PAGE_REPORTING_CAPACITY` blocks. A caller that needs the whole give-back has its guest
-/// report what waits at once first (`page_reporting.flush`, resources/kernel/patches/0005).
-/// A fall is one report's at least, [`REPORTED`] below the level its last fall left or its
-/// memory rose to since: less is its process's own memory moving.
+/// between falls of a give-back as long as the slowest. Cold, none seen on this host, it
+/// ends as [`Falling::cold_over`] says. Its caller begins it with what it gives back still
+/// held and settles it once that give-back has begun, so that its first look finds its
+/// first fall: a guest's once its report of what it freed was asked at once and answered
+/// (`page_reporting.flush`, resources/kernel/patches/0005; its host gives each block back
+/// before it answers, D151). Left to the guest's own passes, a pass already due as the free
+/// came brings the first fall in sooner than `PAGE_REPORTING_DELAY` (a free asks for none
+/// while one is, mm/page_reporting.c `__page_reporting_request`), and a cold settle ended
+/// between passes. A fall is one report's at least, [`REPORTED`] below the level its last
+/// fall left or its memory rose to since: less is its process's own memory moving.
 pub struct Falling {
     pid: u32,
     wait: Wait,
     /// The level a fall is counted from: its memory at its last fall, or the most it has
     /// held since.
     held: u64,
-    /// Its last fall, and the last time a look found its host holding it since.
-    fell: Option<Instant>,
-    quiet: Option<Instant>,
+    /// Its last fall, and the last look since that found its host holding its process.
+    fell: Option<(Instant, Instant)>,
 }
 
 impl Falling {
@@ -3275,7 +3271,25 @@ impl Falling {
             wait: Wait::on(kind, party, "its memory to stop falling"),
             held: Falling::footprint(pid),
             fell: None,
-            quiet: None,
+        }
+    }
+
+    /// Whether a cold settle begun at `began`, its judge with no W* to refuse it by, is over
+    /// at a look made at `now` ([`Falling`]). Fallen (`fallen`: its last fall, and the last
+    /// look since that found its host holding its process): once no fall has come for as
+    /// long as from its start to its last fall, from that look on, the give-back so far the
+    /// slowest seen. Nothing fallen: once `still` of its looks in a row, each paced as D215
+    /// paces looks, found its process still, its memory where it was and its host not
+    /// holding it, [`LOOKS_TO_REFUSE`](shards_api::LOOKS_TO_REFUSE) of them, as a cold wait
+    /// finds its party gone ([`Wait::gone`]): an idle party whose memory does not fall is
+    /// refused, as D215's judge refuses a still one, never waited on for as long as it lives
+    /// (ROOT, 2026-11-18; D209 Part 4, *Nothing fallen*).
+    pub fn cold_over(began: Instant, now: Instant, fallen: Option<(Instant, Instant)>, still: u32) -> bool {
+        match fallen {
+            Some((fell, quiet)) => {
+                now.saturating_duration_since(quiet) >= fell.saturating_duration_since(began)
+            }
+            None => still >= shards_api::LOOKS_TO_REFUSE,
         }
     }
 
@@ -3292,7 +3306,7 @@ impl Falling {
     }
 
     /// What it holds of its own once its give-back has ended, which teaches its kind how
-    /// long the give-back took. A process gone fails the test.
+    /// long the give-back took where anything fell. A process gone fails the test.
     pub fn settled(mut self) -> u64 {
         loop {
             let now = Falling::footprint(self.pid);
@@ -3301,7 +3315,7 @@ impl Falling {
                 self.held = now;
             }
             if fell {
-                (self.fell, self.quiet) = (Some(Instant::now()), Some(Instant::now()));
+                self.fell = Some((Instant::now(), Instant::now()));
             }
             let judged = self.wait.look(fell);
             assert!(
@@ -3310,34 +3324,37 @@ impl Falling {
                 self.pid,
                 self.wait.account()
             );
-            if self.wait.holding.is_some() && self.fell.is_some() {
-                self.quiet = Some(Instant::now());
+            if let Some((fell, _)) = self.fell
+                && self.wait.holding.is_some()
+            {
+                self.fell = Some((fell, Instant::now()));
             }
-            let ended = match (judged, self.fell, self.quiet) {
-                (Err(_), ..) => true,
-                (Ok(()), Some(fell), Some(quiet)) if !self.wait.judged() => {
-                    quiet.elapsed() >= fell.saturating_duration_since(self.wait.began)
-                }
-                (Ok(()), ..) => false,
-            };
+            let ended = judged.is_err()
+                || (!self.wait.judged()
+                    && Falling::cold_over(self.wait.began, Instant::now(), self.fell, self.wait.stills));
             if ended {
-                if let Some(fell) = self.fell {
-                    let took = fell.saturating_duration_since(self.wait.began);
-                    self.wait.read_through();
-                    if self.wait.read == Some(true) {
-                        self.wait.kind.record().teach(took, self.wait.work);
-                    } else {
-                        self.wait.kind.record().teach_unrated(took);
+                let last = match self.fell {
+                    Some((fell, _)) => {
+                        let took = fell.saturating_duration_since(self.wait.began);
+                        self.wait.read_through();
+                        if self.wait.read == Some(true) {
+                            self.wait.kind.record().teach(took, self.wait.work);
+                        } else {
+                            self.wait.kind.record().teach_unrated(took);
+                        }
+                        self.wait.kind.keep();
+                        format!("its last fall {took:?} in")
                     }
-                    self.wait.kind.keep();
-                }
+                    None => format!(
+                        "nothing fallen since its start, its last {} looks in a row finding its process still",
+                        self.wait.stills
+                    ),
+                };
                 let _ = writeln!(
                     io::stderr(),
-                    "VM process {}'s give-back settled at {now} bytes, {:?} in, its last fall {:?} in\n{}",
+                    "VM process {}'s give-back settled at {now} bytes, {:?} in, {last}\n{}",
                     self.pid,
                     self.wait.began.elapsed(),
-                    self.fell
-                        .map(|fell| fell.saturating_duration_since(self.wait.began)),
                     self.wait.account()
                 );
                 return now;
@@ -5785,6 +5802,10 @@ pub struct Wait {
     /// How many of its looks in a row, its last among them, found its party gone: nothing of
     /// it running, nor its daemon saying anything.
     gone: u32,
+    /// How many of its looks in a row, its last among them, found its party still
+    /// ([`Party::look`]), its caller telling of no output since the look before: a settle's
+    /// with nothing fallen ([`Falling::cold_over`]).
+    stills: u32,
     /// Its party's CPU since it began.
     work: Duration,
     /// Whether every look since its judge's look before saw its party run or rest unheld
@@ -5917,6 +5938,7 @@ impl Wait {
             last: (began, "its start".into()),
             holding: None,
             gone: 0,
+            stills: 0,
             work: Duration::ZERO,
             vouched: false,
             read: None,
@@ -6037,6 +6059,7 @@ impl Wait {
         if output {
             // Words are progress its CPU does not show: no window of its rate (D215).
             self.vouched = false;
+            self.stills = 0;
             self.last = (now, "its output".into());
             self.progressed.get_or_insert_with(|| "its output".into());
         }
@@ -6070,6 +6093,11 @@ impl Wait {
         self.holding = None;
         self.gone = if looked.found == Found::Gone {
             self.gone.saturating_add(1)
+        } else {
+            0
+        };
+        self.stills = if looked.found == Found::Still && !output {
+            self.stills.saturating_add(1)
         } else {
             0
         };

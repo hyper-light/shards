@@ -274,7 +274,8 @@ const REGIONS: usize = 4;
 /// A stand-in guest's give-back: [`REGIONS`] regions of [`REGION`] bytes mapped and touched,
 /// "mapped" said on stdout; once stdin gives a byte, each unmapped in turn, `ms` of busy CPU
 /// apart, the first after twice that (its free, then its guest's wait before it reports, as
-/// D151's reports come); then nothing until stdin closes.
+/// D151's reports come), "freed" said once the first has gone, as a guest's flush answers once
+/// its host has its blocks back; then nothing until stdin closes.
 fn falls(ms: u64, busy: impl Fn(u64)) {
     use std::io::Read as _;
     let regions: Vec<Region> = (0..REGIONS).map(|_| Region::touched()).collect();
@@ -284,9 +285,13 @@ fn falls(ms: u64, busy: impl Fn(u64)) {
     let mut stdin = std::io::stdin();
     let _ = stdin.read(&mut [0u8; 1]);
     busy(ms);
-    for region in regions {
+    for (i, region) in regions.into_iter().enumerate() {
         busy(ms);
         drop(region);
+        if i == 0 {
+            out.write_all(b"freed\n").unwrap();
+            out.flush().unwrap();
+        }
     }
     let _ = stdin.read(&mut [0u8; 1]);
 }
@@ -1804,9 +1809,10 @@ fn a_retry_goes_on_while_what_this_test_started_works() {
 /// end, and its kind learns how long it took (ROOT's ruling, D209 Part 4: containers.rs'
 /// `what_a_microvm_holds_cold_is_given_back_at_its_hosts_word` waited for two samples 500 ms
 /// apart within 4 MiB). Do: a stand-in that frees four regions one at a time, 200 ms of busy
-/// CPU apart, the first 400 ms in, followed from before it frees; twice from one call site.
-/// Expect: each round's end held what was left once all four went, and the second round's
-/// kind learned a give-back that long.
+/// CPU apart, the first 400 ms in, followed from before it frees and settled once it says it
+/// freed the first, as a caller settles once its give-back has begun ([`common::Falling`]);
+/// twice from one call site. Expect: each round's end held what was left once all four went,
+/// and the second round's kind learned a give-back that long.
 #[test]
 fn a_give_back_is_followed_while_its_memory_falls() {
     let ms = 200;
@@ -1834,6 +1840,10 @@ fn a_give_back_is_followed_while_its_memory_falls() {
             falling.seen()
         );
         stand_in.stdin.as_mut().unwrap().write_all(b"g").unwrap();
+        assert!(
+            lines.any(|l| l.unwrap().ends_with("freed")),
+            "the stand-in freed nothing"
+        );
         let ended = falling.settled();
         let _ = stand_in.kill();
         let _ = stand_in.wait();
@@ -1842,6 +1852,76 @@ fn a_give_back_is_followed_while_its_memory_falls() {
         assert!(
             peak.saturating_sub(ended) >= 3 * region + region / 2,
             "round {round}: {peak} bytes held mapped, {ended} at its give-back's end"
+        );
+    }
+}
+
+/// A cold settle ends by what its looks found (`Falling::cold_over`, D209 Part 4): with
+/// nothing fallen, at `LOOKS_TO_REFUSE` looks in a row that found its process still, and not
+/// one before; with a fall, once none has come for as long as from its start to its last
+/// fall, counted from the last look since that found its host holding the process, its still
+/// looks no end of it. Red: lanes/redgreen/own-35g-falling-ends.patch, a settle with nothing
+/// fallen never over, as at a5b586919a, whose cold-memory test waited 54 minutes on macOS.
+#[test]
+fn a_cold_settle_ends_by_what_its_looks_found() {
+    let began = Instant::now();
+    let at = |ms| began + Duration::from_millis(ms);
+    let refuse = shards_api::LOOKS_TO_REFUSE;
+    assert!(!common::Falling::cold_over(began, at(1), None, refuse - 1));
+    assert!(
+        common::Falling::cold_over(began, at(1), None, refuse),
+        "a cold settle with nothing fallen not over at {refuse} still looks"
+    );
+    let fell = Some((at(400), at(400)));
+    assert!(!common::Falling::cold_over(began, at(799), fell, refuse));
+    assert!(common::Falling::cold_over(began, at(800), fell, 0));
+    let held = Some((at(400), at(700)));
+    assert!(!common::Falling::cold_over(began, at(1099), held, refuse));
+    assert!(common::Falling::cold_over(began, at(1100), held, 0));
+}
+
+/// A give-back with nothing to fall is refused with its account, never followed for as long
+/// as its process lives (ROOT's ruling, 2026-11-18, D209 Part 4: an idle party whose memory
+/// is not falling is refused, as D215's judge refuses a still one). Do: a stand-in at rest,
+/// freeing nothing, followed and settled twice from one call site, its kind made cold first.
+/// Expect: each settle over with nothing fallen, and its kind taught nothing, so the second
+/// is cold too.
+#[test]
+fn a_give_back_with_nothing_fallen_ends_and_teaches_nothing() {
+    /// [`common::Falling::begin`] at its caller's call site, its kind made cold: what this host
+    /// kept of it removed before the kind's first wait in this process.
+    #[track_caller]
+    fn cold_falling(pid: u32) -> common::Falling {
+        let site = std::panic::Location::caller();
+        let _ = std::fs::remove_file(common::WaitKind::kept_at(site, "", ""));
+        common::Falling::begin(pid)
+    }
+    for round in 0..2 {
+        let mut stand_in = stand_in_doing("rests")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut lines = std::io::BufRead::lines(std::io::BufReader::new(stand_in.stdout.take().unwrap()));
+        assert!(
+            lines.any(|l| l.unwrap().ends_with("resting")),
+            "the stand-in said nothing"
+        );
+        let held = shards_vmm::platform::process_usage(stand_in.id())
+            .unwrap()
+            .footprint;
+        let falling = cold_falling(stand_in.id());
+        assert_eq!(
+            falling.seen(),
+            shards_api::Seen::Cold,
+            "round {round}: its kind learned of nothing fallen"
+        );
+        let ended = falling.settled();
+        let _ = stand_in.kill();
+        let _ = stand_in.wait();
+        assert!(
+            ended.saturating_add(common::REPORTED) > held,
+            "round {round}: {held} bytes held, {ended} as it settled"
         );
     }
 }
