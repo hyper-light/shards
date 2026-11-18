@@ -16,9 +16,17 @@
 //!   client's exit, the command having run.
 //! - `rate_R_sent`, `rate_R_failed`: the requests sent, and those that failed, shards' own;
 //!   `rate_R_refused_by_host`: those whose microVM's entry its host refused, as D261's gate
-//!   takes a refusal for its host's, as the tests read one ([`by_the_host`]); and
-//!   `rate_R_done`: the rate they were answered at, per second, over the step's span to its
-//!   last answer. Each failed request is said with why.
+//!   takes a refusal for its host's ([`by_the_host`]); and `rate_R_done`: the rate they were
+//!   answered at, per second, over the step's span to its last answer. Each failed request is
+//!   said with why.
+//!
+//! A rate whose span, from its start to its drain's end, its host refused VM entries in, every
+//! refusal D261's gate takes for its host's ([`span_refusals`], `limits::the_hosts_all`), is
+//! not shards' measurement: its row says `"invalid":"the host refused VM entries"`, its
+//! refusals are said (how many, the first and the last, the host model and a witness), and no
+//! rate after it is measured on a host that has begun to refuse. A refusal the gate does not
+//! take stays a failure, said with why (ROOT's ruling of 2026-11-18; CI 44245219858's rate 40
+//! on EC2's nested KVM, 721 VM processes refused in 42 s).
 //!
 //! Each rate is reported as it ends, its table, its `shards-bench` line and its samples, so
 //! that a run cut short still shows the rates it finished. Its requests are waited for by
@@ -53,6 +61,7 @@ fn main() {
 
 #[cfg(unix)]
 fn main() {
+    use std::io::Write as _;
     use std::process::{Command, Stdio};
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
@@ -113,8 +122,10 @@ fn main() {
     // Each request's client's words, a file each, read as it ends.
     let said_dir = common::workspace().join(format!("target/bench/requests-{}", std::process::id()));
     std::fs::create_dir_all(&said_dir).unwrap();
-    for &rate in &rates {
+    for (r, &rate) in rates.iter().enumerate() {
         let start = Instant::now();
+        // Its span on the clock every process of its host reads, as refusals say their moments.
+        let from_us = shards_vmm::vm::limits::now_us();
         let mut due = 0.0f64;
         // Each request's client as its thread spawns it, and each request's end.
         let (spawned, spawns) = mpsc::channel();
@@ -166,12 +177,7 @@ fn main() {
         let clients: Vec<u32> = spawns.iter().take(n).flatten().collect();
         let came = answered(rate, &ends, &dues, &clients, &mut seen, &home);
         // The refused entries its daemon's log tells of, read once every request has ended.
-        let refusals = std::fs::read_to_string(home.join("daemon.log"))
-            .unwrap_or_default()
-            .lines()
-            .filter(|line| shards_vmm::vm::limits::Said::find(line).is_some())
-            .collect::<Vec<_>>()
-            .join("\n");
+        let refusals = span_refusals(&home, from_us, shards_vmm::vm::limits::now_us());
         let (mut latency, mut failed, mut refused, mut last) = (Vec::with_capacity(n), 0usize, 0usize, start);
         for end in came {
             last = last.max(end.done);
@@ -185,6 +191,31 @@ fn main() {
         }
         let done_rate = (n - failed - refused) as f64 / last.duration_since(start).as_secs_f64();
         failures += failed + refused;
+        // Its span's refusals, each taken by D261's gate: its host's, not shards' measurement.
+        let invalid = match &refusals.span {
+            Ok(None) => false,
+            Ok(Some(all)) => {
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "rate {rate}: invalid: its host refused VM entries in its span, every one its \
+                     host's by D261's gate: {all}; host model {}",
+                    shards_vmm::vm::limits::HostModel::here()
+                );
+                true
+            }
+            Err(not) => {
+                for (refusal, why) in not {
+                    let _ = writeln!(
+                        std::io::stderr(),
+                        "rate {rate}: a refused entry D261's gate does not take for its host's ({why}): {}",
+                        refusal.line
+                    );
+                }
+                failures += not.len();
+                false
+            }
+        };
+        failures += usize::from(invalid);
         let name = format!("rate_{rate}");
         let rows = [
             stats(&name, "us", latency),
@@ -197,15 +228,26 @@ fn main() {
             ),
             stats(&format!("{name}_done"), "per_s", vec![done_rate]),
         ];
-        report(
-            "arrival",
-            &[
-                ("rate", rate.to_string()),
-                ("secs", secs.to_string()),
-                ("kernel", kernel.clone()),
-            ],
-            &rows,
-        );
+        let mut params = vec![
+            ("rate", rate.to_string()),
+            ("secs", secs.to_string()),
+            ("kernel", kernel.clone()),
+        ];
+        if invalid {
+            params.push(("invalid", "the host refused VM entries".to_string()));
+        }
+        report("arrival", &params, &rows);
+        // No rate after it is measured on a host that has begun to refuse its entries.
+        if invalid {
+            let rest = rates.get(r + 1..).unwrap_or_default();
+            if !rest.is_empty() {
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "rates {rest:?} not measured: the host refused VM entries at rate {rate}"
+                );
+            }
+            break;
+        }
     }
     run_env(&strings(&["daemon", "stop"]), false, &env);
     let _ = std::fs::remove_dir_all(&said_dir);
@@ -226,18 +268,106 @@ struct End {
     done: std::time::Instant,
 }
 
-/// Whether a failed request's microVM's entry was refused by its host, as D261's gate takes a
-/// refusal for its host's, as the tests read a run's (`common::run_host_refused`): the refusal
-/// its client's words, `said`, carry, or that `refusals`, its daemon's log's, tell of the VM
-/// those words name as ended or that its daemon logged unable to serve in them
-/// (`common::run_refusal`), its witness its host model's records and their burst width. Said either way: a
-/// refusal the gate takes, with its witness, is counted apart from shards' failures; one it
-/// does not take, and a failure that names no refused VM, stay shards', said with the client's
-/// words.
+/// The refusals of entry a rate's daemon's log tells of (D261), and what D261's gate makes of
+/// its span's ([`span_refusals`]).
 #[cfg(unix)]
-fn by_the_host(rate: f64, refusals: &str, said: &str) -> bool {
+struct Refusals {
+    /// Each refusal line its daemon's log holds, in the span or not.
+    lines: String,
+    /// Every refusal those lines and its host model's records tell of: the gate's witnesses.
+    kept: Vec<shards_vmm::vm::limits::Refusal>,
+    /// Its host model's burst width: the records' widest, or D261's measured.
+    width_us: u64,
+    /// The gate over the span's own refusals ([`shards_vmm::vm::limits::the_hosts_all`]).
+    span: Result<
+        Option<shards_vmm::vm::limits::HostsRefusals>,
+        Vec<(shards_vmm::vm::limits::Said, shards_vmm::vm::limits::NotTheHosts)>,
+    >,
+}
+
+/// The refusals of entry `home`'s daemon's log tells of (D261), and D261's gate over those of a
+/// rate's span, `from_us` to `to_us` (its start to its drain's end, as refusals say their
+/// moments): each with every refusal the log tells of, in the span or not, and those its host
+/// model's records keep (those its refusals name, and the tests' own, `common::vcpu_limits`),
+/// as its witnesses, their burst width the records' or D261's measured. Where the span holds a
+/// refusal, the width is waited out from its last one first, and the log read again, so that
+/// a witness said just after it is read, as the tests' gate waits (`common::host_refusal`).
+#[cfg(unix)]
+fn span_refusals(home: &std::path::Path, from_us: u64, to_us: u64) -> Refusals {
+    use shards_vmm::vm::limits;
+    let read = || -> Vec<(String, limits::Said)> {
+        std::fs::read_to_string(home.join("daemon.log"))
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| limits::Said::find(line).map(|said| (line.to_string(), said)))
+            .collect()
+    };
+    let in_span = |said: &[(String, limits::Said)]| -> Vec<limits::Said> {
+        said.iter()
+            .map(|(_, said)| said)
+            .filter(|said| (from_us..=to_us).contains(&said.refusal.at_us))
+            .cloned()
+            .collect()
+    };
+    let records = |span: &[limits::Said]| -> Vec<limits::Limits> {
+        let mut files: Vec<std::path::PathBuf> = span.iter().filter_map(|said| said.file.clone()).collect();
+        files.sort();
+        files.dedup();
+        files
+            .into_iter()
+            .map(|file| limits::Limits::kept_in(file, limits::HostModel::here()))
+            .chain([common::vcpu_limits()])
+            .collect()
+    };
+    let width = |records: &[limits::Limits]| {
+        records
+            .iter()
+            .map(limits::Limits::burst_width_us)
+            .max()
+            .unwrap_or_else(limits::measured_width_us)
+    };
+    let mut said = read();
+    if let Some(last) = in_span(&said).iter().map(|said| said.refusal.at_us).max() {
+        let wait = last
+            .saturating_add(width(&records(&in_span(&said))))
+            .saturating_sub(limits::now_us());
+        std::thread::sleep(std::time::Duration::from_micros(wait));
+        said = read();
+    }
+    let span = in_span(&said);
+    let records = records(&span);
+    let width_us = width(&records);
+    let kept: Vec<limits::Refusal> = said
+        .iter()
+        .map(|(_, said)| said.refusal)
+        .chain(records.iter().flat_map(limits::Limits::refusals))
+        .collect();
+    Refusals {
+        lines: said
+            .iter()
+            .map(|(line, _)| line.as_str())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        span: limits::the_hosts_all(&span, &kept, width_us),
+        kept,
+        width_us,
+    }
+}
+
+/// Whether a failed request's microVM's entry was refused by its host, as D261's gate takes a
+/// refusal for its host's: the refusal its client's words, `said`, carry, or that its daemon's
+/// log tells of the VM those words name as ended (`common::run_refusal`), its witnesses and
+/// burst width its rate's ([`Refusals`]), as its span is judged. Said either way: a refusal the
+/// gate takes, with its witness, is counted apart from shards' failures; one it does not take,
+/// and a failure that names no refused VM, stay shards', said with the client's words.
+#[cfg(unix)]
+fn by_the_host(rate: f64, refusals: &Refusals, said: &str) -> bool {
     use std::io::Write as _;
-    let host = match common::host_refusal(&common::run_refusal(said, refusals)) {
+    let refusal = shards_vmm::vm::limits::Said::find(&common::run_refusal(said, &refusals.lines));
+    let host = match refusal.map(|refusal| {
+        let gate = shards_vmm::vm::limits::the_hosts(&refusal, &refusals.kept, refusals.width_us);
+        (refusal, gate)
+    }) {
         Some((refusal, Ok(witness))) => {
             let _ = writeln!(
                 std::io::stderr(),

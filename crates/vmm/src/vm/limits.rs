@@ -1015,6 +1015,69 @@ pub fn the_hosts(said: &Said, kept: &[Refusal], width_us: u64) -> Result<Witness
         .ok_or(NotTheHosts::Alone { width_us })
 }
 
+/// Refusals D261's gate took for their host's, every one of a span of time
+/// ([`the_hosts_all`]): how many, the first and the last, and the first's witness.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostsRefusals {
+    pub count: usize,
+    pub first: Said,
+    pub last: Said,
+    pub witness: Witness,
+}
+
+impl fmt::Display for HostsRefusals {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} refused, the first at {} s ({MACHINE}{}), the last at {} s ({MACHINE}{}); the first's \
+             witness: {}",
+            self.count,
+            seconds(self.first.refusal.at_us),
+            self.first.refusal.machine,
+            seconds(self.last.refusal.at_us),
+            self.last.refusal.machine,
+            self.witness
+        )
+    }
+}
+
+/// Whether D261's gate takes every refusal of `said` for its host's ([`the_hosts`]), each with
+/// `kept`, the refusals its witnesses may be among, and `width_us`, its host model's burst
+/// width: what a span of time its host refused entries in comes to, a bench's rate's (ROOT's
+/// ruling of 2026-11-18, CI 44245219858). A refusal said twice, as its VM process's own line
+/// and as its daemon's log says it, counts once. Those it took, together, where it took every
+/// one, none where `said` holds none; else each it did not take, with why: their failures
+/// stand, and the span is not its host's.
+pub fn the_hosts_all(
+    said: &[Said],
+    kept: &[Refusal],
+    width_us: u64,
+) -> Result<Option<HostsRefusals>, Vec<(Said, NotTheHosts)>> {
+    let each: BTreeMap<(u64, u32), &Said> = said
+        .iter()
+        .map(|s| ((s.refusal.at_us, s.refusal.machine), s))
+        .collect();
+    let (mut taken, mut not) = (Vec::new(), Vec::new());
+    for s in each.into_values() {
+        match the_hosts(s, kept, width_us) {
+            Ok(witness) => taken.push((s, witness)),
+            Err(why) => not.push((s.clone(), why)),
+        }
+    }
+    if !not.is_empty() {
+        return Err(not);
+    }
+    let (Some(&(first, witness)), Some(&(last, _))) = (taken.first(), taken.last()) else {
+        return Ok(None);
+    };
+    Ok(Some(HostsRefusals {
+        count: taken.len(),
+        first: first.clone(),
+        last: last.clone(),
+        witness,
+    }))
+}
+
 /// A machine the tests do not ask of their host ([`Limits::admit`]): its count, and the least
 /// count its host model has only refused, how often, the vCPU the last refusal named, and the
 /// file that keeps them.
@@ -1594,6 +1657,46 @@ mod tests {
                 width_us: width
             })
         );
+    }
+
+    /// A span of time whose every refusal D261's gate takes for its host's is its host's (a
+    /// bench's rate whose host refused entries, ROOT's ruling of 2026-11-18), said with how
+    /// many, the first and the last, and the first's witness; a refusal said twice counts once.
+    /// A span with any refusal the gate does not take is not: each such refusal is said with
+    /// why, its failure standing. A span with none is neither. The shape of CI 44245219858's
+    /// firecracker job: a machine whose guest had run refused, and others at their first
+    /// entries within the burst width of it.
+    #[test]
+    fn a_spans_refusals_are_its_hosts_only_where_the_gate_takes_every_one() {
+        let width = measured_width_us();
+        let ran = refused(3, 1_794_982_514_349_836, 111_001, true);
+        let firsts = [
+            refused(0, 1_794_982_514_400_000, 111_002, false),
+            refused(3, 1_794_982_515_000_000, 111_003, false),
+        ];
+        let all: Vec<Said> = [&ran, &firsts[0], &firsts[1]].map(said).to_vec();
+        let kept: Vec<Refusal> = all.iter().map(|s| s.refusal).collect();
+        // Each said twice, as a VM process's own line and its daemon's log say it.
+        let twice: Vec<Said> = all.iter().chain(all.iter()).cloned().collect();
+        let taken = the_hosts_all(&twice, &kept, width).unwrap().unwrap();
+        assert_eq!(
+            (
+                taken.count,
+                taken.first.refusal,
+                taken.last.refusal,
+                taken.witness
+            ),
+            (3, ran.refusal, firsts[1].refusal, Witness::Ran)
+        );
+        // One more, before its guest ran, past the width of every machine whose guest had.
+        let alone = refused(0, 1_794_982_600_000_000, 111_004, false);
+        let with_alone: Vec<Said> = all.iter().cloned().chain([said(&alone)]).collect();
+        let kept: Vec<Refusal> = with_alone.iter().map(|s| s.refusal).collect();
+        assert_eq!(
+            the_hosts_all(&with_alone, &kept, width),
+            Err(vec![(said(&alone), NotTheHosts::Alone { width_us: width })])
+        );
+        assert_eq!(the_hosts_all(&[], &kept, width), Ok(None));
     }
 
     /// D261's gate takes a refusal of a machine whose guest had run for its host's, alone or

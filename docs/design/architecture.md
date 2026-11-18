@@ -14513,7 +14513,40 @@ comes to made no progress for 399 ms, past the slowest answer of its kind seen o
     records and their learned burst width. Taken, it is counted in `rate_R_refused_by_host`;
     not taken, or naming no refused VM, it stays in `rate_R_failed`; each is said with why. A
     refusal its client's words do not name (the third way) stays shards' failure, as in the
-    tests. The drain's judge is unchanged: a request its host refused has ended.
+    tests. The drain's judge is unchanged: a request its host refused has ended. Its gate's
+    witnesses and width are now its rate's span's (below).
+  - *A rate its host refused entries in is not measured* (ROOT's ruling (c), 2026-11-18, goal
+    1453357d; D261's gate). CI 44245219858's firecracker job (Intel Xeon 6975P-C under EC2's
+    nested KVM) met its host refusing entries at rate 40: its daemon's log holds 721 VM
+    processes refused (VMX error 7) over 42.36 s, 649 before their guests ran and 72 after. Its
+    latencies there were the host's, not shards'.
+    - *The span.* Each rate's span is its start to its drain's end, on the clock every process
+      of its host reads, as a refusal says its moment. The refusals its daemon's log tells of in
+      it are judged together by D261's gate (`limits::the_hosts_all`, each by `the_hosts`). A
+      refusal said twice, as its VM process's line and as the daemon's `WARN`, counts once.
+    - *Its witnesses.* Every refusal the log tells of, in the span or not, as each VM process
+      said it, and those its host model's records keep (those the span's refusals name, and the
+      tests' own). Its pool's VMs are restores, which keep no records (D261), so the log is
+      where their refusals are. The burst width is the records' widest, or D261's measured,
+      waited out from the span's last refusal before the log is read again, as the tests' gate
+      waits (`common::host_refusal`).
+    - *Every one the host's.* The rate is invalid. Its row carries `"invalid":"the host refused
+      VM entries"`, and stderr gets how many, the first and the last moment and VM process,
+      the host model and the first's witness. No rate after it is measured on a host that has
+      begun to refuse: the bench says which were not, and keeps its home (its daemon's log).
+    - *Any one not the host's.* That refusal stays a failure, said with why (`NotTheHosts`),
+      and the rate is measured as before, the home kept.
+    - *Its requests* are read by the same gate, witnesses and width (`by_the_host`), so that a
+      rate's requests and its span agree: a failed request whose VM the gate takes is counted
+      in `rate_R_refused_by_host`, others in `rate_R_failed`.
+    - Held by vmm `vm::limits::tests::a_spans_refusals_are_its_hosts_only_where_the_gate_takes_every_one`
+      (synthetic records of CI 44245219858's shape: three taken, said twice each, counted once,
+      the first's witness its own run; one more alone before its guest ran, past the width,
+      not taken, its failure standing; none, neither). Red:
+      lanes/redgreen/own-38g-invalid.patch (every refusal taken, the gate unread). Written,
+      not built or run (the lane's rule). Owed (ROOT): that test, the bench on a KVM host, and
+      the next EC2 run's Arrival saying its rows `invalid` where its host refused, or its
+      refusals' gate.
   - *The job's limit after D36's common point* (2026-11-17). The comparison now waits a working
     set's window (`RECORD_FOR`, 1 s on KVM) before it reads each restore's and fleet's memory
     (D36): at most 408 s more a run, 396 restores (6 pairs, 3 warm-ups and 30 runs of each
@@ -39648,6 +39681,8 @@ post-mortem read of the printk ring through VMCOREINFO, not a debug port.
           error names (`common::vm_host_refused`); and boot.rs
           `runs_init_where_its_kernel_opened_no_console`, refused so on CI 44164945050's x86_64
           musl job (its `console=ttyS0` boot's vCPU 0, beside the `shards_api` tests' refusals).
+          The arrival bench reads a rate's span by it, every refusal at once
+          (`limits::the_hosts_all`, D209 Part 11).
         - *No witness yet:* a machine past its init's announcement keeps no refusal, as its
           records are let go of then; a restore keeps none either, since it is given no records.
           Their refusals are said, but witness nothing, and a restore's refusal before its guest
