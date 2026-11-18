@@ -4594,6 +4594,10 @@ pub struct Looked {
     /// Whether a process of it had gone, or could not be read, before this look read its
     /// last CPU: what it ran since the look before is lost to its work.
     pub lost: bool,
+    /// What it could not read of this process's threads beside its waiter, a machine's
+    /// party's, and why ([`Ran::Unread`]): its wait's account says it, and the look takes
+    /// nothing from them, its evidence beginning anew.
+    pub unread: Option<String>,
 }
 
 impl Party {
@@ -4750,6 +4754,7 @@ impl Party {
             daemon_ran: None,
             vouched: true,
             lost: false,
+            unread: None,
         };
         let mut based = !std::mem::replace(&mut self.looked, true);
         if self.said.as_mut().is_some_and(Said::said) {
@@ -4762,6 +4767,11 @@ impl Party {
             looked.resolution = looked.resolution.max(beside.uncertainty);
             match ran {
                 Ran::Based => based = true,
+                Ran::Unread(why) => {
+                    based = true;
+                    looked.vouched = false;
+                    looked.unread = Some(why);
+                }
                 Ran::Still => {}
                 Ran::Held => {
                     looked.vouched = false;
@@ -4771,11 +4781,20 @@ impl Party {
                             "its host held a thread of this process beside its waiter from running".into();
                     }
                 }
-                Ran::Others(cpu) => {
+                Ran::Others { cpu, starved } => {
                     looked.cpu = looked.cpu.saturating_add(cpu);
+                    // A thread beside its waiter runnable on no CPU since the look before: no
+                    // window of the rate's, under either reading, as a member's (D215).
+                    looked.vouched &= !starved;
                     if self.cpu == Cpu::Progress && looked.found != Found::Progressed {
                         looked.found = Found::Progressed;
                         looked.what = "this process's threads beside its waiter ran".into();
+                    } else if self.cpu == Cpu::Liveness && starved && looked.found == Found::Still {
+                        // Its CPU its liveness alone, its host's hold of a thread of it is still
+                        // a hold, as a VM process's is (D209 Part 5, D261; CI 44268931283).
+                        looked.found = Found::Held;
+                        looked.what =
+                            "its host held a thread of this process beside its waiter from any CPU".into();
                     }
                 }
             }
@@ -4958,8 +4977,28 @@ impl Party {
     /// refusal named no member's state, whether one was ending among them): its status
     /// ([`process_status`]), how many of its threads are runnable (`shards_api::
     /// runnable_threads`), where its threads wait ([`waits_in`]), and its end under way or its
-    /// stop, as its look found them.
+    /// stop, as its look found them. A machine of this process's follows no process: its
+    /// threads are this process's, said so, its waiter's among them (D261: CI 44268931283's
+    /// refusal of a 16-vCPU boot said "none followed", whether its vCPUs ran or waited unread).
     fn states(&self) -> String {
+        if matches!(self.members, Members::Machine) {
+            let pid = std::process::id();
+            let mut said = format!(
+                "this process {pid}, {}",
+                process_status(pid).unwrap_or_else(|| "unread".into())
+            );
+            if let Some((runnable, threads)) = shards_api::runnable_threads(pid) {
+                said.push_str(&format!(", {runnable} of {threads} threads runnable"));
+            }
+            if let Some(waits) = waits_in(pid) {
+                said.push_str(&format!(", its threads waiting in {waits}"));
+            }
+            #[cfg(windows)]
+            if let Some(threads) = shards_api::threads_said(pid) {
+                said.push_str(&format!(", its threads {threads}"));
+            }
+            return said;
+        }
         if self.watched.is_empty() {
             return "none followed".into();
         }
@@ -5101,12 +5140,22 @@ fn ending(pid: u32) -> String {
 ///   (`a_judged_calls_own_work_is_its_progress`' first form, and ROOT's batch: this file's
 ///   `a_machines_host_work_is_its_progress` refused under 14 busy loops), where its own
 ///   times did.
-/// - Linux and macOS: whether another thread is runnable as it is read (Linux its state `R`,
-///   macOS `TH_STATE_RUNNING`, each running or waiting for a CPU): one whose others ran
+/// - Linux and macOS: whether each other thread is runnable as it is read (Linux its state
+///   `R`, macOS `TH_STATE_RUNNING`, each running or waiting for a CPU): one whose others ran
 ///   nothing since the look before while one of them was runnable was held by its host
-///   ([`Ran::Held`]), as a busy host keeps a spinning thread from its CPU.
+///   ([`Ran::Held`]), as a busy host keeps a spinning thread from its CPU; and a runnable one
+///   that ran no CPU since the look before was kept from any CPU by its host
+///   (`shards_api::starved`, the rule a VM process's threads are read by), which under
+///   [`Cpu::Liveness`] is its host's hold though others ran (D209 Part 5, D261: a guest of
+///   more vCPUs than its host has CPUs runs some while one of them waits for a CPU).
 /// - Windows: QueryProcessCycleTime and QueryThreadCycleTime, cycle counts, exact (their
-///   time undocumented: what they ran is said as no CPU time, R* a refusal's diagnosis).
+///   time undocumented: what they ran is said as no CPU time, R* a refusal's diagnosis); and
+///   each other thread's switches to a CPU and whether it waits for one (ready or standby),
+///   from the system's listing of every thread (`shards_api::threads_switched`, PM M606), by
+///   which a thread kept from every CPU is read as on Linux and macOS (ROOT's ruling of
+///   2026-11-18: read on every OS).
+/// - A reading that fails is said in its wait's account, and its look takes nothing from it
+///   ([`Ran::Unread`]): no hold, no progress, its evidence beginning anew.
 ///
 /// Other tests of its process run beside it too: a binary whose tests run two machines at
 /// once has each machine's CPU the other's progress, a stall shown only once the other ends.
@@ -5121,66 +5170,87 @@ struct Beside {
 }
 
 /// One look's reading, in its OS's units (Unix nanoseconds, Windows cycles): the looking
-/// thread's counter, this process's, then the looking thread's again; on Linux and macOS
-/// each other thread's own counter too, by its thread ID (macOS: its port's name), and
-/// whether one of them was runnable.
+/// thread's counter, this process's, then the looking thread's again; and each other thread,
+/// by its ID ([`Others`]).
 struct Reading {
     before: u64,
     process: u64,
     after: u64,
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
     others: Others,
 }
 
-/// This process's threads but the calling one, each by its ID and its own CPU time, and
-/// whether one was runnable as it was read.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+/// This process's threads but the calling one, each by its ID (macOS: its port's name), as
+/// shards-api reads a process's (`shards_api::Threads`) for its rule of a thread its host keeps
+/// from any CPU (`shards_api::starved`): a count that moves only as it runs, and whether it
+/// wanted a CPU as it was read. Linux: its own CPU clock, in nanoseconds, and its state `R`
+/// (running or waiting for a CPU). macOS: its user and system time (thread_info(2)), and
+/// `TH_STATE_RUNNING` (the same). Windows: its switches to a CPU, doubled, and one more while
+/// it runs, as its times move in its clock's ticks and would show a thread that ran less than
+/// one as unrun, and its state ready or standby, waiting for one
+/// (`shards_api::threads_switched`, the system's listing that a VM process's are read by on
+/// Windows, PM M606).
 struct Others {
-    cpu: std::collections::BTreeMap<u32, u64>,
-    runnable: bool,
+    threads: shards_api::Threads,
+}
+
+impl Others {
+    /// Whether one of them wanted a CPU as it was read.
+    fn runnable(&self) -> bool {
+        self.threads.values().any(|&(_, runnable)| runnable)
+    }
 }
 
 /// What [`Beside::look`] found.
 enum Ran {
-    /// Nothing before it to compare with: its first look, one by another thread, or one that
-    /// could not read a counter.
+    /// Nothing before it to compare with: its first look, or one by another thread.
     Based,
+    /// Its threads could not be read, and why: its account says it, and nothing is taken
+    /// from it, neither a hold nor progress, its evidence beginning anew.
+    Unread(String),
     /// Nothing beyond its waiter's own run and the counters' uncertainty.
     Still,
-    /// Nothing, while one of its other threads was runnable: its host held it.
+    /// Nothing, while one of its other threads wanted a CPU: its host held it.
     Held,
-    /// Its other threads ran, this much (none said on Windows, whose cycles are no time).
-    Others(Duration),
+    /// Its other threads ran, this much (none said on Windows, whose cycles are no time);
+    /// `starved` where one wanting a CPU as it was read ran none since the look before
+    /// (`shards_api::starved`).
+    Others { cpu: Duration, starved: bool },
 }
 
 impl Beside {
     fn look(&mut self) -> Ran {
         let thread = std::thread::current().id();
-        let Some(now) = self.read() else {
-            self.last = None;
-            return Ran::Based;
+        let now = match self.read() {
+            Ok(now) => now,
+            Err(why) => {
+                self.last = None;
+                return Ran::Unread(why);
+            }
         };
         let others = match self.last.take() {
-            Some((by, last)) if by == thread => Some(self.others(&last, &now)),
+            Some((by, last)) if by == thread => Some((self.others(&last, &now), starved(&last, &now))),
             _ => None,
         };
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
-        let held = now.others.runnable;
-        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-        let held = false;
+        let held = now.others.runnable();
         self.last = Some((thread, now));
         match others {
             None => Ran::Based,
-            Some(0) if held => Ran::Held,
-            Some(0) => Ran::Still,
-            Some(ns) if cfg!(unix) => Ran::Others(Duration::from_nanos(ns)),
-            Some(_) => Ran::Others(Duration::ZERO),
+            Some((0, _)) if held => Ran::Held,
+            Some((0, _)) => Ran::Still,
+            Some((ns, starved)) if cfg!(unix) => Ran::Others {
+                cpu: Duration::from_nanos(ns),
+                starved,
+            },
+            Some((_, starved)) => Ran::Others {
+                cpu: Duration::ZERO,
+                starved,
+            },
         }
     }
 
     /// What this process's threads beside its waiter ran from `last` to `now`, in its OS's
     /// units: the process's counter past its waiter's run and the counters' uncertainty, or,
-    /// on Linux, the other threads' own counters' growth, whichever shows more.
+    /// on Linux and macOS, the other threads' own counters' growth, whichever shows more.
     fn others(&self, last: &Reading, now: &Reading) -> u64 {
         let waiter = now.after.saturating_sub(last.before);
         let uncertain = if cfg!(windows) {
@@ -5197,18 +5267,20 @@ impl Beside {
     }
 
     #[cfg(unix)]
-    fn read(&mut self) -> Option<Reading> {
+    fn read(&mut self) -> Result<Reading, String> {
         let before = thread_cpu(libc::clock_gettime)?;
         let process = match self.watch.as_mut() {
             Some(watch) => {
-                watch.look().ok()?;
+                watch.look().map_err(|e| format!("this process's CPU: {e}"))?;
                 watch.cpu()
             }
             None => {
-                let watch = shards_api::Followed::of_pid(std::process::id())
-                    .ok()
-                    .flatten()
-                    .and_then(|followed| shards_api::Watch::of(followed).ok().flatten())?;
+                let followed = shards_api::Followed::of_pid(std::process::id())
+                    .map_err(|e| format!("this process: {e}"))?
+                    .ok_or("this process: no process has its own ID")?;
+                let watch = shards_api::Watch::of(followed)
+                    .map_err(|e| format!("this process's CPU: {e}"))?
+                    .ok_or("this process's CPU: no process has its own ID")?;
                 let cpu = watch.cpu();
                 self.uncertainty = watch.resolution().saturating_add(thread_cpu(libc::clock_getres)?);
                 self.watch = Some(watch);
@@ -5217,41 +5289,54 @@ impl Beside {
         };
         let after = thread_cpu(libc::clock_gettime)?;
         let ns = |d: Duration| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX);
-        Some(Reading {
+        Ok(Reading {
             before: ns(before),
             process: ns(process),
             after: ns(after),
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
             others: other_threads()?,
         })
     }
 
     #[cfg(windows)]
-    fn read(&mut self) -> Option<Reading> {
-        use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetCurrentThread};
+    fn read(&mut self) -> Result<Reading, String> {
+        use windows_sys::Win32::System::Threading::{
+            GetCurrentProcess, GetCurrentThread, GetCurrentThreadId,
+        };
         use windows_sys::Win32::System::WindowsProgramming::{QueryProcessCycleTime, QueryThreadCycleTime};
         let (mut before, mut process, mut after) = (0u64, 0u64, 0u64);
-        // SAFETY: this thread's and this process's pseudo-handles, which need no closing, and
-        // a count each to write.
-        let read = unsafe {
-            QueryThreadCycleTime(GetCurrentThread(), &mut before) != 0
-                && QueryProcessCycleTime(GetCurrentProcess(), &mut process) != 0
-                && QueryThreadCycleTime(GetCurrentThread(), &mut after) != 0
-        };
-        read.then_some(Reading {
+        let failed = |what: &str| format!("{what}: {}", io::Error::last_os_error());
+        // SAFETY: this thread's pseudo-handle, which needs no closing, and a count to write.
+        if unsafe { QueryThreadCycleTime(GetCurrentThread(), &mut before) } == 0 {
+            return Err(failed("its waiter's cycles (QueryThreadCycleTime)"));
+        }
+        // SAFETY: this process's pseudo-handle, which needs no closing, and a count to write.
+        if unsafe { QueryProcessCycleTime(GetCurrentProcess(), &mut process) } == 0 {
+            return Err(failed("this process's cycles (QueryProcessCycleTime)"));
+        }
+        // SAFETY: as the first.
+        if unsafe { QueryThreadCycleTime(GetCurrentThread(), &mut after) } == 0 {
+            return Err(failed("its waiter's cycles (QueryThreadCycleTime)"));
+        }
+        // SAFETY: GetCurrentThreadId takes nothing and always succeeds.
+        let me = unsafe { GetCurrentThreadId() };
+        let threads = shards_api::threads_switched(std::process::id(), me)?;
+        Ok(Reading {
             before,
             process,
             after,
+            others: Others { threads },
         })
     }
 }
 
-/// What the other threads' own counters grew by from `last` to `now` (Linux and macOS; none
-/// read elsewhere). A thread not read at the look before began since: all it ran is since.
+/// What the other threads' own counters grew by from `last` to `now` (Linux and macOS; on
+/// Windows their counts are switches, no time). A thread not read at the look before began
+/// since: all it ran is since.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn threads_ran(last: &Reading, now: &Reading) -> u64 {
-    now.others.cpu.iter().fold(0u64, |ran, (tid, &cpu)| {
-        ran.saturating_add(cpu.saturating_sub(last.others.cpu.get(tid).copied().unwrap_or(0)))
+    now.others.threads.iter().fold(0u64, |ran, (tid, &(cpu, _))| {
+        let was = last.others.threads.get(tid).map_or(0, |&(was, _)| was);
+        ran.saturating_add(cpu.saturating_sub(was))
     })
 }
 
@@ -5260,58 +5345,74 @@ fn threads_ran(_: &Reading, _: &Reading) -> u64 {
     0
 }
 
+/// Whether a thread beside the waiter, wanting a CPU as `now` read it, ran none since `last`:
+/// its host kept it from every CPU (`shards_api::starved`).
+fn starved(last: &Reading, now: &Reading) -> bool {
+    shards_api::starved(&last.others.threads, &now.others.threads)
+}
+
 /// `read` (clock_gettime(2) or clock_getres(2)) of the calling thread's CPU clock.
 #[cfg(unix)]
 fn thread_cpu(
     read: unsafe extern "C" fn(libc::clockid_t, *mut libc::timespec) -> libc::c_int,
-) -> Option<Duration> {
-    cpu_clock(libc::CLOCK_THREAD_CPUTIME_ID, read)
+) -> Result<Duration, String> {
+    cpu_clock(libc::CLOCK_THREAD_CPUTIME_ID, read).map_err(|e| format!("its waiter's CPU clock: {e}"))
 }
 
-/// The CPU time of each thread of this process but the calling one, by its ID, each from
-/// its own CPU clock: the scheduler's (`CPUCLOCK_SCHED`, 2) of the thread its ID names
+/// The CPU time and state of each thread of this process but the calling one, by its ID, its
+/// CPU from its own CPU clock: the scheduler's (`CPUCLOCK_SCHED`, 2) of the thread its ID names
 /// (`CPUCLOCK_PERTHREAD_MASK`, 4), `(~tid << 3) | 6` (include/linux/posix-timers.h
-/// `make_thread_cpuclock`; glibc's and musl's `pthread_getcpuclockid` make the same). A
-/// thread that ended between this process's listing and its read is left out.
+/// `make_thread_cpuclock`; glibc's and musl's `pthread_getcpuclockid` make the same), and its
+/// state its `/proc/self/task/<tid>/stat` field 3 (proc(5)). A thread that ended between this
+/// process's listing and its read, its task gone, has none to read; any other failure is said.
 #[cfg(target_os = "linux")]
-fn other_threads() -> Option<Others> {
+fn other_threads() -> Result<Others, String> {
     // SAFETY: gettid(2) takes nothing and always succeeds.
     let me = unsafe { libc::gettid() };
-    let mut others = Others {
-        cpu: std::collections::BTreeMap::new(),
-        runnable: false,
-    };
-    for entry in std::fs::read_dir("/proc/self/task").ok()? {
-        let Some(tid) = entry
-            .ok()
-            .and_then(|entry| entry.file_name().to_str()?.parse::<libc::pid_t>().ok())
-        else {
-            continue;
-        };
+    let listed = |e: io::Error| format!("this process's tasks, /proc/self/task: {e}");
+    let mut threads = shards_api::Threads::new();
+    for entry in std::fs::read_dir("/proc/self/task").map_err(listed)? {
+        let entry = entry.map_err(listed)?;
+        let task = entry.path();
+        let tid = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<libc::pid_t>().ok())
+            .ok_or_else(|| format!("{}: no task ID", task.display()))?;
         if tid == me {
             continue;
         }
-        let Some(clock) = (!tid).checked_shl(3).map(|id| id | 6) else {
-            continue;
+        let clock = (!tid)
+            .checked_shl(3)
+            .map(|id| id | 6)
+            .ok_or_else(|| format!("task {tid}: no CPU clock names it"))?;
+        let cpu = match cpu_clock(clock, libc::clock_gettime) {
+            Ok(cpu) => cpu,
+            Err(_) if !task.exists() => continue,
+            Err(e) => return Err(format!("task {tid}'s CPU clock: {e}")),
         };
-        let Some(cpu) = cpu_clock(clock, libc::clock_gettime) else {
-            continue;
+        let stat = match std::fs::read_to_string(task.join("stat")) {
+            Ok(stat) => stat,
+            Err(_) if !task.exists() => continue,
+            Err(e) => {
+                return Err(format!(
+                    "task {tid}'s state, {}: {e}",
+                    task.join("stat").display()
+                ));
+            }
         };
-        let (Ok(tid), Ok(ns)) = (u32::try_from(tid), u64::try_from(cpu.as_nanos())) else {
-            continue;
-        };
-        others.cpu.insert(tid, ns);
-        // Its state (`/proc/self/task/<tid>/stat` field 3, after its command's closing
-        // parenthesis, proc(5)).
-        others.runnable |= std::fs::read_to_string(format!("/proc/self/task/{tid}/stat"))
-            .ok()
-            .and_then(|stat| {
-                stat.rsplit_once(')')
-                    .map(|(_, rest)| rest.trim_start().starts_with('R'))
-            })
-            .unwrap_or(false);
+        let runnable = stat
+            .rsplit_once(')')
+            .and_then(|(_, rest)| rest.split_whitespace().next())
+            .map(|state| state == "R")
+            .ok_or_else(|| format!("task {tid}'s stat names no state: {stat:?}"))?;
+        let ns = u64::try_from(cpu.as_nanos()).unwrap_or(u64::MAX);
+        threads.insert(
+            u64::try_from(tid).map_err(|e| format!("task {tid}: {e}"))?,
+            (ns, runnable),
+        );
     }
-    Some(others)
+    Ok(Others { threads })
 }
 
 #[cfg(target_os = "macos")]
@@ -5325,11 +5426,10 @@ unsafe extern "C" {
 }
 
 /// This process's threads but the calling one, each by its port's name, its user and system
-/// time (thread_info(THREAD_BASIC_INFO), as [`ServerThread`] reads one), and whether one is
-/// `TH_STATE_RUNNING` (running or waiting for a CPU). A thread that ended between the list
-/// and its read is left out.
+/// time and state ([`thread_times`]). A thread that ended between the list and its read has
+/// none to read; any other failure is said.
 #[cfg(target_os = "macos")]
-fn other_threads() -> Option<Others> {
+fn other_threads() -> Result<Others, String> {
     // SAFETY: this thread's own pthread, whose port it returns without a new reference.
     let me = unsafe { libc::pthread_mach_thread_np(libc::pthread_self()) };
     let mut list: libc::thread_act_array_t = std::ptr::null_mut();
@@ -5339,23 +5439,27 @@ fn other_threads() -> Option<Others> {
     let task = unsafe { mach_task_self_ };
     // SAFETY: task_threads(2) of this task, into a list and a count it allocates and fills;
     // each port it names carries a send right of ours, released below.
-    if unsafe { libc::task_threads(task, &raw mut list, &raw mut count) } != libc::KERN_SUCCESS {
-        return None;
+    let code = unsafe { libc::task_threads(task, &raw mut list, &raw mut count) };
+    if code != libc::KERN_SUCCESS {
+        return Err(format!(
+            "this process's threads (task_threads): kern_return {code}"
+        ));
     }
     let ports: Vec<libc::thread_act_t> = (0..usize::try_from(count).unwrap_or(0))
         // SAFETY: `count` ports the call wrote at `list`.
         .map(|i| unsafe { *list.add(i) })
         .collect();
-    let mut others = Others {
-        cpu: std::collections::BTreeMap::new(),
-        runnable: false,
-    };
+    let mut threads = shards_api::Threads::new();
+    let mut failed = None;
     for &port in &ports {
-        if port != me
-            && let Some((ns, runnable)) = thread_times(port)
-        {
-            others.cpu.insert(port, ns);
-            others.runnable |= runnable;
+        if port != me && failed.is_none() {
+            match thread_times(port) {
+                Ok(Some(read)) => {
+                    threads.insert(u64::from(port), read);
+                }
+                Ok(None) => {}
+                Err(why) => failed = Some(why),
+            }
         }
         // SAFETY: the send right task_threads gave of this port, released once.
         unsafe { mach_port_deallocate(task, port) };
@@ -5366,22 +5470,38 @@ fn other_threads() -> Option<Others> {
         .unwrap_or(0);
     // SAFETY: the list task_threads allocated in this task, of `count` ports, freed once.
     unsafe { libc::vm_deallocate(task, list as libc::vm_address_t, bytes as libc::vm_size_t) };
-    Some(others)
+    match failed {
+        Some(why) => Err(why),
+        None => Ok(Others { threads }),
+    }
 }
 
-/// Thread `port`'s user and system time in nanoseconds, and whether it is
-/// `TH_STATE_RUNNING`; none where it cannot be read (it ended).
+/// `MACH_SEND_INVALID_DEST` (mach/message.h): a send to a port with no receiver, a thread's
+/// that has ended.
 #[cfg(target_os = "macos")]
-fn thread_times(port: libc::thread_act_t) -> Option<(u64, bool)> {
+const MACH_SEND_INVALID_DEST: libc::kern_return_t = 0x1000_0003;
+
+/// Thread `port`'s user and system time in nanoseconds, and whether it is
+/// `TH_STATE_RUNNING`; none where it has ended (KERN_TERMINATED, or its port no thread's,
+/// mach/kern_return.h and mach/message.h), and any other failure said.
+#[cfg(target_os = "macos")]
+fn thread_times(port: libc::thread_act_t) -> Result<Option<(u64, bool)>, String> {
     // SAFETY: plain data, for thread_info to fill.
     let mut info: libc::thread_basic_info = unsafe { std::mem::zeroed() };
-    let flavor = libc::thread_flavor_t::try_from(libc::THREAD_BASIC_INFO).ok()?;
+    let flavor = libc::thread_flavor_t::try_from(libc::THREAD_BASIC_INFO)
+        .map_err(|e| format!("THREAD_BASIC_INFO: {e}"))?;
     let mut count = libc::THREAD_BASIC_INFO_COUNT;
     // SAFETY: THREAD_BASIC_INFO of a thread port of ours into a thread_basic_info of its
     // count's size (mach/thread_info.h).
     let code = unsafe { libc::thread_info(port, flavor, (&raw mut info).cast(), &raw mut count) };
-    if code != libc::KERN_SUCCESS {
-        return None;
+    match code {
+        libc::KERN_SUCCESS => {}
+        libc::KERN_TERMINATED | libc::KERN_INVALID_ARGUMENT | MACH_SEND_INVALID_DEST => return Ok(None),
+        other => {
+            return Err(format!(
+                "thread {port:#x}'s times (thread_info): kern_return {other}"
+            ));
+        }
     }
     let us = |t: libc::time_value_t| {
         u64::try_from(t.seconds)
@@ -5389,10 +5509,16 @@ fn thread_times(port: libc::thread_act_t) -> Option<(u64, bool)> {
             .checked_mul(1_000_000)?
             .checked_add(u64::try_from(t.microseconds).ok()?)
     };
-    let ns = us(info.user_time)?
-        .checked_add(us(info.system_time)?)?
-        .checked_mul(1000)?;
-    Some((ns, info.run_state == libc::TH_STATE_RUNNING))
+    let ns = us(info.user_time)
+        .and_then(|user| user.checked_add(us(info.system_time)?))
+        .and_then(|us| us.checked_mul(1000))
+        .ok_or_else(|| {
+            format!(
+                "thread {port:#x}'s times out of range: {:?} {:?}",
+                info.user_time.seconds, info.system_time.seconds
+            )
+        })?;
+    Ok(Some((ns, info.run_state == libc::TH_STATE_RUNNING)))
 }
 
 /// `read` (clock_gettime(2) or clock_getres(2)) of CPU clock `clock`.
@@ -5400,19 +5526,18 @@ fn thread_times(port: libc::thread_act_t) -> Option<(u64, bool)> {
 fn cpu_clock(
     clock: libc::clockid_t,
     read: unsafe extern "C" fn(libc::clockid_t, *mut libc::timespec) -> libc::c_int,
-) -> Option<Duration> {
+) -> io::Result<Duration> {
     let mut at = libc::timespec {
         tv_sec: 0,
         tv_nsec: 0,
     };
     // SAFETY: a CPU clock read into a local timespec.
     if unsafe { read(clock, &raw mut at) } != 0 {
-        return None;
+        return Err(io::Error::last_os_error());
     }
-    Some(Duration::new(
-        u64::try_from(at.tv_sec).ok()?,
-        u32::try_from(at.tv_nsec).ok()?,
-    ))
+    let secs = u64::try_from(at.tv_sec).map_err(|e| io::Error::other(format!("its seconds: {e}")))?;
+    let nanos = u32::try_from(at.tv_nsec).map_err(|e| io::Error::other(format!("its nanoseconds: {e}")))?;
+    Ok(Duration::new(secs, nanos))
 }
 
 /// The threads of this process that serve other processes' requests: a test registry's
@@ -5510,7 +5635,7 @@ impl ServerThread {
     #[cfg(target_os = "linux")]
     fn read(&self) -> Option<u64> {
         let clock = (!self.tid).checked_shl(3)? | 6;
-        u64::try_from(cpu_clock(clock, libc::clock_gettime)?.as_nanos()).ok()
+        u64::try_from(cpu_clock(clock, libc::clock_gettime).ok()?.as_nanos()).ok()
     }
 
     /// Its state (`/proc/self/task/<tid>/stat` field 3, after its command's closing
@@ -5663,6 +5788,9 @@ pub struct Wait {
     /// How far into it each due look came that found its party still, since one last found
     /// it progressed, held or based: what its account says its judge saw.
     still: Vec<Duration>,
+    /// When a look of it last could not read this process's threads beside its waiter, and
+    /// why ([`Looked::unread`]): its account says it.
+    unread: Option<(Instant, String)>,
 }
 
 /// Where a [`Wait`] is, by what its caller has found of its answer.
@@ -5780,6 +5908,7 @@ impl Wait {
             stage: Stage::Begun,
             command: false,
             still: Vec::new(),
+            unread: None,
         };
         // Its party as it begins, its first look's (`Judge::begin`): read later, it was what
         // its caller left of it. A home's patience made before the home's removal first
@@ -5902,6 +6031,9 @@ impl Wait {
             .late_from()
             .map_or(Duration::ZERO, |from| own_work(from, now));
         let mut looked = self.party.look();
+        if let Some(why) = looked.unread.take() {
+            self.unread = Some((now, why));
+        }
         if self.stage == Stage::Answered && looked.found == Found::Gone {
             looked.found = Found::Still;
         }
@@ -6009,7 +6141,7 @@ impl Wait {
             format!("{} {}", self.kind.site, self.kind.line)
         };
         format!(
-            "{kind}: {} ({}), {:?} in: its last progress {} {:?} ago; {}; its record {record}{}{}{}; its members now: {}",
+            "{kind}: {} ({}), {:?} in: its last progress {} {:?} ago; {}; its record {record}{}{}{}{}; its members now: {}",
             self.asked,
             self.party.named(),
             self.began.elapsed(),
@@ -6040,6 +6172,10 @@ impl Wait {
                     shards_api::LOOKS_TO_REFUSE
                 )
             },
+            self.unread.as_ref().map_or_else(String::new, |(at, why)| format!(
+                "; its look {:?} ago could not read this process's threads beside its waiter: {why}",
+                at.elapsed()
+            )),
             self.party.states(),
         )
     }

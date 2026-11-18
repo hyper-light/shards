@@ -472,7 +472,9 @@ pub struct Watch {
 
 /// A process's threads as one read saw them, each by its OS's ID for it: its own CPU time,
 /// in nanoseconds, and whether it was runnable on no CPU or running ([`Watch::starved`]).
-pub(crate) type Threads = std::collections::BTreeMap<u64, (u64, bool)>;
+/// Public, with [`starved`], for a reader of its own process's threads (the tests' machine
+/// parties, D209 Part 5), which judges them by the same rule (R12).
+pub type Threads = std::collections::BTreeMap<u64, (u64, bool)>;
 
 /// Each thread of process `pid` as its OS keeps it, for a refusal's account of its party
 /// (`Stall::said`): Windows its state and wait reason (the system's listing, shards-judge's
@@ -530,7 +532,7 @@ pub fn runnable_threads(pid: u32) -> Option<(usize, usize)> {
 /// counter shows). A thread that ran any CPU, or that `before` did not see, shows nothing:
 /// a process that wakes for a moment's housekeeping each window is never starved by it
 /// (the gitssh lane's wedged run, ~750 µs a window, which must stay refusable).
-pub(crate) fn starved(before: &Threads, now: &Threads) -> bool {
+pub fn starved(before: &Threads, now: &Threads) -> bool {
     now.iter()
         .any(|(id, &(cpu, runnable))| runnable && before.get(id).is_some_and(|&(was, _)| was == cpu))
 }
@@ -1942,7 +1944,7 @@ mod os {
         /// ([`disks`]); stopped where every thread of its live processes is suspended
         /// (Suspended, WrSuspended), as a frozen Job's are. What it cannot read shows nothing.
         pub(super) fn hold(&self) -> Hold {
-            let Some(records) = records() else {
+            let Ok(records) = records() else {
                 return Hold::default();
             };
             let (mut runnable, mut paging, mut threads, mut suspended) = (false, false, 0usize, 0usize);
@@ -2013,8 +2015,8 @@ mod os {
                 self.pid, look.cpu, look.cycles, look.ending
             );
             match records() {
-                None => said.push_str("; its threads unread"),
-                Some(records) => each_thread(&records, |pid, t| {
+                Err(why) => said.push_str(&format!("; its threads unread: {why}")),
+                Ok(records) => each_thread(&records, |pid, t| {
                     if self.members.iter().any(|m| m.pid == pid && !m.exited) {
                         said.push_str(&format!(
                             "\nshards judge: VM process {}: thread pid {pid} tid {} state {} reason {} switches {} kernel {} user {}",
@@ -2223,7 +2225,7 @@ mod os {
     /// its members' ([`super::runnable_threads`]); none where it could not be read or lists
     /// no thread of `pid`.
     pub(super) fn runnable_threads(pid: u32) -> Option<(usize, usize)> {
-        let records = records()?;
+        let records = records().ok()?;
         let (mut runnable, mut threads) = (0usize, 0usize);
         each_thread(&records, |of, t| {
             if of == pid {

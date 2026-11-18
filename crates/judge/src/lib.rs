@@ -32,7 +32,7 @@ use std::time::{Duration, Instant};
 #[cfg(windows)]
 pub mod threads;
 #[cfg(windows)]
-pub use threads::{ThreadsHeld, threads_held, threads_said};
+pub use threads::{ThreadsHeld, threads_held, threads_said, threads_switched};
 
 /// A CPU rate: CPU time had over a wall time, kept as the pair it was measured as.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

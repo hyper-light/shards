@@ -418,7 +418,7 @@ fn states(living: &[Living]) -> BTreeMap<u64, &'static str> {
 fn states(living: &[Living]) -> BTreeMap<u64, &'static str> {
     use shards_judge::threads::{each_thread, pages, records, wants_cpu};
     let mut states = BTreeMap::new();
-    let Some(records) = records() else {
+    let Ok(records) = records() else {
         return states;
     };
     let pid = std::process::id();

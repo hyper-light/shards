@@ -48,7 +48,7 @@ pub fn wants_cpu(state: u32) -> bool {
 /// threads of its own process, as the tests' parties do (shards-testwait). A waiter reads it
 /// only at a look that found its threads ran nothing. None where it could not be read.
 pub fn threads_held(pid: u32, tids: &[u32]) -> Option<ThreadsHeld> {
-    let records = records()?;
+    let records = records().ok()?;
     let mut held = ThreadsHeld::default();
     each_thread(&records, |of, t| {
         let tid = u32::try_from(t.ClientId.UniqueThread as usize).unwrap_or(u32::MAX);
@@ -74,7 +74,7 @@ pub fn threads_held(pid: u32, tids: &[u32]) -> Option<ThreadsHeld> {
 /// moved.rs and snapshot.rs storm refusals said "0 of 3 threads runnable" and no more). None
 /// where the listing could not be read or lists no thread of `pid`.
 pub fn threads_said(pid: u32) -> Option<String> {
-    let records = records()?;
+    let records = records().ok()?;
     let mut said = Vec::new();
     each_thread(&records, |of, t| {
         if of != pid {
@@ -190,12 +190,22 @@ pub fn is_suspension(reason: u32) -> bool {
 }
 
 /// The system's process records (NtQuerySystemInformation, SystemProcessInformation), in
-/// words of 8 bytes, as they hold pointers; none where they could not be read. Asked again
-/// with room for what the call said they need, and at least twice the last, until they fit.
-pub fn records() -> Option<Vec<u64>> {
+/// words of 8 bytes, as they hold pointers; or why they could not be read: the call's
+/// NTSTATUS, or room for them that could not be had. Asked again with room for what the call
+/// said they need, and at least twice the last, until they fit.
+pub fn records() -> Result<Vec<u64>, String> {
     let mut words: Vec<u64> = Vec::new();
     loop {
-        let bytes = u32::try_from(words.len().checked_mul(size_of::<u64>())?).ok()?;
+        let bytes = words
+            .len()
+            .checked_mul(size_of::<u64>())
+            .and_then(|bytes| u32::try_from(bytes).ok())
+            .ok_or_else(|| {
+                format!(
+                    "the system's thread listing: {} words, past a call's u32 of bytes",
+                    words.len()
+                )
+            })?;
         let mut needed = 0u32;
         // SAFETY: `bytes` bytes of the words for the call to fill (none, as it is first
         // asked), and a u32 for the size it needs.
@@ -207,23 +217,59 @@ pub fn records() -> Option<Vec<u64>> {
                 &raw mut needed,
             )
         };
+        let needed = usize::try_from(needed)
+            .map_err(|e| format!("the system's thread listing: {needed} bytes needed: {e}"))?;
         if status == STATUS_INFO_LENGTH_MISMATCH {
-            let want = usize::try_from(needed)
-                .ok()?
+            let want = needed
                 .div_ceil(size_of::<u64>())
                 .max(words.len().saturating_mul(2))
                 .max(1);
-            words.try_reserve_exact(want.saturating_sub(words.len())).ok()?;
+            words
+                .try_reserve_exact(want.saturating_sub(words.len()))
+                .map_err(|e| format!("the system's thread listing: room for {want} words: {e}"))?;
             words.resize(want, 0);
             continue;
         }
         if status < 0 {
-            return None;
+            return Err(format!(
+                "the system's thread listing: NtQuerySystemInformation(SystemProcessInformation) failed, NTSTATUS {status:#010x}"
+            ));
         }
-        let filled = usize::try_from(needed).ok()?.div_ceil(size_of::<u64>());
-        words.truncate(filled.min(words.len()));
-        return Some(words);
+        words.truncate(needed.div_ceil(size_of::<u64>()).min(words.len()));
+        return Ok(words);
     }
+}
+
+/// Each thread of process `pid` but thread `except` (a waiter's own), as one read of the
+/// system's whole listing shows it, for D215's rule of a thread its host keeps from any CPU
+/// (shards-api's `starved`: one wanting a CPU now whose count has not moved since the read
+/// before): by its ID, a count that moves whenever it runs, and whether it wants a CPU it does
+/// not have (ready or standby: [`wants_cpu`], not running). The count is its switches to a
+/// CPU (its record's ContextSwitches, windows-sys's `Reserved3` of SYSTEM_THREAD_INFORMATION,
+/// phnt ntexapi.h), doubled, and one more while it runs: it moves as the thread is switched in,
+/// and as it stops running, so that one preempted since the read before, its switches the
+/// same, still shows its run. Its times would not do: they move in its clock's ticks (15.625
+/// ms), and show a thread that ran less than one as unrun. One rule with Linux's and macOS's
+/// readings of a process's threads (the tests' machine parties, D209 Part 5). Why not, where
+/// the listing could not be read.
+pub fn threads_switched(
+    pid: u32,
+    except: u32,
+) -> Result<std::collections::BTreeMap<u64, (u64, bool)>, String> {
+    let records = records()?;
+    let mut threads = std::collections::BTreeMap::new();
+    each_thread(&records, |of, t| {
+        let tid = t.ClientId.UniqueThread as usize;
+        if of != pid || tid == except as usize {
+            return;
+        }
+        let running = t.ThreadState == RUNNING;
+        let count = u64::from(t.Reserved3)
+            .saturating_mul(2)
+            .saturating_add(u64::from(running));
+        threads.insert(tid as u64, (count, wants_cpu(t.ThreadState) && !running));
+    });
+    Ok(threads)
 }
 
 /// Each thread the records in `words` hold: its process's id and its thread's record

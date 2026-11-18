@@ -14134,6 +14134,27 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
     28 / 17 / 17. What it can still hide: a thread its host holds runnable but not running
     is no progress and no hold here (`Beside` reads no schedstat), so a host that holds a
     machine's threads past W* can still see it refused.
+    - *Amended 2026-11-18 (ROOT's ruling; own-38h): a machine's party reads each thread's
+      starvation, as a VM process's.* That gap refused CI 44268931283's x86_64 musl boot of
+      16 vCPUs on a 4-CPU runner (boot.rs' `boots_the_hosts_maximum_vcpu_count`) 140 ms into a
+      silent gap at W* 70 ms, read as `Cpu::Liveness`, whose only hold was all of its threads
+      unrun. `Beside` now keeps each thread's runnable state beside its CPU
+      (`shards_api::Threads`), and a thread runnable as a look reads it that ran no CPU since
+      the look before (`shards_api::starved`, now public: one rule, R12) is its host's hold
+      under `Cpu::Liveness`, as batch 26 made it of a VM process's thread, and vouches for no
+      window of the rate's under either reading. On Windows each thread's count is its switches
+      to a CPU, doubled and one more while it runs (so that a run preempted since the look
+      before still shows), and its want of one its state ready or standby, from the system's listing of
+      every thread that its judge reads a VM process's by (`shards_api::threads_switched`, PM
+      M606), its times moving in its clock's ticks and so showing no run shorter than one. A
+      reading that fails, on any OS, is said in its wait's account (`Ran::Unread`), its look
+      taking nothing from it, where before a failed read was a based look, said nowhere (the
+      person's rule of 2026-11-18: no fallbacks). A machine's account says its process's
+      state, its runnable threads and where they wait, where it said "none followed". Red: harness.rs
+      `a_wide_guest_silent_while_its_host_holds_a_thread_beside_its_waiter_is_held` (Linux:
+      a SCHED_IDLE thread pinned beside a spinning one), lanes/redgreen/own-38h-vcpu.patch.
+      The cost: a wide guest's wait on a host kept full by others is held while it is so, as
+      a VM process's is.
   - *A read's test began its clock after its stand-in's* (CI run 43575280954, Alpine:
     `a_judged_read_goes_on_while_its_party_works` "it answered 999.714051ms in", its read
     never refused): the stand-in's second of work starts as its connect returns, which can be
@@ -40051,6 +40072,14 @@ post-mortem read of the printk ring through VMCOREINFO, not a debug port.
       more vCPUs than its host has CPUs, as every host's most vCPUs are, their CPU is liveness
       alone (`Cpu::Liveness`), from the start. Before its first line too: otherwise a stall
       before any line could never be refused, even on a host that has learned this wait.
+    - *Amended 2026-11-18 (ROOT's ruling; own-38h): its host's hold of a thread is its hold.*
+      CI 44268931283 (x86_64 musl, a 4-CPU runner) refused the 16-vCPU boot 140 ms into a
+      silent gap past "Loading compiled-in X.509 certificates", at the second due look of a
+      W* of 70 ms; the boot's gaps before were 71 and 119 ms. Its party's only hold had been
+      every thread unrun, which running vCPUs never show, and its account said "none
+      followed". A thread beside the waiter runnable and unrun since the look before is now
+      its host's hold (D209 Part 5's amendment), and its account says its threads. Whether
+      that run's vCPUs were so held is unread; ROOT's loaded 4-CPU KVM run is owed (R09).
     - Its first line's wait is a kind of its own. Each line that comes begins a wait for the
       next, of a second kind, whose W* is the slowest gap between two lines seen on that host.
       Both are keyed by the call site and the arm's command-line addition.

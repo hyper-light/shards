@@ -1086,7 +1086,8 @@ fn a_guests_lines_are_its_progress_and_its_pass_teaches_their_slowest_gap() {
 /// A guest of more vCPUs than its host has CPUs runs them for ever, its workload stopped or
 /// not: a wait for its next line is refused once it has said nothing new for longer than the
 /// slowest gap between lines its passes saw on this host, however this process's threads
-/// beside its waiter spin (`Cpu::Liveness`); what it said comes back with the refusal, each
+/// beside its waiter spin (`Cpu::Liveness`), unless its host keeps one of them from any CPU
+/// (its hold, as below); what it said comes back with the refusal, each
 /// line with its time, and its stall teaches nothing (D261: boot.rs' 255-vCPU boot on a nested
 /// WHP runner, followed by its liveness alone to its step's 122 minutes). Do: a pass whose
 /// lines come 300 ms apart; then, through the same call site, a guest that says two lines
@@ -1137,6 +1138,111 @@ fn a_guest_silent_past_its_slowest_gap_is_refused_and_its_stall_teaches_nothing(
         lines.timed()
     );
     assert_eq!(kinds.map(|kind| kind.record().seen()), taught);
+}
+
+/// A guest of more vCPUs than its host has CPUs, silent past its slowest gap while its host
+/// keeps a thread beside its waiter from any CPU, is held, not refused: under `Cpu::Liveness`
+/// a thread runnable as a look reads it and unrun since the look before
+/// (`shards_api::starved`) is its host's hold, of a machine's party as of a VM process's (D209
+/// Part 5, D261; CI 44268931283: a 16-vCPU boot on a 4-CPU runner refused 140 ms into a silent
+/// gap at W* 70 ms, its threads unread). Do (Linux): a pass whose lines come 20 ms apart;
+/// then, through the same call site, a guest that says a line and then nothing for
+/// `LOOKS_TO_REFUSE` of the pass's slowest gaps, while two threads beside its waiter spin
+/// pinned to one CPU, one of them under SCHED_IDLE: runnable, and kept from that CPU by the
+/// other. Expect: the second said; with the hold removed (lanes/redgreen/own-38h-vcpu.patch),
+/// refused at its judge's second due look, two gaps in.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_wide_guest_silent_while_its_host_holds_a_thread_beside_its_waiter_is_held() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let (_end, ended) = std::sync::mpsc::channel::<()>();
+    let cpu = first_cpu();
+    let guest = |script: &[(u64, &str)], kept: bool| {
+        let said = std::sync::Mutex::new(Vec::new());
+        let spinning = AtomicBool::new(true);
+        std::thread::scope(|s| {
+            s.spawn(|| console_says(&said, script));
+            for idle in [false, true].into_iter().filter(|_| kept) {
+                let spinning = &spinning;
+                s.spawn(move || {
+                    pin_to(cpu);
+                    if idle {
+                        idle_policy();
+                    }
+                    while spinning.load(Ordering::Relaxed) {
+                        std::hint::spin_loop();
+                    }
+                });
+            }
+            let heard = cold_lines(&said, &ended);
+            spinning.store(false, Ordering::Relaxed);
+            heard
+        })
+    };
+    let (saying, lines, kinds) = guest(&[(20, "one"), (20, "two"), (20, "done")], false);
+    assert!(
+        matches!(&saying, common::Saying::Said { line, .. } if line == "done"),
+        "{saying:?}\n{}",
+        lines.timed()
+    );
+    let shards_api::Seen::Learned { slowest: gap, .. } = kinds[1].record().seen() else {
+        panic!("its pass taught its next lines' kind nothing\n{}", lines.timed());
+    };
+    let silent = gap.saturating_mul(shards_api::LOOKS_TO_REFUSE);
+    let silent = u64::try_from(silent.as_millis()).unwrap().saturating_add(1);
+    let (saying, lines, _) = guest(&[(0, "one"), (silent, "done")], true);
+    assert!(
+        matches!(&saying, common::Saying::Said { line, .. } if line == "done"),
+        "{saying:?}\n{}",
+        lines.timed()
+    );
+}
+
+/// The first CPU this process may run on (sched_getaffinity(2)).
+#[cfg(target_os = "linux")]
+fn first_cpu() -> usize {
+    // SAFETY: a cpu_set_t, plain data, for sched_getaffinity to fill.
+    let mut set: libc::cpu_set_t = unsafe { std::mem::zeroed() };
+    // SAFETY: sched_getaffinity(2) of this thread into a local set of its size.
+    let got = unsafe { libc::sched_getaffinity(0, size_of::<libc::cpu_set_t>(), &raw mut set) };
+    assert_eq!(got, 0);
+    let cpus = usize::try_from(libc::CPU_SETSIZE).unwrap();
+    // SAFETY: CPU_ISSET reads a bit of a set filled above, below CPU_SETSIZE.
+    (0..cpus)
+        .find(|&cpu| unsafe { libc::CPU_ISSET(cpu, &set) })
+        .unwrap()
+}
+
+/// Pins the calling thread to `cpu` alone (sched_setaffinity(2) of the calling thread).
+#[cfg(target_os = "linux")]
+fn pin_to(cpu: usize) {
+    // SAFETY: a cpu_set_t, plain data; CPU_SET sets a bit below CPU_SETSIZE in it.
+    let mut set: libc::cpu_set_t = unsafe { std::mem::zeroed() };
+    // SAFETY: as above.
+    unsafe { libc::CPU_SET(cpu, &mut set) };
+    // SAFETY: sched_setaffinity(2) of the calling thread (0) to a set of its size.
+    let got = unsafe { libc::sched_setaffinity(0, size_of::<libc::cpu_set_t>(), &raw const set) };
+    assert_eq!(got, 0);
+}
+
+/// Puts the calling thread under SCHED_IDLE, the least weight a thread may have, which needs
+/// no privilege (sched(7), since Linux 2.6.39): beside a thread of the default policy on its
+/// CPU it is runnable, and almost never run. The raw call, as musl's wrapper refuses every
+/// policy (ENOSYS: POSIX's policy is the process's, Linux's the thread's).
+#[cfg(target_os = "linux")]
+fn idle_policy() {
+    // SAFETY: a sched_param, plain data, its priority 0 as SCHED_IDLE requires.
+    let param: libc::sched_param = unsafe { std::mem::zeroed() };
+    // SAFETY: sched_setscheduler(2) of the calling thread (0), reading `param`.
+    let got = unsafe {
+        libc::syscall(
+            libc::SYS_sched_setscheduler,
+            0,
+            libc::SCHED_IDLE,
+            &raw const param,
+        )
+    };
+    assert_eq!(got, 0);
 }
 
 /// A guest's machine that ends ends a wait for its line, what its guest said by then read

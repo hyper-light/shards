@@ -68,10 +68,10 @@ pub use native::{
     ImageIdentity, NativeBoot, NativeImages, NativeStartup, release_app_containers, verify_native_image,
 };
 pub use physical::{GpuName, GpuProbe, GpuProbeError, PhysicalGpu, PhysicalGpuError, ResolvedGpu};
-pub use progress::{Awaited, Bound, Follow, Followed, Unfollowed, Watch, runnable_threads};
+pub use progress::{Awaited, Bound, Follow, Followed, Threads, Unfollowed, Watch, runnable_threads, starved};
 pub use shards_judge::{Found, Judge, LOOKS_TO_REFUSE, Rate, Rated, Record, SPREAD, Seen, Span, Stall};
 #[cfg(windows)]
-pub use shards_judge::{ThreadsHeld, threads_held, threads_said};
+pub use shards_judge::{ThreadsHeld, threads_held, threads_said, threads_switched};
 
 /// A guest to boot.
 #[derive(Debug, Clone, PartialEq, Eq)]
