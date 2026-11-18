@@ -859,8 +859,8 @@ fn components(
 }
 
 /// Whether `config`'s machine has DAX windows (D189): a length for them, and a shared
-/// directory or a join share to give one.
-#[cfg(hv)]
+/// directory or a join share to give one. On every host, where a snapshot is read and their
+/// heads opened by it (`snapshot::read`).
 pub(crate) fn has_windows(config: &crate::snapshot::MachineConfig) -> bool {
     config.share_window_mib > 0 && (config.shares > 0 || config.join_share)
 }

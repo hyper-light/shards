@@ -337,13 +337,21 @@ pub struct Snapshot {
     pub init: Option<u64>,
 }
 
-/// A generation, pinned: its state decoded and its memory file held open. Its files are
-/// a VM's inputs (`platform::open_input`): a VM in App Sandbox is handed each open, and
+/// A generation, pinned: its state decoded and its files held open, its memory and what its
+/// machine keeps beside it ([`Beside`]), each opened as the generation is read, so that one
+/// missing or unreadable refuses the read as its state or memory does: its template's files,
+/// told apart from its host's failures (D26), not met inside a restore among them. Its files
+/// are a VM's inputs (`platform::open_input`): a VM in App Sandbox is handed each open, and
 /// never its directory (PM M70).
 #[derive(Debug)]
 pub struct Pinned {
     pub snapshot: Snapshot,
     pub memory: File,
+    /// Its writable layer as the snapshot kept it (D190), where its machine has one: its
+    /// head, then its file system, which each restore copies into a file of its own.
+    pub layer: Option<(File, File)>,
+    /// Its DAX windows' heads as the snapshot kept them (D189), where its machine has them.
+    pub window_heads: Option<File>,
     /// The generation's directory.
     pub path: PathBuf,
     /// The generation's name, which a working set recorded from it names (runtime.rs,
@@ -378,14 +386,14 @@ impl Held {
 /// Holds the files of the generation `dir` points at open ([`Held`]).
 pub fn hold(dir: &Path) -> Result<Held, String> {
     let pinned = read(dir)?;
-    let mut files = Vec::new();
-    for name in [LAYER_HEAD, WINDOW_HEADS] {
-        match platform::open_beneath_input(dir, &[&pinned.name, name]) {
-            Ok(file) => files.push(file),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-            Err(e) => return Err(format!("{}: {e}", pinned.path.join(name).display())),
-        }
-    }
+    // Its layer's head and its windows' heads, which its restores map; not its layer's file
+    // system, which each copies into a file of its own (D190).
+    let mut files: Vec<File> = pinned
+        .layer
+        .map(|(head, _)| head)
+        .into_iter()
+        .chain(pinned.window_heads)
+        .collect();
     for (path, read_only) in backing(&pinned.snapshot.config) {
         if read_only {
             files.push(File::open(path).map_err(|e| format!("{}: {e}", path.display()))?);
@@ -1796,9 +1804,23 @@ fn open(dir: &Path, name: &str) -> Result<Pinned, Open> {
             &format!("{actual} bytes; the snapshot's guest has {expected}"),
         )));
     }
+    // What its machine keeps beside its memory, where it has it: its writable layer's head and
+    // file system (D190), its DAX windows' heads (D189). Its template's files as its memory is,
+    // refused here as its memory is where one is missing (D26).
+    let beside = |file: &str| platform::open_beneath_input(dir, &[name, file]).map_err(|e| lost(file, e));
+    let layer = if snapshot.config.layer_mib > 0 {
+        Some((beside(LAYER_HEAD)?, beside(LAYER)?))
+    } else {
+        None
+    };
+    let window_heads = crate::vm::has_windows(&snapshot.config)
+        .then(|| beside(WINDOW_HEADS))
+        .transpose()?;
     Ok(Pinned {
         snapshot,
         memory,
+        layer,
+        window_heads,
         path,
         name: name.to_string(),
     })
@@ -2672,6 +2694,42 @@ mod tests {
                 }
             }
             assert_eq!(generations(&dir).len(), 2, "{:?}", generations(&dir));
+        }
+
+        /// A generation whose machine keeps a writable layer (D190) and DAX windows (D189)
+        /// reads with their files beside its memory, held open as it is read, and is refused
+        /// without one, by its name: its template's files, as its memory is (D26), where they
+        /// were opened inside its restore and a missing one was not told from its host's
+        /// failures. Red where its read opened its state and memory alone.
+        #[test]
+        fn a_generation_reads_only_with_what_its_machine_keeps_beside_its_memory() {
+            let s = Scratch::new("beside");
+            let dir = s.0.join("snap");
+            let mut kept = sample(&s.0, 1);
+            kept.config.layer_mib = 2;
+            kept.config.share_window_mib = 2;
+            write(&dir, &kept, &ram(1)).unwrap();
+            let at = generation(&dir).unwrap();
+            for (file, bytes) in [(LAYER_HEAD, b"head"), (LAYER, b"ext4"), (WINDOW_HEADS, b"wins")] {
+                let e = read(&dir).unwrap_err();
+                assert!(e.contains(&format!("{}:", at.join(file).display())), "{e}");
+                fs::write(at.join(file), bytes).unwrap();
+            }
+            let p = read(&dir).unwrap();
+            let first = |file: &File| {
+                let mut bytes = [0u8; 4];
+                platform::read_exact_at(file, &mut bytes, 0).unwrap();
+                bytes
+            };
+            let (head, layer) = p.layer.as_ref().unwrap();
+            assert_eq!(&first(head), b"head");
+            assert_eq!(&first(layer), b"ext4");
+            assert_eq!(&first(p.window_heads.as_ref().unwrap()), b"wins");
+            // A machine with neither reads without them.
+            drop(p);
+            write(&dir, &sample(&s.0, 2), &ram(2)).unwrap();
+            let p = read(&dir).unwrap();
+            assert!(p.layer.is_none() && p.window_heads.is_none());
         }
 
         /// A spawner that stages generations for a process that writes in no directory of

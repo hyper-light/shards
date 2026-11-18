@@ -1596,6 +1596,8 @@ pub fn restore_reported(
     let snapshot::Pinned {
         snapshot: snap,
         memory: memory_file,
+        layer: kept_layer,
+        window_heads,
         path: generation,
         name,
     } = pinned;
@@ -1618,13 +1620,12 @@ pub fn restore_reported(
     // Its writable layer (D190): the head as the snapshot kept it, and the restore's own
     // copy of its file system, this very generation's: the clone of it the restore was
     // given, or a copy made here into the file it was given, empty or a clone of another
-    // generation's. One the snapshot and the restore do not agree on is refused as the
-    // machine is checked (`check_hosts`).
-    let layer = match &cfg.layer {
-        Some(path) if snap.config.layer_mib > 0 => {
+    // generation's. The snapshot's own were opened as it was read, its template's files
+    // (`snapshot::Pinned`, D26). One the snapshot and the restore do not agree on is refused
+    // as the machine is checked (`check_hosts`).
+    let layer = match (&cfg.layer, kept_layer) {
+        (Some(path), Some((head, kept))) => {
             let at = |e: std::io::Error| format!("{}: its writable layer: {e}", generation.display());
-            let head = platform::open_beneath_input(&generation, &[snapshot::LAYER_HEAD]).map_err(at)?;
-            let kept = platform::open_beneath_input(&generation, &[snapshot::LAYER]).map_err(at)?;
             let file = platform::open_input(path, true).map_err(|e| format!("{}: {e}", path.display()))?;
             let len = kept.metadata().map_err(at)?.len();
             let given = file.metadata().map_err(at)?.len();
@@ -1639,21 +1640,14 @@ pub fn restore_reported(
             }
             Some(Arc::new(pmem::Layer::restore(head, file)?))
         }
-        Some(path) => {
+        (Some(path), None) => {
             return Err(format!(
                 "{}: a writable layer for a snapshot that has none",
                 path.display()
             ));
         }
-        None => None,
+        (None, _) => None,
     };
-    // Its DAX windows' heads (D189), as the snapshot kept them.
-    let window_heads = super::has_windows(&snap.config)
-        .then(|| {
-            platform::open_beneath_input(&generation, &[snapshot::WINDOW_HEADS])
-                .map_err(|e| format!("{}: its DAX windows' heads: {e}", generation.display()))
-        })
-        .transpose()?;
     let machine = machine::restore(
         &snap,
         &memory_file,

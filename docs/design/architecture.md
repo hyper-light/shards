@@ -1364,7 +1364,10 @@ for the exit status.
     for its template's sake (`shards_ipc::TEMPLATE_FAILED_STATUS`, vm_run.rs `serve_workload`),
     and only these classes are its template's, each from the code:
     - its template's files did not read: `shards_vmm::snapshot::read` refused its pointer, its
-      generation's state or its memory (vm_run.rs `restore_reported`, `read_snapshot`);
+      generation's state or its memory, or what its machine keeps beside its memory, its
+      writable layer's head or file system (D190) or its DAX windows' heads (D189), each opened
+      as the generation is read (`snapshot::Pinned`; vm_run.rs `restore_reported`,
+      `read_snapshot`);
     - its guest reset before it took a run, as its kernel's panic does under `panic=-1`
       (`ExitReason::Reset`);
     - its guest powered off before it took a run, its init having ended
@@ -1382,9 +1385,18 @@ for the exit status.
     D215). Init's refusal of another build's contract (`workload::OtherInit`) comes after READY,
     as a run is taken: it fails that run, 125 as `docker run` fails a command that never ran,
     and touches no pool; the guest's configuration is its cause, which a cold boot repeats.
-    Open: a template's files that fail inside the VMM's restore past `snapshot::read` (its
-    writable layer's head or copy) are not told apart from its host's yet, and count against
-    nothing.
+    A template's files fail as it is read, not later (ROOT's word, goal 1453357d): its layer's
+    head and file system and its windows' heads were opened inside the VMM's restore, past
+    `snapshot::read`, where a missing one was not told from its host's failures and counted
+    against nothing; the read opens them now, beside its memory, by what its machine keeps
+    (`snapshot::Pinned`), and the restore and its daemon's hold (`snapshot::hold`, PM M315)
+    take them from it, opening none again. Red under `own-38b-beside-unread.patch` (the read
+    opening its state and memory alone): snapshot's
+    `a_generation_reads_only_with_what_its_machine_keeps_beside_its_memory`. What a restore
+    does with them after counts against nothing still, as each step there mixes its
+    template's file with its host's: its layer's copy into the restore's own file
+    (`platform::copy_used`, reading its template's, writing to its host's disk) and its head's
+    mapping (`pmem::Layer::restore`).
   - **A run waiting on a pool fails only where a judge refuses it** (the same ruling). A refill
     that fails for no fault of its template's leaves the runs that wait waiting: each wakes and
     plans the next refill for the runs with none starting (`plan_refill`'s `for_runs`), and
