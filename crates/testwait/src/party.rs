@@ -1,7 +1,8 @@
 //! A test's party (D215, #77): its test's own thread, and every thread made from one of its
 //! party's, by the code under test (the daemon's `DaemonThread`, shards-remote's threads, each
 //! through [`carried`] under `cfg(test)`) or by the test ([`spawn_in`], [`spawn_member`]),
-//! each made a member as it starts, of the party of the thread that made it. A test's judged
+//! each of the party of the thread that made it from its making ([`Made`]): held until it first
+//! runs, as a thread wanting a CPU is, and a member from then to its end. A test's judged
 //! wait counts what its party's members ran, and the deadlines its party's threads wait
 //! until, alone: no other test's threads in this process, nor what a test that ended left
 //! running (CI 43990298220, aarch64-apple-darwin: a removal test's wait that could not end was
@@ -12,7 +13,7 @@
 //! wait on a thread of none counts this process's threads, as before parties were.
 
 use std::cell::{Cell, RefCell};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
@@ -40,6 +41,11 @@ struct Party {
     /// reads their states ([`hold`]).
     #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     threads: BTreeMap<u64, Thread>,
+    /// Its living members' threads' names, by the same keys, where they have one: a refusal's
+    /// account names them ([`account`]).
+    names: BTreeMap<u64, Box<str>>,
+    /// The keys of the threads made for it that have not yet run ([`Made`]).
+    unstarted: BTreeSet<u64>,
     ended: u64,
 }
 
@@ -74,15 +80,16 @@ pub fn current() -> u64 {
     PARTY.with(|party| party.get().0)
 }
 
-/// `f`, to run on a thread being made: a member, as it runs, of this thread's party.
+/// `f`, to run on a thread being made: of this thread's party from now, made and not yet run
+/// ([`Made`]), and a member of it from its first run to its end.
 pub fn carried<'a, F, T>(f: F) -> impl FnOnce() -> T + Send + 'a
 where
     F: FnOnce() -> T + Send + 'a,
     T: 'a,
 {
-    let party = current();
+    let made = Made::new(current());
     move || {
-        let _member = Member::join(party);
+        let _member = made.and_then(Made::join);
         f()
     }
 }
@@ -173,23 +180,70 @@ struct Member {
 
 impl Member {
     fn join(party: u64) -> Option<Member> {
+        Member::join_as(party, NEXT_MEMBER.fetch_add(1, Ordering::Relaxed))
+    }
+
+    /// This thread as member `key` of party `party` from now: no longer one of its unstarted
+    /// ([`Made`]), whether or not its clock reads.
+    fn join_as(party: u64, key: u64) -> Option<Member> {
         if party == 0 {
             return None;
         }
         // Of its party whatever its clock: the threads it makes are too.
         PARTY.with(|of| of.set((party, false)));
-        let clock = Clock::own()?;
-        let key = NEXT_MEMBER.fetch_add(1, Ordering::Relaxed);
+        let clock = Clock::own();
+        let name = std::thread::current().name().map(Box::<str>::from);
         {
             let mut parties = parties();
             let of = parties.entry(party).or_default();
-            of.members.insert(key, (clock, 0));
+            of.unstarted.remove(&key);
+            of.members.insert(key, (clock?, 0));
             #[cfg(any(target_os = "linux", target_os = "macos", windows))]
             of.threads.insert(key, Thread::own());
+            if let Some(name) = name {
+                of.names.insert(key, name);
+            }
         }
         PARTY.with(|of| of.set((party, true)));
         KEY.with(|of| of.set(Some(key)));
         Some(Member { party, key })
+    }
+}
+
+/// A thread made for party `party` that has not yet run: one of its party's from its making, in
+/// the thread that makes it, before its spawn returns, to its first run ([`Made::join`]). Until
+/// then it reads as held ([`hold`]), as a member that wants a CPU does: it wants one it has never
+/// had. One that joined only as it first ran left a wait begun as it was made a party of its
+/// waiter alone, refused at its first look while its host had yet to run the thread its answer
+/// needed (ROOT, 2026-11-18, #36: under load, shards-api's `take_judged` 5 of 25 and its
+/// session's feeder 3 of 10). One whose thread was never made goes as its closure drops unrun
+/// (a spawn that failed).
+struct Made {
+    party: u64,
+    key: u64,
+}
+
+impl Made {
+    fn new(party: u64) -> Option<Made> {
+        if party == 0 {
+            return None;
+        }
+        let key = NEXT_MEMBER.fetch_add(1, Ordering::Relaxed);
+        parties().entry(party).or_default().unstarted.insert(key);
+        Some(Made { party, key })
+    }
+
+    /// Its first run: its party's member from now to its end.
+    fn join(self) -> Option<Member> {
+        Member::join_as(self.party, self.key)
+    }
+}
+
+impl Drop for Made {
+    fn drop(&mut self) {
+        if let Some(party) = parties().get_mut(&self.party) {
+            party.unstarted.remove(&self.key);
+        }
     }
 }
 
@@ -201,6 +255,7 @@ impl Drop for Member {
         };
         #[cfg(any(target_os = "linux", target_os = "macos", windows))]
         party.threads.remove(&self.key);
+        party.names.remove(&self.key);
         if let Some((clock, waited)) = party.members.remove(&self.key) {
             let ran = clock.ran().unwrap_or(0).saturating_sub(waited);
             party.ended = party.ended.saturating_add(ran);
@@ -214,24 +269,27 @@ impl Drop for Member {
 /// listing alone, read once for every member (shards-judge's `threads_held`, the rule
 /// shards-api's judge holds a VM process's threads by: wanting a CPU, or waiting on its
 /// host's paging), 13.1 to 13.8 ms a read (PM M606), so that a wait reads it only at a look
-/// that found its party ran nothing.
+/// that found its party ran nothing. Its threads made and not yet run ([`Made`]) are runnable,
+/// on every OS: each wants a CPU it has never had.
 pub fn hold(id: u64) -> Hold {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         // Read outside the parties' lock, which every member takes as it starts and ends: a
-        // thread gone since reads as none.
-        let threads: Vec<(u64, Thread)> = parties()
+        // thread gone since reads as none. Its unstarted with them, so that one that starts
+        // meanwhile is read as one or the other.
+        let (threads, unstarted): (Vec<(u64, Thread)>, usize) = parties()
             .get(&id)
             .map(|party| {
-                party
+                let threads = party
                     .threads
                     .iter()
                     .map(|(&key, &thread)| (key, thread))
-                    .collect()
+                    .collect();
+                (threads, party.unstarted.len())
             })
             .unwrap_or_default();
         let asks = Thread::own();
-        let mut hold = Hold::default();
+        let mut hold = Hold::made(unstarted);
         for (key, thread) in threads {
             if thread == asks {
                 continue;
@@ -251,35 +309,145 @@ pub fn hold(id: u64) -> Hold {
     #[cfg(windows)]
     {
         let asks = Thread::own();
-        let tids: Vec<u32> = parties()
+        let (tids, unstarted): (Vec<u32>, usize) = parties()
             .get(&id)
             .map(|party| {
-                party
+                let tids = party
                     .threads
                     .values()
                     .filter(|thread| **thread != asks)
                     .map(|thread| thread.0)
-                    .collect()
+                    .collect();
+                (tids, party.unstarted.len())
             })
             .unwrap_or_default();
+        let made = Hold::made(unstarted);
         if tids.is_empty() {
-            return Hold::default();
+            return made;
         }
         let Some(held) = shards_judge::threads_held(std::process::id(), &tids) else {
-            return Hold::default();
+            return made;
         };
         Hold {
-            read: held.read,
-            runnable: held.runnable,
+            read: held.read.saturating_add(made.read),
+            runnable: held.runnable.saturating_add(made.runnable),
             in_kernel: held.paging,
             ..Hold::default()
         }
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     {
-        let _ = id;
-        Hold::default()
+        Hold::made(parties().get(&id).map_or(0, |party| party.unstarted.len()))
     }
+}
+
+/// What party `id`'s members but the thread that asks were doing as a wait on it was refused,
+/// for its account (shards-judge's `Stall::said`), as D215's judge says a VM process's threads:
+/// each by its thread's name where it has one, and its key, runnable (running, or wanting a
+/// CPU), in its kernel (waiting uninterruptibly there; on Windows, on its host's paging),
+/// waiting, or unread (gone since, or its OS's reading failed); and each thread made for it and
+/// not yet run ([`Made`]).
+pub(crate) fn account(id: u64) -> String {
+    let asks = KEY.with(Cell::get);
+    let read = parties().get(&id).map(|party| {
+        let living: Vec<Living> = party
+            .members
+            .keys()
+            .filter(|key| Some(**key) != asks)
+            .map(|&key| Living {
+                key,
+                name: party.names.get(&key).cloned(),
+                #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+                thread: party.threads.get(&key).copied(),
+            })
+            .collect();
+        let unstarted: Vec<u64> = party.unstarted.iter().copied().collect();
+        (living, unstarted)
+    });
+    let Some((living, unstarted)) = read else {
+        return "no member but its waiter".to_string();
+    };
+    // Read outside the parties' lock, as a hold is.
+    let states = states(&living);
+    let mut said: Vec<String> = living
+        .iter()
+        .map(|member| {
+            let state = states.get(&member.key).copied().unwrap_or("unread");
+            match &member.name {
+                Some(name) => format!("{name} (#{}) {state}", member.key),
+                None => format!("#{} {state}", member.key),
+            }
+        })
+        .collect();
+    said.extend(unstarted.iter().map(|key| format!("#{key} made, not yet run")));
+    if said.is_empty() {
+        return "no member but its waiter".to_string();
+    }
+    said.join(", ")
+}
+
+/// A living member as a refusal's account reads it ([`account`]).
+struct Living {
+    key: u64,
+    name: Option<Box<str>>,
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+    thread: Option<Thread>,
+}
+
+/// Each of `living`'s states as its OS reads them now, by its key, as its hold reads them
+/// ([`hold`]); none for one unread.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn states(living: &[Living]) -> BTreeMap<u64, &'static str> {
+    living
+        .iter()
+        .filter_map(|member| {
+            let state = member.thread?.read()?;
+            let said = if state.runnable {
+                "runnable"
+            } else if state.in_kernel {
+                "in its kernel"
+            } else {
+                "waiting"
+            };
+            Some((member.key, said))
+        })
+        .collect()
+}
+
+#[cfg(windows)]
+fn states(living: &[Living]) -> BTreeMap<u64, &'static str> {
+    use shards_judge::threads::{each_thread, pages, records, wants_cpu};
+    let mut states = BTreeMap::new();
+    let Some(records) = records() else {
+        return states;
+    };
+    let pid = std::process::id();
+    each_thread(&records, |of, t| {
+        if of != pid {
+            return;
+        }
+        let tid = u32::try_from(t.ClientId.UniqueThread as usize).unwrap_or(u32::MAX);
+        let Some(member) = living
+            .iter()
+            .find(|member| member.thread.is_some_and(|thread| thread.0 == tid))
+        else {
+            return;
+        };
+        let said = if wants_cpu(t.ThreadState) {
+            "runnable"
+        } else if pages(t.ThreadState, t.WaitReason) {
+            "in its kernel"
+        } else {
+            "waiting"
+        };
+        states.insert(member.key, said);
+    });
+    states
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+fn states(_living: &[Living]) -> BTreeMap<u64, &'static str> {
+    BTreeMap::new()
 }
 
 /// What a look read of a party's members ([`hold`]): how many it read, how many were
@@ -308,6 +476,15 @@ impl Hold {
                 .queued
                 .iter()
                 .any(|(key, now)| before.queued.get(key).is_some_and(|was| now > was))
+    }
+
+    /// A party's `unstarted` threads made and not yet run ([`Made`]), each runnable.
+    fn made(unstarted: usize) -> Hold {
+        Hold {
+            read: unstarted,
+            runnable: unstarted,
+            ..Hold::default()
+        }
     }
 
     /// A stand-in's members as its test says they are: `runnable` of them runnable.

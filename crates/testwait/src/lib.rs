@@ -212,6 +212,17 @@ impl Counted {
         }
     }
 
+    /// What its members were doing as a wait on it was refused, for its account
+    /// ([`party::account`]): a test's party's, each read; this process's, whose threads no wait
+    /// reads; a stand-in's as its test says.
+    fn account(self) -> String {
+        match self {
+            Counted::Party(id) => party::account(id),
+            Counted::Process => "this process's threads, of no party, their states unread".to_string(),
+            Counted::StandIn { held, .. } => format!("a stand-in's, {} of them held", held()),
+        }
+    }
+
     /// A thread waiting on it ran `cpu` more as it waited: no run of a party's.
     fn waited(self, cpu: u64) {
         WAITERS.fetch_add(cpu, Ordering::Relaxed);
@@ -350,13 +361,42 @@ impl<'r> Wait<'r> {
             .until()
             .map_or(self.since, |until| until.max(self.since));
         let free = now.saturating_duration_since(from).saturating_sub(self.held);
-        self.judge.found(if ran {
+        let judged = self.judge.found(if ran {
             Found::Progressed
         } else if held || free < slowest {
             Found::Held
         } else {
             Found::Still
-        })
+        });
+        #[cfg(test)]
+        looked(self.party, false);
+        judged.map_err(|stall| self.said(stall, now))
+    }
+
+    /// `stall`, refused at `now`, with its account ([`Stall::said`]): what its party's members
+    /// were doing, whether it was judged cold, by its host's granularity, or by its kind's
+    /// record, and the latest deadline its party waited until; so that a refusal says why.
+    fn said(&self, stall: Stall, now: Instant) -> Stall {
+        let judged = if std::ptr::eq(self.judging, &COLD) {
+            "judged cold, before any answer in this process, by its host's scheduling granularity"
+        } else {
+            "judged by the slowest of its tests' waits seen"
+        };
+        let deadline = self.party.until().map_or_else(
+            || "no deadline of its party's".to_string(),
+            |until| {
+                format!(
+                    "its party's latest deadline {:?} before",
+                    now.saturating_duration_since(until)
+                )
+            },
+        );
+        let account = format!(
+            "{}; {judged}, {:?}; {deadline}",
+            self.party.account(),
+            stall.slowest()
+        );
+        stall.said(Some(account))
     }
 
     /// What it waited for came: its kind learns from it, the CPU its party ran meanwhile
@@ -375,10 +415,11 @@ impl<'r> Wait<'r> {
 pub fn stalled(stall: &Stall) -> String {
     format!(
         "no thread of its party ran for {:?} its host did not hold it in, {:?} into the \
-         wait, the slowest of its tests' waits seen {:?} (D215)",
+         wait, its window {:?} (D215){}",
         stall.over(),
         stall.waited(),
-        stall.slowest()
+        stall.slowest(),
+        stall.account()
     )
 }
 
@@ -488,11 +529,81 @@ pub fn receive<T>(what: &str, rx: &mpsc::Receiver<T>) -> T {
     }
 }
 
+/// Under test, each party's due looks so far and whether a wait on it has ended, so that a test
+/// may hold a member back until a wait on its party has looked ([`looked_at_least`]), never by a
+/// time.
+#[cfg(test)]
+static LOOKED: Looked = Looked {
+    looks: Mutex::new(std::collections::BTreeMap::new()),
+    changed: std::sync::Condvar::new(),
+};
+
+/// [`LOOKED`]'s: by party, its due looks and whether a wait on it ended; and its changes.
+#[cfg(test)]
+struct Looked {
+    looks: Mutex<std::collections::BTreeMap<u64, (u32, bool)>>,
+    changed: std::sync::Condvar,
+}
+
+/// Under test, a wait on `party` made a due look, or (`ended`) ended.
+#[cfg(test)]
+fn looked(party: Counted, ended: bool) {
+    let Counted::Party(id) = party else {
+        return;
+    };
+    let mut looks = LOOKED.looks.lock().unwrap_or_else(PoisonError::into_inner);
+    let entry = looks.entry(id).or_default();
+    if ended {
+        entry.1 = true;
+    } else {
+        entry.0 = entry.0.saturating_add(1);
+    }
+    LOOKED.changed.notify_all();
+}
+
+/// Under test, until a wait on party `id` has made `looks` due looks, or one on it has ended.
+#[cfg(test)]
+fn looked_at_least(id: u64, looks: u32) {
+    let made = LOOKED.looks.lock().unwrap_or_else(PoisonError::into_inner);
+    // The lock let go at once: nothing more is read under it.
+    drop(LOOKED.changed.wait_while(made, |made| {
+        made.get(&id).is_none_or(|&(due, ended)| due < looks && !ended)
+    }));
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::AtomicBool;
 
     use super::*;
+
+    /// A thread made and not yet run is its party's from its making ([`party::carried`]): a
+    /// wait begun as it is made, on what it alone answers, is held while its host has yet to
+    /// run it, never refused at its first look. Its first run is held back by the test, never
+    /// by load: its closure runs, on a thread of no party, only once the wait has made
+    /// `LOOKS_TO_REFUSE` due looks, as the wait's own looks say ([`looked_at_least`]), within
+    /// which a party still throughout is refused. Its record's own W*, 20 ms, as the cases
+    /// below. Red (lanes/redgreen/testwait-made-member.patch) where a thread joins its party
+    /// only as it first runs: refused at a look before it ran (ROOT, 2026-11-18, #36: under
+    /// load, shards-api's `take_judged` 5 of 25 and its session's feeder 3 of 10).
+    #[test]
+    fn a_thread_made_and_not_yet_run_holds_its_partys_wait() {
+        static MADE: Record = Record::new();
+        MADE.teach(Duration::from_millis(20), Duration::ZERO);
+        let id = party::of_test();
+        let (answer, answered) = mpsc::channel();
+        let made = party::carried(move || {
+            let _ = answer.send(());
+        });
+        let runner = std::thread::spawn(move || {
+            looked_at_least(id, shards_judge::LOOKS_TO_REFUSE);
+            made();
+        });
+        let got = received_on(&MADE, Counted::here(), &answered);
+        looked(Counted::Party(id), true);
+        runner.join().unwrap();
+        assert_eq!(got, Ok(()), "a wait on a thread made and not yet run was refused");
+    }
 
     /// A test's wait gives up on a party that stopped, a whole W* gone by with nothing run;
     /// waits on one that is slow but runs, many W* past the slowest seen; and waits on one

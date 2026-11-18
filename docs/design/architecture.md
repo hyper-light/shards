@@ -30194,6 +30194,59 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
           - Red (lanes/redgreen/remote-vanished-probes.patch): at each test's first refusal, a
             wait for an answer that never comes, while the endpoint probes the vanished holder.
             Refused with its account, never held (before, CI's hang).
+        - *A thread is its party's from its making* (2026-11-18, #36, ROOT's ruling). ROOT's
+          runs at efbe46b566 under load (load average 20 to 37 on 18 CPUs): shards-api
+          `take_judged` refused 5 of 25, the session's feeder 3 of 10, `readiness_is_told_as_it_moves`
+          1 of 10; at load 12 to 17, none.
+          - *Why.* A thread joined its party at its first instruction (`carried`'s closure). A
+            wait begun as its test made the thread its answer needed saw a party of its waiter
+            alone until its host first ran that thread, and refused it at its first due look,
+            one window in: COLD's granularity (15 to 28 µs) or a learned W* as small (8.4 µs,
+            report.rs's `a_refused_or_unwritten_report_is_said_as_such`). Each stall said
+            `over` equal to `slowest`: the judge counts a late look's lateness as its own hold,
+            so the stillness it refuses over is one window exactly.
+          - *Not the cause.* The cold rule: a learned W* refused the same thread. A member
+            wanting a CPU: its hold reads one already (Linux R and run_delay, macOS
+            TH_STATE_RUNNING, Windows ready, running or standby). A reader thread of shards-api's:
+            report.rs's `Reader::frame` reads on its caller's thread, on Unix and Windows alike.
+          - *The rule.* `carried` registers its thread in its party in the thread that makes
+            it, before the spawn returns (`party::Made`). Until it first runs, it reads as held
+            on every OS: it wants a CPU it has never had. Its first run makes it a member, and a
+            spawn that fails drops it unrun. So do the daemon's `DaemonThread` and
+            shards-remote's threads, which go through `carried`.
+          - *The account.* A refusal says what it saw (`Stall::said`): each member by its
+            thread's name where it has one (made and not yet run, runnable, in its kernel, or
+            waiting); whether it was judged cold, by its host's granularity, or by its kind's
+            record, with its window; and its party's latest deadline. Before, every testwait
+            stall said `threads: None`: none called `said`.
+          - `readiness_is_told_as_it_moves`: its test thread was of no party, and a wait on this
+            process reads no thread's state, its waiters made by std. Now a party test, its
+            waiters made by `spawn_member`.
+          - Test: shards-testwait `a_thread_made_and_not_yet_run_holds_its_partys_wait`. The test
+            holds the thread's first run back, never load: its closure runs only once the wait
+            has made `LOOKS_TO_REFUSE` due looks, as the wait's own looks say. Red
+            (lanes/redgreen/testwait-made-member.patch) where a thread joins only as it first
+            runs: refused at a look before it ran.
+        - *Decided for after the tag* (2026-11-18, ROOT's ruling).
+          - *Prevention first.* shards-api's and shards-ipc's product threads are made through
+            one helper that is `carried` under `cfg(test)`, with clippy's `disallowed-methods`
+            on std's `thread::spawn` and `Builder::spawn` outside it, as the daemon's
+            `DaemonThread` is.
+          - *Threads of no party* are read only where prevention cannot reach, and then only a
+            thread *wanting* a CPU, never one merely runnable: Linux run_delay growth, Windows
+            ready or standby, and macOS only while its host had no idle CPU over the look's
+            interval. A leftover thread of an ended test, runnable at some looks, would
+            otherwise reset its refusals again, as before parties existed, when CI
+            43990298220's removal test was held 21 minutes.
+          - *A production timed wait is a deadline.* shards-ipc's FIFO list, where no live PID
+            gives an event, re-reads its writers on a 250 ms `kevent` timeout (`Waits::record`):
+            the event `a_list_without_a_live_pid_still_ends_with_its_writer` waits for, refused
+            10 of 10 at any load. Under test it is its party's deadline while its party has
+            progressed since its waiter last woke on its timer alone, so that an absence check
+            on the waiter ends. That test is redone, its red today's 10 of 10.
+          - *Processes.* A wait whose answer is another process's run (a test's shell clients, a
+            child test process) follows that process as its party, as `Patience` follows a
+            daemon. Which converted waits depend on one is checked first.
         - *net.rs's numbers, ruled (R03).*
           - Judged now: `next_heard` (was 60 s), `take`'s poll (was 60 s), the wake's read (was
             a 10 s read timeout), a hand's wait for its server's flight (`Hand::answers`, was a
