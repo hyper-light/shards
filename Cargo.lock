@@ -1321,6 +1321,15 @@ name = "shards-dns"
 version = "0.1.0"
 
 [[package]]
+name = "shards-durable"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "shards-testdir",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "shards-erofs"
 version = "0.1.0"
 

@@ -1,0 +1,30 @@
+[package]
+name = "shards-durable"
+version = "0.1.0"
+description = "Every write shards makes durable, each declared to whoever follows its process (D286)"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+# FlushFileBuffers and FlushViewOfFile; a file's volume (GetFileInformationByHandle) and its
+# slot file's growth lock (LockFileEx); a process's start (GetProcessTimes) and its thread's ID;
+# the slot file's views (CreateFileMappingW, MapViewOfFile, whose attributes name
+# Win32_Security); the allocation granularity they grow by (GetSystemInfo); and the
+# performance counter a declaration's time is read from.
+windows-sys = { workspace = true, features = [
+  "Win32_Security",
+  "Win32_System_IO",
+  "Win32_System_Performance",
+] }
+
+[dev-dependencies]
+shards-testdir = { path = "../testdir" }
+
+[lints]
+workspace = true
