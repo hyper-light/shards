@@ -2646,19 +2646,25 @@ mod tests {
             // dropped): the stranger's would be read before the waker's.
             assert_eq!(stranger.send_to(&[7], wake).unwrap(), 1);
             sender.try_clone().unwrap().request_stop();
-            driver.wake.set_nonblocking(false).unwrap();
-            driver
-                .wake
-                .set_read_timeout(Some(Duration::from_secs(10)))
-                .unwrap();
+            // Its waker's wake, read as it comes, waited for as long as this process's threads
+            // run (D215's judged wait, shards-testwait): no read timeout of the test's own.
+            driver.wake.set_nonblocking(true).unwrap();
             let mut got = [0; 2];
-            let (n, from) = driver.wake.recv_from(&mut got).unwrap();
+            let mut read = None;
+            shards_testwait::until(&format!("{at}: the waker's wake never came"), || {
+                match driver.wake.recv_from(&mut got) {
+                    Ok(datagram) => read = Some(datagram),
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                    Err(e) => panic!("{at}: the wake: {e}"),
+                }
+                read.is_some()
+            });
+            let (n, from) = read.unwrap();
             assert_eq!(
                 (from, &got[..n]),
                 (sender.waker_addr().unwrap(), &[0][..]),
                 "{at}: the wake read another socket's datagram"
             );
-            driver.wake.set_nonblocking(true).unwrap();
             let rest = driver.wake.recv_from(&mut got);
             assert!(
                 matches!(&rest, Err(e) if e.kind() == std::io::ErrorKind::WouldBlock),
@@ -3216,19 +3222,21 @@ mod tests {
         })
         .unwrap();
         let at = driver.local().unwrap();
-        let running = std::thread::spawn(move || driver.run());
+        // Its test's party, its driver a member: its judged waits count its own threads.
+        shards_testwait::party::of_test();
+        let running = shards_testwait::party::spawn_member(move || driver.run());
         (asks, hears, at, running)
     }
 
-    /// The next of what `hears` hears that `want` takes, the rest of it told if it never comes.
+    /// The next of what `hears` hears that `want` takes, waited for as long as its test's
+    /// threads run (D215's judged wait, shards-testwait), the rest of it told if it never comes.
     fn next_heard(hears: &mpsc::Receiver<Heard>, want: impl Fn(&Heard) -> bool) -> Heard {
-        let patience = Duration::from_secs(60);
         let mut other = Vec::new();
         loop {
-            match hears.recv_timeout(patience) {
+            match shards_testwait::received(hears) {
                 Ok(heard) if want(&heard) => return heard,
                 Ok(heard) => other.push(heard),
-                Err(_) => panic!("nothing wanted within {patience:?}; heard {other:?}"),
+                Err(why) => panic!("nothing wanted: {why:?}; heard {other:?}"),
             }
         }
     }
@@ -3642,12 +3650,12 @@ mod tests {
         /// packets lost on the way unless `acknowledged`, so that its server, which takes an RTT
         /// sample from an acknowledgement (RFC 9002 §5.1), stays cold.
         fn take(&mut self, ty: u8, acknowledged: bool) {
-            let until = Instant::now() + Duration::from_secs(60);
-            while !self.unread.iter().any(|p| long_type(p) == Some(ty)) {
-                assert!(Instant::now() < until, "no packet of type {ty} from its server");
+            // Waited for as long as its test's threads run (D215's judged wait), its server's
+            // driver among them.
+            shards_testwait::until(&format!("no packet of type {ty} from its server"), || {
                 self.gather();
-                std::thread::sleep(Duration::from_millis(1));
-            }
+                self.unread.iter().any(|p| long_type(p) == Some(ty))
+            });
             let (these, rest) = std::mem::take(&mut self.unread)
                 .into_iter()
                 .partition::<Vec<_>, _>(|p| long_type(p) == Some(ty));

@@ -652,15 +652,18 @@ fn writer<'scope>(
     let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(server::QUEUED_CHUNKS);
     std::thread::Builder::new()
         .name("remote-out".into())
-        .spawn_scoped(scope, move || {
-            while let Ok(bytes) = rx.recv() {
-                if let Err(e) = out.write_all(&bytes).and_then(|()| out.flush()) {
-                    let _ = sender.send(Command::Handler(Event::Unwritten(e.to_string())));
-                    break;
+        .spawn_scoped(
+            scope,
+            crate::member(move || {
+                while let Ok(bytes) = rx.recv() {
+                    if let Err(e) = out.write_all(&bytes).and_then(|()| out.flush()) {
+                        let _ = sender.send(Command::Handler(Event::Unwritten(e.to_string())));
+                        break;
+                    }
+                    let _ = sender.send(Command::Handler(Event::Drained));
                 }
-                let _ = sender.send(Command::Handler(Event::Drained));
-            }
-        })
+            }),
+        )
         .map_err(|e| Error::new(format!("a thread for the command's output: {e}")))?;
     Ok(tx)
 }
@@ -880,7 +883,7 @@ fn run(
             // Reading stdin may block past the command's end: the thread is not waited for.
             std::thread::Builder::new()
                 .name("remote-in".into())
-                .spawn(move || {
+                .spawn(crate::member(move || {
                     let mut buffer = vec![0u8; server::READ_MOST];
                     while credit_rx.recv().is_ok() {
                         match stdin.read(&mut buffer) {
@@ -896,7 +899,7 @@ fn run(
                             }
                         }
                     }
-                })
+                }))
                 .map_err(|e| Error::new(format!("a thread for the command's input: {e}")))?;
         }
         if let Some(steered) = steered {

@@ -29895,6 +29895,32 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
           first answer is waited for, the second given up on a whole W* after its host stopped.
           Red (lanes/redgreen/remote-slow-lane.patch): the first waited for within 5 W* of the
           test's own, as control.rs's tests waited, fails "answered within the test's patience".
+        - *crates/remote's other tests, judged* (2026-11-17, #36, ROOT's batch): control/unix.rs,
+          control/drive.rs, managed.rs and managed/input.rs wait through shards-testwait as
+          control.rs's do, and the product's threads (unix.rs's socket lanes, server.rs's and
+          client.rs's) join their maker's party under test (remote's `member`). An absence is
+          its party's stillness, a judged wait on it refused, never a window of the test's:
+          managed.rs's quiet subscription (was 10 s asleep; each driver's timer is its
+          party's deadline, so an idle timeout's or keep-alive's of either side fires first)
+          and managed/input.rs's held record (was 300 ms). A successor refused while the place
+          is held (managed.rs, managed/input.rs) waits on its party's stillness, the
+          endpoint's probe of the holder and its hold of the attempt's second Initial among
+          its deadlines, and its next attempt must take the place (D180): no 100 ms pace, no
+          30 s window. The single-stream endpoint lets a frame that came as its host let its
+          input go pass as the control endpoint does (`Service::refusal`), its owner's
+          connection closed by the revocation's own word, not `Protocol`.
+        - *net.rs's numbers, ruled (R03).* Judged now: `next_heard` (was 60 s), `take`'s poll
+          (was 60 s) and the wake's read (was a 10 s read timeout). The protocol's or the
+          test's data, kept: `ANSWER_EVERY` is RFC 9002's kInitialRtt (333 ms, §6.2.2);
+          6.993 s is seven of the cold probe timeout (`COLD_PTO`, 999 ms); the 42 s and 1 s
+          of `a_handshake_is_held_to_its_window_...`, the 4 s step and the 300 ms and 3 s
+          handshakes are inputs the cases are built from. Not derived yet: the newcomer loops'
+          20 s and 30 s windows (each attempt's answer judged now; the window bounds the
+          attempts refused while the holder's place is judged) and the 2.5 s and 6.5 s about
+          the learned window: tolerances around the protocol's times that the attempts'
+          count, derived from the held Initial (three cold probe timeouts) and the holder's
+          learned window, would replace. tests/loopback.rs keeps its 17 timed waits, untouched
+          here.
     - *Rated answers alone teach R* and C*.* Many kept records held R* 0 ns: answers reaped
       before any look read their CPU (`run_ending`'s `try_wait` reaped a quick client between
       paced looks), a floor that refuses nothing. `Seen::Learned` is now `{ slowest, rated:

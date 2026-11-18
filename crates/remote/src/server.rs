@@ -781,7 +781,7 @@ impl Relay {
         let spawn = |name: &str, f: Box<dyn FnOnce() + Send>| {
             std::thread::Builder::new()
                 .name(name.into())
-                .spawn(f)
+                .spawn(crate::member(f))
                 .map(drop)
                 .map_err(|e| Error::new(format!("a thread for a client's command: {e}")))
         };
@@ -1187,15 +1187,18 @@ fn judge_apart<'s, 'e, H: Host>(
     let sender = sender.try_clone()?;
     std::thread::Builder::new()
         .name("remote-judge".into())
-        .spawn_scoped(starts, move || {
-            let client = host.enrolled(&spki);
-            let invited = if client.is_some() { 0 } else { host.invited() };
-            let _ = sender.send(Command::Handler(Event::Judged {
-                conn,
-                client,
-                invited,
-            }));
-        })
+        .spawn_scoped(
+            starts,
+            crate::member(move || {
+                let client = host.enrolled(&spki);
+                let invited = if client.is_some() { 0 } else { host.invited() };
+                let _ = sender.send(Command::Handler(Event::Judged {
+                    conn,
+                    client,
+                    invited,
+                }));
+            }),
+        )
         .map(|_| ())
         .map_err(|e| Error::new(format!("a thread to judge a key: {e}")))
 }
@@ -1217,15 +1220,18 @@ fn join_apart<'s, 'e, H: Host>(
     let sender = sender.try_clone()?;
     std::thread::Builder::new()
         .name("remote-join".into())
-        .spawn_scoped(starts, move || {
-            let joined = host.join(&name, &proof, &exported, &spki).is_ok();
-            let _ = sender.send(Command::Handler(Event::Joined {
-                conn,
-                stream,
-                name,
-                joined,
-            }));
-        })
+        .spawn_scoped(
+            starts,
+            crate::member(move || {
+                let joined = host.join(&name, &proof, &exported, &spki).is_ok();
+                let _ = sender.send(Command::Handler(Event::Joined {
+                    conn,
+                    stream,
+                    name,
+                    joined,
+                }));
+            }),
+        )
         .map(|_| ())
         .map_err(|e| Error::new(format!("a thread for the join: {e}")))
 }
@@ -1249,38 +1255,42 @@ fn start_apart<'s, 'e, H: Host>(
     let sender = sender.try_clone()?;
     std::thread::Builder::new()
         .name("remote-start".into())
-        .spawn_scoped(starts, move || {
-            if host.enrolled(&spki).as_deref() != Some(client.as_str()) {
-                let _ = sender.send(Command::Handler(Event::Started {
+        .spawn_scoped(
+            starts,
+            crate::member(move || {
+                if host.enrolled(&spki).as_deref() != Some(client.as_str()) {
+                    let _ = sender.send(Command::Handler(Event::Started {
+                        conn,
+                        stream,
+                        started: Err(Error::new(REVOKED_WORDS)),
+                    }));
+                    let _ = sender.send(Command::Handler(Event::Revoked { conn, client }));
+                    return;
+                }
+                let started = Relay::ready(conn, stream, &sender).and_then(|relay| {
+                    Ok(Box::new(Begun {
+                        running: host.start(&client, request)?,
+                        relay,
+                    }))
+                });
+                if let Err(
+                    mpsc::TrySendError::Disconnected(Command::Handler(Event::Started {
+                        started: Ok(begun),
+                        ..
+                    }))
+                    | mpsc::TrySendError::Full(Command::Handler(Event::Started {
+                        started: Ok(begun), ..
+                    })),
+                ) = sender.try_send(Command::Handler(Event::Started {
                     conn,
                     stream,
-                    started: Err(Error::new(REVOKED_WORDS)),
-                }));
-                let _ = sender.send(Command::Handler(Event::Revoked { conn, client }));
-                return;
-            }
-            let started = Relay::ready(conn, stream, &sender).and_then(|relay| {
-                Ok(Box::new(Begun {
-                    running: host.start(&client, request)?,
-                    relay,
-                }))
-            });
-            if let Err(
-                mpsc::TrySendError::Disconnected(Command::Handler(Event::Started {
-                    started: Ok(begun), ..
-                }))
-                | mpsc::TrySendError::Full(Command::Handler(Event::Started {
-                    started: Ok(begun), ..
-                })),
-            ) = sender.try_send(Command::Handler(Event::Started {
-                conn,
-                stream,
-                started,
-            })) {
-                let Begun { running, relay } = *begun;
-                (relay.relay(running).hangup)();
-            }
-        })
+                    started,
+                })) {
+                    let Begun { running, relay } = *begun;
+                    (relay.relay(running).hangup)();
+                }
+            }),
+        )
         .map(|_| ())
         .map_err(|e| Error::new(format!("a thread for the command's start: {e}")))
 }
@@ -1297,13 +1307,16 @@ fn revalidate_apart<'s, 'e, H: Host>(
     let sender = sender.try_clone()?;
     std::thread::Builder::new()
         .name("remote-revalidate".into())
-        .spawn_scoped(starts, move || {
-            for (conn, client, spki) in peers {
-                if host.enrolled(&spki).as_deref() != Some(client.as_str()) {
-                    let _ = sender.send(Command::Handler(Event::Revoked { conn, client }));
+        .spawn_scoped(
+            starts,
+            crate::member(move || {
+                for (conn, client, spki) in peers {
+                    if host.enrolled(&spki).as_deref() != Some(client.as_str()) {
+                        let _ = sender.send(Command::Handler(Event::Revoked { conn, client }));
+                    }
                 }
-            }
-        })
+            }),
+        )
         .map(|_| ())
         .map_err(|e| Error::new(format!("a thread to judge its clients again: {e}")))
 }

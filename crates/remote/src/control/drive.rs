@@ -3597,10 +3597,18 @@ mod tests {
     use std::sync::mpsc;
     use std::time::Duration;
 
-    use super::wake;
+    use shards_testwait::party;
 
-    /// How long a test waits for a ring it awaits: a patience of its own.
-    const PATIENCE: Duration = Duration::from_secs(10);
+    use super::{Wake, wake};
+
+    /// Waits for `wake` to ring as long as its test's threads run (D215's judged wait,
+    /// shards-testwait): a ring lost leaves it ringless while they run nothing more, which is
+    /// given up on, failing the test with `what`.
+    fn rung(wake: &Wake, what: &str) {
+        shards_testwait::answered(|patience| wake.wait(patience).map(|rang| rang.then_some(())))
+            .expect(what)
+            .unwrap();
+    }
 
     #[test]
     fn a_ring_wakes_its_controller_once_however_often_it_rang_until_drained() {
@@ -3610,7 +3618,7 @@ mod tests {
         for _ in 0..1000 {
             ring.ring();
         }
-        assert!(wake.wait(PATIENCE).unwrap(), "rung");
+        rung(&wake, "rung");
         wake.drain().unwrap();
         assert!(!wake.wait(Duration::ZERO).unwrap(), "drained: nothing pending");
         ring.ring();
@@ -3620,7 +3628,7 @@ mod tests {
             "a drain takes a ring not waited for"
         );
         drop(ring);
-        assert!(wake.wait(PATIENCE).unwrap(), "the driver's end rings");
+        rung(&wake, "the driver's end rings");
     }
 
     /// The wake rule: a controller that drains before it tries finds every word told before
@@ -3632,7 +3640,8 @@ mod tests {
         const WORDS: u32 = 100_000;
         let (wake, ring) = wake().unwrap();
         let (tell, heard) = mpsc::channel();
-        let teller = std::thread::spawn(move || {
+        party::of_test();
+        let teller = party::spawn_member(move || {
             for word in 0..WORDS {
                 tell.send(word).unwrap();
                 ring.ring();
@@ -3642,10 +3651,7 @@ mod tests {
         });
         let mut taken = 0;
         while taken < WORDS {
-            assert!(
-                wake.wait(PATIENCE).unwrap(),
-                "no ring within patience, {taken} of {WORDS} taken: a ring lost"
-            );
+            rung(&wake, &format!("no ring, {taken} of {WORDS} taken: a ring lost"));
             wake.drain().unwrap();
             while let Ok(word) = heard.try_recv() {
                 assert_eq!(word, taken);

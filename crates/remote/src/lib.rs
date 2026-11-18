@@ -30,6 +30,20 @@ impl std::fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
+/// `f`, to run on a thread being made: under test, a member of the party of the thread that
+/// makes it (shards-testwait's `party::carried`), so that a test's judged wait counts what it
+/// runs (D215, #77), as the daemon's threads are; elsewhere `f` itself.
+pub(crate) fn member<'a, F, T>(f: F) -> impl FnOnce() -> T + Send + 'a
+where
+    F: FnOnce() -> T + Send + 'a,
+    T: 'a,
+{
+    #[cfg(test)]
+    return shards_testwait::party::carried(f);
+    #[cfg(not(test))]
+    f
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 mod handshake {
