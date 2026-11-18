@@ -2943,17 +2943,8 @@ fn an_images_healthcheck_probes_its_microvm() {
         "slow",
         "--interval=200ms --timeout=100ms --retries=1 CMD [\"/bin/testguest\", \"sleep\"]",
     );
-    for (name, image, options) in [
-        ("good", "good:1", &[][..]),
-        ("bad", "bad:1", &[][..]),
-        ("slow", "slow:1", &[][..]),
-        // The run's retries over the image's: unhealthy only after 50 failures.
-        ("patient", "bad:1", &["--health-retries", "50"][..]),
-    ] {
-        let mut args = vec!["-d", "--name", name];
-        args.extend_from_slice(options);
-        args.push(image);
-        let ran = run_shards_env(&["run"], &args, &env);
+    for (name, image) in [("good", "good:1"), ("bad", "bad:1"), ("slow", "slow:1")] {
+        let ran = run_shards_env(&["run"], &["-d", "--name", name, image], &env);
         assert_eq!(ran.status, Some(0), "{}", ran.stderr);
     }
     let status = |name: &str| {
@@ -2972,7 +2963,6 @@ fn an_images_healthcheck_probes_its_microvm() {
         ("good", "(healthy)"),
         ("bad", "(unhealthy)"),
         ("slow", "(unhealthy)"),
-        ("patient", "(health: starting)"),
     ];
     loop {
         let now: Vec<(String, String)> = wanted.iter().map(|(n, _)| (n.to_string(), status(n))).collect();
@@ -2987,9 +2977,6 @@ fn an_images_healthcheck_probes_its_microvm() {
         std::thread::sleep(patience.next_look());
     }
     patience.done();
-    // The run's retries over the image's: `patient` is still starting once its failing
-    // streak is past five (below), where the image's two would have made it unhealthy. An
-    // order, its probes counted, where a second's sleep claimed nothing came within it.
     // `inspect` shows each record as dockerd keeps it (moby daemon/health.go): its status,
     // its failing streak, and its last five probes, each with its times, exit code and
     // output, a probe past its timeout -1 and dockerd's words (D26).
@@ -2998,34 +2985,8 @@ fn an_images_healthcheck_probes_its_microvm() {
         assert_eq!(shown.status, Some(0), "{}", shown.stderr);
         serde_json::from_str(&shown.stdout).unwrap()
     };
-    // The good one last: once each failing one has failed six times, it has been probed
-    // more than five times too.
-    for (name, status, code, output) in [
-        ("bad", "unhealthy", 1, ""),
-        // What the probe said before its timeout follows dockerd's words (D26).
-        (
-            "slow",
-            "unhealthy",
-            -1,
-            "Health check exceeded timeout (100ms): ready\n",
-        ),
-        ("patient", "starting", 1, ""),
-        ("good", "healthy", 0, ""),
-    ] {
-        // More than five probes run (a failing streak counts them); five are kept.
-        let mut patience = Patience::of(&home);
-        let h = loop {
-            let h = health(name);
-            let probed = h["Log"].as_array().is_some_and(|l| l.len() >= 5)
-                && (code == 0 || h["FailingStreak"].as_u64().is_some_and(|n| n > 5));
-            if probed {
-                patience.done();
-                break h;
-            }
-            assert!(patience.holds(), "{name}: {h}");
-            std::thread::sleep(patience.next_look());
-        };
-        assert_eq!(h["Status"], status, "{name}: {h}");
+    // Five probes kept, each as its microVM's probe ended: its exit code, its output, its times.
+    let kept = |name: &str, h: &serde_json::Value, code: i64, output: &str| {
         let log = h["Log"].as_array().unwrap();
         assert_eq!(log.len(), 5, "{name}: {h}");
         // A probe past its timeout says what it printed by then: one the host started late,
@@ -3047,10 +3008,79 @@ fn an_images_healthcheck_probes_its_microvm() {
                 assert!(t.len() >= 20 && t.as_bytes()[10] == b'T', "{name}: {h}");
             }
         }
+    };
+    // The good one last: once each failing one has failed six times, it has been probed
+    // more than five times too.
+    for (name, status, code, output) in [
+        ("bad", "unhealthy", 1, ""),
+        // What the probe said before its timeout follows dockerd's words (D26).
+        (
+            "slow",
+            "unhealthy",
+            -1,
+            "Health check exceeded timeout (100ms): ready\n",
+        ),
+        ("good", "healthy", 0, ""),
+    ] {
+        // More than five probes run (a failing streak counts them); five are kept.
+        let mut patience = Patience::of(&home);
+        let h = loop {
+            let h = health(name);
+            let probed = h["Log"].as_array().is_some_and(|l| l.len() >= 5)
+                && (code == 0 || h["FailingStreak"].as_u64().is_some_and(|n| n > 5));
+            if probed {
+                patience.done();
+                break h;
+            }
+            assert!(patience.holds(), "{name}: {h}");
+            std::thread::sleep(patience.next_look());
+        };
+        assert_eq!(h["Status"], status, "{name}: {h}");
+        kept(name, &h, code, output);
         if code == 0 {
             assert_eq!(h["FailingStreak"], 0, "{name}: {h}");
         }
     }
+    // The run's retries over the image's: `patient`, of `bad`'s image (2 retries) run with 50,
+    // is still starting at any failing streak from 2 to 49 (moby daemon/health.go
+    // `handleProbeResult`: unhealthy once the streak reaches the retries), where the image's 2
+    // would have made it unhealthy. Run last and watched at once: its 50 failures at its 200 ms
+    // interval take about ten seconds, which the checks above once spent before a look at it,
+    // so that it was looked at first at a streak of 61, unhealthy as dockerd's rule says
+    // (jupiter, after its party followed its microVM's work, 2026-11-18).
+    const RETRIES: u64 = 50;
+    let retries = RETRIES.to_string();
+    let ran = run_shards_env(
+        &["run"],
+        &["-d", "--name", "patient", "--health-retries", &retries, "bad:1"],
+        &env,
+    );
+    assert_eq!(ran.status, Some(0), "{}", ran.stderr);
+    let mut patience = Patience::of(&home);
+    let mut starting_at = None;
+    let h = loop {
+        let h = health("patient");
+        let streak = h["FailingStreak"].as_u64().unwrap_or(0);
+        if (2..RETRIES).contains(&streak) {
+            assert_eq!(h["Status"], "starting", "patient at a streak of {streak}: {h}");
+            starting_at = Some(streak);
+        }
+        let probed = h["Log"].as_array().is_some_and(|l| l.len() >= 5) && streak > 5;
+        if probed || streak >= RETRIES {
+            patience.done();
+            break h;
+        }
+        assert!(patience.holds(), "patient: {h}");
+        std::thread::sleep(patience.next_look());
+    };
+    assert!(
+        starting_at.is_some(),
+        "patient: its host ran {} probes, its run's {RETRIES} retries reached, before a look of \
+         the test's found its streak past its image's 2: its run's retries over its image's are \
+         unproven: {h}",
+        h["FailingStreak"]
+    );
+    kept("patient", &h, 1, "");
     for name in ["good", "bad", "slow", "patient"] {
         let _ = run_shards_env(&["rm"], &["-f", name], &env);
     }
