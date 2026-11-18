@@ -149,6 +149,63 @@ fn learned(view: &net::View) -> Duration {
     }
 }
 
+/// Waits until `done`, with [`Patience`] on `views`: `what`, said if it never is. Nothing tells
+/// of it as it comes, so it looks again after as long as it has waited, as [`learned`] does.
+fn until(views: &[&net::View], what: &str, mut done: impl FnMut() -> bool) {
+    let mut patience = Patience::on(views);
+    while !done() {
+        let Some(left) = patience.left() else {
+            panic!("{}", patience.out(what));
+        };
+        std::thread::sleep(left.min(patience.began.elapsed()));
+    }
+}
+
+/// Waits until nothing `views` show or the tests see has moved ([`PROGRESS`], the datagrams
+/// their drivers heard) for a whole window: the slowest answer their connections have shown
+/// (`net::View::learned`, D180's window of a path that answered), or, none answered yet, the
+/// window they were judged by (`net::View::window`: cold, seven backed-off probe timeouts).
+/// Nothing is in flight then, so what fills as its subjects go on (a command's pipe, its
+/// daemon's room for its stdin) has filled, or stopped. [`until`] a view shows one first.
+fn settled(views: &[&net::View]) {
+    let window = || {
+        views
+            .iter()
+            .filter_map(|v| v.learned())
+            .max()
+            .or_else(|| views.iter().filter_map(|v| v.window()).max())
+    };
+    until(views, "a connection looked at", || window().is_some());
+    let moved = || {
+        let heard = views.iter().map(|v| v.heard()).fold(0u64, u64::saturating_add);
+        (PROGRESS.load(Ordering::Relaxed), heard)
+    };
+    let (mut last, mut since) = (moved(), Instant::now());
+    loop {
+        let now = moved();
+        if now != last {
+            (last, since) = (now, Instant::now());
+        }
+        let still_for = window().unwrap_or_default();
+        let Some(left) = still_for.checked_sub(since.elapsed()).filter(|l| !l.is_zero()) else {
+            return;
+        };
+        std::thread::sleep(left);
+    }
+}
+
+/// The longest probe timeout an endpoint holds a connection to (RFC 9002 §6.2.1, its
+/// application data's) whose handshake ended and whose every RTT sample came within `rtt`: its
+/// smoothed RTT (no more than `rtt`), four times its variation (no more than `rtt` either, each
+/// sample within `rtt` of the smoothed one, §5.3) or kGranularity's 1 ms (§6.1.2), and its
+/// peer's `max_ack_delay`: RFC 9000 §18.2's default of 25 ms, which its transport keeps
+/// (`tls::transport` sets none).
+fn probe_timeout_within(rtt: Duration) -> Duration {
+    let max_ack_delay = Duration::from_millis(25);
+    rtt.saturating_add(rtt.saturating_mul(4).max(Duration::from_millis(1)))
+        .saturating_add(max_ack_delay)
+}
+
 /// Where a machine says what it saw, each saying progress ([`PROGRESS`]).
 #[derive(Clone)]
 struct Saw(mpsc::Sender<Seen>);
@@ -350,14 +407,20 @@ impl Host for Machine {
                     drop(EXHAUSTED.lock().unwrap().take());
                     std::fs::write(go, b"").unwrap();
                 }
+                // Its child looked at paced as D215 paces looks (`shards_abi::pace::pause`: a
+                // look's own cost against the wait so far), its hangup heard as it comes.
+                let began = Instant::now();
                 let status = loop {
+                    let looked = Instant::now();
                     if let Some(status) = ended(&mut child) {
                         break status;
                     }
-                    if hung_up.try_recv().is_ok() && !outlives {
-                        kill(&mut child);
+                    let pause = shards_abi::pace::pause(looked.elapsed(), began.elapsed(), Duration::MAX);
+                    match hung_up.recv_timeout(pause) {
+                        Ok(()) if !outlives => kill(&mut child),
+                        Ok(()) | Err(mpsc::RecvTimeoutError::Timeout) => {}
+                        Err(mpsc::RecvTimeoutError::Disconnected) => std::thread::sleep(pause),
                     }
-                    std::thread::sleep(Duration::from_millis(5));
                 };
                 let _ = exited.send(Seen::Exited(what, status));
                 let _ = gone.send(());
@@ -1036,7 +1099,9 @@ fn a_client_asked_to_send_no_more_stdin_waits_for_its_answer() {
     let endless: Option<Box<dyn Read + Send>> = Some(Box::new(std::io::repeat(b'y')));
     let later = run(laptop, remote, &["anything"], endless);
     let (conn, stream) = patiently(&asked, &[&sender.view()], "the daemon's ask");
-    // Its client sends stdin on meanwhile, to a stream stopped.
+    // Its client sends stdin on meanwhile, to a stream stopped: for 200 ms, the case's input
+    // (R03): nothing waits on it, and a client slower to learn of the stop meanwhile passes
+    // the same, its daemon's answer waited for.
     std::thread::sleep(Duration::from_millis(200));
     sender.send(net::Command::Handler((conn, stream))).unwrap();
     let (status, _, _) = later.get();
@@ -1067,8 +1132,8 @@ fn what_steers_a_command_passes_its_stdin_waiting_for_room() {
     let later = run_steered(laptop, d.remote, &["await", go], endless, Some(steered));
     let controls = patiently(&controls, &[&d.view()], "what steers the command");
     d.seen.saw(&Seen::Started(what.clone()));
-    // Long enough for its pipe, and the daemon's room for its stdin, to fill.
-    std::thread::sleep(Duration::from_millis(300));
+    // Its pipe, and the daemon's room for its stdin, filled: nothing moving (before, 300 ms).
+    settled(&[&d.view()]);
     controls.resize(40, 120).unwrap();
     controls.signal(10).unwrap();
     d.seen.saw(&Seen::Resized(what.clone(), 40, 120));
@@ -1114,8 +1179,8 @@ fn a_command_that_reads_no_stdin_holds_up_no_other() {
     let endless: Option<Box<dyn Read + Send>> = Some(Box::new(std::io::repeat(b'y')));
     let held = run(laptop, d.remote, &["await", go], endless);
     d.seen.saw(&Seen::Started(format!("await {go}")));
-    // Long enough for its pipe, and the daemon's room for its stdin, to fill.
-    std::thread::sleep(Duration::from_millis(300));
+    // Its pipe, and the daemon's room for its stdin, filled: nothing moving (before, 300 ms).
+    settled(&[&d.view()]);
     // Each command's exit seen at the machine before its answer is waited for: one that hangs
     // says which it is, a command that never ended or an end never answered.
     let echo = run(laptop, d.remote, &["echo", "hi"], None);
@@ -1386,15 +1451,9 @@ impl Drop for RawClient {
     }
 }
 
-/// Waits until `path` is there.
+/// Waits until `path` is there ([`until`]; before, looked at each 10 ms at most).
 fn until_there(path: &std::path::Path, view: &net::View) {
-    let mut patience = Patience::on(&[view]);
-    while !path.exists() {
-        let Some(left) = patience.left() else {
-            panic!("{}", patience.out(&format!("{} there", path.display())));
-        };
-        std::thread::sleep(left.min(Duration::from_millis(10)));
-    }
+    until(&[view], &format!("{} there", path.display()), || path.exists());
 }
 
 /// A command refused after it started is told apart from one refused before it, which says
@@ -1788,6 +1847,7 @@ fn a_listener_at_its_bound_gives_a_vanished_clients_place_to_a_newcomer() {
         ],
         1,
     );
+    let dialed = Instant::now();
     let held = RawClient::new(laptop, d.remote);
     let refused = RawClient::dial(desktop, d.remote);
     assert!(
@@ -1800,9 +1860,9 @@ fn a_listener_at_its_bound_gives_a_vanished_clients_place_to_a_newcomer() {
     frame::put(&mut named, Tag::Controls, &96u64.to_be_bytes()).unwrap();
     let stream = held.open(named);
     assert!(matches!(held.next(), Heard::Frame(s, Tag::Refused, _) if s == stream));
-    // Past its probe timeout on loopback (its RTT terms and the peer's 25 ms `max_ack_delay`,
-    // RFC 9000 §18.2's default), still answered.
-    std::thread::sleep(Duration::from_millis(200));
+    // Past its probe timeout since the ask, still answered: every RTT sample its daemon took of
+    // it came within its exchanges so far (`probe_timeout_within`; before, 200 ms).
+    std::thread::sleep(probe_timeout_within(dialed.elapsed()));
     let kept = RawClient::dial(desktop, d.remote);
     assert!(
         matches!(kept, Err(Heard::Lost(_))),
@@ -2251,14 +2311,19 @@ fn a_daemon_reached_before_that_answers_nothing_runs_out_and_is_probed_on() {
         daemon: Identity::generate().unwrap().fingerprint(),
         known: tls::Known::Reached(path),
     };
+    // Its run-out comes a probe timeout and its slowest handshake in: its probe timeout from the
+    // path's RTT, before any sample of its own (RFC 9002 §6.2.1, §6.2.2: the smoothed RTT, four
+    // times half of it or the 1 ms granularity, §6.1.2, and the daemon's max_ack_delay, RFC 9000
+    // §18.2's 25 ms where its parameters say none), 28 ms here. Its caller gives up at the first
+    // probe told past it (before, past twice its slowest handshake).
+    let pto = path.rtt + (path.rtt * 2).max(Duration::from_millis(1)) + Duration::from_millis(25);
+    let run_out = pto + path.handshake;
     let start = Instant::now();
-    // Its caller gives up at the first probe told past twice its slowest handshake: well past
-    // its run-out, which comes a probe timeout and its slowest handshake in.
-    let (ran, _, seen) = asked(remote, |u, _| u.waited >= path.handshake * 2);
+    let (ran, _, seen) = asked(remote, |u, _| u.waited > run_out);
     let took = start.elapsed();
     let said = ran.unwrap_err().to_string();
     assert!(said.contains("no shards daemon answered"), "{said}");
-    assert!(took >= path.handshake * 2, "{took:?}");
+    assert!(took >= run_out, "{took:?}");
     assert!(seen.ran_out, "{seen:?}");
     assert_eq!(remote.known.after(&seen), tls::Known::RanOut(path));
     drop(silent);
@@ -2274,6 +2339,8 @@ fn a_daemon_reached_before_that_answers_nothing_runs_out_and_is_probed_on() {
 struct Relay {
     address: SocketAddr,
     hold: &'static Mutex<Duration>,
+    /// Whether a hold until it is let go ([`Relay::hold_until_released`]) has been let go.
+    released: &'static (Mutex<bool>, std::sync::Condvar),
 }
 
 impl Relay {
@@ -2281,11 +2348,23 @@ impl Relay {
         let front = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
         let address = front.local_addr().unwrap();
         let hold: &'static Mutex<Duration> = Box::leak(Box::new(Mutex::new(Duration::ZERO)));
-        let (due_tx, due) = mpsc::channel::<(Instant, SocketAddr, Vec<u8>)>();
+        let released: &'static (Mutex<bool>, std::sync::Condvar) =
+            Box::leak(Box::new((Mutex::new(false), std::sync::Condvar::new())));
+        // Each datagram when it is due: at its time, or, none, once its hold is let go.
+        let (due_tx, due) = mpsc::channel::<(Option<Instant>, SocketAddr, Vec<u8>)>();
         let back = front.try_clone().unwrap();
         std::thread::spawn(move || {
             while let Ok((at, to, bytes)) = due.recv() {
-                std::thread::sleep(at.saturating_duration_since(Instant::now()));
+                match at {
+                    Some(at) => std::thread::sleep(at.saturating_duration_since(Instant::now())),
+                    None => {
+                        let (let_go, ring) = released;
+                        let mut let_go = let_go.lock().unwrap();
+                        while !*let_go {
+                            let_go = ring.wait(let_go).unwrap();
+                        }
+                    }
+                }
                 let _ = back.send_to(&bytes, to);
             }
         });
@@ -2321,9 +2400,10 @@ impl Relay {
                         let mut until = None;
                         while let Ok(n) = answers.recv(&mut datagram) {
                             let now = Instant::now();
+                            // `Duration::MAX`: until let go, no time of its own.
                             let at = match hold.is_zero() {
-                                true => now,
-                                false => (*until.get_or_insert(now + hold)).max(now),
+                                true => Some(now),
+                                false => (*until.get_or_insert(now.checked_add(hold))).map(|at| at.max(now)),
                             };
                             if due_tx.send((at, from, datagram[..n].to_vec())).is_err() {
                                 break;
@@ -2335,7 +2415,11 @@ impl Relay {
                 let _ = up.send(&datagram[..n]);
             }
         });
-        Relay { address, hold }
+        Relay {
+            address,
+            hold,
+            released,
+        }
     }
 
     /// Holds what the daemon sends back to each client that comes from now on, for `hold` from
@@ -2343,11 +2427,30 @@ impl Relay {
     fn hold(&self, hold: Duration) {
         *self.hold.lock().unwrap() = hold;
     }
+
+    /// Holds what the daemon sends back to each client that comes from now on until
+    /// [`release`](Self::release), with no time of its own.
+    fn hold_until_released(&self) {
+        self.hold(Duration::MAX);
+    }
+
+    /// Lets a hold until it is let go go: what it held, sent at once, and what comes after.
+    fn release(&self) {
+        let (let_go, ring) = self.released;
+        *let_go.lock().unwrap() = true;
+        ring.notify_all();
+    }
 }
 
 /// Runs `args` on `remote` as `identity`: its status, or why it was not run, and what its
 /// connection saw.
-fn ran_seen(identity: &'static Identity, remote: Remote, args: &[&str]) -> (Result<i32, String>, net::Seen) {
+fn ran_seen(
+    identity: &'static Identity,
+    remote: Remote,
+    args: &[&str],
+    waits: impl FnMut(client::Unanswered) -> bool,
+    stalled: impl FnMut(client::Stall),
+) -> (Result<i32, String>, net::Seen) {
     let request = Request {
         args: args.iter().map(|a| a.as_bytes().to_vec()).collect(),
         env: Vec::new(),
@@ -2362,8 +2465,8 @@ fn ran_seen(identity: &'static Identity, remote: Remote, args: &[&str]) -> (Resu
         std::io::sink(),
         |_| {},
         |_| {},
-        |_| true,
-        |_| {},
+        waits,
+        stalled,
         |_| {},
     );
     (
@@ -2402,7 +2505,7 @@ fn a_daemon_reached_before_slower_to_shake_hands_within_a_probe_timeout_is_answe
         address: relay.address,
         ..d.remote
     };
-    let (status, seen) = ran_seen(laptop, remote, &["say", "first", "x", "0"]);
+    let (status, seen) = ran_seen(laptop, remote, &["say", "first", "x", "0"], |_| true, |_| {});
     assert_eq!(status, Ok(0));
     let known = remote.known.after(&seen);
     let tls::Known::Reached(path) = known else {
@@ -2423,7 +2526,13 @@ fn a_daemon_reached_before_slower_to_shake_hands_within_a_probe_timeout_is_answe
     };
     eprintln!("first {seen:?}; hold {hold:?}");
     relay.hold(hold);
-    let (status, seen) = ran_seen(laptop, Remote { known, ..remote }, &["say", "second", "x", "0"]);
+    let (status, seen) = ran_seen(
+        laptop,
+        Remote { known, ..remote },
+        &["say", "second", "x", "0"],
+        |_| true,
+        |_| {},
+    );
     assert_eq!(status, Ok(0), "{seen:?}");
     let slower = seen.handshake.unwrap();
     assert!(slower + seen.absent > hold, "{seen:?}, {path:?}");
@@ -2437,7 +2546,8 @@ fn a_daemon_reached_before_slower_to_shake_hands_within_a_probe_timeout_is_answe
 /// from it and its probe timeout (its host descheduling it: ROOT's run of this file on
 /// adas-macbook-pro-2 at ea6f4b53b, load1 about 44, "nothing heard from it in 30.075715ms, its
 /// probe timeout (26.36784ms) and then the slowest handshake seen from it (3.707875ms): is it
-/// listening there"; here a relay holding what it sends back four times that long) runs out,
+/// listening there"; here a relay holding what it sends back until its client is told its
+/// run-out) runs out,
 /// marked, and is waited for as a daemon never reached is: answered once it is heard, its
 /// run-out kept, so that its next handshake waits as a cold one does. Red with the run-out its
 /// end, in those words, at 476f77d7b on an unloaded host: "nothing heard from it in 39.906044ms,
@@ -2456,23 +2566,37 @@ fn a_daemon_reached_before_unheard_past_its_window_runs_out_and_is_waited_for() 
         address: relay.address,
         ..d.remote
     };
-    let (status, seen) = ran_seen(laptop, remote, &["say", "first", "x", "0"]);
+    let (status, seen) = ran_seen(laptop, remote, &["say", "first", "x", "0"], |_| true, |_| {});
     assert_eq!(status, Ok(0));
     let known = remote.known.after(&seen);
     let tls::Known::Reached(path) = known else {
         panic!("{known:?}");
     };
-    // What the client waits before its run-out: its probe timeout from the path's RTT (RFC 9002
-    // §6.2.1: the smoothed RTT, the larger of four times its variation, half the RTT to start
-    // from, §6.2.2, and the 1 ms granularity, §6.1.2, and the daemon's max_ack_delay, 25 ms
-    // where its transport parameters say none, RFC 9000 §18.2), then the slowest handshake
-    // seen. Held four times that.
+    // Held until its client is told its run-out (`client::Stall::Unreached`, its path's window
+    // with it): however long its client's own absence keeps it from running out, which its wait
+    // counts none of (`net::Liveness::absent`). Before, held four times the run-out's time. Its
+    // run-out is due its probe timeout from the path's RTT (RFC 9002 §6.2.1: the smoothed RTT,
+    // the larger of four times its variation, half the RTT to start from, §6.2.2, and the 1 ms
+    // granularity, §6.1.2, and the daemon's max_ack_delay, 25 ms where its transport parameters
+    // say none, RFC 9000 §18.2), then the slowest handshake seen, into its wait: a probe told
+    // past that with no run-out told gives the run up, which fails the test, never a hang.
     let ms = Duration::from_millis;
-    let past = path.rtt + (path.rtt * 2).max(ms(1)) + ms(25) + path.handshake;
-    let hold = past * 4;
-    eprintln!("first {seen:?}; hold {hold:?}");
-    relay.hold(hold);
-    let (status, seen) = ran_seen(laptop, Remote { known, ..remote }, &["say", "second", "x", "0"]);
+    let due = path.rtt + (path.rtt * 2).max(ms(1)) + ms(25) + path.handshake;
+    eprintln!("first {seen:?}; held until its run-out, due {due:?} in, is told");
+    relay.hold_until_released();
+    let told = std::cell::Cell::new(false);
+    let (status, seen) = ran_seen(
+        laptop,
+        Remote { known, ..remote },
+        &["say", "second", "x", "0"],
+        |unanswered| told.get() || unanswered.waited <= due,
+        |stall| {
+            if matches!(stall, client::Stall::Unreached { window: Some(_), .. }) {
+                told.set(true);
+                relay.release();
+            }
+        },
+    );
     assert_eq!(status, Ok(0), "{seen:?}");
     // Its handshake's time is not held to the hold: the client's own absence, its driver
     // descheduled, is taken out of it (`net::Liveness::absent`), and at load 28 a handshake held
@@ -2487,8 +2611,8 @@ fn a_daemon_reached_before_unheard_past_its_window_runs_out_and_is_waited_for() 
 /// own absence (`net::Liveness::absent`), which its peer is not held to. A command echoes its
 /// stdin as it trickles in, a chunk every 2 ms, so that sends of both its client's and its
 /// daemon's wait for their answers through most of the run, and in a turn's midst as often as
-/// in a wait; the test's whole process, its daemon and its client, is frozen for 200 ms in its
-/// midst, and the command ends whole. Red with no absence taken: a side takes its live peer for
+/// in a wait; the test's whole process, its daemon and its client, is frozen in its midst for
+/// longer than either side's window and than kiln's freezes, and the command ends whole. Red with no absence taken: a side takes its live peer for
 /// dead as both resume. In a process of its own, as a freeze stops every thread of the process it
 /// is sent to.
 #[cfg(unix)]
@@ -2535,6 +2659,7 @@ fn a_process_frozen_past_every_window_keeps_its_connections() {
     let remote = d.remote;
     let out = Captured::default();
     let (tx, ended) = mpsc::channel();
+    let (viewed, client_view) = mpsc::channel();
     let written = out.clone();
     std::thread::spawn(move || {
         let request = Request {
@@ -2543,7 +2668,7 @@ fn a_process_frozen_past_every_window_keeps_its_connections() {
             terminal: None,
         };
         let stdin: Box<dyn Read + Send> = Box::new(Trickle { left: 400 });
-        let ran = client::exec(
+        let (ran, _) = client::exec_with(
             laptop,
             remote,
             request,
@@ -2551,15 +2676,36 @@ fn a_process_frozen_past_every_window_keeps_its_connections() {
             written,
             std::io::sink(),
             |_| {},
+            |_| {},
+            |_| true,
+            |_| {},
+            |hang_up: client::HangUp| {
+                let _ = viewed.send(hang_up.view());
+            },
         );
         let _ = tx.send(ran.map_err(|e| e.to_string()));
     });
-    // 300 ms in, frozen for 200 ms: longer than any window here, and than kiln's freezes.
-    std::thread::sleep(Duration::from_millis(300));
+    // Frozen in its midst: its echo under way, and both its sides' windows learned from their
+    // answers (before, 300 ms in).
+    let daemon_view = d.view();
+    let client_view = patiently(&client_view, &[&daemon_view], "its client's view");
+    let views = [&daemon_view, &client_view];
+    until(&views, "its trickle echoed, both its windows learned", || {
+        !out.bytes().is_empty() && views.iter().all(|v| v.learned().is_some())
+    });
+    // For longer than any window here, either side's learned from its answers, and than kiln's
+    // freezes (124 ms, a 2 ms sleep's p99 on adacachy2): before, 200 ms.
+    let freeze = views
+        .iter()
+        .filter_map(|v| v.learned())
+        .fold(Duration::from_millis(124), Duration::max);
     let pid = std::process::id();
     let frozen = Command::new("sh")
         .arg("-c")
-        .arg(format!("kill -STOP {pid}; sleep 0.2; kill -CONT {pid}"))
+        .arg(format!(
+            "kill -STOP {pid}; sleep {}; kill -CONT {pid}",
+            freeze.as_secs_f64()
+        ))
         .status()
         .unwrap();
     assert!(frozen.success());
@@ -2756,6 +2902,7 @@ fn what_a_command_of_a_connection_gone_writes_reaches_no_other() {
     // It goes on through the hangup its client's going brings, once it has said it will.
     let readied = format!("ready={}", ready.to_str().unwrap());
     let stale = ["await", go.to_str().unwrap(), readied.as_str(), "say=stale"];
+    let dialed = Instant::now();
     {
         let raw = RawClient::new(laptop, d.remote);
         let outlives: Vec<&str> = ["outlives-hangup"].into_iter().chain(stale).collect();
@@ -2763,16 +2910,20 @@ fn what_a_command_of_a_connection_gone_writes_reaches_no_other() {
         until_there(&ready, &d.view());
         raw.ask(Ask::Close);
     }
+    // Every RTT sample its daemon took of the connection came within this.
+    let exchanged = dialed.elapsed();
     d.seen.saw(&Seen::HungUp(stale.join(" ")));
-    // The connection gone, and drained: three probe timeouts on loopback.
-    std::thread::sleep(Duration::from_millis(500));
+    // The connection gone, and drained: its draining lasts three of its probe timeouts (RFC 9000
+    // §10.2.2; quinn-proto's three of its PTO), each within `probe_timeout_within` (before, 500 ms).
+    std::thread::sleep(probe_timeout_within(exchanged).saturating_mul(3));
     let fresh = ["await", done.to_str().unwrap(), "say=fresh", "exit=7"];
     let later = run(laptop, d.remote, &fresh, None);
     d.seen.saw(&Seen::Started(fresh.join(" ")));
     std::fs::write(&go, b"").unwrap();
     d.seen.saw(&Seen::Exited(stale.join(" "), 0));
-    // What it wrote, and its exit, reach the daemon's driver meanwhile.
-    std::thread::sleep(Duration::from_millis(300));
+    // What it wrote, and its exit, reach the daemon's driver meanwhile: its daemon has let go of
+    // it, all of it given its driver (before, 300 ms).
+    d.seen.saw(&Seen::Released(stale.join(" ")));
     std::fs::write(&done, b"").unwrap();
     let (status, out, _) = later.get();
     assert_eq!(status, Ok(7), "{:?}", d.seen.now());

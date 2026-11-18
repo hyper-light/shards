@@ -30025,7 +30025,45 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
               6.5 s"). It must not connect sooner than the slow round's held answer, 3 s (was
               2.5 s). The case's premise, a slow round shorter than the cold window, is
               asserted.
-          - tests/loopback.rs keeps its 17 timed waits, untouched here.
+          - *tests/loopback.rs's numbers, ruled* (2026-11-18, #36 item 3). Its waits are judged
+            by its own `Patience`: its subjects' transports (`net::View`, the datagrams their
+            drivers heard and the windows they were judged by) and what the tests see them do
+            (`PROGRESS`). An integration test builds shards-remote without `cfg(test)`, so the
+            product's threads join no shards-testwait party there.
+            - Judged now:
+              - the machine's wait on its command (was a 5 ms poll): its child looked at as D215
+                paces looks (`shards_abi::pace::pause`), its hangup heard as it comes;
+              - two stdin pipes and daemon rooms filling (was 300 ms each): `settled`, nothing
+                moving for a whole window of the slowest answer the path has shown
+                (`View::learned`), or, before any answer, of the window the path was judged by
+                (cold: seven backed-off probe timeouts);
+              - `until_there` (was a look each 10 ms at most): `until`, looking again after as
+                long as it has waited;
+              - a frozen process's trickle (was "300 ms in"): until its echo is under way and
+                both its sides have learned a window;
+              - a gone command's writes reaching its daemon's driver (was 300 ms): until its
+                daemon lets go of it (`Seen::Released`);
+              - the relay's hold before a run-out (was four times the run-out's time): until its
+                client is told the run-out (`Stall::Unreached` with its path's window). A probe
+                past the run-out's due with no run-out told gives the run up, so the test fails
+                instead of hanging.
+            - Derived now:
+              - a holder's wait past its probe timeout (was 200 ms) and a gone connection's
+                draining, three probe timeouts (RFC 9000 §10.2.2, was 500 ms): from
+                `probe_timeout_within`, RFC 9002 §6.2.1 with every RTT sample within the
+                connection's exchanges as the test saw them, plus RFC 9000 §18.2's 25 ms;
+              - a caller's give-up after a run-out (was past twice the slowest handshake): at
+                the first probe past the run-out's due, the path's probe timeout and its slowest
+                handshake (328 ms here);
+              - the whole-process freeze (was 200 ms): past every window both sides learned and
+                past kiln's measured freezes (124 ms, a 2 ms sleep's p99 on adacachy2).
+            - Kept as inputs the cases are built from: a command's late tell (50 ms, `Late`,
+              which sets only how surely a server that sent the exit first shows it), a client
+              sending on to a stream its daemon stopped (200 ms, which nothing waits on), a
+              daemon slow to answer (300 ms, `Answers::stall`), a silent command's 2 s, a
+              remembered path's 1 ms, 300 ms and 1 ms, and a trickle's 2 ms a chunk. Also kept:
+              the slower handshake's hold, between the first handshake and its client's probe
+              timeout as that run measured them.
     - *Rated answers alone teach R* and C*.* Many kept records held R* 0 ns: answers reaped
       before any look read their CPU (`run_ending`'s `try_wait` reaped a quick client between
       paced looks), a floor that refuses nothing. `Seen::Learned` is now `{ slowest, rated:
