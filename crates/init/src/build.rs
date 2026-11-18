@@ -281,9 +281,10 @@ fn serve() -> io::Result<()> {
                 send(&b.conn, kind::EMULATED, why.as_bytes())?;
             }
             kind::NEEDS => {
-                // Every builder's, a cold one's too, booted with all it may have
-                // (memory-15): its build's cgroup counts what it held either way. All four
-                // words or none: a need with no start is never said (D133).
+                // Every builder's, a cold one's too, booted with all it may have (Unix) or
+                // with its architecture's least (Windows; memory-15, D133): its build's
+                // cgroup counts what it held either way. All four words or none: a need
+                // with no start is never said (D133).
                 let said = match (crate::plug::needed(), crate::plug::startup_said()) {
                     (Ok((need, killed)), Some(start)) => format!("{need} {killed} {start}"),
                     (Ok(_), None) => "its guest's start was not noted".to_owned(),

@@ -1594,7 +1594,8 @@ pub fn host_memory() -> u64 {
 /// `boot IDENTITY BYTES` line of its `builder-memory`, which a builder adds as it ends. One
 /// guest (one kernel, init and CPU count) per test home, so one line; None where the home
 /// has learned none, as before its first builder ended: its next builder boots cold, with
-/// all it may have.
+/// all it may have (on Windows, which charges guest RAM as it is reserved, with its
+/// architecture's least, plugged as it needs: D133).
 pub fn learned_boot(home: &Path) -> Option<u64> {
     let said = std::fs::read_to_string(home.join("builder-memory")).ok()?;
     let boots: Vec<u64> = said

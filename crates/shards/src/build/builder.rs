@@ -351,8 +351,11 @@ pub struct Boot<'a> {
     /// The most memory the builder may have, in MiB: it boots with `boot_mib` of it, and
     /// the rest is plugged as the build needs it (D133).
     pub memory_mib: u64,
-    /// What it boots with, in MiB: what its home learned its guest needs to boot, else all
-    /// it may have (`build::builder_boot`, memory-15).
+    /// What it boots with, in MiB: what its home learned its guest needs to boot; with
+    /// nothing learned, all it may have where its host charges guest RAM as it is touched
+    /// (Unix), and the least a guest of its architecture boots in where it charges it as it
+    /// is reserved (Windows), the rest plugged as its build needs (`build::builder_boot`,
+    /// memory-15, D133).
     pub boot_mib: u64,
     /// Its guest's identity in its home's record (`build::builder_identity`).
     pub identity: &'a str,

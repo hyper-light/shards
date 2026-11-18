@@ -22232,6 +22232,67 @@ its bss and early allocations; arm64's kernel and DTB window). Tests:
 rewritten to two MiB under the least, its next builder boots). Red:
 lanes/redgreen/builder-floor.patch, builder-floor-most.patch.
 
+**On Windows a cold builder boots with its architecture's least, and is plugged (2026-11-18,
+#36, CI 44245219858; ROOT's ruling F1).** memory-15's cold start, all a builder may have where
+nothing is learned of its guest, rests on what that boot costs: the page structures of all of
+it, a 64th (PM M82, M193), once a home and guest. Where guest RAM is charged as it is reserved
+(`platform::CHARGED_AS_RESERVED`: Windows) that premise is false. A VM process there commits
+the RAM it boots with whole as it starts (platform/windows.rs `reserve_ram`, `MEM_COMMIT`),
+touched or not, so a cold builder costs the commit of all it may have, for its whole life. In
+CI 44245219858 (at 1799412f9b, before the ceiling above) eight builds were refused their
+builders' RAM, each "guest RAM: The paging file is too small for this operation to complete.
+(os error 1455)", then "the builder ended as it started": windows-2022's
+`a_steps_output_is_clipped`, `builds_write_each_output` and context.rs
+`a_builds_ssh_agents_through_a_context_are_the_clients`, and windows-2025's
+`builds_take_steps_from_an_azure_blob_cache`, `…_an_s3_cache`, `…_caches_written_elsewhere`,
+`builds_write_each_output` and that context.rs test. Each built in a new home with no
+`SHARDS_BUILD_MEMORY`, its builder booted cold with its whole ceiling; x86_64 Windows alone has
+failed so, since memory-15 (0faaf26280). The ceiling above, what the host can still commit,
+keeps a cold builder from asking for more than there is, but booted with it, the builder still
+takes all the commit its host has left: builders and VMs that start together race for it
+between its read and its commit, and while the builder runs, the host's next VM has none
+(Microsoft's commit semantics, above; not reproduced). Memory to plug is reserved alone there
+and committed only as it is plugged (`reserve_withheld`, `grant`). So, where its host charges
+guest RAM as it is reserved, a cold builder now boots with the least a guest of its
+architecture boots in (`build::least_mib`, above), within its most, and is plugged as its build
+needs, as a warm one is (`build::builder_boot`'s `charged_as_reserved`, which
+`builder_memory_mib` fills with `shards_vmm::platform::CHARGED_AS_RESERVED`). No literal: the
+least is the one its VM process refuses less than. The ceiling stays what the host can still
+commit, and one under the least is refused as before (`UnderTheFloor`). Elsewhere the cold
+start is unchanged, all it may have, which Linux and macOS charge as it is touched. That an
+x86_64 builder boots at that least and runs its step is
+`a_builder_learned_to_need_less_than_its_floor_boots_with_the_floor` (above), green on jupiter
+(WHP, r58). arm64 Windows, whose least is 64 MiB: CI cannot show it (ubuntu-24.04-arm has no
+KVM, its "ok" there a SKIP, job 134680766447; windows-11-arm no hypervisor platform, PM M172),
+but the least is the guest's own, one kernel and init each architecture, so that E2E now runs
+on every architecture whose host has a hypervisor, its record rewritten under that
+architecture's least (b9edb08f11), and an arm64 builder booted at 64 MiB on this Mac's HVF,
+running its step, is the evidence: ROOT's kiln r76 on this Mac (aarch64-apple-darwin, HVF),
+2026-11-18, at 1a8867ef02 over b9edb08f11, ran it ok in 146.98 s, a real boot (no SKIP): an
+arm64 builder booted at 64 MiB and ran its step. So the cold start above holds for arm64
+Windows too, as for every host that charges guest RAM as reserved. The tests of plugging keep their
+first build (above), which on Windows now plugs too. Windows' test of the cold start is
+build_windows.rs `a_builder_in_a_new_home_commits_what_it_boots_with_and_is_plugged`: a new
+home's build with no `SHARDS_BUILD_MEMORY`, its first step's kernel has memory to plug, its
+second allocates and touches the least, and its builder's VM process's peak commit (its timing
+line's `peak_commit_kib`, PeakPagefileUsage) stays under the `MemTotal` that first step sees,
+all its guest may reach (D149): its ceiling less what its kernel kept as it booted, read from
+the guest, never a figure of the test's. Unit test:
+`memory_tests::a_cold_builder_boots_with_its_architectures_least_where_guest_ram_is_charged_as_reserved`,
+both hosts' answers on every host. Red: lanes/redgreen/own-35e-coldboot.patch (the cold start
+all it may have on every host).
+
+**Owed after the tag: commit on first touch (2026-11-18, #36; ROOT's ruling F2, not for
+v0.8.0).** A Windows VM process's boot RAM reserved alone, each block committed and mapped as
+its guest first touches it, through the memory fault a DAX window's head takes
+(`Head::commit_at` through `WindowHeads::memory_fault`, PM M413). A VM would then be charged
+commit for what its guest touches, as on Unix, and memory-15's premise would hold there too: a
+cold builder could boot with all it may have again. Owed: research (how WHP's other users
+commit guest memory; a first access's exit against `WHvAdviseGpaRange`'s populate), and under
+R14 a measurement of the exit's cost on each host, against PM M341's (a page's first access
+taken into stage 2 one at a time, 6 to 23 µs a page; a populate's 0.4 to 0.7) and M413's (a
+first load through its exit 23.4 to 147.2 µs; a 64 KiB block's commit 0.7 to 1.2 µs at p50).
+
 **R03 review memory-11..15 (2026-11-13):** reserve slack, pause/read floors,
 retry count, growth/retention ratios and boot floor remain owed to ROOT with
 designs in `docs/research/measurements/memory-fixes-v1/owed-designs.md`.

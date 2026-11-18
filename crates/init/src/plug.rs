@@ -683,8 +683,11 @@ impl Plug {
     }
 }
 
-/// Makes the build's cgroup and moves init into it, every builder's, booted cold with all
-/// it may have or with memory to plug (D133, memory-15): mounts the builder's cgroup2, makes
+/// Makes the build's cgroup and moves init into it, every builder's, with memory to plug or
+/// none: none where it booted cold with all it may have, as its host gives one that charges
+/// guest RAM as it is touched (Unix), and memory to plug where it booted with what its home
+/// learned, or cold with its architecture's least, as a host that charges guest RAM as it is
+/// reserved gives it (Windows; D133, memory-15): mounts the builder's cgroup2, makes
 /// `build` with `init`, where init goes, and `steps`, where each step has its own, so that
 /// what a build holds is counted (`memory.peak`, `memory.events`, `memory.stat`) for its
 /// needs to be recorded ([`needed`]) and its cold files given back at its host's word
@@ -1332,7 +1335,9 @@ static STARTUP: std::sync::OnceLock<(u64, u64)> = std::sync::OnceLock::new();
 /// Notes what the builder's guest needs as its build is about to be held, and MemTotal as
 /// it booted, for its host to learn what its next builder of this guest boots with
 /// (`kind::NEEDED`, memory-15). Called by PID 1 as it would hold its build, with or without
-/// memory to plug: a cold builder boots with all it may have, and plugs none. Once.
+/// memory to plug: a cold builder boots with all it may have and plugs none where its host
+/// charges guest RAM as it is touched (Unix), and with its architecture's least, plugged as
+/// it needs, where its host charges it as it is reserved (Windows, D133). Once.
 pub fn note_startup() -> io::Result<()> {
     let (total, free) = memory()?;
     let boot = BOOT.get().copied().unwrap_or(total);

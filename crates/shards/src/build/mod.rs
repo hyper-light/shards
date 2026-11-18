@@ -911,10 +911,12 @@ fn builder_cpus() -> u32 {
 /// if set, else what [`builder_most`] makes of this host's memory, what it has available as
 /// the builder starts, and what the home's builds have needed (`needs`, [`Needed`]); and what
 /// it boots with, [`builder_boot`] of what the home learned its guest, `identity`
-/// ([`builder_identity`]), needs as it starts. Its steps and its layers share the most, the
-/// rest of it plugged as the build needs it: what a guest costs at boot grows with what it
-/// boots with (PM M82), not with what it may have. A host whose memory is unread, with
-/// nothing recorded, is refused, as is a most under the floor ([`builder_sizes`]).
+/// ([`builder_identity`]), needs as it starts, on this host, which charges guest RAM as it is
+/// reserved or as it is touched (`shards_vmm::platform::CHARGED_AS_RESERVED`). Its steps and
+/// its layers share the most, the rest of it plugged as the build needs it: what a guest
+/// costs at boot grows with what it boots with (PM M82), not with what it may have. A host
+/// whose memory is unread, with nothing recorded, is refused, as is a most under the floor
+/// ([`builder_sizes`]).
 fn builder_memory_mib(needs: &Path, identity: &str) -> Result<(u64, u64), BuilderMemoryRefused> {
     let needed = Needed::read(needs);
     let learned = needed.boot_for(identity);
@@ -926,20 +928,31 @@ fn builder_memory_mib(needs: &Path, identity: &str) -> Result<(u64, u64), Builde
         None => builder_most(host_memory(), host_committable(), &needed, learned)
             .map_err(BuilderMemoryRefused::Unread)?,
     };
-    builder_sizes(most, asked.is_some(), learned)
+    builder_sizes(
+        most,
+        asked.is_some(),
+        learned,
+        shards_vmm::platform::CHARGED_AS_RESERVED,
+    )
 }
 
 /// The most a builder may have and what it boots with, in MiB, where it may have `most`, its
 /// ceiling `SHARDS_BUILD_MEMORY`'s where `asked`, else its host's: [`builder_boot`] of what its
-/// guest was learned to need. Refused where `most` is under the least a guest of this
+/// guest was learned to need, on a host that charges guest RAM as it is reserved where
+/// `charged_as_reserved`. Refused where `most` is under the least a guest of this
 /// architecture boots in ([`least_mib`]), which its VM process refuses as it starts: before,
 /// the build said only that the builder ended as it started.
-fn builder_sizes(most: u64, asked: bool, learned: Option<u64>) -> Result<(u64, u64), BuilderMemoryRefused> {
+fn builder_sizes(
+    most: u64,
+    asked: bool,
+    learned: Option<u64>,
+    charged_as_reserved: bool,
+) -> Result<(u64, u64), BuilderMemoryRefused> {
     let least = least_mib();
     if most < least {
         return Err(BuilderMemoryRefused::UnderTheFloor { most, least, asked });
     }
-    Ok((most, builder_boot(most, learned)))
+    Ok((most, builder_boot(most, learned, charged_as_reserved)))
 }
 
 /// The least memory a builder's guest boots in, in MiB, in whole blocks: what a guest of this
@@ -1036,12 +1049,22 @@ fn builder_most(
 /// M193), once for each home and guest, and never a guessed floor. A small build's guest was
 /// learned to need less than x86_64's 128 MiB, which its VM process refused, the builder
 /// ending as it started (CI 44227612442, x86_64-pc-windows-msvc).
-fn builder_boot(most: u64, learned: Option<u64>) -> u64 {
-    learned.map_or(most, |bytes| {
-        whole_blocks_up(bytes.div_ceil(1 << 20))
+///
+/// Where its host charges guest RAM as it is reserved (`charged_as_reserved`: Windows, whose
+/// VM process commits the RAM it boots with whole), the cold start costs the commit of all
+/// it may have instead, for the builder's whole life: all its host can still commit, leaving
+/// the host's next VMs none, and more than that for CI 44245219858's builders, which were
+/// refused it (x86_64-pc-windows-msvc: "The paging file is too small"). There a cold builder
+/// boots with that least, within its most, and is plugged as its build needs, as a warm one
+/// is, its memory to plug committed only as it is plugged.
+fn builder_boot(most: u64, learned: Option<u64>, charged_as_reserved: bool) -> u64 {
+    match learned {
+        Some(bytes) => whole_blocks_up(bytes.div_ceil(1 << 20))
             .max(least_mib())
-            .min(most)
-    })
+            .min(most),
+        None if charged_as_reserved => least_mib().min(most),
+        None => most,
+    }
 }
 
 /// The memory a builder's guest needs to boot with, in bytes, from what one that booted with
@@ -6846,16 +6869,17 @@ mod memory_tests {
     }
 
     /// A builder boots with what its home learned its guest needs as it starts, in whole
-    /// blocks within its ceiling; with nothing learned of this guest, all it may have, which
-    /// always boots (memory-15): never a chosen floor, which was 512 MiB whatever the guest.
+    /// blocks within its ceiling; with nothing learned of this guest, on a host that charges
+    /// guest RAM as it is touched, all it may have, which always boots (memory-15): never a
+    /// chosen floor, which was 512 MiB whatever the guest.
     #[test]
     fn a_builder_boots_with_what_its_guest_was_learned_to_need_else_all_it_may_have() {
         let up = super::whole_blocks_up;
-        assert_eq!(builder_boot(16_384, None), 16_384);
-        assert_eq!(builder_boot(16_384, Some(300 * MIB)), up(300));
-        assert_eq!(builder_boot(16_384, Some(700 * MIB + 1)), up(701));
+        assert_eq!(builder_boot(16_384, None, false), 16_384);
+        assert_eq!(builder_boot(16_384, Some(300 * MIB), false), up(300));
+        assert_eq!(builder_boot(16_384, Some(700 * MIB + 1), false), up(701));
         assert!(up(701) >= 701);
-        assert_eq!(builder_boot(256, Some(GIB)), 256);
+        assert_eq!(builder_boot(256, Some(GIB), false), 256);
         // Learned from a guest booted with 16 GiB whose kernel had 15.7 GiB of it: past
         // MemTotal its image and its page structures, 256 MiB; it needed 372 MiB held.
         let booted = 16 * GIB;
@@ -6865,8 +6889,45 @@ mod memory_tests {
         // the least b with b - b/64 >= 416 MiB.
         assert_eq!(need, (416 * MIB * 64).div_ceil(63));
         assert!(need - need / 64 >= 416 * MIB);
-        assert_eq!(builder_boot(16_384, Some(need)), up(need.div_ceil(MIB)));
-        assert!(builder_boot(16_384, Some(need)) < 16_384 / 8);
+        assert_eq!(builder_boot(16_384, Some(need), false), up(need.div_ceil(MIB)));
+        assert!(builder_boot(16_384, Some(need), false) < 16_384 / 8);
+    }
+
+    /// Where its host charges guest RAM as it is reserved (Windows, whose VM process commits
+    /// the RAM it boots with whole: `platform::CHARGED_AS_RESERVED`), a builder with nothing
+    /// learned of its guest boots with the least a guest of its architecture boots in, the
+    /// rest of its most to plug: booted with all it may have, it took all the commit its host
+    /// had left, for its life, and CI 44245219858's builders were refused theirs
+    /// (x86_64-pc-windows-msvc: "The paging file is too small", 1455). Where guest RAM is
+    /// charged as it is touched, the cold start is all it may have, as before; a learned boot
+    /// is the same on either host. Both hosts' answers, on every host.
+    #[test]
+    fn a_cold_builder_boots_with_its_architectures_least_where_guest_ram_is_charged_as_reserved() {
+        let least = least_mib();
+        let block = shards_vmm::devices::virtio::mem::BLOCK >> 20;
+        for most in [least, least + block, 1024, 16_384] {
+            assert_eq!(builder_boot(most, None, true), least, "{most}");
+            assert_eq!(builder_boot(most, None, false), most, "{most}");
+            for asked in [true, false] {
+                assert_eq!(
+                    builder_sizes(most, asked, None, true),
+                    Ok((most, least)),
+                    "{most}"
+                );
+                assert_eq!(
+                    builder_sizes(most, asked, None, false),
+                    Ok((most, most)),
+                    "{most}"
+                );
+            }
+        }
+        for learned in [1, 100 * MIB, 300 * MIB, 3 * GIB] {
+            assert_eq!(
+                builder_boot(1024, Some(learned), true),
+                builder_boot(1024, Some(learned), false),
+                "{learned}"
+            );
+        }
     }
 
     /// A builder never boots under the least memory a guest of its architecture boots in
@@ -6882,15 +6943,15 @@ mod memory_tests {
             least,
             up(shards_abi::bounds::min_memory_mib(std::env::consts::ARCH))
         );
-        assert_eq!(builder_boot(1024, Some(100 * MIB)), up(100).max(least));
+        assert_eq!(builder_boot(1024, Some(100 * MIB), false), up(100).max(least));
         // Under the least on every architecture: x86_64's 128 MiB, arm64's 64.
-        assert_eq!(builder_boot(1024, Some(least / 2 * MIB)), least);
-        assert_eq!(builder_boot(1024, Some(1)), least);
-        assert_eq!(builder_sizes(least, true, Some(1)), Ok((least, least)));
-        assert_eq!(builder_sizes(1024, false, None), Ok((1024, 1024)));
+        assert_eq!(builder_boot(1024, Some(least / 2 * MIB), false), least);
+        assert_eq!(builder_boot(1024, Some(1), false), least);
+        assert_eq!(builder_sizes(least, true, Some(1), false), Ok((least, least)));
+        assert_eq!(builder_sizes(1024, false, None, false), Ok((1024, 1024)));
         let under = least - 2;
-        for asked in [true, false] {
-            let refused = builder_sizes(under, asked, None);
+        for (asked, charged_as_reserved) in [(true, false), (false, false), (true, true), (false, true)] {
+            let refused = builder_sizes(under, asked, None, charged_as_reserved);
             assert_eq!(
                 refused,
                 Err(BuilderMemoryRefused::UnderTheFloor {

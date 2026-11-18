@@ -413,8 +413,9 @@ fn a_builders_steps_see_the_memory_it_may_have() {
         (built, shown)
     };
     let stat = r#"["/bin/testguest", "stat", "/proc/sys/vm/pluggable_kbytes", "/proc/meminfo"]"#;
-    // The home's first builder boots cold, with all it may have, and teaches the home what
-    // its guest needs to boot.
+    // The home's first builder boots cold, with all it may have (on Windows with its
+    // architecture's least, plugged as it needs: D133), and teaches the home what its guest
+    // needs to boot.
     let (cold, shown) = build("build-report-cold-ctx", stat);
     if cold.stderr.contains("/proc/sys/vm/pluggable_kbytes missing") {
         println!("SKIP: this guest kernel reports none of the memory it may plug (D149)");
@@ -612,7 +613,9 @@ fn a_builders_ceiling_comes_from_its_host_and_its_homes_builds() {
 /// least a guest's booted with all of it, and within a tenth of them; and a step that takes
 /// more than all of it fails, as one past the memory of a builder booted with all of it
 /// does. A home's first builder boots with all it may have and plugs nothing
-/// (`a_builders_memory_in_a_new_home_is_all_it_may_have`).
+/// (`a_builders_memory_in_a_new_home_is_all_it_may_have`), except on Windows, where it boots
+/// with its architecture's least and plugs the rest (D133, build_windows.rs
+/// `a_builder_in_a_new_home_commits_what_it_boots_with_and_is_plugged`).
 #[test]
 fn a_builders_memory_is_plugged_as_its_build_needs_it() {
     if cannot_run_vms() {
@@ -748,7 +751,7 @@ fn a_builders_memory_is_plugged_as_its_build_needs_it() {
 /// vCPUs over its 1 GiB of packages did, and its grower never plugged more (PM M392). In a
 /// home whose first build has ended, whose builder boots with what its guest was learned
 /// to need, less than the build's 4 GiB (memory-15): a home's first builder boots with all
-/// it may have, and plugs nothing.
+/// it may have, and plugs nothing, except on Windows (D133).
 #[test]
 fn a_builders_memory_is_plugged_as_fast_as_its_jobs_take_it() {
     if cannot_run_vms() {
@@ -946,7 +949,11 @@ fn a_builder_gives_back_what_it_holds_cold_at_its_builds_word() {
 /// pages (D188), its VM process then holding that much less, as
 /// `a_builder_gives_back_what_it_holds_cold_at_its_builds_word`'s warm builder does; and as
 /// it ends its home learns what its guest needs to boot, less than its ceiling, which the
-/// home's next builder boots with, having the rest to plug.
+/// home's next builder boots with, having the rest to plug. Unix's cold start: Windows
+/// charges guest RAM as it is reserved, all of it committed as a VM boots, so there a new
+/// home's builder boots with its architecture's least and plugs the rest (D133, CI
+/// 44245219858; build_windows.rs
+/// `a_builder_in_a_new_home_commits_what_it_boots_with_and_is_plugged`).
 #[cfg(unix)]
 #[test]
 fn a_builders_memory_in_a_new_home_is_all_it_may_have() {
@@ -1101,11 +1108,12 @@ fn a_builders_memory_in_a_new_home_is_all_it_may_have() {
 }
 
 /// A home's first build that runs out of memory is recorded short (D133, D148, memory-15):
-/// its builder, booted cold with all it may have and nothing to plug, counts what its build
-/// held in the build's cgroup as a warm one does, and the processes its kernel ended; the
-/// home records the build's need and that it ended short, and its next builder may have all
-/// its host's memory, as a run with no limit may: `MemTotal` of the host's less no more than
-/// what the home learned its guest needs to boot, and a block.
+/// its builder, booted cold with all it may have and nothing to plug (on Windows with its
+/// architecture's least, plugged to all of it), counts what its build held in the build's
+/// cgroup as a warm one does, and the processes its kernel ended; the home records the
+/// build's need and that it ended short, and its next builder may have all its host's
+/// memory, as a run with no limit may: `MemTotal` of the host's less no more than what the
+/// home learned its guest needs to boot, and a block.
 #[test]
 fn a_new_homes_build_that_runs_out_is_recorded_short() {
     if cannot_run_vms() {

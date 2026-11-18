@@ -148,9 +148,10 @@ fn a_builders_memory_is_plugged_as_its_build_needs_it() {
     assert!(built.stderr.contains("allocated 1536"), "{shown}");
 }
 
-/// A home's first build, whose builder boots with all it may have and teaches the home what
-/// its guest needs to boot, which the home's next builders boot with (D133, memory-15):
-/// what it learned, in bytes.
+/// A home's first build, whose builder boots cold, here with the least a guest of its
+/// architecture boots in and plugged as it needs (D133: Windows charges guest RAM as it is
+/// reserved), and teaches the home what its guest needs to boot, which the home's next
+/// builders boot with (memory-15): what it learned, in bytes.
 fn warm(home: &TempDir, image: &str, env: &[(&str, &std::ffi::OsStr)]) -> u64 {
     let first = context(
         &format!("{}-first", home.file_name().unwrap().to_string_lossy()),
@@ -203,6 +204,71 @@ fn a_builders_memory_is_plugged_as_fast_as_its_jobs_take_it() {
     );
     assert_eq!(built.status, Some(0), "{shown}");
     assert!(built.stderr.contains("allocated 3072"), "{shown}");
+}
+
+/// A home's first builder, nothing learned of what its guest needs to boot, boots on Windows
+/// with the least a guest of its architecture boots in and is plugged as its build needs, as
+/// a warm builder is (D133): a VM process here commits the RAM it boots with whole
+/// (`shards_vmm::platform::CHARGED_AS_RESERVED`), so a cold builder booted with all it may
+/// have took all the commit its host had left, for its life, and CI 44245219858's builders
+/// were refused theirs ("The paging file is too small", 1455). A new home's build with no
+/// `SHARDS_BUILD_MEMORY`, its ceiling its host's, as those builds' were: its first
+/// step's kernel has memory to plug; its second allocates and touches that least, all its
+/// builder booted with, of which its kernel and init leave it less, so its builder is
+/// plugged; and its builder's VM process's peak commit (`peak_commit_kib` of the timing line
+/// it prints as it ends: PeakPagefileUsage, the most it had committed at once in its life)
+/// stays under the `MemTotal` its first step sees. That `MemTotal` is all its guest may reach
+/// (D149): its ceiling less what its kernel kept as it booted, read from the guest rather
+/// than from the host's commit left, which moves with all else the host runs, and no figure
+/// of the test's. Booted with all of its ceiling, a VM process committed all of it as it
+/// started, more than that.
+#[test]
+fn a_builder_in_a_new_home_commits_what_it_boots_with_and_is_plugged() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("bw-cold-home");
+    let [home_env, kernel_env, init_env, _] = build_env(&home);
+    let env = [home_env, kernel_env, init_env];
+    assert_eq!(common::learned_boot(&home), None);
+    let least = shards_abi::bounds::min_memory_mib(std::env::consts::ARCH);
+    let ctx = context(
+        "bw-cold-ctx",
+        &format!(
+            "FROM {image}\n\
+             RUN [\"/bin/testguest\", \"stat\", \"/proc/sys/vm/pluggable_kbytes\", \"/proc/meminfo\"]\n\
+             RUN [\"/bin/testguest\", \"alloc\", \"{least}\"]\n"
+        ),
+    );
+    let built = run_shards_env(&["build"], &["--progress=plain", ctx.to_str().unwrap()], &env);
+    if built.stderr.contains("/proc/sys/vm/pluggable_kbytes missing") {
+        println!("SKIP: this guest kernel reports none of the memory it may plug (D149)");
+        return;
+    }
+    assert_eq!(built.status, Some(0), "{built}");
+    let reach_kib: u128 = built
+        .stderr
+        .split_once("MemTotal:")
+        .and_then(|(_, after)| after.split_whitespace().next())
+        .and_then(|n| n.parse().ok())
+        .unwrap_or_else(|| panic!("no MemTotal:\n{built}"));
+    let peak_kib = built
+        .peak_commit_kib()
+        .unwrap_or_else(|| panic!("its builder's VM process said no timing line:\n{built}"));
+    let pluggable = common::pluggable_said(&built.stderr);
+    eprintln!(
+        "a new home's builder: its guest may reach {reach_kib} KiB, its VM process committed {peak_kib} KiB at its peak, its first step could plug {pluggable:?} KiB"
+    );
+    assert!(
+        peak_kib > 0 && peak_kib < reach_kib,
+        "its builder's VM process committed {peak_kib} KiB at its peak, all its guest may reach {reach_kib} KiB:\n{built}"
+    );
+    assert!(
+        pluggable.first().is_some_and(|&kib| kib > 0),
+        "a new home's builder has nothing to plug ({pluggable:?} KiB): it booted with all it may have:\n{built}"
+    );
+    assert!(built.stderr.contains(&format!("allocated {least}")), "{built}");
 }
 
 /// A `RUN` step reaches this host's own address on its default route through its
