@@ -101,7 +101,7 @@ pub enum Verdict {
 pub struct Crossover {
     classes: [Class; 64],
     /// Each file the guest was told of: its class and, while its class calibrates, whether
-    /// it was told to map it. Let go of as the guest forgets it.
+    /// it was told to map it. Let go of as the guest forgets it, or as its session ends.
     files: HashMap<u64, (u32, Option<bool>)>,
 }
 
@@ -218,6 +218,22 @@ impl Crossover {
     /// The guest let go of node `node`.
     pub fn forget(&mut self, node: u64) {
         self.files.remove(&node);
+    }
+
+    /// Its guest's session with the share ended, or a new one began (mod.rs `turns_session`,
+    /// D197): every node of the session is gone with it, none forgotten one by one, as the
+    /// guest sends no FORGET once its session ends (linux v6.18 fs/fuse/virtio_fs.c
+    /// `virtio_fs_conn_destroy` stops the forget queue before the share's inodes are evicted,
+    /// and `send_forget_request` frees each FORGET then unsent). What it learned of each size
+    /// class stays: those are its host's costs, not the session's.
+    pub fn session_turned(&mut self) {
+        self.files.clear();
+    }
+
+    /// How many files it knows of: what a session's end lets go of, for its tests.
+    #[cfg(test)]
+    pub fn files_known(&self) -> usize {
+        self.files.len()
     }
 }
 

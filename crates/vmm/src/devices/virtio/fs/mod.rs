@@ -1069,7 +1069,7 @@ impl Fs {
 /// the reply, never while the share answers (D29): a share slow to answer, or never
 /// answering, held every other device's queue work, and a snapshot, off guest memory for
 /// as long (audit V04).
-#[cfg(all(test, unix))]
+#[cfg(test)]
 fn serve(
     chain: &Chain,
     mem: &GuestMemory,
@@ -1150,6 +1150,12 @@ fn serve_with(
                 put(reply, mapped)
             }
             None => {
+                // A session's end or start: its window let go of whole first, and what its
+                // learner kept of the session's nodes, which no FORGET will let go of (D197).
+                if let Some(w) = window.filter(|_| turns_session(req)) {
+                    w.clear();
+                    slot.crossover(crossover::Crossover::session_turned);
+                }
                 // A file its window maps, which the request cuts short: let go of first,
                 // where its host cuts no file a view of which is mapped (NTFS, PM M412).
                 let cutting = window.zip(cuts(req)).filter(|(w, node)| w.maps(*node));
@@ -1205,6 +1211,21 @@ fn serve_with(
             scatter(chain, mem, reply).unwrap_or(0)
         }
     }
+}
+
+/// Whether `req` ends its guest's session with the share or begins one (FUSE_DESTROY,
+/// FUSE_INIT), after which the guest holds none of its window's mappings (D197). Its last
+/// mount's end sends DESTROY and aborts the connection before the share's inodes are evicted,
+/// so their FUSE_REMOVEMAPPING fails, ENOTCONN, an error the guest expects and leaves unsaid,
+/// its ranges freed in it alone (linux v6.18 fs/fuse/virtio_fs.c `virtio_kill_sb`,
+/// `virtio_fs_conn_destroy` before `kill_anon_super`; fs/fuse/dax.c
+/// `inode_reclaim_dmap_range`). A connection aborted with no DESTROY is followed by an INIT,
+/// every range free in its guest by then (fs/fuse/inode.c `fuse_fill_super_common` to
+/// fs/fuse/dax.c `fuse_dax_mem_range_init`). Nothing else of the session is in flight at
+/// either: DESTROY comes once the guest's queues are drained, and no request of a session is
+/// sent before its INIT is answered (fs/fuse/dev.c `fuse_block_alloc`).
+fn turns_session(req: &[u8]) -> bool {
+    matches!(opcode(req), Some(proto::op::DESTROY | proto::op::INIT))
 }
 
 /// The node whose file `req` cuts short, if it may: a SETATTR of its size, or an OPEN that
@@ -2010,6 +2031,159 @@ mod tests {
         t.join().unwrap();
     }
 
+    /// A session's end and a session's start let go of the window whole, as its server lets
+    /// go of every node then (D197): the guest frees its DAX ranges as its share's last mount
+    /// goes with no FUSE_REMOVEMAPPING that reaches the device, and holds none as a session
+    /// begins. Do: through the device, map a file's range, then DESTROY; map it again, then
+    /// INIT with no DESTROY before it. Expect the window to map nothing after each, the
+    /// node's file let go of with its views.
+    #[test]
+    fn a_sessions_end_and_start_let_go_of_its_window() {
+        struct Nothing;
+        impl window::Stage2 for Nothing {
+            unsafe fn map(&self, _: *mut u8, _: u64, _: usize, _: bool) -> Result<(), String> {
+                Ok(())
+            }
+            fn unmap(&self, _: u64, _: usize) -> Result<(), String> {
+                Ok(())
+            }
+        }
+        const MIB: u64 = 1 << 20;
+        let dir = shards_testdir::TempDir::new("fs-dax-session").unwrap();
+        std::fs::write(dir.join("file"), vec![1u8; 2 << 20]).unwrap();
+        let server = server::Server::new(std::fs::File::open(&dir).unwrap().into(), false, None).unwrap();
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        let t = std::thread::spawn(move || answer(&server, theirs).unwrap());
+        let slot = Slot::new();
+        slot.attach(ours).unwrap();
+        let request = |opcode: u32, nodeid: u64, body: &[u8]| {
+            let mut r = Vec::new();
+            r.extend((40 + body.len() as u32).to_le_bytes());
+            r.extend(opcode.to_le_bytes());
+            r.extend(9u64.to_le_bytes());
+            r.extend(nodeid.to_le_bytes());
+            r.extend([0u8; 16]);
+            r.extend(body);
+            r
+        };
+        let w = window::Window::new(1 << 32, 8 * MIB, |_| {
+            Ok(Box::new(Nothing) as Box<dyn window::Stage2>)
+        })
+        .unwrap();
+        let mem = guest();
+        // A request served as its queue's worker serves it: its reply's error.
+        let served = |req: Vec<u8>| {
+            mem.access().unwrap().write(REQUEST, &req).unwrap();
+            let len = u32::try_from(req.len()).unwrap();
+            serve(&chain(vec![readable(REQUEST, len)]), &mem, &slot, None, Some(&w));
+            reply(&mem).1
+        };
+        // The file looked up and its first 2 MiB mapped to be read at the window's start, as
+        // Linux's guest asks (fs/fuse/dax.c): its node.
+        let mapped = || {
+            let looked = slot.ask(&request(1, 1, b"file\0")).unwrap().unwrap();
+            let node = u64::from_le_bytes(looked[16..24].try_into().unwrap());
+            let mut body = Vec::new();
+            for v in [u64::MAX, 0, 2 * MIB, 2, 0] {
+                body.extend(v.to_le_bytes());
+            }
+            assert_eq!(served(request(SETUPMAPPING, node, &body)), 0);
+            assert_eq!(w.mappings().len(), 1);
+            assert!(w.maps(node));
+            node
+        };
+        let node = mapped();
+        assert_eq!(served(request(proto::op::DESTROY, 1, &[])), 0);
+        assert!(w.mappings().is_empty(), "after DESTROY: {:?}", w.mappings());
+        assert!(!w.maps(node), "after DESTROY: node {node}'s file still held");
+        let node = mapped();
+        // fuse_init_in: major 7, minor 45, no readahead, no flags.
+        let init: Vec<u8> = [7u32, 45, 0, 0].iter().flat_map(|v| v.to_le_bytes()).collect();
+        assert_eq!(served(request(proto::op::INIT, 1, &init)), 0);
+        assert!(w.mappings().is_empty(), "after INIT: {:?}", w.mappings());
+        assert!(!w.maps(node), "after INIT: node {node}'s file still held");
+        drop(slot);
+        t.join().unwrap();
+    }
+
+    /// A session's end and a session's start let go of what the device's learner kept of
+    /// the session's files (D197, memory-09), which its guest forgets with no FORGET: a
+    /// provider serving joiner after joiner would otherwise keep every file each session
+    /// looked up. Do: through the device, look a file up and map its range, then DESTROY;
+    /// again, then INIT with no DESTROY before it. Expect the learner to know the file after
+    /// each mapping and nothing after each DESTROY or INIT.
+    #[test]
+    fn a_sessions_end_and_start_let_go_of_what_its_learner_knew() {
+        struct Nothing;
+        impl window::Stage2 for Nothing {
+            unsafe fn map(&self, _: *mut u8, _: u64, _: usize, _: bool) -> Result<(), String> {
+                Ok(())
+            }
+            fn unmap(&self, _: u64, _: usize) -> Result<(), String> {
+                Ok(())
+            }
+        }
+        const MIB: u64 = 1 << 20;
+        let dir = shards_testdir::TempDir::new("fs-dax-learn").unwrap();
+        std::fs::write(dir.join("file"), vec![1u8; 2 << 20]).unwrap();
+        let server = server::Server::new(std::fs::File::open(&dir).unwrap().into(), false, None).unwrap();
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        let t = std::thread::spawn(move || answer(&server, theirs).unwrap());
+        let slot = Slot::new();
+        slot.attach(ours).unwrap();
+        let request = |opcode: u32, nodeid: u64, body: &[u8]| {
+            let mut r = Vec::new();
+            r.extend((40 + body.len() as u32).to_le_bytes());
+            r.extend(opcode.to_le_bytes());
+            r.extend(9u64.to_le_bytes());
+            r.extend(nodeid.to_le_bytes());
+            r.extend([0u8; 16]);
+            r.extend(body);
+            r
+        };
+        let w = window::Window::new(1 << 32, 8 * MIB, |_| {
+            Ok(Box::new(Nothing) as Box<dyn window::Stage2>)
+        })
+        .unwrap();
+        let mem = guest();
+        // A request served as its queue's worker serves it: its reply's error, and the word
+        // after its header (an entry's node).
+        let served = |req: Vec<u8>| {
+            mem.access().unwrap().write(REQUEST, &req).unwrap();
+            let len = u32::try_from(req.len()).unwrap();
+            serve(&chain(vec![readable(REQUEST, len)]), &mem, &slot, None, Some(&w));
+            let mut out = [0u8; 24];
+            mem.access().unwrap().read(REPLY, &mut out).unwrap();
+            (
+                i32::from_le_bytes(out[4..8].try_into().unwrap()),
+                u64::from_le_bytes(out[16..24].try_into().unwrap()),
+            )
+        };
+        let known = || slot.crossover(|x| x.files_known());
+        // The file looked up through the device, which tells its learner of it as the reply
+        // passes, and its first 2 MiB mapped to be read at the window's start.
+        let mapped = || {
+            let (error, node) = served(request(1, 1, b"file\0"));
+            assert_eq!(error, 0);
+            let mut body = Vec::new();
+            for v in [u64::MAX, 0, 2 * MIB, 2, 0] {
+                body.extend(v.to_le_bytes());
+            }
+            assert_eq!(served(request(SETUPMAPPING, node, &body)).0, 0);
+            assert_eq!(known(), 1, "after its mapping");
+        };
+        mapped();
+        assert_eq!(served(request(proto::op::DESTROY, 1, &[])).0, 0);
+        assert_eq!(known(), 0, "after DESTROY");
+        mapped();
+        // fuse_init_in: major 7, minor 45, no readahead, no flags.
+        let init: Vec<u8> = [7u32, 45, 0, 0].iter().flat_map(|v| v.to_le_bytes()).collect();
+        assert_eq!(served(request(proto::op::INIT, 1, &init)).0, 0);
+        assert_eq!(known(), 0, "after INIT");
+        drop(slot);
+        t.join().unwrap();
+    }
+
     /// A DAX mapping is charged its microVM's I/O limits as it is made, its file's bytes in
     /// its range, once (D178, D189): at 1 MiB a second, ten mappings of a 5,000-byte file's
     /// range pass in milliseconds, where the range's 2 MiB each would hold them 18 s, and a
@@ -2540,7 +2714,8 @@ mod tests {
 #[allow(clippy::unwrap_used)]
 mod descriptor_on_windows {
     //! The DAX window's ask on Windows (D189, PM M343) over a real pipe pair, its server played
-    //! here: the 38 bytes it sends, and what it makes of each answer.
+    //! here: the 38 bytes it sends, and what it makes of each answer; and what a session's end
+    //! lets go of on the host (D197).
     use std::io::Write as _;
     use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
 
@@ -2548,7 +2723,119 @@ mod descriptor_on_windows {
     use windows_sys::Win32::System::Memory::{CreateFileMappingW, PAGE_READWRITE};
     use windows_sys::Win32::System::Threading::CreateEventW;
 
+    use super::super::queue::Descriptor;
     use super::*;
+
+    /// A session's end lets go of the host's hold of each file its window maps, its handle and
+    /// its section's views, not its window's tables alone (D197), so that the directory a
+    /// volume's file is in can be renamed aside as a volume's removal renames it
+    /// (shards' volumes.rs `Store::set_aside`, `std::fs::rename`: MoveFileExW, then
+    /// FileRenameInfoEx with POSIX semantics), which NTFS refuses, ERROR_ACCESS_DENIED, while
+    /// anything beneath it is open (MS-FSA 2.1.5.15.11, 2.1.4.2): the refusal that removing a
+    /// joiner's volume met (jupiter r48, r50). A mapped file's own deletion is no test of it:
+    /// std's `remove_file` took one whose view was mapped (jupiter r52). Do: through the
+    /// device, as its queue's worker serves each request, map `vol/_data/hello` of shards' own
+    /// share and rename `vol` aside; then DESTROY, rename it aside and delete it. Expect the
+    /// first rename refused, ERROR_ACCESS_DENIED; after DESTROY the window empty and its
+    /// learner knowing no file (`a_sessions_end_and_start_let_go_of_what_its_learner_knew`'s,
+    /// here on Windows), and the second rename and the deletion done.
+    #[test]
+    fn a_sessions_end_lets_go_of_the_file_its_window_maps() {
+        struct Nothing;
+        impl window::Stage2 for Nothing {
+            unsafe fn map(&self, _: *mut u8, _: u64, _: usize, _: bool) -> Result<(), String> {
+                Ok(())
+            }
+            fn unmap(&self, _: u64, _: usize) -> Result<(), String> {
+                Ok(())
+            }
+        }
+        const BASE: u64 = 0x8000_0000;
+        const REQUEST: u64 = BASE;
+        const REPLY: u64 = BASE + 0x1000;
+        let dir = shards_testdir::TempDir::new("fs-dax-end").unwrap();
+        let (vol, aside) = (dir.join("vol"), dir.join(".vol.removing"));
+        std::fs::create_dir_all(vol.join("_data")).unwrap();
+        std::fs::write(vol.join("_data").join("hello"), vec![1u8; 2 << 20]).unwrap();
+        let root = crate::platform::open_dir(&dir).unwrap();
+        let server = server::Server::new(root.into(), false, None).unwrap();
+        let (theirs, ours) = crate::platform::pipe_stream::pair(true);
+        let w = window::Window::new(1 << 32, 4 << 20, |_| {
+            Ok(Box::new(Nothing) as Box<dyn window::Stage2>)
+        })
+        .unwrap();
+        let mem = GuestMemory::anonymous(&[(BASE, 1 << 20)]).unwrap();
+        let request = |opcode: u32, nodeid: u64, body: &[u8]| {
+            let mut r = Vec::new();
+            r.extend((40 + body.len() as u32).to_le_bytes());
+            r.extend(opcode.to_le_bytes());
+            r.extend(9u64.to_le_bytes());
+            r.extend(nodeid.to_le_bytes());
+            r.extend([0u8; 16]);
+            r.extend(body);
+            r
+        };
+        std::thread::scope(|scope| {
+            let answering = scope.spawn(|| answer(&server, theirs));
+            let slot = Slot::new();
+            slot.attach(ours).unwrap();
+            // A request served as its queue's worker serves it: its reply's error and the
+            // word after its header.
+            let through_device = |req: Vec<u8>| {
+                mem.access().unwrap().write(REQUEST, &req).unwrap();
+                let len = u32::try_from(req.len()).unwrap();
+                let chain = Chain {
+                    head: 0,
+                    descriptors: vec![
+                        Descriptor {
+                            addr: REQUEST,
+                            len,
+                            writable: false,
+                        },
+                        Descriptor {
+                            addr: REPLY,
+                            len: 4096,
+                            writable: true,
+                        },
+                    ],
+                };
+                serve(&chain, &mem, &slot, None, Some(&w));
+                let mut out = [0u8; 24];
+                mem.access().unwrap().read(REPLY, &mut out).unwrap();
+                (
+                    i32::from_le_bytes(out[4..8].try_into().unwrap()),
+                    u64::from_le_bytes(out[16..24].try_into().unwrap()),
+                )
+            };
+            // `vol/_data/hello` looked up a name at a time, as a guest walks a path.
+            let mut node = 1;
+            for name in [&b"vol\0"[..], &b"_data\0"[..], &b"hello\0"[..]] {
+                let (error, found) = through_device(request(proto::op::LOOKUP, node, name));
+                assert_eq!(error, 0, "{name:?}");
+                node = found;
+            }
+            // fuse_setupmapping_in as Linux's guest sends it: no handle, the file's first
+            // 2 MiB, to read, at the window's start.
+            let mut body = Vec::new();
+            for v in [u64::MAX, 0, 2 << 20, 2, 0] {
+                body.extend(v.to_le_bytes());
+            }
+            assert_eq!(through_device(request(SETUPMAPPING, node, &body)).0, 0);
+            assert!(w.maps(node));
+            // Its learner was told of the file as its LOOKUP's reply passed (memory-09).
+            assert_eq!(slot.crossover(|x| x.files_known()), 1);
+            let refused =
+                std::fs::rename(&vol, &aside).expect_err("renamed while a file beneath it is mapped");
+            assert_eq!(refused.raw_os_error(), Some(5), "{refused}");
+            assert_eq!(through_device(request(proto::op::DESTROY, 1, &[])).0, 0);
+            assert!(w.mappings().is_empty(), "{:?}", w.mappings());
+            assert_eq!(slot.crossover(|x| x.files_known()), 0, "after DESTROY");
+            std::fs::rename(&vol, &aside).unwrap();
+            std::fs::remove_dir_all(&aside).unwrap();
+            drop(slot);
+            answering.join().unwrap().unwrap();
+        });
+    }
 
     /// What the server read of the ask, and what it answers: a message of `kind`, `payload`.
     fn asked(answer: impl FnOnce(&mut Stream) + Send + 'static) -> (Result<MapObject, i32>, Vec<u8>, u64) {

@@ -14834,6 +14834,117 @@ Unix's in `fs/server_unix.rs`. 2 (built): Windows' calls and the server's own te
 Windows. 3 (built): the share process and the daemon's shares on Windows, and the volume
 and bind tests on its CI runners. 4 (built): shards' own shares' DAX windows on Windows.
 
+**Amended (kiln goal #37, 2026-11-18, ROOT's (a)): a joiner's volumes let go of by its
+provider's VM.** `a_microvms_own_engine_makes_volumes_of_its_own` failed on every bare-metal
+WHP run (jupiter r11, r21 at 183fe264e3): `volume data: remove prov.data: Access is denied.
+(os error 5)` once its three joiners were removed, its listing of what used the volume (tests'
+`left_of`) naming one process, the provider's VM (shards-vm.exe), on `_data\hello` alone. The
+VM's join-share window keeps, for each node it maps, the file handle its server gave it and
+the views of its section (window_whp.rs `Table::nodes`, `Node::file`), until the guest's
+FUSE_REMOVEMAPPING takes the node's last range, or the window is let go of whole. What
+refused the removal is its first step, the volume's directory renamed aside (volumes.rs
+`Store::set_aside`, `std::fs::rename`, which in Rust 1.98.1 is MoveFileExW, then, where that
+is refused ERROR_ACCESS_DENIED, SetFileInformationByHandle's FileRenameInfoEx with POSIX
+semantics, and the first error where both are): NTFS renames no directory beneath which
+anything is open, whatever its sharing (MS-FSA 2.1.5.15.11 fails it STATUS_ACCESS_DENIED
+where 2.1.4.2 finds an open under it; D281's amendment), and the window's handle of
+`_data\hello` is one. The listing found `prov.data` itself still there, so the rename, not
+the deletion after it, was refused. A mapped file's own deletion is not what Windows refused
+here: on jupiter, std's `remove_file` (DeleteFileW, then a POSIX delete where that is refused)
+took a file whose view the window had mapped (r52, below), so Microsoft's remarks that
+STATUS_CANNOT_DELETE may mean "an existing mapped view to the file"
+(FILE_DISPOSITION_INFORMATION_EX) and that DeleteFile fails for a file open "as a
+memory-mapped file" (DeleteFileW) do not describe this removal.
+- *Found (jupiter: Windows 11 26200, WHP, Ryzen AI MAX+ 395, 32 CPUs).* The drop below, as
+  2102eab1f4 wrote it at each joiner's end, changed nothing: r48 and r50 failed as before, the
+  drop written. r51 (fbab1981da, a debug build: each joiner's end saying the guest's caches
+  and the join share's mounts around the drop, each VM's virtio-fs device tracing its
+  sessions, nodes and mappings; log `~/.cache/win14/logs/engine-own-fbab1981da.log` on
+  jupiter, 1,107 lines) said at every joiner's end `the join share mounted nowhere; ...
+  drop_caches written`, inode-state from about 2,410 to 2,360 and dentry-state from 2,190 to
+  2,120 across the drop; and in the provider's VM (pid 189632), its share's third session:
+  `OPEN node 10400693005217418546 flags 0o100000: fh 4`, `SETUPMAPPING node
+  10400693005217418546 foffset 0x0 len 0x200000 at 0x0: 2 bytes`, `RELEASE node
+  10400693005217418546 fh 4, mapped`, `DESTROY, its session ended; the window maps node
+  10400693005217418546 at 0x0 len 0x200000`. Each of the next four sessions' INIT and DESTROY
+  said that mapping again; no REMOVEMAPPING and no FORGET for its node came; and the removal
+  failed, `prov.data\_data\hello: used by 189632 shards-vm.exe`. The other microVM's (pid
+  177496) sessions mapped nothing.
+- *Why.* Each joiner mounts the join share in its own mount namespace (init setup.rs
+  `join_volume`), so where joiners run one after another, a joiner's end is its share's last
+  mount's, and that ends the share's session before init hears of the exit (linux v6.18
+  kernel/exit.c `do_exit`: `exit_task_namespaces`, then `exit_task_work`, which runs the
+  `__cleanup_mnt` fs/namespace.c `mntput_no_expire` queued as the task's work, then
+  `exit_notify`). The last mount's end sends FUSE_DESTROY and aborts the connection before the
+  share's inodes are evicted (fs/fuse/virtio_fs.c `virtio_kill_sb`: `virtio_fs_conn_destroy`,
+  which stops the forget queue, drains every queue and calls `fuse_conn_destroy`, then
+  `kill_anon_super`), so each evicted DAX inode's FUSE_REMOVEMAPPING fails with ENOTCONN, an
+  error the guest expects and leaves unsaid as it frees the ranges in itself alone
+  (fs/fuse/dax.c `inode_reclaim_dmap_range`: `if (err && err != -ENOTCONN) pr_warn(...)`), and
+  its FORGETs go with the stopped queue. The device let go of its window at its own reset
+  alone, so the session's mappings outlived it, and the drop, run after the session had ended,
+  had none of the share's inodes to evict.
+- *Decided: the window let go of whole as a session ends and as one begins.* The device clears
+  its window, every view and each mapped node's file handle with them (`Window::clear`, its
+  reset's), as its guest's FUSE_DESTROY reaches it, and again at FUSE_INIT (mod.rs
+  `turns_session`), as its share's server forgets every node and handle at both (server.rs
+  `reset`). DESTROY is the end the kernel says (above); INIT covers a connection aborted with
+  no DESTROY, after which the next session begins with every range free in its guest
+  (fs/fuse/inode.c `fuse_fill_super_common` to fs/fuse/dax.c `fuse_dax_mem_range_init`, before
+  `fuse_send_init`). Nothing of a session is in flight at either: DESTROY is sent once the
+  guest's queues are drained, and no request of a session is sent before its INIT is answered
+  (fs/fuse/dev.c `fuse_block_alloc`, `!fc->initialized`). At the same point its learner of
+  which files to map (memory-09's crossover, `Crossover::session_turned`) lets go of what it
+  kept of the session's files: nothing else would, as the guest sends no FORGET once its
+  session ends (fs/fuse/virtio_fs.c `send_forget_request` frees each FORGET unsent once
+  `virtio_fs_conn_destroy` has stopped the forget queue), and a provider serving joiner after
+  joiner kept every file each session was told of. What it learned of each size class stays,
+  its host's costs.
+- *Tested.* The device's own: `a_sessions_end_and_start_let_go_of_its_window` (Unix: a mapping
+  made through the device, then DESTROY; again, then INIT alone; the window empty and the
+  node's file let go of after each), red without the clear
+  (lanes/redgreen/own-36e-a-clear.patch);
+  `a_sessions_end_and_start_let_go_of_what_its_learner_knew` (Unix: the learner knows the
+  mapped file, then nothing after DESTROY and after INIT alone), red without the learner's
+  (own-36e-a-learner.patch); and `a_sessions_end_lets_go_of_the_file_its_window_maps`
+  (Windows: `vol/_data/hello` mapped through the device, `vol` renamed aside as
+  `Store::set_aside` renames a volume, refused ERROR_ACCESS_DENIED; after DESTROY the window
+  empty, the learner knowing nothing, and the rename and the deletion done), red without
+  either clear. On WHP: `a_microvms_own_engine_makes_volumes_of_its_own`, joiners one after
+  another, red without the window's clear (r51, r52, r54); and
+  `a_joiners_volume_goes_while_another_keeps_the_share`, kept as a regression test: a keeper
+  joiner holds the share's session while a writer's volume is removed after it ends, judged by
+  what holds the volume's files as the writer's end is told, no file by its provider's VM
+  process, and where that fails it says each later step's time and the daemon's give-backs.
+  Linux and macOS rename and remove what is open, so the WHP tests pass there either way.
+  r52 (248d15b36e): the engine test passed in 32 s and failed without the window's clear,
+  `remove prov.data: Access is denied`; the Windows test's first form, which asked that a
+  mapped file's deletion be refused, failed with the clear and without it, std's `remove_file`
+  taking the file. r54 (b69dd84ed8, the drop below still in it): the engine, Windows and
+  overlap tests passed; without the window's clear the engine test failed, `remove prov.data:
+  Access is denied`, and the Windows test failed; without the learner's clear the Windows test
+  failed. On this Mac (Apple M5 Max, macOS 26.4.1 arm64) the Unix tests failed without each
+  clear and passed with it (f73ea00d97, whose device code b69dd84ed8 kept), and b69dd84ed8's
+  seven targets' precheck was clean. Owed: the same runs at this form, the drop gone.
+- *Tried and removed: a drop of the guest's caches at each joiner's end.* It was meant for
+  joiners that overlap: while another joiner keeps the join share mounted, its session lives,
+  and an ended joiner's closed files' inodes stay cached until evicted, each evicted with the
+  connection up sending its DAX mappings' FUSE_REMOVEMAPPING and waiting for the answer (linux
+  v6.18 fs/fuse/inode.c `fuse_evict_inode` to fs/fuse/dax.c `fuse_dax_inode_cleanup`). So as
+  each joiner ended, its provider's init set `vm.drop_caches` to 2 ("To free reclaimable slab
+  objects (includes dentries and inodes)", Documentation/admin-guide/sysctl/vm.rst), written
+  beneath the /proc/sys it kept before `masked` made it read-only (`setup::write_sysctl`): by
+  its path the write was refused, `Read-only file system` (r47), a mount's read-only state
+  checked as a file is opened for writing (fs/open.c `do_dentry_open`). It was removed before
+  it landed. Where joiners run one after another, it had nothing of the share to evict (*Why*;
+  r48, r50, r51). Where another joiner keeps the session up, the overlap test passed without
+  it, its red writing the drop by its path, refused: r52's in 81 s, against 9 s with it, what
+  took that time not known; r54's with the test's check of what holds the volume's files,
+  which found no file of the writer's volume held by its provider's VM as the writer's end was
+  told. Nothing was left for it to release, and it evicts every unused dentry and inode of the
+  provider's guest at every joiner's end, at a cost never measured. If a later case shows a
+  hold while another joiner keeps the share, a drop returns, with a test that fails without it.
+
 ### D196. Snapshots of WHP microVMs: a partition saved and restored (built)
 
 **2026-11-14, platform-09 fixed** (6057451cf, 2f88e39b6; red 9c1632a7f; PM M578). A name's
