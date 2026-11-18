@@ -29992,18 +29992,40 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
           30 s window. The single-stream endpoint lets a frame that came as its host let its
           input go pass as the control endpoint does (`Service::refusal`), its owner's
           connection closed by the revocation's own word, not `Protocol`.
-        - *net.rs's numbers, ruled (R03).* Judged now: `next_heard` (was 60 s), `take`'s poll
-          (was 60 s) and the wake's read (was a 10 s read timeout). The protocol's or the
-          test's data, kept: `ANSWER_EVERY` is RFC 9002's kInitialRtt (333 ms, §6.2.2);
-          6.993 s is seven of the cold probe timeout (`COLD_PTO`, 999 ms); the 42 s and 1 s
-          of `a_handshake_is_held_to_its_window_...`, the 4 s step and the 300 ms and 3 s
-          handshakes are inputs the cases are built from. Not derived yet: the newcomer loops'
-          20 s and 30 s windows (each attempt's answer judged now; the window bounds the
-          attempts refused while the holder's place is judged) and the 2.5 s and 6.5 s about
-          the learned window: tolerances around the protocol's times that the attempts'
-          count, derived from the held Initial (three cold probe timeouts) and the holder's
-          learned window, would replace. tests/loopback.rs keeps its 17 timed waits, untouched
-          here.
+        - *net.rs's numbers, ruled (R03).*
+          - Judged now: `next_heard` (was 60 s), `take`'s poll (was 60 s), the wake's read (was
+            a 10 s read timeout), a hand's wait for its server's flight (`Hand::answers`, was a
+            read until 1 ms or 300 ms of quiet) and the replayed handshake's wait for its
+            endpoint's flight (was a 60 s read timeout).
+          - Where a test steps the server on its own thread (the replayed datagrams' test, the
+            wake's), its waits count that thread alone (`of_test`), since no other thread serves
+            them (2026-11-18, #36 item 2). `take`'s party is its test's, its server's driver a
+            member.
+          - Kept as the protocol's or the test's data: `ANSWER_EVERY` is RFC 9002's kInitialRtt
+            (333 ms, §6.2.2). The 42 s and 1 s of `a_handshake_is_held_to_its_window_...`, the
+            4 s `STEP` and the slow round's 3 s held answer are inputs the cases are built from.
+            A hand's congestion window (`HAND_WINDOW`) is RFC 9002 §7.2's initial ten
+            datagrams, plus one for each answer over two `STEP`s (was room for 128, from the
+            30 s).
+          - Derived (2026-11-18, #36 item 4): each newcomer loop's window is now the holder's
+            own time as the protocol gives it. Past that time, the first attempt begun must
+            connect (`connects_by`), and a refusal after it fails the test.
+            - A cold holder that vanished at connect: from the first ask, its probe timeout
+              (`probe_timeout_within`; was 20 s). The bound is RFC 9002 §6.2.1 with every RTT
+              sample within its handshake as the test saw it, or the cold one, plus RFC 9000
+              §18.2's 25 ms `max_ack_delay`.
+            - A replayed handshake: from the first ask, its handshake's cold probe timeout,
+              999 ms (was 20 s).
+            - A handshake that answers and never advances: from its endpoint's accepting it,
+              seven backed-off cold probe timeouts, 6.993 s (was 30 s). It must not connect
+              sooner than that after the test began (`COLD_PTO` times `COLD_PROBE_TIMEOUTS`,
+              was the literal 6.993 s).
+            - The learned window: from its accepting, its endpoint's slowest completed
+              handshake, at most the slow round as the test saw it (was 30 s, with "below
+              6.5 s"). It must not connect sooner than the slow round's held answer, 3 s (was
+              2.5 s). The case's premise, a slow round shorter than the cold window, is
+              asserted.
+          - tests/loopback.rs keeps its 17 timed waits, untouched here.
     - *Rated answers alone teach R* and C*.* Many kept records held R* 0 ns: answers reaped
       before any look read their CPU (`run_ending`'s `try_wait` reaped a quick client between
       paced looks), a floor that refuses nothing. `Seen::Learned` is now `{ slowest, rated:
