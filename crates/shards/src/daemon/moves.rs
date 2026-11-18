@@ -1903,15 +1903,16 @@ impl<D: Disk> Daemon<D> {
         }
         let asked = (|| {
             use shards_ipc::fd::AsFd as _;
+            let vm = self.vm.checked()?;
             let (mut reader, writer) = io::pipe().map_err(|e| e.to_string())?;
             let stderr = io::stderr();
             let child = shards_ipc::spawn(
-                &self.vm,
+                vm,
                 &[std::ffi::OsStr::new("cpu")],
                 &[(writer.as_fd(), 1), (stderr.as_fd(), 2)],
                 false,
             )
-            .map_err(|e| format!("{}: {e}", self.vm.display()))?;
+            .map_err(|e| format!("{}: {e}", vm.display()))?;
             drop(writer);
             let mut out = String::new();
             let read = reader.read_to_string(&mut out);

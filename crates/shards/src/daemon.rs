@@ -1384,8 +1384,9 @@ struct Daemon<D: Disk = Real> {
     /// subnet, on the guest's command line (run.rs, `template`), so its pools' VMs are all
     /// on this one.
     bridge: Option<shards_net::bridge::Bridge>,
-    /// shards-vm, beside this binary: each VM runs in a process of its own.
-    vm: PathBuf,
+    /// shards-vm, beside this binary: each VM runs in a process of its own, its bytes
+    /// checked once, as the daemon serves ([`VmBinary`]).
+    vm: VmBinary,
     identity: Identity,
     /// The most warm VMs a template's pool keeps ([`shards_api::demand`]).
     target: usize,
@@ -2060,7 +2061,8 @@ fn serve(ready: Option<File>, listen: Option<std::net::SocketAddr>) -> Result<()
         }
     };
     let identity = Identity::of_build(&exe).map_err(|e| format!("{}: {e}", exe.display()))?;
-    let vm = crate::helpers::vm()?;
+    // Its VM process's binary checked once it serves, on a thread of its own (`check_vm`).
+    let vm = VmBinary::to_check(crate::helpers::vm);
     let containers = Registry::open(&home, &mut |note| log(note))
         .map_err(|e| format!("{}: {e}", home.join("containers").display()))?;
     // What a daemon's end cut short of a snapshot's save or removal (D176), before any
@@ -2097,6 +2099,7 @@ fn serve(ready: Option<File>, listen: Option<std::net::SocketAddr>) -> Result<()
     }
     // The daemon exits from within, so its threads are never waited for here.
     std::thread::scope(|threads| {
+        daemon.check_vm(threads);
         daemon.start_completer(threads);
         daemon.start_recorder(threads);
         daemon.start_packer(threads);
@@ -2385,7 +2388,7 @@ impl<D: Disk> Daemon<D> {
     /// A daemon of `home`, whose lock it holds, serving no run yet.
     fn new(
         home: PathBuf,
-        vm: PathBuf,
+        vm: VmBinary,
         identity: Identity,
         settings: Settings,
         containers: Registry,
@@ -9145,7 +9148,7 @@ impl<D: Disk> Daemon<D> {
             .collect();
         let (launched, ours) = crate::launch::run(crate::launch::Plan {
             args: &args,
-            vm: &self.vm,
+            vm: self.vm.checked()?,
             network,
             ends: &self.ends,
             #[cfg(unix)]
@@ -9643,6 +9646,71 @@ impl Drop for RequestTurn<'_> {
 /// microVM's record is (D27, "Durability"): std's sync_all is F_FULLFSYNC on macOS, which
 /// with the rename costs 4.3 ms at the median (PM M46), on the path each new microVM takes
 /// to start. So a power loss may still leave one cut, as it may the record.
+/// The VM process's binary the daemon starts each microVM with (D36, amended 2026-11-18): its
+/// bytes checked to be this build's once (`helpers::vm`), on a thread of the daemon's own as
+/// it serves ([`Daemon::check_vm`]), never on its way there; every start waits for that one
+/// check, a pool's fill and a run's alike, so that no microVM runs an unchecked binary, and a
+/// binary not this build's refuses every start, said with why, while what starts none is
+/// served. Checked before its daemon said it served, its read held every new home's first
+/// answer: on jupiter, Defender's real-time scan on, a fresh copy's first read took 152 to
+/// 163 ms against 81 to 100 for one read before, and its SHA-256 166 against 92 (ROOT,
+/// 2026-11-18), the wait CI 44189693085's moved.rs refused, its daemon still before its
+/// watches.
+pub(crate) struct VmBinary {
+    checked: std::sync::OnceLock<Result<PathBuf, String>>,
+    check: fn() -> Result<PathBuf, String>,
+}
+
+impl VmBinary {
+    /// One that `check` checks, once, as it is first asked for.
+    pub(crate) fn to_check(check: fn() -> Result<PathBuf, String>) -> VmBinary {
+        VmBinary {
+            checked: std::sync::OnceLock::new(),
+            check,
+        }
+    }
+
+    /// One checked already, at `path`: a test's stand-in VM.
+    #[cfg(test)]
+    fn given(path: PathBuf) -> VmBinary {
+        let checked = std::sync::OnceLock::new();
+        let _ = checked.set(Ok(path));
+        VmBinary {
+            checked,
+            check: || Err("a stand-in VM binary is never checked".into()),
+        }
+    }
+
+    /// What its one check found: run here where none has run yet, waited for while it runs
+    /// (`OnceLock::get_or_init`), its answer every asker's after.
+    pub(crate) fn checked(&self) -> Result<&Path, String> {
+        match self.checked.get_or_init(self.check) {
+            Ok(path) => Ok(path.as_path()),
+            Err(e) => Err(e.clone()),
+        }
+    }
+}
+
+impl<D: Disk> Daemon<D> {
+    /// Checks its VM process's binary on a thread of its own, as it serves ([`VmBinary`]): a
+    /// pool's fill or a run that starts a microVM meanwhile waits for it. One not this build's
+    /// is said here, once, and refuses every start after, each with why.
+    fn check_vm<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>) {
+        let checking = DaemonThread::new()
+            .name("vm-binary".into())
+            .spawn_scoped(threads, move || {
+                if let Err(e) = self.vm.checked() {
+                    log(format!("{e}: every microVM's start is refused"));
+                }
+            });
+        if let Err(e) = checking {
+            log(format!(
+                "a thread to check the VM process's binary: {e}; the first microVM's start checks it"
+            ));
+        }
+    }
+}
+
 fn keep_whole(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let new = beside(path);
     let kept = std::fs::write(&new, bytes).and_then(|()| std::fs::rename(&new, path));
@@ -11143,7 +11211,7 @@ mod tests {
             let home_lock = File::create(home.join("daemon.lock")).unwrap();
             let daemon = Daemon::new(
                 home.to_path_buf(),
-                PathBuf::from("shards-vm"),
+                VmBinary::given(PathBuf::from("shards-vm")),
                 Identity::default(),
                 Settings {
                     pool: 0,
@@ -16851,6 +16919,75 @@ mod tests {
         });
     }
 
+    /// Every microVM start waits for the one check of its VM process's binary, which the
+    /// daemon runs once it serves (D36, amended 2026-11-18): a start that comes while it runs
+    /// waits for it, none runs it again, and each gets what it found. Red with each start
+    /// checking for itself.
+    #[test]
+    fn every_vm_start_waits_for_the_one_check_of_its_binary() {
+        static CHECKS: AtomicUsize = AtomicUsize::new(0);
+        static HELD: Mutex<bool> = Mutex::new(true);
+        static LET_GO: Condvar = Condvar::new();
+        fn held_check() -> Result<PathBuf, String> {
+            let mut held = lock(&HELD);
+            while *held {
+                held = LET_GO
+                    .wait(held)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+            }
+            CHECKS.fetch_add(1, Ordering::SeqCst);
+            Ok(PathBuf::from("shards-vm"))
+        }
+        let vm = VmBinary::to_check(held_check);
+        let went_on = AtomicUsize::new(0);
+        std::thread::scope(|s| {
+            let starts: Vec<_> = (0..3)
+                .map(|_| {
+                    s.spawn(|| {
+                        let got = vm.checked().map(Path::to_path_buf);
+                        went_on.fetch_add(1, Ordering::SeqCst);
+                        got
+                    })
+                })
+                .collect();
+            assert_eq!(
+                went_on.load(Ordering::SeqCst),
+                0,
+                "a start went on before its binary was checked"
+            );
+            *lock(&HELD) = false;
+            LET_GO.notify_all();
+            for start in starts {
+                assert_eq!(start.join().unwrap(), Ok(PathBuf::from("shards-vm")));
+            }
+        });
+        assert_eq!(
+            CHECKS.load(Ordering::SeqCst),
+            1,
+            "its binary checked more than once"
+        );
+    }
+
+    /// A VM process's binary not this build's refuses every microVM start, each said with
+    /// why, from its one check (D36, amended 2026-11-18); its daemon said it served before any
+    /// check (`serve`, `check_vm`), and serves what starts none.
+    #[test]
+    fn a_binary_not_this_builds_refuses_every_vm_start() {
+        static CHECKS: AtomicUsize = AtomicUsize::new(0);
+        fn not_this_builds() -> Result<PathBuf, String> {
+            CHECKS.fetch_add(1, Ordering::SeqCst);
+            Err("shards-vm: not this build's bytes".into())
+        }
+        let vm = VmBinary::to_check(not_this_builds);
+        for _ in 0..3 {
+            assert_eq!(
+                vm.checked().map(Path::to_path_buf),
+                Err("shards-vm: not this build's bytes".to_string())
+            );
+        }
+        assert_eq!(CHECKS.load(Ordering::SeqCst), 1);
+    }
+
     /// Refills are the refiller's, which starts what a pool keeps ahead of its runs, no
     /// more however often it is asked, and makes the spare record. Unix's: its stand-in
     /// VM is a script that sleeps whatever it is given, and Windows starts no program that
@@ -16866,7 +17003,7 @@ mod tests {
         // (`shards_testdir::program`): no exec of it fails ETXTBSY.
         let vm = t.home.join("vm");
         shards_testdir::program(&vm, "#!/bin/sh\nexec /bin/sleep 600\n").unwrap();
-        t.daemon.vm = vm;
+        t.daemon.vm = VmBinary::given(vm);
         t.run(|t| {
             let dir = t.home.join("template");
             template(&dir);

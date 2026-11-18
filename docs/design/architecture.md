@@ -3333,6 +3333,26 @@ build's, is refused, saying its path, its digest and why.
   starts; macOS: its name). Mutations: the version left out of the cache's key, and the
   bytes unread, each fail. [runs-fixes record](../research/measurements/runs-fixes/README.md#runs-10).
 
+*Amended 2026-11-18 (ROOT's (a); own-38c):* the daemon checks its VM process's binary once it
+says it serves, never on its way there. Its start read `shards-vm` whole through SHA-256
+(`helpers::vm`) before its ready byte, and a new home's first answer waited for that read:
+on jupiter, with Defender's real-time and on-access protection on and the host busy, a fresh
+copy's first read took 152 to 163 ms against 81 to 100 ms for a copy read before, its
+SHA-256 166 against 92 ms (ROOT's measurement), the scan's work in MsMpEng, outside any party
+D215 follows; CI 44189693085's windows-2025 refused moved.rs's `shards run daemon --detached`
+416 ms still, its daemon not yet at its watches. Now `daemon.rs`'s `VmBinary` holds the one
+check (`OnceLock::get_or_init`): `check_vm` runs it on a thread of its own right after the
+ready byte, and every microVM start, a pool's fill or a run's (`Daemon::start`) and the host
+CPU's ask (`moves.rs`), takes the binary through it, waiting while it runs, so no microVM runs
+an unchecked binary, and one not this build's refuses every start, logged once and said to
+each with why, while requests that start none are served. Nothing relied on a bad helper
+refusing the daemon's start: no test (`a_daemon_that_cannot_serve_is_said_at_once` and the
+settings tests end their daemons otherwise), no message of the CLI's, and `daemon --detached`
+exits 0 once ready as before. `helpers::program`'s check before each start (above) stands.
+Tests: `every_vm_start_waits_for_the_one_check_of_its_binary` (three starts held by a check in
+progress, none past it, one check), `a_binary_not_this_builds_refuses_every_vm_start`; red with
+each start checking for itself (lanes/redgreen/own-38c-vm-binary-gate.patch).
+
 shards is one file to install and run, `shards`: every command, the daemon included,
 one CLI.
 
