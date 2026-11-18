@@ -12,7 +12,7 @@ publish = false
 libc = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
-# FlushFileBuffers and FlushViewOfFile; a file's volume (GetFileInformationByHandle) and its
+# FlushFileBuffers and FlushViewOfFile; a file's volume (GetVolumeInformationByHandleW) and its
 # slot file's growth lock (LockFileEx); a process's start (GetProcessTimes) and its thread's ID;
 # the slot file's views (CreateFileMappingW, MapViewOfFile, whose attributes name
 # Win32_Security); the allocation granularity they grow by (GetSystemInfo); and the

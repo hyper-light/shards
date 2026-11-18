@@ -239,6 +239,7 @@ pub const RUN_VALUED: &[&str] = &[
     "--cpus",
     "--cwd",
     "--disk",
+    "--durable",
     "--env",
     "-e",
     "--final-use",

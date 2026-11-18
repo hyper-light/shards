@@ -345,10 +345,7 @@ fn hold(dir: &Path) -> Result<File, String> {
 fn store(dir: &Path, path: &Path, bytes: &[u8]) -> Result<(), String> {
     let temp = dir.join(format!("storing.{}", std::process::id()));
     let written = File::create(&temp)
-        .and_then(|mut f| {
-            f.write_all(bytes)
-                .and_then(|()| shards_vmm::platform::sync_durable(&f))
-        })
+        .and_then(|mut f| f.write_all(bytes).and_then(|()| shards_durable::data(&f)))
         .and_then(|()| fs::rename(&temp, path));
     written.map_err(|e| {
         let _ = fs::remove_file(&temp);
@@ -429,7 +426,7 @@ fn download(
             hasher.update(chunk);
             to.write_all(chunk)?;
         }
-        shards_vmm::platform::sync_durable(&to)?;
+        shards_durable::data(&to)?;
         Ok((size, hex(&hasher.finalize())))
     })();
     let kept = match got {
@@ -521,7 +518,7 @@ pub fn record(home: &Path, kernel: &Path, init: &Path) -> Result<Guest, String> 
     let written = File::create(&temp)
         .and_then(|mut f| {
             f.write_all(record.as_bytes())
-                .and_then(|()| shards_vmm::platform::sync_durable(&f))
+                .and_then(|()| shards_durable::data(&f))
         })
         .and_then(|()| fs::rename(&temp, dir.join("current")));
     if let Err(e) = written {
@@ -553,7 +550,7 @@ fn keep(dir: &Path, source: &Path) -> Result<String, String> {
             hasher.update(chunk);
             to.write_all(chunk)?;
         }
-        shards_vmm::platform::sync_durable(&to)?;
+        shards_durable::data(&to)?;
         drop(to);
         let hex = hex(&hasher.finalize());
         let target = dir.join(format!("sha256-{hex}"));

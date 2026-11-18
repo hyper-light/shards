@@ -57,7 +57,7 @@ fn write_whole(to: &Path, bytes: &[u8]) -> Result<(), String> {
     beside.push(format!(".{}.tmp", std::process::id()));
     let beside = std::path::PathBuf::from(beside);
     let written = std::fs::File::create(&beside)
-        .and_then(|mut f| f.write_all(bytes).and_then(|()| f.sync_all()))
+        .and_then(|mut f| f.write_all(bytes).and_then(|()| shards_durable::all(&f)))
         .and_then(|()| std::fs::rename(&beside, to));
     if let Err(e) = written {
         let _ = std::fs::remove_file(&beside);

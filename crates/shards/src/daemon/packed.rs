@@ -65,7 +65,7 @@ fn pack_with(dir: &File, seq: u64, durable: bool) -> io::Result<bool> {
     let out = platform::create_in(dir, &packed_name)?;
     let made = write_packed(&written, &out).and_then(|()| {
         if durable {
-            platform::sync_durable(&out)?;
+            shards_durable::data(&out)?;
             platform::sync_entries(dir)?;
         }
         Ok(())

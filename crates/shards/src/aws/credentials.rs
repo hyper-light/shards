@@ -1013,7 +1013,7 @@ fn keep(path: &Path, value: &Value) -> std::io::Result<()> {
     }
     let written = options.open(&temp).and_then(|mut f| {
         f.write_all(&bytes)?;
-        f.sync_all()
+        shards_durable::all(&f)
     });
     match written.and_then(|()| std::fs::rename(&temp, path)) {
         Ok(()) => Ok(()),

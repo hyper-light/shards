@@ -1251,7 +1251,7 @@ fn receive_layer_from(
             }
         }
         if len == 0 {
-            return out.sync_all().map(|()| used);
+            return shards_durable::all(&out).map(|()| used);
         }
         frame.resize(len, 0);
         reader.read_exact(&mut frame).map_err(amid)?;

@@ -16818,7 +16818,7 @@ the guest keeps their metadata alone.
   a microVM's fsync made nothing durable on its host, where Docker's overlay2 passes it to
   the host's file system. The root is now `volatile` only over a tmpfs, which nothing
   outlives, and the device makes the layer durable before it answers (`Layer::flush`,
-  `platform::sync_mapped`), outside guest memory's access, which other devices go on taking:
+  `shards_durable::mapped` since D286, `platform::sync_mapped` before), outside guest memory's access, which other devices go on taking:
   fdatasync on Linux, which writes back what the guest wrote through the mapping; on macOS
   F_FULLFSYNC, the one call there whose data is persisted when it returns (fsync(2):
   without it a drive may lose or reorder what fsync gave it, "not a theoretical edge case"),
@@ -16852,7 +16852,7 @@ the guest keeps their metadata alone.
   meanwhile waits (`platform::LET_GO_WRITES_BACK`). Until it says so the daemon reads
   nothing of the file: as the VM's link ended, its guest could still be powering off. A
   restore on macOS has its copy of its template's layer written back on a thread of its
-  own as it restores (`platform::write_back_ahead`), so that what its VM lets go of at its
+  own as it restores (`shards_durable::ahead` since D286, `platform::write_back_ahead` before), so that what its VM lets go of at its
   end is its run's own writes. The guest's part took 0.50 ms (Mac) and 0.90 ms (Fedora) at
   p50, 1.9 at most, where a freeze (FIFREEZE: the same writes, and the file system then
   marked as needing no recovery, fs/ext4/super.c ext4_freeze) took 16 and 32 ms the first
@@ -44513,7 +44513,7 @@ after; rewritten by lane xnet-v, *Amended* below). Owed (ROOT), at this slice's 
   `api_run::hosted::tests::a_port_coming_in_to_a_runs_address_on_a_shared_network_is_one_members`;
   real VMs, the contested test's holder granted in beside the other, refused `Unheld`.
 
-### D286. Every durable write, declared to whoever follows its process (built: the helper and its slot file, the judge's rule; the conversion of every call site owed, commit 3 of #36's)
+### D286. Every durable write, declared to whoever follows its process (built: the helper and its slot file, the judge's rule, and, commit 3 of #36's, every call site through it, its slot file installed at every host entry, and clippy's rule)
 
 **Why.** D215 ends a wait on evidence about its own subject. A flush's wait shows by no
 thread state on Windows (`Executive`, as a pipe's unanswered read, PM M606), and between two
@@ -44538,14 +44538,24 @@ stdout*: Docker's byte-exact texts. *The daemon's IPC*: its children's alone.
   `view` (msync `MS_SYNC`, FlushViewOfFile), `mapped` (vmm's `sync_mapped`) and `ahead`
   (macOS's write-back thread). Commit 3 makes it the only way to sync: clippy's
   `disallowed-methods` for std's `sync_all` and `sync_data`, libc's fsync and fdatasync, and
-  windows-sys's FlushFileBuffers and FlushViewOfFile, allowed in shards-durable alone.
+  windows-sys's FlushFileBuffers and FlushViewOfFile, allowed in shards-durable alone
+  (sys.rs; each entry `allow-invalid`, as each names one OS's call, absent from the others'
+  libc or windows-sys); `F_FULLFSYNC`, a constant clippy cannot name, is refused in code
+  outside crates/durable by scripts/lint. The copies it replaced are gone: vmm's
+  `platform::{sync_durable, sync_mapped, flush_shared, write_back_ahead}`, ipc's and image's
+  `sync_durable`, and the fs server's own `F_FULLFSYNC` (now `all`, with fsync where a file
+  system lacks it, as every other); vmm's `sync_entries` and `sync_dir` stay, the handle
+  Windows reopens to write (FlushFileBuffers asks GENERIC_WRITE) before `entries`. The
+  guest's syncs (init, testguest) go through it too, declaring nothing.
 - *Declared*, where the process installed its home's slot file (`install`; a sandboxed VM
   process given it by its spawner): `<home>/durable-v1`, a file of 64-byte slots (the least
   power of two its five words fit, so that slots tile every granule) mapped shared by every
   writer of the home and each follower, as D281's count file is. A slot: its owner (pid and
   the low half of its start), its start as its OS keeps it, its thread's ID as its OS's
   thread listing names it, the volume (`st_dev`; Windows the volume serial,
-  GetFileInformationByHandle) and since (the system's monotonic clock). A thread claims one
+  GetVolumeInformationByHandleW, whose FileFsVolumeInformation asks no access right of the
+  handle, where GetFileInformationByHandle's FileBasicInformation asks FILE_READ_ATTRIBUTES,
+  which vmm's NtCreateFile opens to write lack) and since (the system's monotonic clock). A thread claims one
   slot once (a compare-and-swap of its owner from 0) and gives it back as it ends; a
   declaration stores the volume, then since (release), its end since 0; a write inside
   another's is the outer's. A failed declaration fails its write. The file grows by one
@@ -44556,16 +44566,38 @@ stdout*: Docker's byte-exact texts. *The daemon's IPC*: its children's alone.
 - *Read* by a follower (`Reader::declared(pid, start)`), lock-free: since before and after
   the fields, so that none is paired with another declaration's; judged by D215's rule
   (amended 2026-11-18).
+- *Installed* at every host entry with no cost to its start (`shards`' launch, PM M113):
+  `install_at(home)` records the home alone, and the process's first declaration, or its
+  first follower's read (`installed`, then `io::Result`, a failure said in the account as
+  `Unread::Declarations`), opens the slot file. `shards` records its home as its command is
+  known (cli `dispatch`), the daemon the home it entered (`.` on Unix, runs-02), a share
+  process the home its spawner names (`--durable HOME`, as it is given no environment). A
+  VM process may not open it (App Sandbox, AppContainer, Landlock): its spawner (the
+  daemon's launch, a run host's, a builder's, and `run --kernel` and `restore`'s CLI)
+  makes the slot file and names its home (`--durable HOME`); macOS and Windows grant it the
+  file to write (`Access::Write`), Linux opens it before Landlock, as its vCPU records are
+  (D261), and it installs it (`install_file`), its start failing where it cannot. A home not
+  made has no follower (each opens its slot file in it): a write made before its home is
+  made declares nothing, the open tried again at the next; any other failure to open fails
+  the write.
 - *Outside it*: the guest's syncs (init's), which no host judge follows, their host cost its
   VMM's declared flush; a tool writing outside any home declares nothing.
 
 **Verified** (light tests, none run here; ROOT's): shards-durable `a_write_is_declared_while_it_goes_on`,
 `claims_past_a_granule_grow_the_file_by_one`, `an_ended_processs_slot_is_taken_back_before_the_file_grows`,
-`a_write_another_process_declares_is_read` (the test binary as a child declaring); D215's
-tests above. **Owed:** commit 3 (every call site, the slot file installed at every host
-entry, the clippy rule, and a lint for `F_FULLFSYNC`, a constant clippy cannot name); R14
-per durable write (one volume call, one clock read, two stores; a claim once a thread) and
-per look (a scan of the slots; a declared volume's counters, one read).
+`a_write_another_process_declares_is_read` (the test binary as a child declaring),
+`a_recorded_home_is_opened_at_its_first_declaration` (a child that recorded its home opens
+its slot file at its first declaration, not before; a home not made declares nothing) and,
+on macOS, `a_file_without_full_fsync_is_synced_still` (the one test of the fallback vmm, ipc
+and image each had); D215's tests above. scripts/lint's `F_FULLFSYNC` check: clean on the
+tree, and an untracked file naming it refused (commit 3's lane log). **Owed:** clippy on
+the seven targets, each entry resolving (or, absent there, allowed) and no raw sync left
+(ROOT's); a VM process's install on each OS (macOS's grant, Windows' AppContainer handle,
+Linux before Landlock), live; R14 per durable write (one volume call, one clock read, two
+stores; a claim once a thread; the first write's open of the slot file) and per look (a
+scan of the slots; a declared volume's counters, one read); and the build writer (Linux,
+D188), started with no environment and given no home, which declares nothing: it makes no
+durable write today.
 
 ## 4. Start path (≤ 5 ms budget)
 

@@ -805,7 +805,7 @@ fn rewrite(
             file.set_permissions(meta.permissions())?;
         }
         file.write_all(&text)?;
-        file.sync_all()?;
+        shards_durable::all(&file)?;
         std::fs::rename(&staged, &target)
     })();
     if written.is_err() {

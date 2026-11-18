@@ -6,6 +6,17 @@ allow-print-in-tests = true
 # A test's directories are shards_testdir::TempDir's, removed as they go and, a killed test
 # process's, as the next one starts: none is made by hand in the system's temporary
 # directory, where hundreds were left before (2026-10-10).
+# Every durable write is shards_durable's, which declares it to whoever follows its process
+# (D286): its crate alone calls the OS's syncs (crates/durable/src/sys.rs), and scripts/lint
+# refuses F_FULLFSYNC, a constant, elsewhere. Each OS's call is absent from the others' (libc
+# has no fdatasync on macOS and no fsync on Windows; windows-sys is no Unix crate's), so that
+# a crate whose libc or windows-sys lacks it is not told so (`allow-invalid`).
 disallowed-methods = [
   { path = "std::env::temp_dir", reason = "a test's directory is shards_testdir::TempDir's, which removes it" },
+  { path = "std::fs::File::sync_all", reason = "a durable write is shards_durable::all's, declared to whoever follows its process (D286)" },
+  { path = "std::fs::File::sync_data", reason = "a durable write is shards_durable::data's, declared to whoever follows its process (D286)" },
+  { path = "libc::fsync", reason = "a durable write is shards_durable's (all, entries), declared to whoever follows its process (D286)", allow-invalid = true },
+  { path = "libc::fdatasync", reason = "a durable write is shards_durable::data's, declared to whoever follows its process (D286)", allow-invalid = true },
+  { path = "windows_sys::Win32::Storage::FileSystem::FlushFileBuffers", reason = "a durable write is shards_durable's (data, all, entries), declared to whoever follows its process (D286)", allow-invalid = true },
+  { path = "windows_sys::Win32::System::Memory::FlushViewOfFile", reason = "a view's write-back is shards_durable::view's or mapped's, declared to whoever follows its process (D286)", allow-invalid = true },
 ]

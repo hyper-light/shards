@@ -345,7 +345,7 @@ fn index_legacy(dir: &Path, log: &File) -> io::Result<()> {
         at = end;
     }
     let file = out.into_inner().map_err(io::IntoInnerError::into_error)?;
-    shards_vmm::platform::sync_durable(&file)?;
+    shards_durable::data(&file)?;
     std::fs::rename(&aside, dir.join(INDEX))
 }
 

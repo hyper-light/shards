@@ -950,18 +950,12 @@ pub(super) fn pwrite(fd: host::Raw, buf: &[u8], offset: Option<u64>) -> Result<u
     Ok(done)
 }
 
-/// Durable on stable storage: F_FULLFSYNC on macOS, whose fsync leaves the drive's cache.
+/// Durable on stable storage (`shards_durable::all`, D286): fsync(2) on Linux; on macOS
+/// F_FULLFSYNC, whose fsync leaves the drive's cache, and fsync where its file system lacks it.
 pub(super) fn durable(fd: host::Raw) -> Result<(), Errno> {
-    #[cfg(target_os = "macos")]
-    // SAFETY: fcntl(2) of a descriptor we hold.
-    let rc = unsafe { libc::fcntl(fd, libc::F_FULLFSYNC) };
-    #[cfg(target_os = "linux")]
-    // SAFETY: fsync(2) of a descriptor we hold.
-    let rc = unsafe { libc::fsync(fd) };
-    if rc != 0 {
-        return Err(last());
-    }
-    Ok(())
+    // SAFETY: a descriptor the server holds open for the call, which outlives the borrow.
+    let fd = unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) };
+    shards_durable::all(fd).map_err(|e| host::linux_errno(e.raw_os_error().unwrap_or(libc::EIO)))
 }
 
 /// fallocate(2)'s allocation, with or without KEEP_SIZE; nothing else Linux's takes.

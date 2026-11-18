@@ -1640,9 +1640,10 @@ pub fn truncate(h: BorrowedHandle<'_>, size: u64) -> Result<(), Errno> {
     file_of(h).set_len(size).map_err(|e| win32_errno(&e))
 }
 
-/// `h`'s file's data and metadata written through to its disk (FlushFileBuffers).
+/// `h`'s file's data and metadata written through to its disk (`shards_durable::all`,
+/// FlushFileBuffers; D286).
 pub fn sync(h: BorrowedHandle<'_>) -> Result<(), Errno> {
-    file_of(h).sync_all().map_err(|e| win32_errno(&e))
+    shards_durable::all(h).map_err(|e| win32_errno(&e))
 }
 
 /// An NT time, 100 ns since 1601, of seconds and nanoseconds since the Unix epoch.

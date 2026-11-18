@@ -1636,7 +1636,7 @@ pub fn restore_reported(
                 // Written back as it restores, ahead of its run, rather than as the VM lets
                 // go of the file, where its host waits to read what its run left (macOS, PM
                 // M278), on a thread of its own: the restore goes on.
-                platform::write_back_ahead(&file).map_err(at)?;
+                shards_durable::ahead(&file, |e| crate::debug!("writing back: {e}")).map_err(at)?;
             }
             Some(Arc::new(pmem::Layer::restore(head, file)?))
         }

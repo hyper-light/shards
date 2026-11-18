@@ -2148,7 +2148,7 @@ mod tests {
             .unwrap();
         let data = saved.save(&file).unwrap();
         assert_eq!(data, [(0, DATA_BLOCK as u64)]);
-        file.sync_all().unwrap();
+        shards_durable::all(&file).unwrap();
         let before = file.metadata().unwrap().blocks();
         let restored = GuestMemory::from_file(&ranges, &file, Some(&data)).unwrap();
         for offset in (DATA_BLOCK..2 * DATA_BLOCK).step_by(page) {

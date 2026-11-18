@@ -645,7 +645,7 @@ mod tests {
             .open(dir.join("f"))
             .unwrap();
         file.write_all(&vec![7u8; len]).unwrap();
-        file.sync_all().unwrap();
+        shards_durable::all(&file).unwrap();
         // SAFETY: a copy-on-write mapping of the whole file, and a view of it, both closed
         // below.
         let mapping = unsafe {
@@ -713,7 +713,7 @@ mod tests {
             .open(dir.join("f"))
             .unwrap();
         file.write_all(bytes).unwrap();
-        file.sync_all().unwrap();
+        shards_durable::all(&file).unwrap();
         drop(file);
         // SAFETY: the reservation made above, released whole.
         unsafe { VirtualFree(buf.cast(), 0, MEM_RELEASE) };

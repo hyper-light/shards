@@ -7,11 +7,11 @@ use std::ptr::NonNull;
 use windows_sys::Win32::Foundation::CloseHandle;
 use windows_sys::Win32::Foundation::ERROR_HANDLE_EOF;
 use windows_sys::Win32::Storage::FileSystem::{
-    FILE_FLAG_BACKUP_SEMANTICS, FlushFileBuffers, GetDiskFreeSpaceExW, ReadFile, WriteFile,
+    FILE_FLAG_BACKUP_SEMANTICS, GetDiskFreeSpaceExW, ReadFile, WriteFile,
 };
 use windows_sys::Win32::System::IO::OVERLAPPED;
 use windows_sys::Win32::System::Memory::{
-    CreateFileMappingW, FlushViewOfFile, MEM_COMMIT, MEM_DECOMMIT, MEM_PRESERVE_PLACEHOLDER, MEM_RELEASE,
+    CreateFileMappingW, MEM_COMMIT, MEM_DECOMMIT, MEM_PRESERVE_PLACEHOLDER, MEM_RELEASE,
     MEM_REPLACE_PLACEHOLDER, MEM_RESERVE, MEM_RESERVE_PLACEHOLDER, MEMORY_MAPPED_VIEW_ADDRESS,
     MapViewOfFile3, PAGE_NOACCESS, PAGE_READONLY, PAGE_READWRITE, PAGE_WRITECOPY, UnmapViewOfFile,
     UnmapViewOfFile2, VirtualAlloc, VirtualAlloc2, VirtualFree, VirtualProtect,
@@ -547,32 +547,6 @@ fn view_at(at: NonNull<u8>) -> bool {
         && info.State == MEM_COMMIT
         && info.Type == MEM_MAPPED
         && info.AllocationBase == at.as_ptr().cast()
-}
-
-/// Writes what was written through `ptr..ptr + len`, a view [`map_file_shared`] made, to
-/// its file (FlushViewOfFile).
-///
-/// # Safety
-/// `ptr` and `len` are a view's from [`map_file_shared`], still mapped.
-pub unsafe fn flush_shared(ptr: NonNull<u8>, len: usize) -> io::Result<()> {
-    // SAFETY: forwarded caller contract.
-    if unsafe { FlushViewOfFile(ptr.as_ptr().cast(), len) } != 0 {
-        Ok(())
-    } else {
-        Err(io::Error::last_os_error())
-    }
-}
-
-/// Makes what was written to `file` durable, through a view of it at `ptr..ptr+len`
-/// ([`map_file_shared`]) too: the view's pages written to the file (FlushViewOfFile), then
-/// the file to its device (FlushFileBuffers).
-///
-/// # Safety
-/// `ptr..ptr+len` is the view [`map_file_shared`] made of `file`, still mapped.
-pub unsafe fn sync_mapped(file: &File, ptr: NonNull<u8>, len: usize) -> io::Result<()> {
-    // SAFETY: forwarded caller contract.
-    unsafe { flush_shared(ptr, len) }?;
-    sync_durable(file)
 }
 
 /// Whether a mapping of a file hides its holes (unix.rs): its ranges are all of it here
@@ -1361,15 +1335,6 @@ pub fn keep_cached(file: &File) -> io::Result<Cached> {
     }
 }
 
-/// Flushes file data and metadata to stable storage.
-pub fn sync_durable(file: &File) -> io::Result<()> {
-    // SAFETY: flushing an owned, open handle.
-    if unsafe { FlushFileBuffers(file.as_raw_handle()) } == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(())
-}
-
 /// The volume holding `path`: the bytes this user may still write there, and its size
 /// (GetDiskFreeSpaceExW's counts for the caller, which honor quotas).
 pub fn disk_space(path: &std::path::Path) -> io::Result<(u64, u64)> {
@@ -1857,8 +1822,8 @@ mod shared {
             assert_eq!((*p, *p.add(page)), (0, 0x22));
             p.add(2 * page).write_bytes(0x33, page);
         }
-        // SAFETY: the view at `at`, still mapped.
-        unsafe { super::flush_shared(at, len) }.unwrap();
+        // SAFETY: the view of `second` at `at`, still mapped.
+        unsafe { shards_durable::view(&second, at, len) }.unwrap();
         let read = |name: &str| std::fs::read(dir.join(name)).unwrap();
         assert!(read("first")[..page].iter().all(|&b| b == 0x11));
         assert!(read("first")[page..].iter().all(|&b| b == 0));

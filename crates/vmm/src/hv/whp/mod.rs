@@ -2170,7 +2170,7 @@ mod tests {
             .open(dir.join("memory"))
             .unwrap();
         file.write_all(&bytes).unwrap();
-        file.sync_all().unwrap();
+        shards_durable::all(&file).unwrap();
         // SAFETY: a copy-on-write mapping of the whole file, and a view of it, closed below.
         let mapping = unsafe {
             CreateFileMappingW(

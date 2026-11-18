@@ -447,6 +447,9 @@ enum Source {
     Installed(&'static shards_durable::Reader),
     /// Another home's, which its follower names (`Followed::declaring`).
     Own(shards_durable::Reader),
+    /// This process's own home's, which could not be opened: its OS error, which each read
+    /// says (`Unread::Declarations`), never taken for no declarations.
+    Failed(Option<i32>),
 }
 
 /// A volume's device as first found, and its last reading.
@@ -457,9 +460,13 @@ struct Volume {
 }
 
 impl Declarations {
-    /// This process's own home's, where it installed its slot file; none where it did not.
+    /// This process's own home's, where it installed its slot file or recorded its home
+    /// (`shards_durable::install_at`); none where it did neither, or its home is not made.
     fn installed() -> Option<Declarations> {
-        shards_durable::installed().map(|reader| Declarations::of(Source::Installed(reader)))
+        match shards_durable::installed() {
+            Ok(reader) => reader.map(|reader| Declarations::of(Source::Installed(reader))),
+            Err(e) => Some(Declarations::of(Source::Failed(e.raw_os_error()))),
+        }
     }
 
     /// The home `home`'s.
@@ -474,10 +481,12 @@ impl Declarations {
         }
     }
 
-    fn reader(&self) -> &shards_durable::Reader {
+    /// Its reader, or the OS error its home's slot file could not be opened with.
+    fn reader(&self) -> Result<&shards_durable::Reader, Option<i32>> {
         match &self.reader {
-            Source::Installed(reader) => reader,
-            Source::Own(reader) => reader,
+            Source::Installed(reader) => Ok(reader),
+            Source::Own(reader) => Ok(reader),
+            Source::Failed(errno) => Err(*errno),
         }
     }
 
@@ -487,10 +496,13 @@ impl Declarations {
     fn writing(&self, members: &[(u32, u64)]) -> (Option<Writing>, Vec<u64>) {
         let mut declared = Vec::new();
         for &(pid, start) in members {
-            match self.reader().declared(pid, start) {
+            let found = self
+                .reader()
+                .and_then(|reader| reader.declared(pid, start).map_err(|e| e.raw_os_error()));
+            match found {
                 Ok(found) => declared.extend(found.into_iter().map(|d| (pid, d))),
-                Err(e) => {
-                    let moved = Moved::Unreadable(0, Unread::Declarations(e.raw_os_error()));
+                Err(errno) => {
+                    let moved = Moved::Unreadable(0, Unread::Declarations(errno));
                     return (
                         Some(Writing {
                             volume: 0,
@@ -4290,12 +4302,13 @@ mod tests {
             }
             // Written to a file of its own and flushed to its disk, again and again until its
             // stdin ends: a thread that waits on its host's disk, as `record`'s in guest.rs
-            // does (PM M600, M601). macOS: a page, then F_FULLFSYNC (fcntl(2)), as `record`.
+            // does (PM M600, M601), by `shards_durable::data`, declaring nothing (this process
+            // installs no slot file). macOS: a page, then F_FULLFSYNC (fcntl(2)), as `record`.
             // Linux: a MiB, then fdatasync(2), to a file beside this test binary, on the disk
             // cargo built it on: $TMPDIR may be a tmpfs (adacachy2's is), whose flush waits on
             // nothing; a MiB keeps the device writing at each flush (on adacachy2's NVMe, 100
             // flushes of a MiB waited in `D` 117 times for 1 ms or more, PM M601). Windows: a
-            // page, then FlushFileBuffers (std's `sync_data`), as `record` there (PM M606).
+            // page, then FlushFileBuffers, as `record` there (PM M606).
             Ok("flush") => {
                 let ended = std::sync::atomic::AtomicBool::new(false);
                 #[cfg(not(target_os = "linux"))]
@@ -4340,14 +4353,7 @@ mod tests {
                             std::os::windows::fs::FileExt::seek_write(&file, &bytes, 0).unwrap(),
                             chunk
                         );
-                        #[cfg(target_os = "macos")]
-                        {
-                            use std::os::fd::AsRawFd as _;
-                            // SAFETY: fcntl(2) of a descriptor this holds open.
-                            assert_eq!(unsafe { libc::fcntl(file.as_raw_fd(), libc::F_FULLFSYNC) }, 0);
-                        }
-                        #[cfg(not(target_os = "macos"))]
-                        file.sync_data().unwrap();
+                        shards_durable::data(&file).unwrap();
                     }
                 });
                 drop(file);

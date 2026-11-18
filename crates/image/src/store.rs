@@ -302,7 +302,7 @@ impl Partial {
             .into_inner()
             .map_err(|e| Error(e.to_string()))
             .and_then(|through| Ok(through.into_file()?))
-            .and_then(|file| Ok(sync_durable(&file)?))
+            .and_then(|file| Ok(shards_durable::all(&file)?))
             .and_then(|()| Ok(fs::rename(&self.path, to)?));
         if moved.is_err() {
             let _ = fs::remove_file(&self.path);
@@ -346,7 +346,7 @@ impl Partial {
                     file.set_modified(was + std::time::Duration::from_secs(2))?;
                 }
             }
-            sync_durable(&file)?;
+            shards_durable::all(&file)?;
             fs::rename(&self.path, to)?;
             Ok(true)
         });
@@ -365,7 +365,7 @@ impl Partial {
             .into_inner()
             .map_err(|e| Error(e.to_string()))
             .and_then(|through| Ok(through.into_file()?))
-            .and_then(|file| Ok(sync_durable(&file)?))
+            .and_then(|file| Ok(shards_durable::all(&file)?))
             .and_then(|()| Ok(fs::rename(&self.path, to)?));
         if moved.is_err() {
             let _ = fs::remove_file(&self.path);
@@ -522,15 +522,15 @@ fn platform_string(p: &oci::Platform) -> String {
     s
 }
 
-/// Makes the entries of `dir` durable: the renames into it outlast a power loss. Windows
-/// takes FlushFileBuffers (std's `sync_all`) of a handle to it that may write ("must have
-/// the GENERIC_WRITE access right", its documentation), which a directory opens for only
-/// with backup semantics (CreateFileW), as the VMM's `platform::sync_dir` does.
+/// Makes the entries of `dir` durable: the renames into it outlast a power loss
+/// (`shards_durable::entries`, D286). Windows flushes a handle to it that may write ("must
+/// have the GENERIC_WRITE access right", FlushFileBuffers' documentation), which a directory
+/// opens for only with backup semantics (CreateFileW), as the VMM's `platform::sync_dir` does.
 fn sync_dir(dir: &Path) -> Result<(), Error> {
     #[cfg(unix)]
-    sync_durable(&File::open(dir)?)?;
+    let opened = File::open(dir)?;
     #[cfg(windows)]
-    {
+    let opened = {
         use std::os::windows::fs::OpenOptionsExt as _;
         const GENERIC_WRITE: u32 = 0x4000_0000;
         const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
@@ -538,8 +538,8 @@ fn sync_dir(dir: &Path) -> Result<(), Error> {
             .access_mode(GENERIC_WRITE)
             .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
             .open(dir)?
-            .sync_all()?;
-    }
+    };
+    shards_durable::entries(&opened)?;
     Ok(())
 }
 
@@ -577,30 +577,6 @@ fn make_sparse(file: &File) -> io::Result<()> {
     #[cfg(unix)]
     let _ = file;
     Ok(())
-}
-
-/// Makes completed writes to `file` durable on stable storage, as the VMM's
-/// `platform::sync_durable` does where it is linked (review 1.13): on macOS `F_FULLFSYNC`,
-/// which flushes the drive's cache where `fsync` does not (fsync(2)), and `fsync` where
-/// the filesystem has none, as SQLite falls back and Go's `File.Sync` does on an SMB mount
-/// (go.dev/issue/64215), where std's `sync_all` fails: a store on a network share would
-/// keep nothing.
-fn sync_durable(file: &File) -> io::Result<()> {
-    #[cfg(target_os = "macos")]
-    {
-        use std::os::fd::AsRawFd as _;
-        // SAFETY: fcntl(2) on a descriptor the caller holds open.
-        if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_FULLFSYNC) } == 0 {
-            return Ok(());
-        }
-        // SAFETY: fsync(2) on the same descriptor.
-        if unsafe { libc::fsync(file.as_raw_fd()) } == 0 {
-            return Ok(());
-        }
-        Err(io::Error::last_os_error())
-    }
-    #[cfg(not(target_os = "macos"))]
-    file.sync_all()
 }
 
 /// A blob being downloaded (`Store::download`). Its file under `ingest/` stays locked for
@@ -685,7 +661,7 @@ impl Download {
             drop(file);
             return bad(format!("{digest}: the content hashes to {actual}"));
         }
-        sync_durable(&file)?;
+        shards_durable::all(&file)?;
         // Moved while still locked: a download waiting on the lock must find the blob.
         if target.is_file() && !replace {
             let _ = fs::remove_file(&path);
@@ -789,7 +765,7 @@ impl Ranged {
             let _ = fs::remove_file(&marker);
             return bad(format!("{}: the content hashes to {actual}", self.digest));
         }
-        sync_durable(&self.file)?;
+        shards_durable::all(&self.file)?;
         if self.target.is_file() && !self.replace {
             let _ = fs::remove_file(&self.path);
         } else {
@@ -807,7 +783,7 @@ impl Drop for Ranged {
         if self.done {
             return;
         }
-        let kept = self.file.set_len(self.in_order()).is_ok() && self.file.sync_data().is_ok();
+        let kept = self.file.set_len(self.in_order()).is_ok() && shards_durable::data(&self.file).is_ok();
         if kept {
             let _ = fs::remove_file(marker(&self.path));
         }
@@ -840,7 +816,7 @@ fn unless_out_of_order(file: &File, partial: &Path) -> io::Result<()> {
     let marker = marker(partial);
     if marker.exists() {
         file.set_len(0)?;
-        file.sync_data()?;
+        shards_durable::data(&file)?;
         fs::remove_file(&marker)?;
     }
     Ok(())
@@ -1372,7 +1348,7 @@ impl Store {
             .into());
         }
         // The marker first, synced: the file is out of order once it is at its full size.
-        File::create(marker(&path))?.sync_all()?;
+        shards_durable::all(File::create(marker(&path))?)?;
         file.set_len(size)?;
         Ok(Some(Ranged {
             path,
@@ -3448,20 +3424,6 @@ fn from_path(rootfs: &Path) -> PathBuf {
 mod tests {
     use super::*;
     use crate::tar::tests::{Member, Writer};
-
-    /// What a filesystem without F_FULLFSYNC holds is made durable with fsync instead:
-    /// /dev/null refuses F_FULLFSYNC and takes fsync, as an SMB share does, where std's
-    /// sync_all fails (review 1.13).
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn a_file_without_full_fsync_is_synced_still() {
-        let null = std::fs::OpenOptions::new().write(true).open("/dev/null").unwrap();
-        assert!(null.sync_all().is_err(), "std's sync_all took F_FULLFSYNC here");
-        sync_durable(&null).unwrap();
-        let held = shards_testdir::TempDir::new("sync").unwrap();
-        let dir = std::fs::File::open(&held).unwrap();
-        sync_durable(&dir).unwrap();
-    }
 
     /// A stage goes whole, a tree of clones in it too, its files counted; on macOS an
     /// immutable clone and directory with it, never what a link in it names, which keeps

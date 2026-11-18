@@ -14,7 +14,7 @@ pub fn exit_after_report(path: &str) -> i32 {
     let saved = (|| {
         let mut file = std::fs::File::create(path)?;
         writeln!(file, "actor_pid={}", std::process::id())?;
-        file.sync_all()
+        shards_durable::all(&file)
     })();
     match saved {
         Ok(()) => 0,
@@ -51,7 +51,7 @@ fn answer(directory: &str, port: &str) -> io::Result<()> {
     let pending = root.join("answer.pending");
     let mut result = std::fs::File::create(&pending)?;
     result.write_all(&challenge)?;
-    result.sync_all()?;
+    shards_durable::all(&result)?;
     std::fs::rename(pending, root.join("answer"))?;
     input.write_all(&challenge)?;
     Ok(())
@@ -81,7 +81,7 @@ fn report(path: &str) -> io::Result<()> {
     writeln!(file, "namespace_init_signal_errno={signal}")?;
     writeln!(file, "namespace_init_memory_errno={memory}")?;
     writeln!(file, "namespace_init_descriptors_errno={descriptors}")?;
-    file.sync_all()
+    shards_durable::all(&file)
 }
 
 fn proc_access(path: &std::ffi::CStr, flags: libc::c_int) -> i32 {

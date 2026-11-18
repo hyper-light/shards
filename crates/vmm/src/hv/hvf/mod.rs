@@ -1770,7 +1770,7 @@ mod tests {
             .unwrap();
         file.set_len(len as u64).unwrap();
         crate::platform::write_all_at(&file, &[1; 16 << 10], 32 << 20).unwrap();
-        file.sync_all().unwrap();
+        shards_durable::all(&file).unwrap();
         let data = || crate::platform::data_ranges(&file, len as u64).unwrap();
         let alone = data();
         assert_eq!(alone, [(32 << 20, 16 << 10)]);

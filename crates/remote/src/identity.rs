@@ -64,7 +64,9 @@ impl Identity {
         let at = |e: io::Error| Error::new(format!("{}: {e}", new.display()));
         // Its user's alone wherever the home is (shards_ipc::create_private).
         let mut file = shards_ipc::create_private(&new).map_err(at)?;
-        let written = file.write_all(&made.pkcs8).and_then(|()| file.sync_all());
+        let written = file
+            .write_all(&made.pkcs8)
+            .and_then(|()| shards_durable::all(&file));
         drop(file);
         let linked = written.and_then(|()| fs::hard_link(&new, path));
         let _ = fs::remove_file(&new);

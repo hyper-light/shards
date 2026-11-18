@@ -17,6 +17,9 @@ shards-archive = { path = "../archive" }
 shards-cmdline = { path = "../cmdline" }
 shards-devcgroup = { path = "../devcgroup" }
 shards-dns = { path = "../dns" }
+# Its durable writes, through the one helper, declaring nothing: no host judge follows a guest
+# (D286).
+shards-durable = { path = "../durable" }
 shards-erofs = { path = "../erofs" }
 shards-user = { path = "../user" }
 

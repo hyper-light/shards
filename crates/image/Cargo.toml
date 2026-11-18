@@ -11,6 +11,8 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+# Its store's durable writes, declared (D286).
+shards-durable = { path = "../durable" }
 shards-erofs = { path = "../erofs" }
 flate2 = { version = "1", default-features = false, features = ["zlib-rs", "runtime_detection"] }
 regex = "1"

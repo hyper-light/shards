@@ -488,7 +488,7 @@ fn made_disk(path: &Path, bytes: u64) -> Result<(), String> {
             time,
         };
         shards_ext4::format(&mut file, &options).map_err(|e| at(&e))?;
-        file.sync_all().map_err(|e| at(&e))
+        shards_durable::all(&file).map_err(|e| at(&e))
     })();
     if made.is_err() {
         let _ = std::fs::remove_file(path);
@@ -1397,7 +1397,7 @@ mod tests {
         let mut f = std::fs::OpenOptions::new().write(true).open(file).unwrap();
         f.seek(SeekFrom::Start(at)).unwrap();
         f.write_all(b"sentinel").unwrap();
-        f.sync_all().unwrap();
+        shards_durable::all(&f).unwrap();
     }
 
     /// devices-11: a disk file is had by its identity, whatever path names it. A hard link

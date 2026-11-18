@@ -17,6 +17,8 @@ gpu = []
 
 [dependencies]
 shards-abi = { path = "../abi" }
+# Every durable write it makes, declared (D286).
+shards-durable = { path = "../durable" }
 shards-netring = { path = "../netring" }
 # A share's server hands the VM process a file's object for a DAX window (D189): a descriptor
 # on Unix, a section's handle's value on Windows.

@@ -132,7 +132,7 @@ fn publish(root: &std::path::Path, name: &str, bytes: &[u8]) -> io::Result<()> {
     let pending = root.join(format!("{name}.pending"));
     let mut file = std::fs::File::create(&pending)?;
     file.write_all(bytes)?;
-    file.sync_all()?;
+    shards_durable::all(&file)?;
     std::fs::rename(pending, root.join(name))
 }
 

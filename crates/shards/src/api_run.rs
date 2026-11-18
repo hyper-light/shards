@@ -4453,7 +4453,10 @@ mod hosted {
     ) -> Result<Shares, String> {
         let exe = std::env::current_exe().map_err(|e| format!("this binary: {e}"))?;
         let (door, share) = Stream::pair().map_err(|e| format!("the share process's connection: {e}"))?;
+        // Where its servers declare their durable writes (D286): this run's home.
+        let durable = crate::helpers::durable_words()?;
         let mut args: Vec<&OsStr> = vec![OsStr::new("share")];
+        args.extend(durable.iter().map(OsString::as_os_str));
         // Its notices of what its host changes (D235), on a pipe past its others.
         let told = tags.filter(|t| t.len() == dirs.len()).map(|t| t.join(","));
         let notices = match &told {
@@ -4515,7 +4518,10 @@ mod hosted {
             .map(|_| crate::os::share_pipe())
             .collect::<io::Result<Vec<_>>>()
             .map_err(|e| format!("a share's stream: {e}"))?;
+        // Where its servers declare their durable writes (D286): this run's home.
+        let durable = crate::helpers::durable_words()?;
         let mut args: Vec<&OsStr> = vec![OsStr::new("share")];
+        args.extend(durable.iter().map(OsString::as_os_str));
         // Its notices of what its host changes (D235), on a pipe past its others.
         let told = tags.filter(|t| t.len() == dirs.len()).map(|t| t.join(","));
         let notices = match &told {

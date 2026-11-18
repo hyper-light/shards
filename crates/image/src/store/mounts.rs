@@ -27,7 +27,7 @@ use std::path::{Path, PathBuf};
 
 use sha2::{Digest as _, Sha256};
 
-use super::{Locked, Partial, Store, make_sparse, sync_dir, sync_durable, unix_now};
+use super::{Locked, Partial, Store, make_sparse, sync_dir, unix_now};
 use crate::{Error, bad};
 
 pub(super) const VERSION: u32 = 2;
@@ -866,7 +866,7 @@ pub fn layer_uuid(parts: &[&str]) -> [u8; 16] {
 /// any record names it: a crash never leaves a record naming a torn image.
 fn finish(part: &MountPart, len: u64) -> Result<(), Error> {
     part.file.set_len(len)?;
-    sync_durable(&part.file)?;
+    shards_durable::all(&part.file)?;
     Ok(())
 }
 

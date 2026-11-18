@@ -2160,6 +2160,10 @@ fn serve(ready: Option<File>, listen: Option<std::net::SocketAddr>) -> Result<()
     // The home's names are relative to it (its slots): the home is
     // the daemon's own, so this holds no client's directory busy.
     let home = entered_home(&home)?;
+    // Its durable writes declared in the home's slot file (D286), named as its other paths
+    // are, relative to the home it entered: opened at the first, as its judges read it.
+    shards_durable::install_at(home.clone())
+        .map_err(|e| format!("its declarations of durable writes: {e}"))?;
     let Some(home_lock) = take_lock(&home)? else {
         // Another daemon serves this home.
         return Ok(());
@@ -5683,7 +5687,10 @@ impl<D: Disk> Daemon<D> {
             .map(|_| crate::os::share_pipe())
             .collect::<io::Result<Vec<_>>>()
             .map_err(|e| format!("a share's stream: {e}"))?;
+        // Where its servers declare their durable writes (D286): this home.
+        let durable = crate::helpers::durable_words()?;
         let mut args: Vec<&OsStr> = vec![OsStr::new("share")];
+        args.extend(durable.iter().map(|word| word.as_os_str()));
         if moved {
             args.push(OsStr::new(crate::share::MOVED));
         }
@@ -5754,7 +5761,10 @@ impl<D: Disk> Daemon<D> {
     ) -> Result<(UnixStream, Arc<shards_ipc::Child>, Option<OwnedFd>), String> {
         let exe = std::env::current_exe().map_err(|e| format!("this binary: {e}"))?;
         let (vm, share) = UnixStream::pair().map_err(|e| format!("the share process's connection: {e}"))?;
+        // Where its servers declare their durable writes (D286): this home.
+        let durable = crate::helpers::durable_words()?;
         let mut args: Vec<&OsStr> = vec![OsStr::new("share")];
+        args.extend(durable.iter().map(|word| word.as_os_str()));
         if moved {
             args.push(OsStr::new(crate::share::MOVED));
         }
@@ -8770,10 +8780,15 @@ impl<D: Disk> Daemon<D> {
         };
         let err = io::stderr();
         let env = crate::netproc::child_env();
+        // Where its servers declare their durable writes (D286): this home.
+        let durable = crate::helpers::durable_words()?;
+        let mut args: Vec<&OsStr> = vec![OsStr::new("share")];
+        args.extend(durable.iter().map(|word| word.as_os_str()));
+        args.push(OsStr::new("--join"));
         let child = shards_ipc::spawn_in_job(
             group.as_ref(),
             &exe,
-            &[OsStr::new("share"), OsStr::new("--join")],
+            &args,
             &[
                 (err.as_fd(), 2),
                 (served.as_fd(), 3),
@@ -8827,10 +8842,15 @@ impl<D: Disk> Daemon<D> {
         let root = File::open(&at).map_err(failed)?;
         let ghosts = self.private_dir()?;
         let err = io::stderr();
+        // Where its servers declare their durable writes (D286): this home.
+        let durable = crate::helpers::durable_words()?;
+        let mut args: Vec<&OsStr> = vec![OsStr::new("share")];
+        args.extend(durable.iter().map(|word| word.as_os_str()));
+        args.push(OsStr::new("--join"));
         let child = shards_ipc::spawn_in_group(
             self.group_of(parent)?,
             &exe,
-            &[OsStr::new("share"), OsStr::new("--join")],
+            &args,
             &[
                 (err.as_fd(), 2),
                 (served.as_fd(), 3),

@@ -3607,10 +3607,9 @@ fn into_map(spec: &str) -> io::Result<(&str, usize)> {
     // SAFETY: read(2) into the mapping's `len` bytes, mapped to be written.
     let n = unsafe { libc::read(input.as_raw_fd(), map, len) };
     let n = usize::try_from(n).map_err(|_| io::Error::last_os_error())?;
-    // SAFETY: msync(2) of the mapping above.
-    if unsafe { libc::msync(map, len, libc::MS_SYNC) } != 0 {
-        return Err(io::Error::last_os_error());
-    }
+    let at = std::ptr::NonNull::new(map.cast::<u8>()).ok_or_else(|| io::Error::other("a mapping at null"))?;
+    // SAFETY: the mapping of `target` above, still mapped.
+    unsafe { shards_durable::view(&target, at, len) }?;
     holds(dst, 0, &std::fs::read(src)?, n)?;
     Ok((dst, n))
 }
@@ -4011,7 +4010,7 @@ fn share_cost(path: &str, n: usize) -> i32 {
     let began = std::time::Instant::now();
     let wrote = std::fs::File::create(format!("{path}.w")).and_then(|mut f| {
         f.write_all(&bytes)?;
-        f.sync_all()
+        shards_durable::all(&f)
     });
     if let Err(e) = wrote {
         return failed(e);
@@ -4295,7 +4294,7 @@ fn busy(kind: &str, n: usize, dir: &str) -> i32 {
                     let mut told = false;
                     loop {
                         let wrote = std::fs::File::create(&path)
-                            .and_then(|mut f| f.write_all(&chunk).and_then(|()| f.sync_all()));
+                            .and_then(|mut f| f.write_all(&chunk).and_then(|()| shards_durable::all(&f)));
                         if let Err(e) = wrote {
                             let _ = writeln!(io::stderr(), "busy: writing {path}: {e}");
                             return;
@@ -7384,7 +7383,7 @@ fn big(path: &str, mib: u64) -> io::Result<()> {
     for _ in 0..mib {
         file.write_all(&chunk)?;
     }
-    file.sync_all()
+    shards_durable::all(&file)
 }
 
 /// Says `ns`, the IPC namespace this process is in; `shm BYTES` for its /dev/shm, or `shm
@@ -7500,7 +7499,7 @@ fn unlinked_held(path: &str, size: Option<u64>) -> i32 {
             if let Some(size) = size {
                 f.set_len(size)?;
             }
-            f.sync_data()?;
+            shards_durable::data(&f)?;
             std::fs::remove_file(path).map(|()| f)
         });
     let held = match held {
@@ -7517,7 +7516,7 @@ fn unlinked_held(path: &str, size: Option<u64>) -> i32 {
         let mut line = [0u8; 5];
         let done = held
             .write_all_at(format!("{n:016}").as_bytes(), 5)
-            .and_then(|()| held.sync_data())
+            .and_then(|()| shards_durable::data(&held))
             .and_then(|()| held.read_exact_at(&mut line, 0));
         match done {
             Ok(()) => {
@@ -7542,7 +7541,7 @@ fn pour(path: &str, bytes: u64, chunk: usize) -> i32 {
         while left > 0 {
             let n = usize::try_from(left).unwrap_or(usize::MAX).min(block.len());
             f.write_all(block.get(..n).unwrap_or_default())?;
-            f.sync_data()?;
+            shards_durable::data(&f)?;
             left -= n as u64;
         }
         Ok(())
@@ -7586,7 +7585,7 @@ fn appender(path: &str, ms: u64) -> i32 {
     let mut n = 0u64;
     loop {
         n += 1;
-        if let Err(e) = writeln!(file, "{n}").and_then(|()| file.sync_data()) {
+        if let Err(e) = writeln!(file, "{n}").and_then(|()| shards_durable::data(&file)) {
             let _ = writeln!(io::stderr(), "{n}: {e}");
             return 1;
         }

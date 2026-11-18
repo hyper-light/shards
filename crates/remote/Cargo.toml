@@ -24,6 +24,8 @@ sha2 = "0.11"
 # A file of its user's alone wherever it is: an identity's, an invitation's.
 shards-ipc = { path = "../ipc" }
 shards-abi = { path = "../abi" }
+# Their durable writes, declared (D286).
+shards-durable = { path = "../durable" }
 
 [dev-dependencies]
 shards-testdir = { path = "../testdir" }

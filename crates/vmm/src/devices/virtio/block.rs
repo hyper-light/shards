@@ -1044,11 +1044,11 @@ fn execute(
         T_IN => transfer(&out, sector, mem, backend, Direction::Read),
         T_OUT if backend.read_only => Err(S_IOERR),
         T_OUT => transfer(&body, sector, mem, backend, Direction::Write).map(|_| 0),
-        // Durable on stable storage, not just in the host page cache (platform::sync_durable).
-        // A join disk's ranges are images and the files of a build's steps, which the host
-        // reads back as they are: nothing to make durable.
+        // Durable on stable storage, not just in the host page cache (`shards_durable::data`,
+        // D286). A join disk's ranges are images and the files of a build's steps, which the
+        // host reads back as they are: nothing to make durable.
         T_FLUSH => match &backend.store {
-            Store::File { file, .. } => platform::sync_durable(file).map(|()| 0).map_err(|_| S_IOERR),
+            Store::File { file, .. } => shards_durable::data(file).map(|()| 0).map_err(|_| S_IOERR),
             Store::Join(_) => Ok(0),
         },
         T_GET_ID => {

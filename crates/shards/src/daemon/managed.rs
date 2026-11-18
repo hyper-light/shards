@@ -1852,7 +1852,7 @@ impl<D: Disk> Daemon<D> {
                 }
             }
         }
-        metadata.sync_all()?;
+        shards_durable::all(&metadata)?;
         let metadata = shared_metadata(metadata)?;
         let mut drained = Vec::new();
         drained
@@ -2833,7 +2833,7 @@ fn generation(dir: &Path) -> io::Result<u64> {
     let mut file = match shards_ipc::create_private(&path) {
         Ok(mut file) => {
             file.write_all(&1u64.to_be_bytes())?;
-            shards_vmm::platform::sync_durable(&file)?;
+            shards_durable::data(&file)?;
             shards_vmm::platform::sync_dir(dir)?;
             return Ok(1);
         }
@@ -2854,7 +2854,7 @@ fn generation(dir: &Path) -> io::Result<u64> {
             .ok_or_else(|| io::Error::other("managed output generation exhausted"))?;
         file.rewind()?;
         file.write_all(&next.to_be_bytes())?;
-        shards_vmm::platform::sync_durable(&file)?;
+        shards_durable::data(&file)?;
         Ok(next)
     })();
     let unlocked = file.unlock();

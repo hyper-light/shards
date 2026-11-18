@@ -1259,6 +1259,7 @@ name = "shards-apple"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "shards-durable",
  "shards-testdir",
 ]
 
@@ -1343,6 +1344,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "shards-durable",
 ]
 
 [[package]]
@@ -1402,6 +1404,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "shards-durable",
  "shards-erofs",
  "shards-testdir",
  "windows-sys 0.61.2",
@@ -1417,6 +1420,7 @@ dependencies = [
  "shards-cmdline",
  "shards-devcgroup",
  "shards-dns",
+ "shards-durable",
  "shards-erofs",
  "shards-testdir",
  "shards-user",
@@ -1486,6 +1490,7 @@ dependencies = [
 name = "shards-ntfs"
 version = "0.1.0"
 dependencies = [
+ "shards-durable",
  "shards-testdir",
  "windows-sys 0.61.2",
 ]
@@ -1506,6 +1511,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "shards-durable",
  "shards-image",
  "shards-ipc",
  "shards-testdir",
@@ -1537,6 +1543,7 @@ dependencies = [
  "libc",
  "sha2",
  "shards-abi",
+ "shards-durable",
  "shards-ipc",
  "shards-testdir",
  "shards-testwait",
@@ -1606,6 +1613,7 @@ dependencies = [
  "rustls",
  "shards-abi",
  "shards-devcgroup",
+ "shards-durable",
  "shards-http2",
  "shards-seccomp",
 ]
@@ -1660,6 +1668,7 @@ dependencies = [
  "libc",
  "shards-abi",
  "shards-cmdline",
+ "shards-durable",
  "shards-ipc",
  "shards-netring",
  "shards-testdir",
@@ -1675,6 +1684,7 @@ dependencies = [
  "shards-abi",
  "shards-afunix",
  "shards-apple",
+ "shards-durable",
  "shards-ipc",
  "shards-netring",
  "shards-ntfs",

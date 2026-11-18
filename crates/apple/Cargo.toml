@@ -14,4 +14,6 @@ workspace = true
 libc = { workspace = true }
 
 [dev-dependencies]
+# Its storage test's flushes (D286).
+shards-durable = { path = "../durable" }
 shards-testdir = { path = "../testdir" }

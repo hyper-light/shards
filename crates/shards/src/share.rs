@@ -71,6 +71,25 @@ fn take_moved(args: &mut Vec<OsString>) -> bool {
 /// machine ([`take_moved`]).
 pub(crate) const MOVED: &str = "--moved";
 
+/// The flag before all else a share process is given, `--durable HOME`, `--join` too: the
+/// home whose slot file its servers' durable writes declare in (D286), its spawner's
+/// (`helpers::durable_words`), which its daemon follows it by. One given no environment
+/// finds no home of its own.
+pub(crate) const DURABLE: &str = "--durable";
+
+/// [`DURABLE`]'s home, taken out of `args`, recorded for this process's durable writes, which
+/// open its slot file at the first ([`shards_durable::install_at`]).
+fn take_durable(args: &mut Vec<OsString>) -> Result<(), String> {
+    if args.first().is_none_or(|a| a != DURABLE) {
+        return Ok(());
+    }
+    let rest = args.split_off(args.len().min(2));
+    let taken = std::mem::replace(args, rest);
+    let [_, home] =
+        <[OsString; 2]>::try_from(taken).map_err(|_| format!("share: {DURABLE} takes its home"))?;
+    shards_durable::install_at(PathBuf::from(home)).map_err(|e| format!("share: {DURABLE}: {e}"))
+}
+
 /// The flag before a share process's shares that says it tells what its host changes
 /// beneath them (D235), and its argument the guest's names of them, their virtio-fs tags,
 /// joined by `,`, one for each share: its notices go to the descriptor after its others,
@@ -274,6 +293,9 @@ pub fn share(args: impl Iterator<Item = OsString>) -> ExitCode {
         ExitCode::FAILURE
     };
     let mut args: Vec<OsString> = args.collect();
+    if let Err(e) = take_durable(&mut args) {
+        return failed(&e);
+    }
     if args.first().is_some_and(|a| a == "--join") {
         return join();
     }
@@ -378,6 +400,9 @@ pub fn share(args: impl Iterator<Item = OsString>) -> ExitCode {
         ExitCode::FAILURE
     };
     let mut args: Vec<OsString> = args.collect();
+    if let Err(e) = take_durable(&mut args) {
+        return failed(&e);
+    }
     if args.first().is_some_and(|a| a == "--join") {
         return join();
     }

@@ -20,7 +20,7 @@ pub fn run(path: &str, rounds: &str) -> i32 {
                 error.raw_os_error()
             )?;
         }
-        report.sync_all()?;
+        shards_durable::all(&report)?;
         std::fs::rename(pending, path)?;
         result
     })();

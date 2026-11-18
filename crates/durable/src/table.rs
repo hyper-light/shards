@@ -16,7 +16,7 @@
 
 use std::fs::{File, OpenOptions};
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock, PoisonError};
 
@@ -130,8 +130,17 @@ pub(crate) struct Writer {
     maps: Mutex<Vec<Map>>,
 }
 
-/// This process's writer, where it installed one.
+/// This process's writer, where it installed one, or opened the slot file of the home it
+/// recorded ([`install_at`]).
 static WRITER: OnceLock<Writer> = OnceLock::new();
+
+/// The home this process recorded ([`install_at`]), whose slot file it opens at its first
+/// declaration or read.
+static HOME: OnceLock<PathBuf> = OnceLock::new();
+
+fn installed_already() -> io::Error {
+    io::Error::other("a slot file is installed already")
+}
 
 /// Declares this process's durable writes in the slot file of the home `home` ([`open`]).
 /// Once a process: a second install is refused.
@@ -143,24 +152,86 @@ pub fn install(home: &Path) -> io::Result<()> {
 /// sandboxed process is given it by its spawner), and reads its home's declarations from it
 /// ([`installed`]). Once a process: a second install is refused.
 pub fn install_file(file: File) -> io::Result<()> {
+    if HOME.get().is_some() {
+        return Err(installed_already());
+    }
     let reader = Reader::of(file.try_clone()?)?;
     let writer = Writer::of(file)?;
-    WRITER
-        .set(writer)
-        .map_err(|_| io::Error::other("a slot file is installed already"))?;
-    READER
-        .set(reader)
-        .map_err(|_| io::Error::other("a slot file is installed already"))
+    WRITER.set(writer).map_err(|_| installed_already())?;
+    READER.set(reader).map_err(|_| installed_already())
+}
+
+/// Declares this process's durable writes in the slot file of the home `home`, recorded now
+/// and opened at its first declaration (or [`installed`]), so that a process's start pays no
+/// call for it, and one that writes nothing durable opens nothing (`shards`' launch, PM
+/// M113). A home not made by then has no follower, as each opens its slot file in it: it
+/// takes no declaration, and the next one opens it again. Any other failure to open it fails
+/// the write. Once a process: a second install is refused.
+pub fn install_at(home: PathBuf) -> io::Result<()> {
+    if WRITER.get().is_some() {
+        return Err(installed_already());
+    }
+    HOME.set(home).map_err(|_| installed_already())
+}
+
+/// The home this process recorded ([`install_at`]): where a process it starts that may not
+/// open the slot file itself is told to declare, granted it by this one.
+pub fn home() -> Option<&'static Path> {
+    HOME.get().map(PathBuf::as_path)
+}
+
+/// The slot file of `home` ([`open`]); none where `home` is not made, as no follower reads
+/// one there.
+fn made_in(home: &Path) -> io::Result<Option<File>> {
+    match open(home) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound && !home.is_dir() => Ok(None),
+        opened => opened.map(Some),
+    }
+}
+
+/// This process's writer: the one it installed, else one of the slot file of the home it
+/// recorded, opened now with its reader ([`install_at`]); none where it did neither, or its
+/// home is not made.
+fn writer() -> io::Result<Option<&'static Writer>> {
+    if let Some(writer) = WRITER.get() {
+        return Ok(Some(writer));
+    }
+    let Some(home) = HOME.get() else {
+        return Ok(None);
+    };
+    let Some(file) = made_in(home)? else {
+        return Ok(None);
+    };
+    let reader = Reader::of(file.try_clone()?)?;
+    let writer = Writer::of(file)?;
+    // Another thread's, opened meanwhile, is kept where it was first: either is the home's.
+    let _ = READER.set(reader);
+    let _ = WRITER.set(writer);
+    Ok(WRITER.get())
 }
 
 /// This process's reader of its own home's declarations, where it installed its slot file
-/// ([`install`]): what a follower of the home's processes reads by default.
+/// ([`install`]) or opened the one of the home it recorded ([`install_at`]): what a follower
+/// of the home's processes reads by default.
 static READER: OnceLock<Reader> = OnceLock::new();
 
-/// The reader of the home this process installed its slot file of ([`install`]); none where
-/// it installed none.
-pub fn installed() -> Option<&'static Reader> {
-    READER.get()
+/// The reader of the home this process installed its slot file of ([`install`]), or recorded
+/// ([`install_at`]), the slot file opened then at the first call; none where it did neither,
+/// or its home is not made (none declares in it). A failure to open it is its error, which a
+/// follower says, never taken for no declarations.
+pub fn installed() -> io::Result<Option<&'static Reader>> {
+    if let Some(reader) = READER.get() {
+        return Ok(Some(reader));
+    }
+    let Some(home) = HOME.get() else {
+        return Ok(None);
+    };
+    let Some(file) = made_in(home)? else {
+        return Ok(None);
+    };
+    // Another thread's, opened meanwhile, is kept where it was first: either is the home's.
+    let _ = READER.set(Reader::of(file)?);
+    Ok(READER.get())
 }
 
 impl Writer {
@@ -350,12 +421,13 @@ impl Drop for Declaring {
     }
 }
 
-/// `write`, a durable write of `file`, declared where this process installed a slot file: its
-/// volume, then its start, stored in this thread's slot (claimed once) before it, its start
-/// stored none after it. A write made inside another's declaration is that one's. A thread
-/// whose slot is gone (its storage torn down as it ends) claims one for this write alone.
+/// `write`, a durable write of `file`, declared where this process installed a slot file (or
+/// recorded its home, its slot file opened now: [`writer`]): its volume, then its start,
+/// stored in this thread's slot (claimed once) before it, its start stored none after it. A
+/// write made inside another's declaration is that one's. A thread whose slot is gone (its
+/// storage torn down as it ends) claims one for this write alone.
 pub(crate) fn declared<T>(file: &impl Target, write: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
-    let Some(writer) = WRITER.get() else {
+    let Some(writer) = writer()? else {
         return write();
     };
     let volume = sys::volume(file)?;
@@ -569,7 +641,7 @@ mod tests {
         // A process of this binary's that declares in a home of its own, read as it lives,
         // then ended and waited for.
         let theirs = TempDir::new("durable-ended").unwrap();
-        let (mut child, _) = declaring_child(theirs.path());
+        let (mut child, _) = declaring_child(theirs.path(), false);
         let (pid, start) = (child.id(), sys::start_of(child.id()).unwrap().unwrap());
         child.stdin.take().unwrap().write_all(b"\n").unwrap();
         assert!(child.wait().unwrap().success());
@@ -586,9 +658,11 @@ mod tests {
         assert!(reader.declared(pid, start).unwrap().is_empty());
     }
 
-    /// The test binary's own process, run by [`a_write_another_process_declares_is_read`]: it
-    /// declares a write in the slot file of `SHARDS_DURABLE_TEST_HOME`, says so on its stdout,
-    /// and holds it until a line comes on its stdin.
+    /// The test binary's own process, run by [`a_write_another_process_declares_is_read`] and
+    /// [`a_recorded_home_is_opened_at_its_first_declaration`]: it declares a write in the slot
+    /// file of `SHARDS_DURABLE_TEST_HOME`, installed there, or with `SHARDS_DURABLE_TEST_AT`
+    /// its home recorded alone ([`install_at`]), which opens nothing before that write; says
+    /// so on its stdout, and holds it until a line comes on its stdin.
     #[test]
     #[ignore = "a child of a_write_another_process_declares_is_read"]
     fn declares_until_told() {
@@ -596,7 +670,15 @@ mod tests {
             return;
         };
         let home = Path::new(&home);
-        install(home).unwrap();
+        if std::env::var_os("SHARDS_DURABLE_TEST_AT").is_some() {
+            install_at(home.to_path_buf()).unwrap();
+            assert!(
+                !home.join(FILE).exists(),
+                "its slot file opened before a declaration"
+            );
+        } else {
+            install(home).unwrap();
+        }
         let file = File::create(home.join("theirs")).unwrap();
         declared(&file, || {
             println!("declared {}", sys::thread()?);
@@ -604,12 +686,14 @@ mod tests {
             std::io::stdin().lock().read_line(&mut String::new())
         })
         .unwrap();
+        assert!(super::installed().unwrap().is_some());
     }
 
-    /// [`declares_until_told`] run as a process of its own declaring in `home`, once it has
-    /// said so: it and its declaring thread's ID.
-    fn declaring_child(home: &Path) -> (std::process::Child, u64) {
-        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+    /// [`declares_until_told`] run as a process of its own declaring in `home`, its home
+    /// recorded alone where `at`, once it has said so: it and its declaring thread's ID.
+    fn declaring_child(home: &Path, at: bool) -> (std::process::Child, u64) {
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command
             .args([
                 "--exact",
                 "table::tests::declares_until_told",
@@ -618,9 +702,11 @@ mod tests {
             ])
             .env("SHARDS_DURABLE_TEST_HOME", home)
             .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .spawn()
-            .unwrap();
+            .stdout(std::process::Stdio::piped());
+        if at {
+            command.env("SHARDS_DURABLE_TEST_AT", "1");
+        }
+        let mut child = command.spawn().unwrap();
         let mut lines = std::io::BufReader::new(child.stdout.take().unwrap()).lines();
         let thread: u64 = lines
             .by_ref()
@@ -635,7 +721,7 @@ mod tests {
     #[test]
     fn a_write_another_process_declares_is_read() {
         let home = TempDir::new("durable-another").unwrap();
-        let (mut child, thread) = declaring_child(home.path());
+        let (mut child, thread) = declaring_child(home.path(), false);
         let (pid, start) = (child.id(), sys::start_of(child.id()).unwrap().unwrap());
         let reader = Reader::open(home.path()).unwrap();
         let seen = reader.declared(pid, start).unwrap();
@@ -647,5 +733,40 @@ mod tests {
         child.stdin.take().unwrap().write_all(b"\n").unwrap();
         assert!(child.wait().unwrap().success());
         assert!(reader.declared(pid, start).unwrap().is_empty());
+    }
+
+    /// A process that recorded its home ([`install_at`]) opens its slot file at its first
+    /// declaration, not before (the child checks), and that write is read as declared as an
+    /// installed process's is. A home not made has no slot file to open: a write there is
+    /// made undeclared.
+    #[test]
+    fn a_recorded_home_is_opened_at_its_first_declaration() {
+        let home = TempDir::new("durable-at").unwrap();
+        let (mut child, thread) = declaring_child(home.path(), true);
+        let (pid, start) = (child.id(), sys::start_of(child.id()).unwrap().unwrap());
+        let seen = Reader::open(home.path()).unwrap().declared(pid, start).unwrap();
+        assert_eq!(seen.len(), 1, "{seen:?}");
+        assert_eq!(seen[0].thread, thread);
+        child.stdin.take().unwrap().write_all(b"\n").unwrap();
+        assert!(child.wait().unwrap().success());
+        assert!(made_in(&home.path().join("not-made")).unwrap().is_none());
+    }
+
+    /// What a file system without F_FULLFSYNC holds is made durable with fsync instead, as
+    /// SQLite's `full_fsync` falls back: /dev/null refuses F_FULLFSYNC and takes fsync, as an
+    /// SMB share does, where std's `sync_all` fails (review 1.13); and a directory's names.
+    /// One test for the three copies of this fallback that vmm, ipc and image had.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_file_without_full_fsync_is_synced_still() {
+        use std::os::fd::AsRawFd as _;
+        let null = OpenOptions::new().write(true).open("/dev/null").unwrap();
+        // SAFETY: fcntl(2) of a descriptor this test holds.
+        let full = unsafe { libc::fcntl(null.as_raw_fd(), libc::F_FULLFSYNC) };
+        assert_eq!(full, -1, "/dev/null took F_FULLFSYNC");
+        crate::data(&null).unwrap();
+        crate::all(&null).unwrap();
+        let held = TempDir::new("sync").unwrap();
+        crate::entries(File::open(held.path()).unwrap()).unwrap();
     }
 }

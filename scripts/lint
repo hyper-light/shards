@@ -18,6 +18,19 @@ llvm=${LLVM_BIN:-$(brew --prefix llvm 2>/dev/null || true)/bin}
 echo "== format"
 cargo fmt --all --check
 
+echo "== durable writes"
+# Every durable write is shards_durable's, declared to whoever follows its process (D286):
+# clippy refuses the OS's syncs elsewhere (clippy.toml), but F_FULLFSYNC is a constant, which
+# clippy cannot name, so code outside crates/durable that names it is refused here. Comments
+# may name it.
+status=0
+git -C "$root" grep --untracked -n -E '^([^/]|/[^/])*F_FULLFSYNC' -- crates ':!crates/durable' || status=$?
+case $status in
+1) ;;
+0) echo "F_FULLFSYNC outside crates/durable: make the write durable with shards_durable (D286)" >&2; exit 1 ;;
+*) echo "searching crates/ for F_FULLFSYNC failed ($status)" >&2; exit 1 ;;
+esac
+
 for target in ${*:-$all}; do
 	case " $(printf '%s' "$all" | tr '\n' ' ') " in
 		*" $target "*) ;;

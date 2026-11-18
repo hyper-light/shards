@@ -157,8 +157,7 @@ fn slates_fs() -> Result<(), String> {
             std::fs::File::create("/mnt/from-guest").map_err(|e| format!("create /mnt/from-guest: {e}"))?;
         file.write_all(wrote.as_bytes())
             .map_err(|e| format!("write /mnt/from-guest: {e}"))?;
-        file.sync_all()
-            .map_err(|e| format!("fsync /mnt/from-guest: {e}"))?;
+        shards_durable::all(&file).map_err(|e| format!("fsync /mnt/from-guest: {e}"))?;
     }
     let back =
         std::fs::read_to_string("/mnt/from-guest").map_err(|e| format!("read /mnt/from-guest: {e}"))?;
@@ -188,8 +187,7 @@ fn share() -> Result<(), String> {
             std::fs::File::create("/mnt0/from-guest").map_err(|e| format!("create /mnt0/from-guest: {e}"))?;
         file.write_all(wrote.as_bytes())
             .map_err(|e| format!("write /mnt0/from-guest: {e}"))?;
-        file.sync_all()
-            .map_err(|e| format!("fsync /mnt0/from-guest: {e}"))?;
+        shards_durable::all(&file).map_err(|e| format!("fsync /mnt0/from-guest: {e}"))?;
     }
     // Each way to change the read-only share is refused EROFS, as its server answers a
     // change (fs/server.rs `writable`): a file made, one written, removed, renamed and cut.
@@ -326,7 +324,7 @@ fn slates_fs_dax() -> Result<(), String> {
         // SAFETY: inside the mapping (GUEST_AT + GUEST.len() < RANGE).
         unsafe { map.add(GUEST_AT + i).write_volatile(*byte) };
     }
-    file.sync_all().map_err(|e| format!("fsync {BIG}: {e}"))?;
+    shards_durable::all(&file).map_err(|e| format!("fsync {BIG}: {e}"))?;
     let _ = writeln!(io::stdout(), "SLATES-DAX STORED");
     waiting("the host's change in the map", || {
         let (host, own) = (read(HOST_AT, HOST.len()), read(GUEST_AT, GUEST.len()));
@@ -549,10 +547,10 @@ fn blk() -> Result<(), String> {
         pwrite_exact(fd, b, off)?;
         off += len as u64;
     }
-    // SAFETY: fsync on our descriptor; issues VIRTIO_BLK_T_FLUSH.
-    if unsafe { libc::fsync(fd) } != 0 {
-        return Err(format!("fsync: {}", io::Error::last_os_error()));
-    }
+    // SAFETY: our descriptor, open until it is closed below. Its fsync issues
+    // VIRTIO_BLK_T_FLUSH.
+    let held = unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) };
+    shards_durable::all(held).map_err(|e| format!("fsync: {e}"))?;
     let mut off = 0;
     while off < rw_bytes {
         let len = (1 << 20).min(rw_bytes - off) as usize;
@@ -1748,7 +1746,7 @@ fn pci_plug() -> Result<(), String> {
                 disk.seek(io::SeekFrom::Start(MIB as u64))
                     .map_err(|e| e.to_string())?;
                 disk.write_all(&buf).map_err(|e| format!("writing {name}: {e}"))?;
-                disk.sync_all().map_err(|e| format!("syncing {name}: {e}"))?;
+                shards_durable::all(&disk).map_err(|e| format!("syncing {name}: {e}"))?;
                 let _ = writeln!(io::stdout(), "SHARDS-PLUG DISK {name} {rescanned} {ready}");
             }
             ["grow", name, sectors] => {
@@ -1797,7 +1795,7 @@ fn pci_plug() -> Result<(), String> {
                 let mut file =
                     std::fs::File::create("/mnt/from-guest").map_err(|e| format!("/mnt/from-guest: {e}"))?;
                 file.write_all(b"written through a plugged share\n")
-                    .and_then(|()| file.sync_all())
+                    .and_then(|()| shards_durable::all(&file))
                     .map_err(|e| format!("/mnt/from-guest: {e}"))?;
                 drop(file);
                 let target = cstr("/mnt")?;
@@ -4188,7 +4186,7 @@ fn layer() -> Result<(), String> {
     for _ in 0..64 {
         big.write_all(&chunk).map_err(|e| e.to_string())?;
     }
-    big.sync_all().map_err(|e| e.to_string())?;
+    shards_durable::all(&big).map_err(|e| e.to_string())?;
     let wrote = now() - t;
     drop(big);
     let t = now();
@@ -4226,11 +4224,12 @@ fn layer() -> Result<(), String> {
             // SAFETY: within the mapping.
             unsafe { *p.cast::<u8>().add(page) = 1 };
         }
-        // SAFETY: the mapping made above.
-        unsafe {
-            libc::msync(p, len, libc::MS_SYNC);
-            libc::munmap(p, len);
+        if let Some(at) = std::ptr::NonNull::new(p.cast::<u8>()) {
+            // SAFETY: the mapping of `f` made above, unmapped after.
+            let _ = unsafe { shards_durable::view(&f, at, len) };
         }
+        // SAFETY: the mapping made above.
+        unsafe { libc::munmap(p, len) };
     }
     let mapped = now() - t;
     let _ = writeln!(
@@ -4840,7 +4839,7 @@ fn bpf_costs() -> Result<(), String> {
         .map_err(|e| format!("/dev/vda: {e}"))?;
     disk.write_all(rec.as_bytes())
         .map_err(|e| format!("writing /dev/vda: {e}"))?;
-    disk.sync_all().map_err(|e| format!("syncing /dev/vda: {e}"))
+    shards_durable::all(&disk).map_err(|e| format!("syncing /dev/vda: {e}"))
 }
 
 /// What a build step's devices cost its start (D44, PM M498): init's step_cgroup as it
@@ -4970,7 +4969,7 @@ fn step_cgroup_costs() -> Result<(), String> {
         .map_err(|e| format!("/dev/vda: {e}"))?;
     disk.write_all(rec.as_bytes())
         .map_err(|e| format!("writing /dev/vda: {e}"))?;
-    disk.sync_all().map_err(|e| format!("syncing /dev/vda: {e}"))
+    shards_durable::all(&disk).map_err(|e| format!("syncing /dev/vda: {e}"))
 }
 
 /// CLOCK_MONOTONIC, in nanoseconds.

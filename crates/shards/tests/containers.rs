@@ -2137,7 +2137,7 @@ fn a_volumes_large_files_go_through_its_dax_window() {
     {
         use std::os::fd::AsRawFd as _;
         let file = std::fs::File::open(dir.join("pages")).unwrap();
-        file.sync_all().unwrap();
+        shards_durable::all(&file).unwrap();
         // SAFETY: posix_fadvise(2) on a descriptor this test holds open.
         let advised = unsafe { libc::posix_fadvise(file.as_raw_fd(), 0, 0, libc::POSIX_FADV_DONTNEED) };
         assert_eq!(advised, 0);

@@ -45,8 +45,8 @@ use windows_sys::Win32::Storage::FileSystem::{
     FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_FULL_DIR_INFO, FILE_GENERIC_READ,
     FILE_GENERIC_WRITE, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
     FILE_SHARE_WRITE, FILE_WRITE_DATA, FileAttributeTagInfo, FileCaseSensitiveInfo, FileDispositionInfo,
-    FileDispositionInfoEx, FileFullDirectoryInfo, FlushFileBuffers, GetFileInformationByHandleEx,
-    SYNCHRONIZE, SetFileInformationByHandle,
+    FileDispositionInfoEx, FileFullDirectoryInfo, GetFileInformationByHandleEx, SYNCHRONIZE,
+    SetFileInformationByHandle,
 };
 use windows_sys::Win32::System::IO::{DeviceIoControl, IO_STATUS_BLOCK};
 use windows_sys::Win32::System::Ioctl::{
@@ -392,10 +392,10 @@ pub fn write_in(dir: &File, name: &str, bytes: &[u8]) -> io::Result<()> {
     )?;
     let landed = file
         .write_all(bytes)
-        .and_then(|()| super::sync_durable(&file))
+        .and_then(|()| shards_durable::data(&file))
         .and_then(|()| land(&file, dir, name, naming))
         // The rename is the file's own metadata: flushed with it.
-        .and_then(|version| super::sync_durable(&file).map(|()| version));
+        .and_then(|version| shards_durable::data(&file).map(|()| version));
     let version = match landed {
         Ok(version) => version,
         Err(e) => {
@@ -806,20 +806,16 @@ fn rename_to(file: &File, dir: &File, name: &str) -> io::Result<NTSTATUS> {
 }
 
 /// Makes the entries of the directory `dir` holds open durable: the renames into it survive
-/// a crash once this returns (unix.rs `sync_entries`). FlushFileBuffers wants a handle that
-/// may write ("must have the GENERIC_WRITE access right", its documentation), which `dir`,
-/// opened to read, is not: one of its own.
+/// a crash once this returns (unix.rs `sync_entries`), by `shards_durable::entries` of a
+/// handle of its own that may write: FlushFileBuffers wants one ("must have the GENERIC_WRITE
+/// access right", its documentation), which `dir`, opened to read, is not.
 pub fn sync_entries(dir: &File) -> io::Result<()> {
     let writable = reopen_dir(
         dir,
         FILE_GENERIC_WRITE | SYNCHRONIZE,
         FILE_SYNCHRONOUS_IO_NONALERT,
     )?;
-    // SAFETY: flushing a handle `writable` holds open.
-    if unsafe { FlushFileBuffers(writable.as_raw_handle()) } == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(())
+    shards_durable::entries(&writable)
 }
 
 /// The bytes a directory's listing is read in at once.
@@ -1506,7 +1502,7 @@ mod tests {
             .open(&path)
             .unwrap();
         file.write_all(&vec![0xaa; 4 * MIB]).unwrap();
-        file.sync_all().unwrap();
+        shards_durable::all(&file).unwrap();
         let allocated = || {
             let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
             let mut high = 0u32;

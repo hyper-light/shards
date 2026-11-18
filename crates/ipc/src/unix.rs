@@ -2275,27 +2275,6 @@ pub(crate) fn spawn_here(
     }
 }
 
-/// Makes completed writes to `file` durable on stable storage, as the VMM's
-/// `platform::sync_durable` does for the processes that link it (review 1.13): on macOS
-/// `F_FULLFSYNC`, which flushes the drive's cache where `fsync` does not (fsync(2)), and
-/// `fsync` where the filesystem has no `F_FULLFSYNC`, as SQLite falls back and as Go's
-/// `File.Sync` does on an SMB mount (go.dev/issue/64215), where std's `sync_all` fails.
-pub fn sync_durable(file: &std::fs::File) -> io::Result<()> {
-    #[cfg(target_os = "macos")]
-    {
-        // SAFETY: fcntl(2) on a descriptor the caller holds open.
-        if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_FULLFSYNC) } == 0 {
-            return Ok(());
-        }
-        // SAFETY: fsync(2) on the same descriptor.
-        if unsafe { libc::fsync(file.as_raw_fd()) } == 0 {
-            return Ok(());
-        }
-        Err(io::Error::last_os_error())
-    }
-    #[cfg(not(target_os = "macos"))]
-    file.sync_all()
-}
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 pub(crate) mod tests {
@@ -2435,20 +2414,6 @@ pub(crate) mod tests {
         drop(theirs);
         let mut judge = judge_every(std::time::Duration::from_millis(10), &asked, None);
         assert!(super::recv_judged(&ours, &mut judge).unwrap().is_none());
-    }
-
-    /// What a filesystem without F_FULLFSYNC holds is made durable with fsync instead:
-    /// /dev/null refuses F_FULLFSYNC and takes fsync, as an SMB share does, where std's
-    /// sync_all fails (review 1.13).
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn a_file_without_full_fsync_is_synced_still() {
-        let null = std::fs::OpenOptions::new().write(true).open("/dev/null").unwrap();
-        assert!(null.sync_all().is_err(), "std's sync_all took F_FULLFSYNC here");
-        sync_durable(&null).unwrap();
-        let held = shards_testdir::TempDir::new("sync").unwrap();
-        let dir = std::fs::File::open(&held).unwrap();
-        sync_durable(&dir).unwrap();
     }
 
     use super::*;

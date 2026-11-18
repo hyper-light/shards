@@ -1296,7 +1296,7 @@ pub fn relocate(dir: &Path, to: &dyn Fn(&Path) -> Option<PathBuf>) -> Result<(),
     let staged = generation.join(".state.moved");
     let _ = fs::remove_file(&staged);
     let file = create_unsynced(&staged, |mut f| f.write_all(&state)).map_err(|e| at(&e))?;
-    platform::sync_durable(&file).map_err(|e| at(&e))?;
+    shards_durable::data(&file).map_err(|e| at(&e))?;
     drop(file);
     fs::rename(&staged, generation.join(STATE)).map_err(|e| at(&e))?;
     platform::sync_dir(&generation).map_err(|e| at(&e))
@@ -1613,7 +1613,7 @@ impl Staged {
         let (dir, name, staging) = (&self.dir, &self.name, &self.staging);
         let committed = (|| -> io::Result<()> {
             for file in &self.files {
-                platform::sync_durable(file)?;
+                shards_durable::data(file)?;
             }
             // Closed once durable, before their directory moves: NTFS renames no directory a
             // file of which is open, ERROR_ACCESS_DENIED (PM M345).

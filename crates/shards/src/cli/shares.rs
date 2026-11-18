@@ -102,10 +102,11 @@ fn private_dir() -> Result<std::fs::File, String> {
     shards_vmm::platform::open_dir(&at).map_err(|e| format!("{}: {e}", at.display()))
 }
 
-/// The share process's arguments: `share`, then each share's mode and its name, empty for
-/// the whole directory.
-fn share_args(shares: &[(PathBuf, bool)]) -> Vec<&'static OsStr> {
+/// The share process's arguments: `share`, where its servers declare their durable writes
+/// (`durable`, D286), then each share's mode and its name, empty for the whole directory.
+fn share_args<'a>(durable: &'a [OsString], shares: &[(PathBuf, bool)]) -> Vec<&'a OsStr> {
     let mut args = vec![OsStr::new("share")];
+    args.extend(durable.iter().map(OsString::as_os_str));
     for (_, read_only) in shares {
         args.push(OsStr::new(if *read_only { "ro" } else { "rw" }));
         args.push(OsStr::new(""));
@@ -131,6 +132,7 @@ pub(super) fn served(args: &[OsString]) -> Result<(Vec<OsString>, Vec<std::os::f
     }
     let dirs = opened(&shares)?;
     let ghosts = private_dir()?;
+    let durable = crate::helpers::durable_words()?;
     let exe = std::env::current_exe().map_err(|e| format!("this binary: {e}"))?;
     let (link, theirs) = UnixStream::pair().map_err(|e| format!("the share process's connection: {e}"))?;
     let stderr = std::io::stderr();
@@ -146,7 +148,7 @@ pub(super) fn served(args: &[OsString]) -> Result<(Vec<OsString>, Vec<std::os::f
     // keeps this helper inside its original process-group/cgroup scope.
     shards_ipc::spawn(
         &exe,
-        &share_args(&shares),
+        &share_args(&durable, &shares),
         &fds,
         !super::has_vm_flag(args, "--host-managed"),
     )
@@ -232,6 +234,7 @@ pub(super) fn served(args: &[OsString], job: &shards_ipc::GroupJob) -> Result<Se
     }
     let dirs = opened(&shares)?;
     let ghosts = private_dir()?;
+    let durable = crate::helpers::durable_words()?;
     let exe = std::env::current_exe().map_err(|e| format!("this binary: {e}"))?;
     let streams = shares
         .iter()
@@ -259,7 +262,7 @@ pub(super) fn served(args: &[OsString], job: &shards_ipc::GroupJob) -> Result<Se
     let child = shards_ipc::spawn_detached(
         Some(job),
         &exe,
-        &share_args(&shares),
+        &share_args(&durable, &shares),
         &fds,
         &crate::netproc::env_pairs(&env),
     )

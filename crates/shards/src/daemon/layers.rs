@@ -1039,13 +1039,13 @@ mod tests {
         let (offset, len) = (((first + 1024) * 4096).next_multiple_of(1 << 20), 16u64 << 20);
         assert!(offset + len <= (first + n) * 4096);
         shards_vmm::platform::write_all_at(&file, &vec![0x5Au8; len as usize], offset).unwrap();
-        file.sync_all().unwrap();
+        shards_durable::all(&file).unwrap();
         let on_disk = || crate::os::on_disk(&at, &file.metadata().unwrap());
         let before = on_disk();
         let used = std::fs::read(&at).unwrap();
         let given = give_back(&at).unwrap().unwrap();
         assert!(given >= len, "{given} bytes given back");
-        file.sync_all().unwrap();
+        shards_durable::all(&file).unwrap();
         let after = on_disk();
         assert!(after + len <= before, "{before} bytes on disk, then {after}");
         let now = std::fs::read(&at).unwrap();

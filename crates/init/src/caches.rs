@@ -266,7 +266,7 @@ impl Caches {
         )
         .map_err(|e| err(e.0))?;
         let written = out.finish()?;
-        disk.sync_data()?;
+        shards_durable::data(&disk)?;
         // The host reads them from here on: the guest needs none of their pages, which only
         // a write the device refused past its cache left.
         // SAFETY: posix_fadvise(2) on a descriptor this process holds.

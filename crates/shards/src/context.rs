@@ -593,7 +593,7 @@ fn unnamed(path: &Path) -> PathBuf {
 fn write_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let mut file = shards_ipc::create_private(path)?;
     file.write_all(bytes)?;
-    file.sync_all()
+    shards_durable::all(&file)
 }
 
 fn dir(home: &Path, name: &str) -> Result<PathBuf, String> {
@@ -2193,7 +2193,7 @@ impl crate::synced::Outputs for Fetched {
     fn end(&mut self) -> io::Result<()> {
         match self.current.take() {
             Some(Fetching::File { file, temp, dest }) => {
-                let kept = file.sync_all().and_then(|()| fs::rename(&temp, &dest));
+                let kept = shards_durable::all(&file).and_then(|()| fs::rename(&temp, &dest));
                 *UNFINISHED
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner) = None;

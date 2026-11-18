@@ -9,6 +9,8 @@ rust-version.workspace = true
 publish = false
 
 [target.'cfg(windows)'.dependencies]
+# Its files made durable, declared (D286).
+shards-durable = { path = "../durable" }
 windows-sys = { workspace = true, features = [
   "Wdk_Foundation",
   "Wdk_Storage_FileSystem",

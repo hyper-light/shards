@@ -497,8 +497,7 @@ impl SwapWindow {
         let Some(mapped) = run.as_ref() else {
             return Ok(Vec::new());
         };
-        // SAFETY: the mapping `mapped` holds, which stays while its lock is held.
-        unsafe { platform::flush_shared(mapped.host, mapped.len) }.map_err(|e| format!("its swap: {e}"))?;
+        mapped.written_back().map_err(|e| format!("its swap: {e}"))?;
         let unmap = || self.slots.unmap(RUN_SLOT, self.gpa, mapped.len);
         // SAFETY: the mapping stays until the window drops, after the VM.
         let map = || unsafe {
@@ -545,8 +544,7 @@ impl SwapWindow {
         // without this; ext4 and XFS reserve its block as it is dirtied,
         // ext4_da_get_block_prep, xfs_buffered_write_iomap_begin), but one that gives it a
         // block only as it writes it back would count none, and the copy would lose it.
-        // SAFETY: the mapping `mapped` holds, which stays while its lock is held.
-        unsafe { platform::flush_shared(mapped.host, mapped.len) }.map_err(at)?;
+        mapped.written_back().map_err(at)?;
         let unmap = || self.slots.unmap(RUN_SLOT, self.gpa, mapped.len);
         // SAFETY: the mapping stays until the window drops, after the VM.
         let map = || unsafe {
@@ -792,14 +790,25 @@ impl Shared {
         platform::copy_ranges(file, to, self.len as u64, ranges)
     }
 
-    /// Makes what was written through it durable in its file ([`platform::sync_mapped`]:
+    /// Makes what was written through it durable in its file (`shards_durable::mapped`, D286:
     /// fdatasync on Linux, F_FULLFSYNC on macOS). Under its file's lock, which
     /// [`release`](Self::release) takes to let go of both.
     fn flush(&self) -> std::io::Result<()> {
         let file = lock(&self.file);
         let file = file.as_ref().ok_or_else(|| std::io::Error::other(RELEASED))?;
         // SAFETY: the mapping `map` made of `file`, which stays while its file is held here.
-        unsafe { platform::sync_mapped(file, self.host, self.len) }
+        unsafe { shards_durable::mapped(file, self.host, self.len) }
+    }
+
+    /// Writes what was written through it to its file, and waits until it has
+    /// (`shards_durable::view`, D286: msync(2) `MS_SYNC`, FlushViewOfFile): its file's blocks
+    /// then hold it, which [`platform::data_ranges`] says. Under its file's lock, as
+    /// [`flush`](Self::flush).
+    fn written_back(&self) -> std::io::Result<()> {
+        let file = lock(&self.file);
+        let file = file.as_ref().ok_or_else(|| std::io::Error::other(RELEASED))?;
+        // SAFETY: the mapping `map` made of `file`, which stays while its file is held here.
+        unsafe { shards_durable::view(file, self.host, self.len) }
     }
 
     /// Unmaps it and closes its file now, rather than as it drops; once. Under its file's
@@ -1184,8 +1193,7 @@ impl Layer {
     /// Its machine is paused, as a save's is: its mapping may be taken from its guest.
     pub unsafe fn data(&self) -> Result<Vec<(u64, u64)>, String> {
         let at = |e: std::io::Error| format!("its layer: {e}");
-        // SAFETY: the mapping `data` holds, for the layer's life.
-        unsafe { platform::flush_shared(self.data.host, self.data.len) }.map_err(at)?;
+        self.data.written_back().map_err(at)?;
         let guest = self
             .guest
             .get()
@@ -1225,8 +1233,7 @@ impl Layer {
         if head_alone {
             return self.data.write_runs(data, &[]).map_err(at);
         }
-        // SAFETY: the mapping `data` holds, for the layer's life.
-        unsafe { platform::flush_shared(self.data.host, self.data.len) }.map_err(at)?;
+        self.data.written_back().map_err(at)?;
         // The file system's part of the guest's mapping, after the head.
         let guest = self
             .guest
@@ -2371,8 +2378,8 @@ mod tests {
         {
             use std::os::unix::fs::MetadataExt as _;
             let run = File::open(dir.join("run")).unwrap();
-            run.sync_all().unwrap();
-            kept.sync_all().unwrap();
+            shards_durable::all(&run).unwrap();
+            shards_durable::all(&kept).unwrap();
             let on_disk = |f: &File| f.metadata().unwrap().blocks() * 512;
             assert!(
                 on_disk(&kept) <= on_disk(&run),

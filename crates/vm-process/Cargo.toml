@@ -25,6 +25,8 @@ gpu = ["shards-vmm/gpu"]
 [dependencies]
 shards-abi = { path = "../abi" }
 shards-cmdline = { path = "../cmdline" }
+# Its durable writes declared in its spawner's home's slot file, which it is given (D286).
+shards-durable = { path = "../durable" }
 shards-ipc = { path = "../ipc" }
 shards-vmm = { path = "../vmm" }
 

@@ -1,6 +1,10 @@
 //! Each OS's calls: the durable writes themselves, and what a declaration and its slot file
 //! take (a file's volume, a process's start, a thread's ID, the clock, the slot file's views
 //! and its growth's lock).
+#![expect(
+    clippy::disallowed_methods,
+    reason = "the one place shards calls its OS's durable writes, each declared by its caller (D286)"
+)]
 
 #[cfg(unix)]
 pub(crate) use unix::*;
@@ -305,8 +309,7 @@ mod windows {
 
     use windows_sys::Win32::Foundation::{CloseHandle, ERROR_INVALID_PARAMETER, FILETIME, WAIT_OBJECT_0};
     use windows_sys::Win32::Storage::FileSystem::{
-        BY_HANDLE_FILE_INFORMATION, FlushFileBuffers, GetFileInformationByHandle, LOCKFILE_EXCLUSIVE_LOCK,
-        LockFileEx, UnlockFileEx,
+        FlushFileBuffers, GetVolumeInformationByHandleW, LOCKFILE_EXCLUSIVE_LOCK, LockFileEx, UnlockFileEx,
     };
     use windows_sys::Win32::System::IO::{OVERLAPPED, OVERLAPPED_0, OVERLAPPED_0_0};
     use windows_sys::Win32::System::Memory::{
@@ -368,13 +371,28 @@ mod windows {
         Ok(())
     }
 
-    /// The volume `file` is on: its serial number (GetFileInformationByHandle's
-    /// `dwVolumeSerialNumber`), as GetVolumeInformationW names each volume.
+    /// The volume `file` is on: its serial number (GetVolumeInformationByHandleW), as
+    /// GetVolumeInformationW names each volume. Its volume's information alone
+    /// (FileFsVolumeInformation), which asks no access right of the handle, where the file's
+    /// own (GetFileInformationByHandle, FileBasicInformation) asks FILE_READ_ATTRIBUTES, which
+    /// a handle opened to write alone has not (vmm's NtCreateFile opens of a directory's files).
     pub(crate) fn volume(file: &impl Target) -> io::Result<u64> {
-        let mut info = BY_HANDLE_FILE_INFORMATION::default();
-        // SAFETY: a handle the caller holds, into a BY_HANDLE_FILE_INFORMATION of ours.
-        said(unsafe { GetFileInformationByHandle(handle(file), &raw mut info) })?;
-        Ok(u64::from(info.dwVolumeSerialNumber))
+        let mut serial = 0u32;
+        // SAFETY: a handle the caller holds; its serial alone asked, into a u32 of ours, and
+        // no buffer named.
+        said(unsafe {
+            GetVolumeInformationByHandleW(
+                handle(file),
+                std::ptr::null_mut(),
+                0,
+                &raw mut serial,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                0,
+            )
+        })?;
+        Ok(u64::from(serial))
     }
 
     fn filetime(at: FILETIME) -> u64 {

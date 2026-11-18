@@ -32,6 +32,9 @@ shards-verify = { path = "../verify" }
 # every helper given its three standard streams alone, on every OS (D248).
 shards-ipc = { path = "../ipc" }
 
+# Its credentials' durable writes, declared (D286).
+shards-durable = { path = "../durable" }
+
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
 

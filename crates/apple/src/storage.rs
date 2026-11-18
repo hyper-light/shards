@@ -255,19 +255,18 @@ fn count(cf: &frameworks::Api, dictionary: CFTypeRef, key: CFTypeRef) -> Option<
 #[cfg(test)]
 mod tests {
     /// This host's block storage drivers are read, and their completed I/O only grows: a
-    /// write flushed to the disk's media (F_FULLFSYNC) is one more of their writes, so the
-    /// sum is read again until it shows that, a wait for that fact, with no clock.
+    /// write flushed to the disk's media (`shards_durable::data`, F_FULLFSYNC) is one more of
+    /// their writes, so the sum is read again until it shows that, a wait for that fact, with
+    /// no clock.
     #[test]
     fn a_hosts_completed_io_is_read_and_grows_with_a_flush() {
         use std::io::Write as _;
-        use std::os::fd::AsRawFd as _;
         let first = super::completed().expect("the host's block storage statistics");
         let dir = shards_testdir::TempDir::new("storage").unwrap();
         let mut file = std::fs::File::create(dir.join("flushed")).unwrap();
         loop {
             file.write_all(&[0u8; 4096]).unwrap();
-            // SAFETY: fcntl(2) F_FULLFSYNC of a file this test holds open.
-            assert_ne!(unsafe { libc::fcntl(file.as_raw_fd(), libc::F_FULLFSYNC) }, -1);
+            shards_durable::data(&file).unwrap();
             if super::completed().unwrap() > first {
                 break;
             }

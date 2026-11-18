@@ -134,7 +134,7 @@ impl Invitation {
         match shards_ipc::create_private(path) {
             Ok(mut file) => file
                 .write_all(text.as_bytes())
-                .and_then(|()| file.sync_all())
+                .and_then(|()| shards_durable::all(&file))
                 .map_err(at),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                 if fs::read(path).map_err(at)? == text.as_bytes() {

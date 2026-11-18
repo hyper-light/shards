@@ -45,6 +45,13 @@ pub(crate) fn env_ours_first(ours: &str, theirs: &str) -> Option<String> {
         .find_map(|var| std::env::var(var).ok().filter(|v| !v.is_empty()))
 }
 
+/// The commands that record their home for their durable writes themselves (D286), which
+/// [`dispatch`] records for every other: the daemon, the home it entered (its paths are
+/// relative to it, runs-02); a share process, the home its spawner names (`share::DURABLE`),
+/// given no environment of its spawner's; and BuildKit's frontend, which runs in a guest,
+/// where no host judge follows it.
+const HOMES_OF_THEIR_OWN: [&str; 3] = ["daemon", "share", "frontend"];
+
 pub fn main() -> ExitCode {
     let mut args: Vec<OsString> = std::env::args_os().skip(1).collect();
     // A context (D180): the command runs whole on its machine. A context's own commands
@@ -270,6 +277,17 @@ fn dispatch(args: Vec<OsString>) -> ExitCode {
             return unknown(&shards_cmdline::catalog::unknown(word));
         }
         _ => {}
+    }
+    // Its durable writes declared in its home's slot file (D286), as the command it runs is
+    // known (`run daemon` is the daemon's): the home recorded alone here, which costs its
+    // launch no call (PM M113), and its slot file opened at the first. The first install of
+    // this process, which nothing refuses.
+    if words
+        .first()
+        .is_none_or(|command| !HOMES_OF_THEIR_OWN.contains(command))
+        && let Ok(home) = shards_ipc::home()
+    {
+        let _ = shards_durable::install_at(home);
     }
     if let Some(why) = owners_alone(&words, &crate::client_grants::client_here()) {
         return failed(&why);
@@ -1526,6 +1544,11 @@ fn vm(args: &[OsString]) -> ExitCode {
     // A managed VM's final use's keeper started (D260).
     let (args, final_use_to) = final_use_kept(args);
     let args = args.as_slice();
+    // Where it declares its durable writes (D286), its slot file granted it by its broker.
+    let durable = match crate::helpers::durable_words() {
+        Ok(durable) => durable,
+        Err(e) => return failed(&e),
+    };
     let broker = match shardsd() {
         Ok(bin) => bin,
         Err(e) => return failed(&e),
@@ -1573,7 +1596,7 @@ fn vm(args: &[OsString]) -> ExitCode {
         Ok(cwd) => cwd,
         Err(e) => return failed(&format!("the working directory: {e}")),
     };
-    let mut with: Vec<OsString> = Vec::with_capacity(args.len() + 6);
+    let mut with: Vec<OsString> = Vec::with_capacity(args.len() + 8);
     with.extend(args.first().cloned());
     with.push("--grants".into());
     with.push(fd.to_string().into());
@@ -1583,6 +1606,7 @@ fn vm(args: &[OsString]) -> ExitCode {
     with.extend(crate::helpers::vcpu_records_words(
         args.first().map(OsString::as_os_str),
     ));
+    with.extend(durable);
     with.extend(args.iter().skip(1).cloned());
     if let Err(e) = shares::inherit(shared)
         .and_then(|()| said_kept(said_to))
@@ -1643,14 +1667,19 @@ fn vm(args: &[OsString]) -> ExitCode {
     if let Err(why) = carried.keep_for_exec() {
         return carried_io_failure(why);
     }
-    // Where a boot's host model's vCPU records are kept (D261), which it holds open before
-    // Landlock confines it (D30).
+    // Where a boot's host model's vCPU records are kept (D261), and where it declares its
+    // durable writes (D286), each of which it holds open before Landlock confines it (D30).
+    let durable = match crate::helpers::durable_words() {
+        Ok(durable) => durable,
+        Err(e) => return failed(&e),
+    };
     let with = with.unwrap_or_else(|| args.to_vec());
-    let mut words: Vec<OsString> = Vec::with_capacity(with.len() + 2);
+    let mut words: Vec<OsString> = Vec::with_capacity(with.len() + 4);
     words.extend(with.first().cloned());
     words.extend(crate::helpers::vcpu_records_words(
         with.first().map(OsString::as_os_str),
     ));
+    words.extend(durable);
     words.extend(with.iter().skip(1).cloned());
     instead(&words)
 }
@@ -1961,9 +1990,14 @@ fn vm(args: &[OsString]) -> ExitCode {
         Ok(cwd) => cwd,
         Err(e) => return failed(&format!("the working directory: {e}")),
     };
-    // Where a boot's host model's vCPU records are kept (D261), which this process grants it.
+    // Where a boot's host model's vCPU records are kept (D261), which this process grants it,
+    // and where it declares its durable writes (D286), its slot file granted it too.
     let records = crate::helpers::vcpu_records_words(args.first().map(OsString::as_os_str));
-    let mut with: Vec<&std::ffi::OsStr> = Vec::with_capacity(args.len() + 6);
+    let durable = match crate::helpers::durable_words() {
+        Ok(durable) => durable,
+        Err(e) => return failed(&e),
+    };
+    let mut with: Vec<&std::ffi::OsStr> = Vec::with_capacity(args.len() + 8);
     with.extend(args.first().map(OsString::as_os_str));
     with.push("--cwd".as_ref());
     with.push(cwd.as_os_str());
@@ -1972,6 +2006,7 @@ fn vm(args: &[OsString]) -> ExitCode {
         with.push(WORKING_SET.as_ref());
     }
     with.extend(records.iter().map(OsString::as_os_str));
+    with.extend(durable.iter().map(OsString::as_os_str));
     with.extend(args.iter().skip(1).map(OsString::as_os_str));
     let (asks_to, answers_from) = (OwnedHandle::from(asks_to), OwnedHandle::from(answers_from));
     let env = crate::netproc::child_env();

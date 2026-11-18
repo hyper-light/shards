@@ -415,6 +415,9 @@ fn launch_with(
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     let answerer = kind.answerer();
     let (binary, env, _) = program(args, vm)?;
+    // Where it declares its durable writes (D286), its slot file granted it (D30): told
+    // before anything is started, as its slot file may not open.
+    let durable = crate::helpers::durable_words()?;
     #[cfg(target_os = "macos")]
     let (grants, granted) =
         std::os::unix::net::UnixStream::pair().map_err(|e| format!("{who}'s grants: {e}"))?;
@@ -453,6 +456,7 @@ fn launch_with(
     );
     // Where a boot's host model's vCPU records are kept (D261), which it is granted (D30).
     words.extend(crate::helpers::vcpu_records_words(args.first().copied()));
+    words.extend(durable);
     let args = absolute(args)?;
     let args: Vec<&OsStr> = args.iter().map(OsString::as_os_str).collect();
     let argv = after_command(&args, &words);
@@ -610,6 +614,8 @@ fn launch(plan: Plan<'_>, kind: Kind) -> Result<Launched, String> {
     } = plan;
     let (who, answerer) = (kind.who(), kind.answerer());
     let (binary, env, gpu) = program(args, vm)?;
+    // Where it declares its durable writes (D286), its slot file granted it (D30).
+    let durable = crate::helpers::durable_words()?;
     let network = match network {
         Some(n) => {
             let (ready, side) = crate::netproc::prepare(n.policy, &n.mac, n.bridge, n.credentials)?;
@@ -641,6 +647,7 @@ fn launch(plan: Plan<'_>, kind: Kind) -> Result<Launched, String> {
     );
     // Where a boot's host model's vCPU records are kept (D261), which it is granted (D30).
     words.extend(crate::helpers::vcpu_records_words(args.first().copied()));
+    words.extend(durable);
     let argv = after_command(args, &words);
     let err = std::io::stderr();
     let suspended = shards_ipc::spawn_suspended(&shards_ipc::Spawn {

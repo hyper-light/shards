@@ -734,7 +734,7 @@ pub fn layout_dir(
         let tmp = dest.join("ingest").join(d.hex());
         let mut f = std::fs::File::create(&tmp).map_err(|e| at(&tmp, e))?;
         write(&mut f).map_err(|e| at(&tmp, e))?;
-        f.sync_all().map_err(|e| at(&tmp, e))?;
+        shards_durable::all(&f).map_err(|e| at(&tmp, e))?;
         set_mode(&tmp, 0o444).map_err(|e| at(&tmp, e))?;
         std::fs::rename(&tmp, &path).map_err(|e| at(&path, e))
     };
@@ -939,7 +939,7 @@ pub fn layout_index_dir(
         let tmp = dest.join("ingest").join(d.hex());
         let mut f = std::fs::File::create(&tmp).map_err(|e| at(&tmp, e))?;
         write(&mut f).map_err(|e| at(&tmp, e))?;
-        f.sync_all().map_err(|e| at(&tmp, e))?;
+        shards_durable::all(&f).map_err(|e| at(&tmp, e))?;
         set_mode(&tmp, 0o444).map_err(|e| at(&tmp, e))?;
         std::fs::rename(&tmp, &path).map_err(|e| at(&path, e))
     };

@@ -523,7 +523,7 @@ fn copy_used_tree(from: &Path, to: &Path) {
             let len = source.metadata().unwrap().len();
             let made = std::fs::File::create(&copy).unwrap();
             shards_vmm::platform::copy_used(&source, &made, len).unwrap();
-            made.sync_all().unwrap();
+            shards_durable::all(&made).unwrap();
         }
     }
 }

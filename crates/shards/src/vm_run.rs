@@ -303,6 +303,15 @@ impl Common {
                 }
                 CWD.set(dir).map_err(|_| "--cwd given twice".to_string())?;
             }
+            "--durable" => {
+                let home = PathBuf::from(value("--durable")?);
+                if !home.is_absolute() {
+                    return Err(format!("--durable: {} is not an absolute path", home.display()));
+                }
+                DURABLE
+                    .set(home)
+                    .map_err(|_| "--durable given twice".to_string())?;
+            }
             "--grants" => grants(&text(value("--grants")?)?)?,
             "-e" | "--env" => w.env.push(text(value("--env")?)?),
             "-w" | "--workdir" => w.workdir = text(value("--workdir")?)?,
@@ -3340,6 +3349,36 @@ static BACKING: std::sync::OnceLock<Vec<(PathBuf, bool)>> = std::sync::OnceLock:
 /// Sandbox starts a VM process in its container instead.
 static CWD: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
+/// The home this process declares its durable writes in (`--durable HOME`, D286): its
+/// spawner's, which follows it by them (D215).
+static DURABLE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// The slot file of [`DURABLE`]'s home, where it was given one.
+fn durable_file() -> Option<PathBuf> {
+    DURABLE.get().map(|home| home.join(shards_durable::FILE))
+}
+
+/// Declares this process's durable writes in its spawner's home's slot file (D286), where it
+/// was given one (`--durable`): on macOS and Windows the file its spawner granted it, opened to
+/// be written (`Access::Write`), which its spawner made first; on Linux opened here, before
+/// Landlock, which gives no rule for it, as its vCPU records are held (D261). One that cannot
+/// be installed fails its start: its writes would go undeclared, as no judge may take them.
+fn durable_installed() -> Result<(), String> {
+    let Some(path) = durable_file() else {
+        return Ok(());
+    };
+    #[cfg(any(target_os = "macos", windows))]
+    let file = shards_vmm::platform::open_input(&path, true);
+    #[cfg(not(any(target_os = "macos", windows)))]
+    let file = std::fs::OpenOptions::new().read(true).write(true).open(&path);
+    file.and_then(shards_durable::install_file).map_err(|e| {
+        format!(
+            "{}: its home's declarations of durable writes: {e}",
+            path.display()
+        )
+    })
+}
+
 /// What a VM that saves a snapshot gives up once it is committed (review 8.2): the
 /// snapshot's directory, which only the save writes. A template's saver goes on to serve a
 /// run, and a guest that took its process over could otherwise rewrite what every later
@@ -3793,6 +3832,7 @@ fn granted(paths: &crate::confine::Paths) -> Result<(), String> {
         .chain(paths.write.iter().map(|p| (Access::Write, p.clone())))
         .chain(paths.write_under.iter().map(|p| (Access::MakeDir, p.clone())))
         .chain(paths.records.iter().map(|p| (Access::Keep, p.clone())))
+        .chain(durable_file().map(|p| (Access::Write, p)))
         .chain(paths.vsock.iter().map(|p| (Access::Listen, p.clone())))
         .collect();
     // The last it asks for: on macOS its link closes after unless it dials (`confine`); on
@@ -3968,20 +4008,23 @@ fn confine(paths: &crate::confine::Paths) -> Result<(), String> {
     // The last it asks for: the link closes, and the spawner grants nothing more, unless
     // the guest's connections to host ports go through it.
     #[cfg(target_os = "macos")]
-    return granted(paths).and_then(|()| match &paths.vsock {
-        Some(vsock) => dial_through_spawner(vsock),
-        None => {
-            if let Some(link) = GRANTS.get() {
-                shards_ipc::end(link);
+    return granted(paths)
+        .and_then(|()| durable_installed())
+        .and_then(|()| match &paths.vsock {
+            Some(vsock) => dial_through_spawner(vsock),
+            None => {
+                if let Some(link) = GRANTS.get() {
+                    shards_ipc::end(link);
+                }
+                Ok(())
             }
-            Ok(())
-        }
-    });
+        });
     // Its sockets narrowed, every connect refused, then Landlock, on every thread; and
     // its vsock path bound, and its dials beside it made, by its spawner (D30), whose link
     // closes where it has none to make.
     #[cfg(target_os = "linux")]
     return crate::confine::sockets()
+        .and_then(|()| durable_installed())
         .and_then(|()| crate::confine::landlock(paths))
         .and_then(|()| match &paths.vsock {
             Some(vsock) => {
@@ -4007,6 +4050,7 @@ fn confine(paths: &crate::confine::Paths) -> Result<(), String> {
     {
         shards_vmm::hv::forbid_dynamic_code_once_set_up();
         granted(paths)?;
+        durable_installed()?;
         // Its spawner stages its snapshots and reads its files' ranges for it, as long as
         // the link stays: it may make no FSCTL (D141), and a restore copies a template's
         // writable layer by its ranges (D196), as any save of it copies its layer and swap

@@ -1259,7 +1259,7 @@ mod tests {
         unsafe { head.host().as_ptr().add(HEAD_BLOCK + 8192).write_bytes(0x40, 64) };
         let kept = file(&dir, "head");
         head.save(&kept).unwrap();
-        platform::sync_durable(&kept).unwrap();
+        shards_durable::data(&kept).unwrap();
         assert_eq!(read_head_index(&kept, blocks).unwrap(), [None, Some(0)]);
         let used = kept.metadata().unwrap().blocks() * 512;
         assert!(used < (HEAD_BLOCK / 8) as u64, "{used} bytes of the file used");

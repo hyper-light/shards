@@ -1290,7 +1290,7 @@ fn durably(dir: &Path, name: &str, bytes: &[u8]) -> std::io::Result<()> {
     let aside = dir.join(format!("{name}.new"));
     let mut f = std::fs::File::create(&aside)?;
     f.write_all(bytes)?;
-    f.sync_all()?;
+    shards_durable::all(&f)?;
     std::fs::rename(&aside, dir.join(name))?;
     shards_vmm::platform::sync_dir(dir)
 }

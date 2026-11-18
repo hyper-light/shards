@@ -5593,7 +5593,7 @@ mod tests {
         let file = p.join("big");
         std::fs::write(&file, vec![7u8; 4 * mib]).unwrap();
         let held = std::fs::File::open(&file).unwrap();
-        held.sync_all().unwrap();
+        shards_durable::all(&held).unwrap();
         // The pages of the file's first `len` bytes resident in the host's page cache.
         let resident = || -> usize {
             let len = 4 * mib;

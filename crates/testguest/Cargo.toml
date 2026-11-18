@@ -22,6 +22,9 @@ path = "src/main.rs"
 [target.'cfg(target_os = "linux")'.dependencies]
 rustls = { version = "0.23.45", default-features = false, features = ["std", "aws_lc_rs"] }
 shards-devcgroup = { path = "../devcgroup" }
+# Its durable writes, through the one helper, declaring nothing: no host judge follows a guest
+# (D286).
+shards-durable = { path = "../durable" }
 shards-seccomp = { path = "../seccomp" }
 # HTTP/2's HPACK for `tls-ask`, the injector's own (D242, R12).
 shards-http2 = { path = "../http2" }

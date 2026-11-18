@@ -227,7 +227,7 @@ pub(crate) fn save(home: &Path, client: &str, grants: &Grants) -> Result<(), Str
     let written = shards_ipc::create_private(&unnamed).and_then(|mut f| {
         use std::io::Write as _;
         f.write_all(grants.text().as_bytes())?;
-        f.sync_all()
+        shards_durable::all(&f)
     });
     let kept = written.and_then(|()| std::fs::rename(&unnamed, &path));
     if kept.is_err() {

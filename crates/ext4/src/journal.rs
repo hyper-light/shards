@@ -56,7 +56,7 @@ impl WriteAt for std::fs::File {
     }
 
     fn sync(&self) -> io::Result<()> {
-        self.sync_data()
+        shards_durable::data(self)
     }
 }
 

@@ -763,7 +763,7 @@ mod tests {
             }
             let mut file = std::fs::File::create(&path).unwrap();
             shards_image::erofs::write(fs.tree(), &mut contents, &mut file).unwrap();
-            file.sync_all().unwrap();
+            shards_durable::all(&file).unwrap();
         };
         write(br#"{"run":{"command":["true"]}}"#);
         assert_eq!(agentfile(&path, &expected).unwrap().active_members, [0]);
