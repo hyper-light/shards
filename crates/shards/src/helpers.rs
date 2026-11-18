@@ -694,13 +694,20 @@ pub(crate) fn vcpu_records_words(command: Option<&std::ffi::OsStr>) -> Vec<std::
     if command.is_none_or(|command| command != "run") {
         return Vec::new();
     }
-    match cache() {
-        Ok(cache) if cache.is_absolute() => vec![
-            "--vcpu-records".into(),
-            cache.join("vcpu-limits").into_os_string(),
-        ],
-        _ => Vec::new(),
+    match vcpu_records() {
+        Some(dir) => vec!["--vcpu-records".into(), dir.into_os_string()],
+        None => Vec::new(),
     }
+}
+
+/// Where this user's host models' vCPU records are kept (D261): the cache's `vcpu-limits`,
+/// where a cache is named whole. What the VMs it boots keep their outcomes in
+/// ([`vcpu_records_words`]), and their host's bursts of refusals, whose width the daemon reads.
+pub(crate) fn vcpu_records() -> Option<PathBuf> {
+    cache()
+        .ok()
+        .filter(|cache| cache.is_absolute())
+        .map(|cache| cache.join("vcpu-limits"))
 }
 
 /// This user's cache: `SHARDS_CACHE` where it names a directory, else `~/Library/Caches/shards`

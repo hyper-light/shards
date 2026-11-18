@@ -1460,23 +1460,26 @@ for the exit status.
     template's file with its host's: its layer's copy into the restore's own file
     (`platform::copy_used`, reading its template's, writing to its host's disk) and its head's
     mapping (`pmem::Layer::restore`).
-  - **A run waiting on a pool fails only where a judge refuses it** (the same ruling). A refill
-    that fails for no fault of its template's leaves the runs that wait waiting: each wakes and
-    plans the next refill for the runs with none starting (`plan_refill`'s `for_runs`), and
-    "none is starting for it" is said only where no refill can be planned (its template gone or
-    broken, its root filesystem unrecorded or replaced) and none is starting. A refill that its
-    start's judge gives up on (D215, `ready`: it ran nothing past the slowest start seen) fails a
-    run left waiting with no refill starting for it, in the judge's words (`Pool::refused`,
-    typed `NotReady::Refused`); one for each such refill, no more than the runs that wait. A run
-    waits on a judge of its own (ROOT's ruling of 2026-11-17, D215 by the record of starts,
+  - **A run waiting on a pool fails on its own try, or where a judge refuses it** (the same
+    ruling; amended by ROOT's of 2026-11-18, below). A refill that ends before it is ready for
+    no fault of its template's, whatever ended it (its start's judge giving up on it, D215,
+    `ready`; its host refusing to enter it, D261; its VMM's error or its launch), fails a run
+    left waiting with no refill starting for it, in its words (`Pool::refused`; a judged one's
+    typed `NotReady::Refused`): that run's one try, one for each such refill, no more than the
+    runs that wait. It was the next refill's to plan, each run waking to plan one for the runs
+    with none starting, so that a refill failing every time was restored again and again (*A
+    refill that fails holds its pool's refills ahead*, below). "None is starting for it" is
+    said only where no refill can be planned (its template gone or broken, its root
+    filesystem unrecorded or replaced) and none is starting. A run waits on a judge of its own
+    (ROOT's ruling of 2026-11-17, D215 by the record of starts,
     `Answers::ready`, the kind it waits on): at each look due, its pool progressed where a
     refill came ready since the look before (`Pool::readied`); it is live (`Found::Held`)
     where a refill still starts, its own start's judge following it, and none has ended
     unready since; it is still where its refills keep ending unready for no fault of its
-    template's (`Pool::ended_unready`: its host refusing every entry, a VMM's error on every
-    start) or none starts. Still for a whole W* of starts, its wait is refused, the run told
-    that none of its pool's refills came ready, its template whole. A kind not yet taught
-    judges nothing, its wait following its refills alone, as D215's cold waits do.
+    template's while others start for it (`Pool::ended_unready`) or none starts. Still for a
+    whole W* of starts, its wait is refused, the run told that none of its pool's refills came
+    ready, its template whole. A kind not yet taught judges nothing, its wait following its
+    refills alone, as D215's cold waits do.
   - Held by daemon.rs `refills_no_fault_of_their_templates_keep_it_and_the_next_serves_the_run_waiting`
     (three refills ended NOT_RUN leave the template whole, and the run waiting is served by the
     next), `a_refill_failed_for_its_template_breaks_it` (one ended TEMPLATE_FAILED_STATUS breaks
@@ -1490,6 +1493,82 @@ for the exit status.
     (lanes/redgreen/own-38b-*.patch). Owed (ROOT): those tests and the pool tests, clippy on
     every target, and the next EC2 CI run's Arrival, its kept daemon log saying each refill's
     end and fault.
+  - **A refill that fails holds its pool's refills ahead** (ROOT's ruling of 2026-11-18, goal
+    1453357d, from own-35e's triage of CI 44245219858's windows-2025 job 134607324167). Its
+    images daemon 5368 restored a refill of one pool again and again for 37 minutes: its log
+    holds 41 refills ended 125 before they were ready ("malformed snapshot state", whose cause
+    is fixed apart), each "no fault of its template's", each followed by the next, until every
+    spawn of its host failed (os error 1450, 28 in 56 s). A refill that ends before it is ready for no
+    fault of its template's (`Fault::Judged`, `Fault::Host`, `Fault::Other`) holds its pool
+    (`Ahead::Held`): `plan_refill` plans none ahead of its runs until a refill of it comes
+    ready, which opens it (`Ahead::Open`). Its runs' own go on: a run that comes is planned
+    its VM as ever, its one try, failing in that VM's words where it fails (above). What a
+    pool starts is so bounded by its runs, never by itself: no number is chosen. The host's
+    span (below) is on top of it, for every pool, where the host refused.
+    - Held by daemon.rs `a_refill_that_fails_holds_its_pools_refills_ahead_and_a_run_tries_once`
+      (a stand-in VM ending 125, NOT_RUN, before READY: a refill ahead planned once, then none
+      until a run's own; that run's try ending 125 fails it at once in its words, naming its
+      VM, the pool still held; a run whose VM comes up runs, and its pool plans ahead again).
+      Red: lanes/redgreen/own-38g-held.patch (no hold: a refill ahead planned after the first
+      failed; and the run's failed try leaves it waiting, its next refill planned).
+  - **A host refusing entries holds the pools' refills for a burst width** (ROOT's rulings of
+    2026-11-18, goal 1453357d; D261). CI 44245219858's firecracker job (Intel Xeon 6975P-C under
+    EC2's nested KVM) met its host refusing VM entries at the arrival bench's rate 40: its
+    daemon's log holds 721 VM processes refused (VMX error 7), once each, 649 before their
+    guests ran and 72 after, over 42.36 s, 17.0 a second; 403 of them refills ended NOT_RUN,
+    "no fault of its template's". Each such end woke the runs waiting, which planned the next
+    refill at once: the pool restored straight into its host's refusals.
+    - *Told by its status.* A warm VM that took no run and ended as its host refused to enter it
+      says so by its status, `shards_ipc::HOST_REFUSED_STATUS` (75, sysexits(3)'s EX_TEMPFAIL,
+      "the request should be reattempted later"), as `TEMPLATE_FAILED_STATUS` tells its
+      template's fault (vm_run.rs `serve_workload`). A restore keeps nothing in its host model's
+      records (D261), so its status, not the records, is how its daemon hears of it.
+    - *A span of a burst width.* Such an end begins a span (`Host::Refusing`, `State::host`),
+      until a burst width has passed with none refused: its host model's, D261's, learned
+      (`Limits::burst_width_us`: the largest gap between consecutive refusals of one burst its
+      records keep, or the largest D261 measured, 1.122999 s, where none larger is kept), read
+      once as the span begins from the records in the user's cache (`helpers::vcpu_records`),
+      never kept apart. A refusal within it begins it again, its width kept. A refusal past a
+      width from the one before is of no burst of it (D261's chain), and D261's measured bursts
+      came 15.4 s or more apart. A host refuses every VM on it at once (D261's bursts), so the
+      span is every pool's, and a refused cold boot of a run begins it too. No number is chosen
+      here.
+    - *Within it, no VM ahead of the runs* (`plan_refill`): a pool's refills ahead wait for its
+      end; the next asked for after it plans as before. Nothing wakes at its end: a pool is
+      speculation, and a run is served regardless (below).
+    - *A run that comes within it waits for its end, then tries once* (`claim`). It is counted
+      for no refill until the span's end as it found it as it came; no refusal after holds it
+      again, so its wait is a burst width at most. A VM ready meanwhile serves it, and the
+      daemon's stop ends it. Then it is planned its VM as any run is, its wait on that judged
+      from then (D215's, by the record of starts). It fails only on evidence of its own (D215's
+      rule): its VM refused, it fails at once in its host's words, as a judged refill's run does
+      (`Pool::refused`), "VM P ended before it was ready; its process ended with status 75
+      (0x4b), its host's hypervisor having refused to enter it (D261)", naming the VM whose own
+      refusal its daemon's log holds, as the tests and the arrival bench read a run's refusal
+      (`common::run_vms`). Not refused at once on its neighbours' refusals, about a VM it never
+      tried: on a burst of a second a run comes up a second late rather than failing, and in a
+      storm like 44245219858's each run fails after one try of its own, refusals at the runs'
+      arrival rate, not the pool's 17 a second. A run waiting with a refill starting for it
+      waits for that one, as before.
+    - *Limits.* With no records kept, the width is D261's measured. A records file edited to
+      keep a wider `gap` holds refills and runs that long, said as each span begins ("until W
+      pass with none refused"); one past what the clock holds makes no span. Refusals of other
+      processes' VMs (another daemon's, a `run --kernel`) hold nothing here: a daemon hears its
+      own VMs' statuses alone. The width is read as a span begins, no hot path.
+    - Held by daemon.rs `a_run_that_comes_as_its_host_refuses_vms_waits_out_the_span_then_tries_once`
+      (stand-in VMs: a run waiting fails at once in its host's words, naming its VM; one that
+      comes within the span is counted for no refill before its end, then tries once, its VM
+      refused, failing in its host's words naming that VM; one that comes within the span that
+      refusal began runs, its VM up; within a span no refill is planned ahead, past it one is;
+      the width D261's measured, none kept in the test's home) and
+      `a_hosts_refusals_make_spans_of_its_burst_width_read_once_a_span` (the span's end, a
+      refusal within it beginning it again, its width read once, its end). Reds:
+      lanes/redgreen/own-38g-pause.patch (the status read as no one's: the run waiting plans the
+      next refill, which the test's daemon cannot start) and own-38g-pause-span.patch (no span
+      kept: the run that comes within it is counted for a refill at once). Written, not built or
+      run (the lane's rule). Owed (ROOT): those tests and the pool tests, clippy on every target,
+      and the next EC2 run's Arrival, its daemon's log saying refills ended 75 and "until W pass
+      with none refused", no refill started ahead within a span, and each run one try.
   - **VMs start outside the pools' lock** (review 7.8). What a pool needs is planned under
     it and counted as starting at once, so that no other claim or refill starts it again,
     then started without it: a start spawns the VM and its network process. A claim that

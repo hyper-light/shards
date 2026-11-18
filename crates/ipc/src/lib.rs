@@ -869,6 +869,15 @@ pub const SAVED_STATUS: u8 = 148;
 /// Read only of a VM that took no run, which has no command whose status it could be.
 pub const TEMPLATE_FAILED_STATUS: u8 = 65;
 
+/// The status of a warm VM that took no run and ended as its host's hypervisor refused to
+/// enter it (D261): its daemon starts none ahead of its runs, nor for a run that comes, until
+/// its host has refused none for a burst width (D26, ROOT's ruling of 2026-11-18; CI
+/// 44245219858, where a pool restored straight into its host's refusals, 17 VMs a second).
+/// sysexits(3)'s EX_TEMPFAIL, "temporary failure, indicating something that is not really an
+/// error ... the request should be reattempted later". Read only of a VM that took no run, as
+/// [`TEMPLATE_FAILED_STATUS`] is.
+pub const HOST_REFUSED_STATUS: u8 = 75;
+
 /// An `ATTACH_RUN` flag: the client's stdin goes to the command's.
 pub const ATTACH_STDIN: u8 = 1;
 

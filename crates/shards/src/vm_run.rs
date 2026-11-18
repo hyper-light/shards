@@ -2645,6 +2645,11 @@ fn serve_workload(
             report("its guest ended before it took a run");
             return ExitCode::from(shards_ipc::TEMPLATE_FAILED_STATUS);
         }
+        // One its host refused to enter before it took a run, said above, says so by its
+        // status too: its daemon then starts no VM into its host's refusals (D26, D261).
+        if refill && TAKEN.get().is_none() && matches!(reason, ExitReason::Refused(_)) {
+            return ExitCode::from(shards_ipc::HOST_REFUSED_STATUS);
+        }
         // The guest waits for its status to be read before it powers off, so the relay
         // has finished unless the guest never ran the command.
         // A warm VM's link to its daemon, where it kept its layer, closes as this returns:

@@ -887,11 +887,15 @@ struct Pool {
     broken: bool,
     /// Runs waiting for a VM of it.
     waiting: usize,
-    /// Why refills its start's judge gave up on (D215) failed, each while more runs waited
-    /// than refills were starting: each fails one run that waits, in its words, where a
-    /// refill that failed otherwise leaves them waiting for the next (`Daemon::claim`). No
-    /// more than the runs that wait: one that leaves unfailed takes one with it.
+    /// Why refills that ended before they were ready for no fault of its template's (its
+    /// start's judge giving up on one, D215; its host refusing to enter one, D261; any other
+    /// end) failed, each while more runs waited than refills were starting: each fails one
+    /// run that waits, in its words, its one try (`Daemon::claim`; ROOT's ruling of
+    /// 2026-11-18). No more than the runs that wait: one that leaves unfailed takes one with
+    /// it.
     refused: VecDeque<String>,
+    /// Whether it starts VMs ahead of its runs ([`Ahead`]).
+    ahead: Ahead,
     /// Its refills that came ready, and those that ended unready for no fault of its
     /// template's, counted: what a claim's judged wait reads of its pool (`Daemon::claim`;
     /// D215, D26).
@@ -900,6 +904,66 @@ struct Pool {
     /// Its runs' arrivals and its refills' times, which say how many VMs it keeps; its
     /// last claim orders eviction, least recent first.
     demand: shards_api::demand::Demand,
+}
+
+/// Whether a pool starts VMs ahead of its runs (D26, ROOT's ruling of 2026-11-18): CI
+/// 44245219858's windows-2025 images daemon restored a refill of one pool again and again for
+/// 37 minutes, each ending 125 before it was ready ("malformed snapshot state"), no fault of
+/// its template's, until every spawn of its host failed (os error 1450). What a pool starts is
+/// bounded by its runs, never by itself.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum Ahead {
+    /// As its target asks (`shards_api::demand`).
+    #[default]
+    Open,
+    /// None: a refill of it ended before it was ready for no fault of its template's, and none
+    /// has come ready since. Its runs' own go on, one try for each run that comes
+    /// (`Daemon::claim`), and the first to come ready opens it again.
+    Held,
+}
+
+/// What the daemon has seen of its host entering the VMs it starts (D26, D261; ROOT's ruling
+/// of 2026-11-18): CI 44245219858's pool restored into its host's refusals of entry, 721
+/// refused in 42.36 s, 17.0 a second.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum Host {
+    /// It enters them, as far as the daemon has seen.
+    #[default]
+    Entering,
+    /// Its hypervisor refused to enter one, last at `since`, as the VM's status said
+    /// (`shards_ipc::HOST_REFUSED_STATUS`): a span until `width` has passed with none refused,
+    /// `width` its host model's burst width (D261), read as the span began. Within it no VM
+    /// is started ahead of the runs (`Daemon::plan_refill`), and a run that comes is planned
+    /// none before the span's end as it found it (`Daemon::claim`).
+    Refusing { since: Instant, width: Duration },
+}
+
+impl Host {
+    /// One of its VMs ended at `now`, its host's hypervisor having refused to enter it: the
+    /// span under way begun again, its width kept, or one begun, its width as `read` reads
+    /// it, once a span. The width, where one began.
+    fn refused(&mut self, now: Instant, read: impl FnOnce() -> Duration) -> Option<Duration> {
+        let (width, began) = match *self {
+            Host::Refusing { since, width } if now.saturating_duration_since(since) < width => (width, false),
+            Host::Refusing { .. } | Host::Entering => (read(), true),
+        };
+        *self = Host::Refusing { since: now, width };
+        began.then_some(width)
+    }
+
+    /// The end of the span under way at `now`: none where its last refusal was a width ago or
+    /// more, which ends it, nor where its end is past what the clock holds (a width no
+    /// records of D261's make).
+    fn span_end(&mut self, now: Instant) -> Option<Instant> {
+        let Host::Refusing { since, width } = *self else {
+            return None;
+        };
+        if now.saturating_duration_since(since) >= width {
+            *self = Host::Entering;
+            return None;
+        }
+        since.checked_add(width)
+    }
 }
 
 /// Collections due, for the collector's thread ([`Daemon::collect_all`]).
@@ -927,6 +991,9 @@ struct State {
     pools: HashMap<PoolKey, Pool>,
     /// Pooled warm VMs still starting, by pid, for the daemon to end when it exits.
     starting: HashMap<u32, Arc<shards_ipc::Child>>,
+    /// Whether its host enters the VMs its pools start: every pool's, as its host refuses
+    /// the entries of every VM on it at once (D261's bursts).
+    host: Host,
 }
 
 /// The spare record (a microVM's ID, directory and log): none, one being made, or one made.
@@ -1641,6 +1708,9 @@ struct Daemon<D: Disk = Real> {
     /// What its microVMs' answers to its own execs have taught it, each kind apart, which its
     /// waits on them while they run are judged by ([`health::Wait::WhileRuns`]).
     answers: health::Answers,
+    /// Where its host model's vCPU records are kept (D261, `helpers::vcpu_records`), which its
+    /// host's burst width is read from ([`Daemon::burst_width`]): none where no cache is named.
+    vcpu_records: Option<PathBuf>,
     /// Runs waiting for a VM booted for them, by number: told as the daemon stops.
     booting: Mutex<HashMap<u64, mpsc::Sender<Started>>>,
     next_cold: AtomicU64,
@@ -2530,6 +2600,7 @@ impl<D: Disk> Daemon<D> {
             groups: groups::Groups::default(),
             checks: health::Checks::default(),
             answers: health::Answers::default(),
+            vcpu_records: crate::helpers::vcpu_records(),
             booting: Mutex::default(),
             next_cold: AtomicU64::new(0),
             boots: Boots::new(shards_vmm::vm::booting_vcpus_at_most(
@@ -8912,7 +8983,15 @@ impl<D: Disk> Daemon<D> {
                 .map(|p| (p.readied, p.ended_unready, p.starting > 0))
         };
         let (mut readied, mut ended) = counts(&state).map_or((0, 0), |(r, e, _)| (r, e));
-        let mut waiting = false;
+        // Where it comes as its host refuses to enter VMs (D261), the end of that span as it then
+        // stands: it is counted for no refill and planned none before it, and no refusal after
+        // holds it again, so that it waits its host model's burst width at most (ROOT's ruling
+        // of 2026-11-18). A wait to its end, on this claim's own timed wait: then it is planned
+        // its one VM as any run is, and fails in its host's words only where that is refused.
+        let deferred = state.host.span_end(began);
+        // Its arrival counted in its pool's demand, and itself among the runs a refill is
+        // planned for.
+        let (mut arrived, mut waiting) = (false, false);
         let leave = |state: &mut State, waiting: bool| {
             if waiting && let Some(pool) = state.pools.get_mut(key) {
                 pool.waiting = pool.waiting.saturating_sub(1);
@@ -8925,17 +9004,18 @@ impl<D: Disk> Daemon<D> {
                 state.pools.remove(key);
                 return Err(Claim::Broken);
             }
-            if !waiting {
+            if !arrived {
                 pool.demand.claimed(Instant::now(), self.target);
+                arrived = true;
             }
             // Its pool refills once it has its run (handle).
             if let Some(ready) = pool.ready.pop_front() {
                 leave(&mut state, waiting);
                 return Ok(ready);
             }
-            // A refill its start's judge gave up on fails a run that waited with no refill
-            // starting for it, in its judge's words (D215); one its host refused, or that failed
-            // otherwise for no fault of its template's, leaves it waiting for the next (D26).
+            // A refill that ended before it was ready, for no fault of its template's, fails a
+            // run that waited with no refill starting for it, in its words: its one try (D26,
+            // ROOT's ruling of 2026-11-18).
             if waiting && let Some(why) = pool.refused.pop_front() {
                 leave(&mut state, waiting);
                 return Err(Claim::Failed(why));
@@ -8945,9 +9025,26 @@ impl<D: Disk> Daemon<D> {
                 leave(&mut state, waiting);
                 return Err(Claim::Failed("the daemon is shutting down".into()));
             }
+            // Come as its host refused VMs: none planned for it before that span's end, which
+            // a VM ready meanwhile, or the daemon's stop, cuts short.
+            if let Some(end) = deferred {
+                let wait = end.saturating_duration_since(Instant::now());
+                if !wait.is_zero() {
+                    state = timed(Some(wait), || self.changed.wait_timeout(state, wait))
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .0;
+                    continue;
+                }
+            }
             if !waiting {
-                pool.waiting += 1;
+                pool_of(&mut state, key, rootfs, stamp).waiting += 1;
                 waiting = true;
+                // Its wait on its pool's refills is judged from here: a span waited out is none
+                // of it.
+                if deferred.is_some() {
+                    judge = shards_api::Judge::begin(&self.answers.ready);
+                    (readied, ended) = counts(&state).map_or((readied, ended), |(r, e, _)| (r, e));
+                }
             }
             // Its VM, unless one is starting for it, started outside the pools' lock,
             // which no other claim then waits on (review 7.8). One that cannot be started
@@ -9501,6 +9598,31 @@ impl<D: Disk> Daemon<D> {
         Ok(())
     }
 
+    /// VM `pid`'s host refused to enter it (D261): `host`'s span begun again, or one begun, its
+    /// width read as it begins ([`Host::refused`]), which is said.
+    fn host_refused(&self, host: &mut Host, pid: u32) {
+        if let Some(width) = host.refused(Instant::now(), || self.burst_width()) {
+            log(format!(
+                "VM {pid}: its host refused to enter it: no VM is started ahead of runs, nor planned for a run that comes, until {width:?} pass with none refused, its host model's burst width (D261)"
+            ));
+        }
+    }
+
+    /// Its host model's burst width (D261, `limits::Limits::burst_width_us`): the largest gap
+    /// between consecutive refusals of one burst its records keep, or the largest D261
+    /// measured where that is larger or none are kept. Read as a span of refusals begins,
+    /// never kept apart: its records learn as its host's VMs are refused.
+    fn burst_width(&self) -> Duration {
+        use shards_vmm::vm::limits;
+        let us = self
+            .vcpu_records
+            .as_ref()
+            .map_or_else(limits::measured_width_us, |dir| {
+                limits::Limits::at(dir.clone(), limits::HostModel::here()).burst_width_us()
+            });
+        Duration::from_micros(us)
+    }
+
     /// Waits for a VM to be ready and hands it to whoever it is for; then has its end, and
     /// its network process's, followed by the followers' loop (`follow_vm`), and returns:
     /// no thread waits out a VM's life. A pooled VM that ends while waiting leaves its
@@ -9553,29 +9675,42 @@ impl<D: Disk> Daemon<D> {
             .map_err(|e| NotReady::Failed(e.why))
             .and_then(|()| ready(&socket, pid, &self.answers.ready));
         // Said with what its process says, which may take a second: before the daemon's
-        // state is held. Its template's fault only where its status says so (D26).
+        // state is held. Its template's fault, or its host's refusal, only where its status
+        // says so (D26, D261).
         let ready = ready.map_err(|not| {
             let judged = matches!(not, NotReady::Refused(_));
             let (why, status) = with_its_process(&child, not.to_string());
-            let fault = if !unstarted && status == Some(i32::from(shards_ipc::TEMPLATE_FAILED_STATUS)) {
-                Fault::Template
+            let said = |by: u8| !unstarted && status == Some(i32::from(by));
+            if said(shards_ipc::TEMPLATE_FAILED_STATUS) {
+                (why, Fault::Template)
+            } else if said(shards_ipc::HOST_REFUSED_STATUS) {
+                (
+                    format!("{why}, its host's hypervisor having refused to enter it (D261)"),
+                    Fault::Host,
+                )
             } else if judged {
-                Fault::Judged
+                (why, Fault::Judged)
             } else {
-                Fault::Other
-            };
-            (why, fault)
+                (why, Fault::Other)
+            }
         });
+        // Refused by its host (D261): a span begun, or the one under way begun again
+        // (`Host::Refusing`).
+        let entry_refused = matches!(&ready, Err((_, Fault::Host)));
         match &dest {
             For::Pool(key) => {
                 let mut state = lock(&self.state);
                 state.starting.remove(&pid);
+                if entry_refused {
+                    self.host_refused(&mut state.host, pid);
+                }
                 let pool = state.pools.entry(key.clone()).or_default();
                 pool.starting = pool.starting.saturating_sub(1);
                 let came = ready.is_ok();
                 match ready {
                     Ok(()) => {
                         pool.readied += 1;
+                        pool.ahead = Ahead::Open;
                         let took = began.elapsed();
                         pool.demand.refilled(took);
                         // Said, as the daemon alone times its refills: the window a reader
@@ -9611,24 +9746,31 @@ impl<D: Disk> Daemon<D> {
                         self.vm_readied(pid, &live);
                         self.rebalance(threads, &state, key);
                     }
-                    // Broken where it failed for its template's sake (`Pool::broken`). Given up on
-                    // by its start's judge, it fails a run left waiting with no refill starting
-                    // for it (`Pool::refused`). Any other end counts against nothing, and the
-                    // runs that wait plan the next refill.
+                    // Broken where it failed for its template's sake (`Pool::broken`). Failed for
+                    // no fault of its template's, it fails a run left waiting with no refill
+                    // starting for it, in its words, that run's one try (`Pool::refused`), and its
+                    // pool starts none ahead of its runs until one comes ready (`Ahead::Held`).
                     Err((e, fault)) => {
                         if fault != Fault::Template {
                             pool.ended_unready += 1;
+                            pool.ahead = Ahead::Held;
                         }
                         match fault {
                             Fault::Template => {
                                 pool.broken = true;
                                 log(format!("{e}: its template's, so {} is broken", key.dir.display()));
                             }
-                            Fault::Judged if pool.waiting > pool.starting + pool.refused.len() => {
-                                log(format!("{e}: a run waiting on its pool fails with it"));
+                            Fault::Judged | Fault::Host | Fault::Other
+                                if pool.waiting > pool.starting + pool.refused.len() =>
+                            {
+                                log(format!(
+                                    "{e}: no fault of its template's; a run waiting on its pool fails with it"
+                                ));
                                 pool.refused.push_back(e);
                             }
-                            Fault::Judged | Fault::Other => log(format!("{e}: no fault of its template's")),
+                            Fault::Judged | Fault::Host | Fault::Other => log(format!(
+                                "{e}: no fault of its template's; its pool starts none ahead of its runs until one comes ready"
+                            )),
                         }
                         let _ = child.kill(shards_ipc::signal::SIGKILL);
                     }
@@ -9657,6 +9799,10 @@ impl<D: Disk> Daemon<D> {
                 }
                 Err((e, _)) => {
                     let _ = child.kill(shards_ipc::signal::SIGKILL);
+                    // A cold boot's refusal is its host's as a refill's is: every pool's.
+                    if entry_refused {
+                        self.host_refused(&mut lock(&self.state).host, pid);
+                    }
                     let _ = tx.send(Started::Ended(Box::new(Err(e))));
                 }
             },
@@ -10527,7 +10673,11 @@ fn ready(socket: &UnixStream, pid: u32, record: &shards_api::Record) -> Result<(
         })?;
         #[cfg(test)]
         lock(&WAITED_PAST_MOST).insert(pid, followed.waited_past_most());
-        if let (false, shards_api::Seen::Learned { slowest, .. }) = (said, record.seen()) {
+        // Past it only once its time is: a look comes before W* too (CI 44245219858 said
+        // "past the slowest start seen" 1.4 ms into a start).
+        if let (false, shards_api::Seen::Learned { slowest, .. }) = (said, record.seen())
+            && into() >= slowest
+        {
             said = true;
             log(format!(
                 "VM {pid}: not ready {:?} into its start, past the slowest start seen ({slowest:?}): followed as it goes on",
@@ -10575,11 +10725,17 @@ enum Fault {
     /// Its template's: it ended with `shards_ipc::TEMPLATE_FAILED_STATUS`. Its template is
     /// broken (`Pool::broken`).
     Template,
-    /// Its start's judge's, which gave up on it (D215, [`NotReady::Refused`]): a run left
-    /// waiting with no refill starting for it fails with its words (`Pool::refused`).
+    /// Its start's judge's, which gave up on it (D215, [`NotReady::Refused`]): as
+    /// [`Fault::Other`].
     Judged,
-    /// No one's it counts: its host's refusal to enter it (D261), its VMM's error, its
-    /// launch, its end otherwise. The runs that wait plan the next refill.
+    /// Its host's: its hypervisor refused to enter it (D261), as its status said
+    /// (`shards_ipc::HOST_REFUSED_STATUS`). As [`Fault::Other`]; and until a burst width has
+    /// passed with none refused, no pool starts a VM ahead of its runs, nor plans one for a
+    /// run that comes (`Host::Refusing`).
+    Host,
+    /// No one's it counts: its VMM's error, its launch, its end otherwise. A run left waiting
+    /// with no refill starting for it fails with its words, its one try, and its pool starts
+    /// none ahead of its runs until one comes ready (`Ahead::Held`).
     Other,
 }
 
@@ -11562,7 +11718,7 @@ mod tests {
             })
             .unwrap();
             let home_lock = File::create(home.join("daemon.lock")).unwrap();
-            let daemon = Daemon::new(
+            let mut daemon = Daemon::new(
                 home.to_path_buf(),
                 VmBinary::given(PathBuf::from("shards-vm")),
                 Identity::default(),
@@ -11582,6 +11738,8 @@ mod tests {
                 home_lock,
             )
             .unwrap();
+            // Its host model's vCPU records in its home, never its user's cache's.
+            daemon.vcpu_records = Some(home.join("vcpu-limits"));
             Test {
                 daemon,
                 home,
@@ -17416,6 +17574,271 @@ mod tests {
                     .get(&own(&dir))
                     .is_none_or(|p| !p.broken && p.waiting == 0)
             );
+        });
+    }
+
+    /// A host refusing to enter VMs (D261) begins a span of its host model's burst width, read
+    /// as it begins: a refusal within it begins it again, its width kept and not read again,
+    /// and one past it begins another; a width past the last refusal, it has ended (D26, ROOT's
+    /// ruling of 2026-11-18).
+    #[test]
+    fn a_hosts_refusals_make_spans_of_its_burst_width_read_once_a_span() {
+        let width = Duration::from_micros(shards_vmm::vm::limits::measured_width_us());
+        let mut host = Host::default();
+        let t0 = Instant::now();
+        assert_eq!(host.span_end(t0), None);
+        assert_eq!(host.refused(t0, || width), Some(width));
+        assert_eq!(host.span_end(t0), Some(t0 + width));
+        let again = t0 + width / 2;
+        assert_eq!(
+            host.refused(again, || panic!("a width read within its span")),
+            None
+        );
+        assert_eq!(host.span_end(again), Some(again + width));
+        assert_eq!(host.span_end(again + width), None);
+        assert_eq!(host, Host::Entering);
+        let later = again + width * 2;
+        assert_eq!(host.refused(later, || width * 2), Some(width * 2));
+        assert_eq!(host.span_end(later), Some(later + width * 2));
+    }
+
+    /// A refill its host's hypervisor refused to enter (its status
+    /// `shards_ipc::HOST_REFUSED_STATUS`, D261) begins a span of its host model's burst width
+    /// (D26, ROOT's ruling of 2026-11-18; CI 44245219858's pool restored into its host's
+    /// refusals, 17 VMs a second). The run waiting on it with no refill starting for it fails
+    /// at once in its host's words, naming the VM refused as the tests' readers of a run's
+    /// refusal find it (`common::run_vms`). A run that comes within the span is counted for no
+    /// refill before the span's end, then tries once: its VM refused, it fails in its host's
+    /// words naming that VM; its VM up, it runs. Within a span no refill is planned ahead of
+    /// the runs of any pool, one none of whose refills failed among them; past it, one is.
+    /// Its width is its host model's records' (none kept in this home: D261's measured). Each
+    /// refill is the test's stand-in, counted as starting as a plan counts it, so that a run
+    /// counted plans none of its own, which a test's daemon cannot start. Red with the
+    /// refusal's status read as no one's (lanes/redgreen/own-38g-pause.patch: the run waiting
+    /// fails in words that are not its host's), and with no span kept
+    /// (lanes/redgreen/own-38g-pause-span.patch: the other pool plans ahead within the span,
+    /// and the run that comes within it is counted for a refill at once).
+    #[cfg(unix)]
+    #[test]
+    fn a_run_that_comes_as_its_host_refuses_vms_waits_out_the_span_then_tries_once() {
+        let mut t = Test::new("host-refusing");
+        // A pool's target: a refill ahead is planned once its host enters again.
+        t.daemon.target = 2;
+        t.daemon.warm_max = 8;
+        t.run(|t| {
+            let dir = t.home.join("template");
+            template(&dir);
+            // Another template's pool, none of whose refills fails.
+            let other = t.home.join("other");
+            template(&other);
+            let rootfs = dir.with_extension("erofs");
+            let stamp = shards_image::store::rootfs_stamp(&rootfs);
+            let (test, threads) = (t.t, t.threads);
+            let claim = || match test.daemon.claim(threads, &own(&dir), &rootfs, stamp.as_deref()) {
+                Ok(ready) => Ok(ready.vm.id()),
+                Err(Claim::Broken) => Err("found broken".to_string()),
+                Err(Claim::Failed(why)) => Err(why),
+            };
+            // A refill starting, its VM the test's to play.
+            let starting = || {
+                pool_of(
+                    &mut lock(&test.daemon.state),
+                    &own(&dir),
+                    &rootfs,
+                    stamp.as_deref(),
+                )
+                .starting += 1;
+            };
+            let counted = || {
+                lock(&test.daemon.state)
+                    .pools
+                    .get(&own(&dir))
+                    .map_or(0, |p| p.waiting)
+            };
+            // The span under way: when its last refusal came, and its width.
+            let span = || match &lock(&test.daemon.state).host {
+                Host::Refusing { since, width } => Some((*since, *width)),
+                Host::Entering => None,
+            };
+            let in_its_words = |why: &str, pid: u32| {
+                why.contains(&format!("VM {pid} ended"))
+                    && why.contains("its host's hypervisor having refused to enter it")
+            };
+            std::thread::scope(|s| {
+                // A run waiting, its refill refused: it fails at once, in its host's words.
+                starting();
+                let first = party::spawn_in(s, claim);
+                while !first.is_finished() && counted() == 0 {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                let pid = refill_played(t, &dir, Played::Ended(shards_ipc::HOST_REFUSED_STATUS));
+                let why = first.join().unwrap().unwrap_err();
+                assert!(in_its_words(&why, pid), "{why}");
+                let (since, width) = span().expect("its host's refusal not kept");
+                assert_eq!(
+                    width,
+                    Duration::from_micros(shards_vmm::vm::limits::measured_width_us())
+                );
+                let end = since + width;
+
+                // A run that comes within it: counted for no refill before its end. Nor is a
+                // refill planned ahead there, of any pool, one none of whose refills failed
+                // among them, which a look shows where its host did not hold this test a whole
+                // width. Each run's end comes before its checks, so that a failing check leaves
+                // no claim waiting.
+                starting();
+                let second = party::spawn_in(s, claim);
+                let (planned_ahead, looked) = {
+                    let mut state = lock(&t.daemon.state);
+                    let planned = t.daemon.plan_refill(&mut state, &own(&other), true).is_some();
+                    let looked = Instant::now();
+                    if let Some(pool) = state.pools.get_mut(&own(&other)) {
+                        pool.starting = 0;
+                    }
+                    (planned, looked)
+                };
+                while !second.is_finished() && counted() == 0 {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                let counted_at = Instant::now();
+                // Its one try: its VM refused, in its host's words, naming that VM.
+                let pid = refill_played(t, &dir, Played::Ended(shards_ipc::HOST_REFUSED_STATUS));
+                let why = second.join().unwrap().unwrap_err();
+                if looked < end {
+                    assert!(!planned_ahead, "a refill planned ahead within its host's span");
+                } else {
+                    eprintln!("its host held this test past its span ({width:?}): no look within it");
+                }
+                assert!(
+                    counted_at >= end,
+                    "a run counted for a refill {:?} before its span's end",
+                    end.saturating_duration_since(counted_at)
+                );
+                assert!(in_its_words(&why, pid), "{why}");
+
+                // A run that comes within the span its refusal began: past it, its VM up, it
+                // runs.
+                let (since, width) = span().expect("its host's refusal not kept");
+                let end = since + width;
+                starting();
+                let third = party::spawn_in(s, claim);
+                while !third.is_finished() && counted() == 0 {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                let counted_at = Instant::now();
+                let pid = refill_played(t, &dir, Played::Ready);
+                assert_eq!(third.join().unwrap(), Ok(pid));
+                assert!(
+                    counted_at >= end,
+                    "a run counted for a refill {:?} before its span's end",
+                    end.saturating_duration_since(counted_at)
+                );
+            });
+            // Past the span, a refill ahead is planned again, its host entering: of the other
+            // pool, and of this one, its last refill come up.
+            let mut state = lock(&t.daemon.state);
+            assert!(t.daemon.plan_refill(&mut state, &own(&other), true).is_some());
+            assert!(t.daemon.plan_refill(&mut state, &own(&dir), true).is_some());
+            assert_eq!(state.host, Host::Entering);
+            let pool = &state.pools[&own(&dir)];
+            assert!(
+                !pool.broken && pool.waiting == 0,
+                "{:?}",
+                (pool.broken, pool.waiting)
+            );
+        });
+    }
+
+    /// A refill that ends before it is ready for no fault of its template's (here 125, NOT_RUN,
+    /// as CI 44245219858's windows-2025 refills ended, restored again and again for 37 minutes)
+    /// holds its pool's refills ahead until one comes ready (D26, ROOT's ruling of 2026-11-18):
+    /// one refill ahead planned, then none until a run's own. That run's try ending so fails it
+    /// at once in its words, naming its VM, the pool still held; a run whose VM comes up runs,
+    /// and its pool plans ahead again. Each run's VM is the test's stand-in, counted as starting
+    /// as a plan counts it, so that a run counted plans none of its own, which a test's daemon
+    /// cannot start. Reds: no hold (lanes/redgreen/own-38g-held.patch: a refill ahead planned
+    /// after the first failed), and a failed try leaving its run waiting
+    /// (lanes/redgreen/own-38g-held-try.patch: its run plans the next refill, "starting a warm
+    /// VM").
+    #[cfg(unix)]
+    #[test]
+    fn a_refill_that_fails_holds_its_pools_refills_ahead_and_a_run_tries_once() {
+        let mut t = Test::new("held-refills");
+        // A pool's target: a refill ahead is planned where its pool is open.
+        t.daemon.target = 2;
+        t.daemon.warm_max = 8;
+        t.run(|t| {
+            let dir = t.home.join("template");
+            template(&dir);
+            let rootfs = dir.with_extension("erofs");
+            let stamp = shards_image::store::rootfs_stamp(&rootfs);
+            let (test, threads) = (t.t, t.threads);
+            let claim = || match test.daemon.claim(threads, &own(&dir), &rootfs, stamp.as_deref()) {
+                Ok(ready) => Ok(ready.vm.id()),
+                Err(Claim::Broken) => Err("found broken".to_string()),
+                Err(Claim::Failed(why)) => Err(why),
+            };
+            // Whether a refill ahead is planned now, as the refiller plans one: its count taken
+            // back, as the test starts none.
+            let planned_ahead = || {
+                let mut state = lock(&test.daemon.state);
+                let was = state.pools.get(&own(&dir)).map_or(0, |p| p.starting);
+                let planned = test.daemon.plan_refill(&mut state, &own(&dir), true).is_some();
+                if let Some(pool) = state.pools.get_mut(&own(&dir)) {
+                    pool.starting = was;
+                }
+                planned
+            };
+            // A refill starting, its VM the test's to play.
+            let starting = || {
+                pool_of(
+                    &mut lock(&test.daemon.state),
+                    &own(&dir),
+                    &rootfs,
+                    stamp.as_deref(),
+                )
+                .starting += 1;
+            };
+            let counted = || {
+                lock(&test.daemon.state)
+                    .pools
+                    .get(&own(&dir))
+                    .map_or(0, |p| p.waiting)
+            };
+            // A run that comes, counted, its VM played as `played`: what it was told, and its
+            // VM's pid.
+            let run = |played: Played| {
+                std::thread::scope(|s| {
+                    starting();
+                    let claiming = party::spawn_in(s, claim);
+                    while !claiming.is_finished() && counted() == 0 {
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                    let pid = refill_played(t, &dir, played);
+                    (claiming.join().unwrap(), pid)
+                })
+            };
+            // A refill ahead, its VM ending before it was ready, no fault of its template's.
+            assert!(planned_ahead(), "no refill planned ahead");
+            starting();
+            refill_played(t, &dir, Played::Ended(crate::spec::NOT_RUN));
+            assert!(!planned_ahead(), "a refill planned ahead after one failed");
+            // A run's one try, ending so: it fails at once, in its words.
+            let (told, pid) = run(Played::Ended(crate::spec::NOT_RUN));
+            let why = told.unwrap_err();
+            assert!(
+                why.contains(&format!("VM {pid} ended")) && why.contains("status 125"),
+                "{why}"
+            );
+            assert!(
+                !planned_ahead(),
+                "a refill planned ahead after a run's try failed"
+            );
+            // A run whose VM comes up runs, and its pool plans ahead again.
+            let (told, pid) = run(Played::Ready);
+            assert_eq!(told, Ok(pid));
+            assert!(planned_ahead(), "no refill planned ahead once one came ready");
+            assert!(!lock(&t.daemon.state).pools[&own(&dir)].broken);
         });
     }
 
