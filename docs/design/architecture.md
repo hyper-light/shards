@@ -40578,6 +40578,29 @@ post-mortem read of the printk ring through VMCOREINFO, not a debug port.
           musl job (its `console=ttyS0` boot's vCPU 0, beside the `shards_api` tests' refusals).
           The arrival bench reads a rate's span by it, every refusal at once
           (`limits::the_hosts_all`, D209 Part 11).
+        - *A test's VM ended by its host's refusal wherever the test meets that end* (CI
+          44379986478 at 4ff00b72a8, goal #36, own-38s). EC2's nested KVM refused a VM that
+          served a test's run on two paths the gate was not on: x86_64 gnu's
+          `pools_keep_what_their_runs_need_while_they_come`, a burst's held run (`Held`, its
+          client's stderr then /dev/null) ended 125, its VM 306660's vCPU 0 refused 170 ms into
+          its process; x86_64 musl's `idle_followers_cost_nothing_and_end_with_their_container`,
+          whose detached run's VM 201354 had its vCPU 3 refused after its guest ran, so `kill up`
+          found it "not running", true of a container its VM had ended with. Now a held run's
+          client's words go to a file and its end is gated by them (`Held::end`, its three
+          callers), and a detached run's by its container's ID (`common::container_host_refused`:
+          its VMs those its daemon's log says `could not serve its run`, by their pids, no other
+          container's). Either reads a VM's refusal once it has said one or its process has gone:
+          a warm VM that took a run says its refusal as its machine stops and exits 0, its client
+          having the status, so its daemon logs no `VM N ended`, and the wait for that line ran to
+          its patience's refusal (`vms_host_refused`). VM 306660's refusal is labelled before its
+          guest ran (`Entered`: a restored vCPU's own I/O alone counts) and had no witness in its
+          job, so the gate leaves its failure standing, said with why; whether a restored vCPU
+          idle in its guest, which makes no I/O exit, had been entered is not read (KVM counts
+          each of a vCPU's exits, a failed entry's too, in its `exits` statistic:
+          arch/x86/kvm/x86.c `vcpu_enter_guest`, Linux 7.2-rc4), which is ROOT's to rule on.
+          Held by harness.rs `a_containers_vm_refusal_is_read_by_its_id` (a stand-in log: the
+          container's VM's refusal read, another container's and one whose ID only begins with
+          it not); red: lanes/redgreen/own-38s-container-refusal.patch.
         - *No witness yet:* a machine past its init's announcement keeps no refusal, as its
           records are let go of then; a restore keeps none either, since it is given no records.
           Their refusals are said, but witness nothing, and a restore's refusal before its guest

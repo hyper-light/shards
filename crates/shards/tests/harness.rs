@@ -3147,6 +3147,48 @@ fn a_failed_runs_vm_refusal_is_read_by_its_vms_pid() {
     assert_eq!(common::run_refusal(&said, &other), "");
 }
 
+/// A container's VM's refusal is read from its daemon's log by the container's own ID, where
+/// no client heard its run's words (`common::container_refusal`, what
+/// `common::container_host_refused` gates): the VM its daemon logged as unable to serve that
+/// container's run, and that VM's refusal, not another container's VM's, nor one whose ID only
+/// begins with its own. CI 44379986478, x86_64 musl, daemon.rs
+/// `idle_followers_cost_nothing_and_end_with_their_container`: `run -d`'s VM 201354 refused
+/// (0x7, after its guest ran), the container ended with it, and `kill up` failed "it is not
+/// running" with no refusal its test could read. A stand-in log, as the daemon and a warm VM's
+/// own log write it, in the order that run's did: the VM's refusal before the daemon's line.
+#[test]
+fn a_containers_vm_refusal_is_read_by_its_id() {
+    let refusal = |pid: u32| {
+        format!(
+            "vCPU 3: VM entry failed (hardware reason 0x7): the host's hypervisor (KVM under \
+             KVMKVMKVM) refused to enter it (after its guest ran, at 1795033598.145239 s, VM \
+             process {pid})"
+        )
+    };
+    let unserved = "the guest stopped before the command ended: failed to fill whole buffer";
+    let up = "1c2045a27baf0a278652f9f8377d363b5815934a74966c74f407e6b235962e5f";
+    let log = format!(
+        "[201354 2141091us WARN] {}\n\
+         [999 120us WARN] {}\n\
+         [31337 120us WARN] {}\n\
+         shards daemon 201193: container {up}: its VM 201354 could not serve its run: {unserved}\n\
+         shards daemon 201193: container 85674155d5e9: its VM 999 could not serve its run: {unserved}\n\
+         shards daemon 201193: container {up}0: its VM 31337 could not serve its run: {unserved}\n",
+        refusal(201354),
+        refusal(999),
+        refusal(31337),
+    );
+    let read = common::container_refusal(up, &log);
+    assert!(
+        read.contains("VM process 201354")
+            && !read.contains("VM process 999")
+            && !read.contains("VM process 31337"),
+        "{read}"
+    );
+    // A container whose VM its daemon logged nothing of: none, its failure its test's.
+    assert_eq!(common::container_refusal("85674155d5e9aa", &log), "");
+}
+
 /// A stream that a process still holds as its run's wait gives it up is taken whole, every byte
 /// its command wrote before its end among it, however late its reader runs
 /// (`common::Collected::ask`). KVM, 32 CPUs at load ~50, rust:1.98.1 glibc, at 45fdaf49a6:

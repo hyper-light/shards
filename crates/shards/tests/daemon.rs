@@ -2759,17 +2759,38 @@ struct Held {
     stdin: Option<std::process::ChildStdin>,
     out: BufReader<std::process::ChildStdout>,
     name: String,
+    /// Where its client's stderr goes, `said` in it: a file, as a run hands its client's
+    /// stdio to its microVM, which a pipe's reader would wait on past its client's end
+    /// (benches/arrival.rs).
+    words: TempDir,
+}
+
+/// How a [`Held`] run ended: its client's status and what its client said.
+struct Ended {
+    status: Option<i32>,
+    said: String,
+}
+
+impl Ended {
+    /// Whether it failed as its VM's host refused to enter its VM, as D261's gate takes the
+    /// refusal for its host's: its test then skips, said so ([`common::run_host_refused`]). CI
+    /// 44379986478, x86_64 gnu: a burst's run ended 125, its VM 306660's vCPU 0 refused (0x7).
+    fn host_refused(&self, home: &Path) -> bool {
+        self.status != Some(0) && common::run_host_refused(&self.said, home)
+    }
 }
 
 impl Held {
     /// `shards run -i --name NAME IMAGE cat`, with `env`.
     fn start(image: &str, name: &str, env: &[(&str, &OsStr)]) -> Held {
+        let words = TempDir::new(&format!("held-{name}"));
+        let said = std::fs::File::create(words.join("said")).unwrap();
         let mut client = common::command()
             .args(["run", "-i", "--pull", "never", "--name", name, image, "cat"])
             .envs(env.iter().copied())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(said)
             .spawn()
             .unwrap();
         let stdin = client.stdin.take();
@@ -2779,6 +2800,7 @@ impl Held {
             stdin,
             out,
             name: name.to_string(),
+            words,
         }
     }
 
@@ -2802,11 +2824,14 @@ impl Held {
             .unwrap_or_else(|| panic!("{}'s VM {pid} is no process of {templates}", self.name))
     }
 
-    /// Ends its command, its client's stdin closed, and waits for its client's status.
+    /// Ends its command, its client's stdin closed, and waits for its client: its status and
+    /// what it said.
     #[track_caller]
-    fn end(mut self, home: &Path) -> Option<i32> {
+    fn end(mut self, home: &Path) -> Ended {
         drop(self.stdin.take());
-        wait(&mut self.client, home)
+        let status = wait(&mut self.client, home);
+        let said = std::fs::read_to_string(self.words.join("said")).unwrap();
+        Ended { status, said }
     }
 }
 
@@ -2877,7 +2902,11 @@ fn warm_vms_are_bounded_across_templates() {
     let templates_named = templates.to_string_lossy().into_owned();
     let mut held = Held::start(&first, "first-again", &env);
     let ran = held.vm(&env, &templates_named);
-    assert_eq!(held.end(&home), Some(0), "the first's run, held");
+    let ended = held.end(&home);
+    if ended.host_refused(&home) {
+        return;
+    }
+    assert_eq!(ended.status, Some(0), "the first's run, held: {}", ended.said);
     let pooled = |needle: &str| -> Vec<(u32, String)> {
         commands_with(needle)
             .into_iter()
@@ -3058,7 +3087,11 @@ fn pools_keep_what_their_runs_need_while_they_come() {
         let mut apart = Held::start(&image, &format!("apart-{n}"), &env);
         let vm = apart.vm(&env, &templates_named);
         runs_own.borrow_mut().push(vm);
-        assert_eq!(apart.end(&home), Some(0), "a run apart");
+        let ended = apart.end(&home);
+        if ended.host_refused(&home) {
+            return;
+        }
+        assert_eq!(ended.status, Some(0), "a run apart: {}", ended.said);
         refilled(said);
         assert_eq!(
             warm(),
@@ -3100,7 +3133,11 @@ fn pools_keep_what_their_runs_need_while_they_come() {
         runs_own.borrow_mut().push(vm);
     }
     for held in burst {
-        assert_eq!(held.end(&home), Some(0), "a run of the burst");
+        let ended = held.end(&home);
+        if ended.host_refused(&home) {
+            return;
+        }
+        assert_eq!(ended.status, Some(0), "a run of the burst: {}", ended.said);
     }
     settled(
         Patience::of(&home),
@@ -3648,6 +3685,12 @@ fn idle_followers_cost_nothing_and_end_with_their_container() {
         &seconds,
     );
     let killed = run_shards_env(&["kill"], &["up"], &env);
+    // A container its VM's host refused to enter had ended with it, as D261's gate takes the
+    // refusal for its host's: the test skips, said so (CI 44379986478, x86_64 musl: VM
+    // 201354's vCPU 3, 0x7, after its guest ran; `kill up` said it was not running).
+    if killed.status != Some(0) && common::container_host_refused(up.stdout.trim(), &home) {
+        return;
+    }
     assert_eq!(killed.status, Some(0), "{}", killed.stderr);
     for f in &mut followers {
         let mut patience = Patience::of(&home);
