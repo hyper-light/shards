@@ -4594,9 +4594,11 @@ pub struct Looked {
     /// Whether a process of it had gone, or could not be read, before this look read its
     /// last CPU: what it ran since the look before is lost to its work.
     pub lost: bool,
-    /// What it could not read of this process's threads beside its waiter, a machine's
-    /// party's, and why ([`Ran::Unread`]): its wait's account says it, and the look takes
-    /// nothing from them, its evidence beginning anew.
+    /// Whose threads it could not read, and why: this process's beside its waiter, a
+    /// machine's party's ([`Ran::Unread`]), or a member's (`shards_api::Watch::starved`). Its
+    /// wait's account says it, and the look takes nothing from them that it would need them
+    /// for: no hold, no window of the rate's, and, where its CPU is its liveness, its evidence
+    /// beginning anew.
     pub unread: Option<String>,
 }
 
@@ -4770,7 +4772,7 @@ impl Party {
                 Ran::Unread(why) => {
                     based = true;
                     looked.vouched = false;
-                    looked.unread = Some(why);
+                    looked.unread = Some(format!("this process's threads beside its waiter: {why}"));
                 }
                 Ran::Still => {}
                 Ran::Held => {
@@ -4857,7 +4859,18 @@ impl Party {
             // its answer waits on may have sat runnable on no CPU: its host's hold
             // (`shards_api::Watch::starved`), read at each look so its window is theirs.
             // Read under either CPU, as the rate's window needs it (D215).
-            let starved = watch.starved();
+            // Its threads unread: no window of the rate's, and, under its liveness, no
+            // evidence either way of its host's hold, so the look takes nothing (based); its
+            // account says why (`Looked::unread`).
+            let starved = match watch.starved() {
+                Ok(starved) => starved,
+                Err(why) => {
+                    looked.vouched = false;
+                    looked.unread = Some(format!("process {pid}'s threads: {why}"));
+                    based |= self.cpu == Cpu::Liveness;
+                    false
+                }
+            };
             looked.vouched &= found
                 .as_ref()
                 .is_ok_and(|&found| watch.vouched_by(found, starved));
@@ -5319,7 +5332,7 @@ impl Beside {
         }
         // SAFETY: GetCurrentThreadId takes nothing and always succeeds.
         let me = unsafe { GetCurrentThreadId() };
-        let threads = shards_api::threads_switched(std::process::id(), me)?;
+        let threads = shards_api::threads_switched(&[std::process::id()], Some(me))?;
         Ok(Reading {
             before,
             process,
@@ -5788,8 +5801,8 @@ pub struct Wait {
     /// How far into it each due look came that found its party still, since one last found
     /// it progressed, held or based: what its account says its judge saw.
     still: Vec<Duration>,
-    /// When a look of it last could not read this process's threads beside its waiter, and
-    /// why ([`Looked::unread`]): its account says it.
+    /// When a look of it last could not read its party's threads, whose and why
+    /// ([`Looked::unread`]): its account says it.
     unread: Option<(Instant, String)>,
 }
 
@@ -6173,7 +6186,7 @@ impl Wait {
                 )
             },
             self.unread.as_ref().map_or_else(String::new, |(at, why)| format!(
-                "; its look {:?} ago could not read this process's threads beside its waiter: {why}",
+                "; its look {:?} ago could not read {why}",
                 at.elapsed()
             )),
             self.party.states(),

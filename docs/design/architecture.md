@@ -13777,11 +13777,26 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
     shows nothing, so a process that wakes a moment each window (the gitssh lane's wedged
     run, ~750 µs a window) is never held by it. `Party::look` asks it at each look of a
     `Cpu::Liveness` party, a waiter that never asks paying nothing; production's judged
-    waits count any CPU as progress and do not ask. Windows reads no thread's state outside
-    the system's whole listing: unread there. Held by shards-api's
+    waits count any CPU as progress and do not ask. Held by shards-api's
     `a_thread_runnable_and_unrun_since_the_read_before_is_starved` and
     `a_live_processs_threads_read_twice_show_no_starved_sleeper_or_spinner`. Not reproduced
     live here: the storm's refusal needs a loaded 14-core host; ROOT's batch confirms.
+    - *Amended 2026-11-18 (ROOT's ruling; own-38h): read on Windows, and a read that fails is
+      said.* Windows had read no thread's state here, so its Liveness parties had no such
+      hold. It reads each live process of the party in the system's whole listing, the one
+      its judge reads a VM process's hold by (shards-judge's `threads_switched`, PM M606):
+      a thread's count its switches to a CPU (ContextSwitches), doubled and one more while
+      it runs, as its times move in its clock's ticks (15.625 ms) and would show a run
+      shorter than one as none, and its want of a CPU its state ready or standby. On every
+      OS a read that fails is no longer "not starved": `Watch::starved` says why
+      (`Watch::unread`, in a refusal's account), a judge's window is then no rate's, and a
+      test's party takes nothing from the look, its account saying whose threads and why. A
+      Linux task whose schedstat reads "0 0 0" has never run and is left out, a reading; a
+      task still there with no schedstat file is said (its kernel keeps none, no
+      CONFIG_SCHED_INFO), as is one that cannot be read or parsed. Red, Linux and
+      Windows: harness.rs `a_streaming_guest_whose_thread_its_host_keeps_from_any_cpu_is_held`
+      (a stand-in whose idle-class thread is pinned beside a spinner of its own on one CPU:
+      held, where Windows refused it).
   - *A daemon's helpers serving a waiter's own clients are its daemon's run* (2026-11-14,
     judgecli). Part 8's rule discounted the daemon's own run in a window in which the
     waiter began a client of its home, not its helper processes'. On KVM (adacachy2,

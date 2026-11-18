@@ -72,7 +72,8 @@ fn a_daemons_whole_lines_are_its_words() {
 /// stderr, "holder PID" said there, and its own end, the holder left holding them; `stages`
 /// and `spinner`, a machine's waits in a process of their own ([`stages`], [`spinner`]);
 /// `serving`, a wait on a server thread of its own process ([`serving`]); `own-vms`, waits
-/// on VM processes of its own ([`own_vms`]).
+/// on VM processes of its own ([`own_vms`]); `starved`, two threads spinning on one CPU until
+/// its stdin closes, one of them kept from it ([`starved`]).
 #[test]
 #[ignore = "a process of its own for the harness's stand-ins, which run it"]
 fn stand_in() {
@@ -139,6 +140,8 @@ fn stand_in() {
         serving();
     } else if asked == "own-vms" {
         own_vms();
+    } else if asked == "starved" {
+        starved();
     } else if let Some(ms) = asked.strip_prefix("leaves ") {
         #[allow(
             clippy::zombie_processes,
@@ -1024,6 +1027,47 @@ fn a_streaming_guests_cpu_is_its_liveness_and_its_stop_its_hosts_hold() {
     let _ = stopped.wait();
 }
 
+/// A guest whose CPU is its liveness alone (`Cpu::Liveness`, past its first line) is held, not
+/// refused, while its host keeps a thread of its VM process from every CPU
+/// (`shards_api::Watch::starved`), on Linux and Windows alike: a vCPU waiting for a CPU the
+/// guest's other vCPUs hold is its host's hold (ROOT's batch 26), and Windows read no thread
+/// of it before (own-38h, ROOT's ruling of 2026-11-18). Do: teach the kind its W* by a
+/// stand-in's own end; follow a stand-in two threads of which spin pinned to one CPU, one of
+/// them in its OS's idle class ([`starved`]), through `LOOKS_TO_REFUSE` of its judge's windows,
+/// looking at its own pace. Expect: no look refused; with Windows' read removed
+/// (lanes/redgreen/own-38h-starved-windows.patch), refused there.
+#[cfg(any(target_os = "linux", windows))]
+#[test]
+fn a_streaming_guest_whose_thread_its_host_keeps_from_any_cpu_is_held() {
+    let mut quick = stand_in_doing("exit")
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut taught = streaming(quick.id());
+    taught.absent();
+    while quick.try_wait().unwrap().is_none() {
+        taught.look(true).unwrap();
+    }
+    taught.answered();
+    let shards_api::Seen::Learned { slowest, .. } = taught.seen() else {
+        panic!("its kind learned nothing of an answer");
+    };
+    let mut kept = stand_in_doing("starved")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut heard = streaming(kept.id());
+    let began = Instant::now();
+    while began.elapsed() <= slowest.saturating_mul(shards_api::LOOKS_TO_REFUSE) {
+        let judged = heard.look(true);
+        assert!(judged.is_ok(), "{judged:?}");
+        std::thread::sleep(heard.next_look());
+    }
+    drop(kept.stdin.take());
+    kept.wait().unwrap();
+}
+
 /// Says each of `script`'s lines into `said` after its pause in milliseconds, each whole, as
 /// a console's lines come: a guest's console as [`common::guest_says`] reads one.
 fn console_says(said: &std::sync::Mutex<Vec<u8>>, script: &[(u64, &str)]) {
@@ -1145,13 +1189,13 @@ fn a_guest_silent_past_its_slowest_gap_is_refused_and_its_stall_teaches_nothing(
 /// a thread runnable as a look reads it and unrun since the look before
 /// (`shards_api::starved`) is its host's hold, of a machine's party as of a VM process's (D209
 /// Part 5, D261; CI 44268931283: a 16-vCPU boot on a 4-CPU runner refused 140 ms into a silent
-/// gap at W* 70 ms, its threads unread). Do (Linux): a pass whose lines come 20 ms apart;
+/// gap at W* 70 ms, its threads unread). Do (Linux, Windows): a pass whose lines come 20 ms apart;
 /// then, through the same call site, a guest that says a line and then nothing for
 /// `LOOKS_TO_REFUSE` of the pass's slowest gaps, while two threads beside its waiter spin
-/// pinned to one CPU, one of them under SCHED_IDLE: runnable, and kept from that CPU by the
-/// other. Expect: the second said; with the hold removed (lanes/redgreen/own-38h-vcpu.patch),
+/// pinned to one CPU, one of them in its OS's idle class (Linux SCHED_IDLE, Windows
+/// THREAD_PRIORITY_IDLE): runnable, and kept from that CPU by the other. Expect: the second said; with the hold removed (lanes/redgreen/own-38h-vcpu.patch),
 /// refused at its judge's second due look, two gaps in.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 #[test]
 fn a_wide_guest_silent_while_its_host_holds_a_thread_beside_its_waiter_is_held() {
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -1196,6 +1240,38 @@ fn a_wide_guest_silent_while_its_host_holds_a_thread_beside_its_waiter_is_held()
         "{saying:?}\n{}",
         lines.timed()
     );
+}
+
+/// A stand-in's two threads spinning pinned to one CPU until its stdin closes, one of them in
+/// its OS's idle class ([`idle_policy`]): the other keeps it from that CPU, so that it is
+/// runnable and almost never run, as its host keeps a vCPU of a guest wider than itself.
+#[cfg(any(target_os = "linux", windows))]
+fn starved() {
+    use std::io::Read as _;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let cpu = first_cpu();
+    let spinning = AtomicBool::new(true);
+    std::thread::scope(|s| {
+        for idle in [false, true] {
+            let spinning = &spinning;
+            s.spawn(move || {
+                pin_to(cpu);
+                if idle {
+                    idle_policy();
+                }
+                while spinning.load(Ordering::Relaxed) {
+                    std::hint::spin_loop();
+                }
+            });
+        }
+        let _ = std::io::stdin().read(&mut [0u8; 1]);
+        spinning.store(false, Ordering::Relaxed);
+    });
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
+fn starved() {
+    panic!("a starved stand-in is made on Linux and Windows alone");
 }
 
 /// The first CPU this process may run on (sched_getaffinity(2)).
@@ -1243,6 +1319,43 @@ fn idle_policy() {
         )
     };
     assert_eq!(got, 0);
+}
+
+/// The first CPU this process may run on (GetProcessAffinityMask), as its affinity mask's
+/// lowest bit.
+#[cfg(windows)]
+fn first_cpu() -> usize {
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessAffinityMask};
+    let (mut process, mut system) = (0usize, 0usize);
+    // SAFETY: this process's pseudo-handle, which needs no closing, and two masks to write.
+    let got = unsafe { GetProcessAffinityMask(GetCurrentProcess(), &mut process, &mut system) };
+    assert_ne!(got, 0, "{}", std::io::Error::last_os_error());
+    assert_ne!(process, 0, "no CPU this process may run on");
+    usize::try_from(process.trailing_zeros()).unwrap()
+}
+
+/// Pins the calling thread to `cpu` alone (SetThreadAffinityMask).
+#[cfg(windows)]
+fn pin_to(cpu: usize) {
+    use windows_sys::Win32::System::Threading::{GetCurrentThread, SetThreadAffinityMask};
+    let mask = 1usize.checked_shl(u32::try_from(cpu).unwrap()).unwrap();
+    // SAFETY: this thread's pseudo-handle, which needs no closing, and a mask of a CPU its
+    // process may run on.
+    let was = unsafe { SetThreadAffinityMask(GetCurrentThread(), mask) };
+    assert_ne!(was, 0, "{}", std::io::Error::last_os_error());
+}
+
+/// Puts the calling thread at THREAD_PRIORITY_IDLE, the least of its process's class
+/// (SetThreadPriority): Windows runs the ready thread of the highest priority, so beside a
+/// thread of the default priority on its CPU it is ready, and almost never run (its
+/// starvation boost aside).
+#[cfg(windows)]
+fn idle_policy() {
+    use windows_sys::Win32::System::Threading::{GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_IDLE};
+    // SAFETY: this thread's pseudo-handle, which needs no closing, and a priority Windows
+    // names.
+    let set = unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_IDLE) };
+    assert_ne!(set, 0, "{}", std::io::Error::last_os_error());
 }
 
 /// A guest's machine that ends ends a wait for its line, what its guest said by then read

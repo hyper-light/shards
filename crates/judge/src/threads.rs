@@ -240,8 +240,8 @@ pub fn records() -> Result<Vec<u64>, String> {
     }
 }
 
-/// Each thread of process `pid` but thread `except` (a waiter's own), as one read of the
-/// system's whole listing shows it, for D215's rule of a thread its host keeps from any CPU
+/// Each thread of processes `pids` but thread `except` (a waiter's own, where one asks), as one
+/// read of the system's whole listing shows it, for D215's rule of a thread its host keeps from any CPU
 /// (shards-api's `starved`: one wanting a CPU now whose count has not moved since the read
 /// before): by its ID, a count that moves whenever it runs, and whether it wants a CPU it does
 /// not have (ready or standby: [`wants_cpu`], not running). The count is its switches to a
@@ -250,17 +250,17 @@ pub fn records() -> Result<Vec<u64>, String> {
 /// and as it stops running, so that one preempted since the read before, its switches the
 /// same, still shows its run. Its times would not do: they move in its clock's ticks (15.625
 /// ms), and show a thread that ran less than one as unrun. One rule with Linux's and macOS's
-/// readings of a process's threads (the tests' machine parties, D209 Part 5). Why not, where
-/// the listing could not be read.
+/// readings of a process's threads (shards-api's `Watch::starved` of a VM process's, the tests'
+/// machine parties, D209 Part 5). Why not, where the listing could not be read.
 pub fn threads_switched(
-    pid: u32,
-    except: u32,
+    pids: &[u32],
+    except: Option<u32>,
 ) -> Result<std::collections::BTreeMap<u64, (u64, bool)>, String> {
     let records = records()?;
     let mut threads = std::collections::BTreeMap::new();
     each_thread(&records, |of, t| {
         let tid = t.ClientId.UniqueThread as usize;
-        if of != pid || tid == except as usize {
+        if !pids.contains(&of) || except.is_some_and(|except| tid == except as usize) {
             return;
         }
         let running = t.ThreadState == RUNNING;

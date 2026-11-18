@@ -450,6 +450,8 @@ pub struct Watch {
     resolution: Duration,
     /// Its threads as [`starved`](Watch::starved) last read them, none before its first.
     threads: Option<Threads>,
+    /// Why [`starved`](Watch::starved) last could not read its threads, where it could not.
+    unread: Option<String>,
     /// Whether its host's storage worked for it between the look before and the last
     /// ([`Io::grown_since`]).
     stored: bool,
@@ -498,10 +500,18 @@ fn account_of(pid: u32, watch: &Watch) -> Option<String> {
     let times = os::times_said(&watch.times);
     #[cfg(not(target_os = "linux"))]
     let times: Option<String> = None;
-    let said: Vec<String> = [threads_account(pid), watch.kernel().map(str::to_string), times]
-        .into_iter()
-        .flatten()
-        .collect();
+    let unread = watch
+        .unread()
+        .map(|why| format!("its threads unread at its last look: {why}"));
+    let said: Vec<String> = [
+        threads_account(pid),
+        watch.kernel().map(str::to_string),
+        times,
+        unread,
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
     (!said.is_empty()).then(|| said.join("; "))
 }
 
@@ -513,9 +523,9 @@ fn account_of(pid: u32, watch: &Watch) -> Option<String> {
 /// said "unread" alone.
 pub fn runnable_threads(pid: u32) -> Option<(usize, usize)> {
     #[cfg(target_os = "linux")]
-    let threads = os::threads(pid)?;
+    let threads = os::threads(pid).ok()?;
     #[cfg(all(unix, not(target_os = "linux")))]
-    let threads = os::threads_cpu(pid)?;
+    let threads = os::threads_cpu(pid).ok()?;
     #[cfg(windows)]
     {
         os::runnable_threads(pid)
@@ -553,6 +563,7 @@ impl Watch {
             hold,
             resolution,
             threads: None,
+            unread: None,
             stored: false,
             kernel: None,
             waited: Ok(None),
@@ -568,21 +579,32 @@ impl Watch {
     /// its threads did) while the one its answer waits on sat runnable on no CPU, as a guest of
     /// more vCPUs than its host has CPUs, the host busy besides (ROOT's batch 26, HVF: a
     /// 64-vCPU storm's stream refused 170 ms into its quiet). Its threads are read only here,
-    /// so a waiter that never asks pays nothing; false at its first call, and where they
-    /// cannot be read (Windows reads none: its threads' states are in the system's whole
-    /// listing alone).
-    pub fn starved(&mut self) -> bool {
-        #[cfg(target_os = "linux")]
-        let now = os::threads(self.followed.pid());
-        #[cfg(all(unix, not(target_os = "linux")))]
-        let now = os::threads_cpu(self.followed.pid());
-        #[cfg(windows)]
-        let now: Option<Threads> = None;
-        let was = std::mem::replace(&mut self.threads, now);
-        match (&was, &self.threads) {
-            (Some(before), Some(now)) => starved(before, now),
-            _ => false,
-        }
+    /// so a waiter that never asks pays nothing; on every OS ([`Followed::threads`]: Windows
+    /// from the system's whole listing, its threads' switches to a CPU). False at its first
+    /// call, which has nothing before it. Why not where its threads could not be read, kept
+    /// for its account ([`unread`](Self::unread)) until a read succeeds: no hold is taken
+    /// from it, nor none.
+    pub fn starved(&mut self) -> Result<bool, String> {
+        let now = match self.followed.threads() {
+            Ok(now) => now,
+            Err(why) => {
+                self.threads = None;
+                self.unread = Some(why.clone());
+                return Err(why);
+            }
+        };
+        self.unread = None;
+        let was = self.threads.replace(now);
+        Ok(was
+            .as_ref()
+            .zip(self.threads.as_ref())
+            .is_some_and(|(before, now)| starved(before, now)))
+    }
+
+    /// Why its threads could not be read at its last call of [`starved`](Self::starved), where
+    /// they could not: for its account.
+    pub fn unread(&self) -> Option<&str> {
+        self.unread.as_deref()
     }
 
     /// The least time a change of its CPU counter stands for, as its OS says it
@@ -865,10 +887,13 @@ impl<'a> Follow<'a> {
         // every sample since the look before, vouches for its window; its threads read only
         // then.
         let held = std::mem::take(&mut self.held);
-        let work = (self.bound != Bound::Stillness && !held && {
-            let starved = self.watch.starved();
-            self.watch.vouched_by(found, starved)
-        })
+        // A failed read of its threads vouches for nothing; its account says it.
+        let work = (self.bound != Bound::Stillness
+            && !held
+            && self
+                .watch
+                .starved()
+                .is_ok_and(|starved| self.watch.vouched_by(found, starved)))
         .then(|| self.watch.cpu().saturating_sub(self.from));
         let span = Span {
             began,
@@ -960,6 +985,16 @@ impl Followed {
     /// What its host is doing to it, now ([`Hold`]).
     fn hold(&self) -> Hold {
         os::hold(self.pid)
+    }
+
+    /// Its threads now, for D215's rule of a thread its host keeps from any CPU ([`starved`]):
+    /// Linux each task's schedstat run and state, macOS each thread's times and run state; why
+    /// not, where they could not be read.
+    fn threads(&self) -> Result<Threads, String> {
+        #[cfg(target_os = "linux")]
+        return os::threads(self.pid);
+        #[cfg(not(target_os = "linux"))]
+        return os::threads_cpu(self.pid);
     }
 
     /// The least time a change of its CPU counter stands for; none where it has gone.
@@ -1155,32 +1190,53 @@ mod os {
     /// Process `pid`'s threads ([`Threads`]): each task's run time, its `schedstat`'s first
     /// field (`sum_exec_runtime`, nanoseconds; a thread's own CPU clock is its own thread
     /// group's alone, posix-cpu-timers.c `pid_for_clock`), and whether its state is `R`
-    /// (`/proc/<pid>/task/<tid>/stat` field 3). A task whose schedstat reads as zeros (no
-    /// accounting) is left out: its run would not show. None where its tasks cannot be listed.
-    pub(super) fn threads(pid: u32) -> Option<super::Threads> {
+    /// (`/proc/<pid>/task/<tid>/stat` field 3). A task gone since its tasks were listed has
+    /// none to read, and one whose schedstat reads "0 0 0" has never run, which is a reading:
+    /// it is left out, as nothing of it has run to show. Any other failure is said: a task
+    /// still there with no schedstat (its kernel keeps none, as without CONFIG_SCHED_INFO,
+    /// which CONFIG_SCHEDSTATS or CONFIG_TASK_DELAY_ACCT selects; fs/proc/base.c), or one
+    /// that cannot be read or parsed.
+    pub(super) fn threads(pid: u32) -> Result<super::Threads, String> {
+        let listed = |e: std::io::Error| format!("process {pid}'s tasks, /proc/{pid}/task: {e}");
         let mut threads = super::Threads::new();
-        for task in std::fs::read_dir(format!("/proc/{pid}/task")).ok()?.flatten() {
-            let Some(tid) = task.file_name().to_str().and_then(|tid| tid.parse::<u64>().ok()) else {
-                continue;
-            };
+        for task in std::fs::read_dir(format!("/proc/{pid}/task")).map_err(listed)? {
+            let task = task.map_err(listed)?;
             let dir = task.path();
-            let Some(ran) = std::fs::read_to_string(dir.join("schedstat"))
-                .ok()
-                .and_then(|text| {
-                    let mut fields = text.split_whitespace().map(str::parse::<u64>);
-                    let (ran, waited, slices) =
-                        (fields.next()?.ok()?, fields.next()?.ok()?, fields.next()?.ok()?);
-                    (ran != 0 || waited != 0 || slices != 0).then_some(ran)
-                })
+            let tid = task
+                .file_name()
+                .to_str()
+                .and_then(|tid| tid.parse::<u64>().ok())
+                .ok_or_else(|| format!("{}: no task ID", dir.display()))?;
+            let text = match std::fs::read_to_string(dir.join("schedstat")) {
+                Ok(text) => text,
+                Err(_) if !dir.exists() => continue,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    return Err(format!(
+                        "{}/schedstat absent: its kernel keeps no schedstat, as without \
+                         CONFIG_SCHED_INFO (selected by CONFIG_SCHEDSTATS or CONFIG_TASK_DELAY_ACCT)",
+                        dir.display()
+                    ));
+                }
+                Err(e) => return Err(format!("{}/schedstat: {e}", dir.display())),
+            };
+            let mut fields = text.split_whitespace().map(str::parse::<u64>);
+            let (Some(Ok(ran)), Some(Ok(waited)), Some(Ok(slices))) =
+                (fields.next(), fields.next(), fields.next())
             else {
-                continue;
+                return Err(format!("{}/schedstat: not three counts: {text:?}", dir.display()));
             };
-            let Some(state) = std::fs::read(dir.join("stat")).ok().and_then(|stat| state(&stat)) else {
+            if ran == 0 && waited == 0 && slices == 0 {
                 continue;
+            }
+            let stat = match std::fs::read(dir.join("stat")) {
+                Ok(stat) => stat,
+                Err(_) if !dir.exists() => continue,
+                Err(e) => return Err(format!("{}/stat: {e}", dir.display())),
             };
+            let state = state(&stat).ok_or_else(|| format!("{}/stat: names no state", dir.display()))?;
             threads.insert(tid, (ran, state == b'R'));
         }
-        Some(threads)
+        Ok(threads)
     }
 
     /// Each thread of process `pid` as its task's files show it ([`super::threads_account`]):
@@ -1633,29 +1689,52 @@ mod os {
     /// Process `pid`'s threads ([`Threads`](super::Threads)), by their handles: each one's user
     /// and system time (`pth_user_time`, `pth_system_time`, nanoseconds, sys/proc_info.h), and
     /// whether its run state is `TH_STATE_RUNNING` (running, or waiting for a CPU). A thread
-    /// that ended since it was listed is left out; none where they cannot be listed.
-    pub(super) fn threads_cpu(pid: u32) -> Option<super::Threads> {
-        let id = libc::c_int::try_from(pid).ok()?;
+    /// that ended since it was listed has none to read ([`thread_info_read`]); any other
+    /// failure is said.
+    pub(super) fn threads_cpu(pid: u32) -> Result<super::Threads, String> {
+        let id = libc::c_int::try_from(pid).map_err(|e| format!("process {pid}: {e}"))?;
+        let handles = threads(id).ok_or_else(|| {
+            format!(
+                "process {pid}'s threads (PROC_PIDTASKINFO, PROC_PIDLISTTHREADS): {}",
+                std::io::Error::last_os_error()
+            )
+        })?;
         let mut read = super::Threads::new();
-        for handle in threads(id)? {
-            if let Some(info) = thread_info(id, handle) {
+        for handle in handles {
+            if let Some(info) = thread_info_read(id, handle)? {
                 let cpu = info.pth_user_time.saturating_add(info.pth_system_time);
                 read.insert(handle, (cpu, info.pth_run_state == libc::TH_STATE_RUNNING));
             }
         }
-        Some(read)
+        Ok(read)
     }
 
     /// Process `id`'s thread `handle` (`PROC_PIDTHREADINFO`); none where it could not be
     /// read, as of a thread that ended since it was listed.
     fn thread_info(id: libc::c_int, handle: u64) -> Option<libc::proc_threadinfo> {
+        thread_info_read(id, handle).ok().flatten()
+    }
+
+    /// Process `id`'s thread `handle` (`PROC_PIDTHREADINFO`): none where it has ended since it
+    /// was listed (ESRCH), and why not where it could not be read otherwise.
+    fn thread_info_read(id: libc::c_int, handle: u64) -> Result<Option<libc::proc_threadinfo>, String> {
         // SAFETY: a proc_threadinfo, plain data, for proc_pidinfo to fill.
         let mut info: libc::proc_threadinfo = unsafe { std::mem::zeroed() };
-        let size = libc::c_int::try_from(size_of::<libc::proc_threadinfo>()).ok()?;
+        let size = libc::c_int::try_from(size_of::<libc::proc_threadinfo>())
+            .map_err(|e| format!("a proc_threadinfo's size: {e}"))?;
         // SAFETY: proc_pidinfo(3) writes at most `size` bytes into `info`.
         let got =
             unsafe { libc::proc_pidinfo(id, libc::PROC_PIDTHREADINFO, handle, (&raw mut info).cast(), size) };
-        (got == size).then_some(info)
+        if got == size {
+            return Ok(Some(info));
+        }
+        let e = std::io::Error::last_os_error();
+        if e.raw_os_error() == Some(libc::ESRCH) {
+            return Ok(None);
+        }
+        Err(format!(
+            "process {id}'s thread {handle:#x} (PROC_PIDTHREADINFO): {got} bytes: {e}"
+        ))
     }
 
     /// The run state of process `id`'s thread `handle` (`pth_run_state`); none where it could
@@ -1923,6 +2002,16 @@ mod os {
         /// Whether every process of its tree has been seen to exit.
         pub(super) fn ended(&self) -> bool {
             self.members.iter().all(|m| m.exited)
+        }
+
+        /// The threads of its processes not seen to exit, from one read of the system's whole
+        /// listing, for D215's rule of a thread its host keeps from any CPU ([`super::starved`]):
+        /// each one's switches to a CPU, doubled and one more while it runs, and whether it
+        /// waits for one (shards-judge's `threads_switched`); why not, where the listing could
+        /// not be read.
+        pub(super) fn threads(&self) -> Result<super::Threads, String> {
+            let pids: Vec<u32> = self.members.iter().filter(|m| !m.exited).map(|m| m.pid).collect();
+            shards_judge::threads_switched(&pids, None)
         }
 
         /// The least time a change of what tells whether its tree ran stands for: none,
