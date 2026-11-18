@@ -1342,9 +1342,11 @@ pub fn command_line(pid: u32) -> Result<Option<String>, String> {
 
 /// What is left of `dir`, it and each directory and file under it a line, for a removal of it
 /// that failed to say what held it: on Windows each with the processes that use it, open or
-/// mapped ([`users`]), by ID and executable, since NTFS renames no directory under which
+/// mapped ([`users_of`]), by ID and executable, since NTFS renames no directory under which
 /// anything is open, whatever its sharing (MS-FSA 2.1.5.15.11, 2.1.4.2); elsewhere nothing,
-/// where a removal takes what is open.
+/// where a removal takes what is open. One gone between its listing and its look, as a VM's
+/// files go while it ends, holds nothing and is left out; one whose users cannot be read says
+/// why (jupiter at 183fe264e3: a file gone so ended its listing in a panic, NotFound).
 #[cfg(windows)]
 pub fn left_of(dir: &Path) -> String {
     let names: std::collections::HashMap<u32, String> = processes()
@@ -1362,15 +1364,16 @@ pub fn left_of(dir: &Path) -> String {
         }
     }
     left.into_iter()
-        .map(|f| match std::panic::catch_unwind(|| users(&f)) {
+        .filter_map(|f| match users_of(&f) {
             Ok(pids) => {
                 let by: Vec<String> = pids
                     .iter()
                     .map(|p| format!("{p} {}", names.get(p).map_or("?", String::as_str)))
                     .collect();
-                format!("{}: used by {}", f.display(), by.join(", "))
+                Some(format!("{}: used by {}", f.display(), by.join(", ")))
             }
-            Err(_) => format!("{}: its users unread", f.display()),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+            Err(e) => Some(format!("{}: its users unread: {e}", f.display())),
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -1405,6 +1408,12 @@ pub fn files_under(dir: &Path) -> Vec<PathBuf> {
 /// obtain a handle to a directory", CreateFileW).
 #[cfg(windows)]
 pub fn users(file: &Path) -> Vec<u32> {
+    users_of(file).unwrap_or_else(|e| panic!("file users of {}: {e}", file.display()))
+}
+
+/// [`users`], its failure said rather than panicked: NotFound where the file is gone.
+#[cfg(windows)]
+pub fn users_of(file: &Path) -> io::Result<Vec<u32>> {
     use std::os::windows::fs::OpenOptionsExt as _;
     use std::os::windows::io::AsRawHandle as _;
     use windows_sys::Wdk::Storage::FileSystem::{FileProcessIdsUsingFileInformation, NtQueryInformationFile};
@@ -1416,20 +1425,23 @@ pub fn users(file: &Path) -> Vec<u32> {
     let handle = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
-        .open(file)
-        .unwrap();
+        .open(file)?;
     // FILE_PROCESS_IDS_USING_FILE_INFORMATION: a ULONG count, padded to a pointer's
     // alignment, then that many ULONG_PTR process IDs. Both Windows targets are 64-bit.
     let mut buffer = vec![0usize; 65];
     loop {
-        let mut io = IO_STATUS_BLOCK::default();
-        let bytes = u32::try_from(buffer.len().checked_mul(size_of::<usize>()).unwrap()).unwrap();
+        let mut block = IO_STATUS_BLOCK::default();
+        let bytes = buffer
+            .len()
+            .checked_mul(size_of::<usize>())
+            .and_then(|b| u32::try_from(b).ok())
+            .ok_or_else(|| io::Error::other("its users' answer past 4 GiB"))?;
         // SAFETY: an open synchronous file, its status block, and `bytes` writable,
         // pointer-aligned bytes for the header and the IDs that follow it.
         let status = unsafe {
             NtQueryInformationFile(
                 handle.as_raw_handle(),
-                &mut io,
+                &mut block,
                 buffer.as_mut_ptr().cast(),
                 bytes,
                 FileProcessIdsUsingFileInformation,
@@ -1439,16 +1451,27 @@ pub fn users(file: &Path) -> Vec<u32> {
             status,
             STATUS_BUFFER_OVERFLOW | STATUS_BUFFER_TOO_SMALL | STATUS_INFO_LENGTH_MISMATCH
         ) {
-            buffer.resize(buffer.len().checked_mul(2).unwrap(), 0);
+            let grown = buffer
+                .len()
+                .checked_mul(2)
+                .ok_or_else(|| io::Error::other("its users' answer past memory"))?;
+            buffer.resize(grown, 0);
             continue;
         }
-        assert_eq!(status, 0, "file users of {}: {status:#x}", file.display());
+        if status != 0 {
+            return Err(io::Error::other(format!(
+                "NtQueryInformationFile: NTSTATUS {:#010x}",
+                status.cast_unsigned()
+            )));
+        }
         // SAFETY: a successful query wrote the ULONG header into this initialized buffer.
         let count = unsafe { *buffer.as_ptr().cast::<u32>() } as usize;
-        assert!(count < buffer.len());
-        return buffer[1..=count]
+        let ids = buffer
+            .get(1..=count)
+            .ok_or_else(|| io::Error::other("its users' count past its answer"))?;
+        return ids
             .iter()
-            .map(|&pid| u32::try_from(pid).unwrap())
+            .map(|&pid| u32::try_from(pid).map_err(io::Error::other))
             .collect();
     }
 }
