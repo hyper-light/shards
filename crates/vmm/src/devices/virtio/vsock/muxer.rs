@@ -3238,4 +3238,103 @@ mod tests {
         mem.access().unwrap().read(0x8000_1000, &mut seen).unwrap();
         assert_eq!(seen, bytes);
     }
+
+    /// A connection's write to its host, under way as the thread that made it ends, carries
+    /// every byte its guest sent, once and in order (D272, amended 2026-11-18, its open
+    /// question): the device's worker ended at every pause, and Windows cancels as a thread
+    /// ends the calls queued to it, a cancelled write saying nothing of what its reader took
+    /// (M603). Its guest sends past the way down's quota while its host reads nothing, so that
+    /// a write is under way as the thread ends, and then its host reads it all. Red where
+    /// Windows queues an associated handle's write named an event to its thread: the stream
+    /// cut, or a byte lost or repeated.
+    #[cfg(windows)]
+    #[test]
+    fn a_connections_write_made_by_a_thread_that_has_ended_goes_on() {
+        use std::os::windows::io::AsRawHandle as _;
+        let dir_guard = shards_testdir::TempDir::new("vsock-ended-write").unwrap();
+        let dir = dir_guard.join("v");
+        let mut m = Muxer::new(VsockHost::at(dir.clone()), 3).unwrap();
+        let port = super::super::poll::completion_port().unwrap();
+        m.attach_port(port.as_raw_handle()).unwrap();
+        let mem = GuestMemory::anonymous(&[(0x8000_0000, 1 << 20)]).unwrap();
+        let byte = |at: usize| u8::try_from(at % 251).unwrap_or(0);
+        let chunk = MAX_PAYLOAD as usize;
+        // Past the way down's quota by two packets: a write is under way, its pipe full.
+        let past = shards_ipc::VSOCK_QUOTA as usize + 2 * chunk;
+        let mut client = PipesClient::open(&dir);
+        client.write_all(b"CONNECT 1234\n").unwrap();
+        // Its handshake, the guest's answer and its bytes on a thread that then ends, as a
+        // worker did at a pause, a write of them to its host under way.
+        let sent = std::thread::scope(|s| {
+            s.spawn(|| {
+                let mut poller = super::super::poll::Poller::new().unwrap();
+                poller.watch(port.as_raw_handle());
+                let mut asked = None;
+                turn_until(&mut m, &mut poller, "the guest's REQUEST", |m| {
+                    asked =
+                        asked.or_else(|| std::iter::from_fn(|| m.next_rx(&[])).find(|h| h.op == op::REQUEST));
+                    asked.is_some()
+                });
+                let asked = asked.unwrap();
+                let local_port = asked.src_port;
+                let from_guest = |op: u16, len: u32| Header {
+                    op,
+                    len,
+                    buf_alloc: 1 << 20,
+                    ..request(local_port, 1234)
+                };
+                m.on_guest_packet(&from_guest(op::RESPONSE, 0), &[], &mem);
+                // What the guest may send, as the device's latest packet says: its fwd_cnt and
+                // buf_alloc.
+                let mut granted = asked.fwd_cnt.wrapping_add(asked.buf_alloc);
+                let mut sent = 0usize;
+                turn_until(&mut m, &mut poller, "a write to its host under way", |m| {
+                    for h in std::iter::from_fn(|| m.next_rx(&[])) {
+                        granted = h.fwd_cnt.wrapping_add(h.buf_alloc);
+                    }
+                    let room = granted.wrapping_sub(u32::try_from(sent).unwrap()) as usize;
+                    if sent < past && room >= chunk {
+                        let data: Vec<u8> = (sent..sent + chunk).map(byte).collect();
+                        mem.access().unwrap().write(0x8000_0000, &data).unwrap();
+                        let span = Span {
+                            gpa: 0x8000_0000,
+                            ptr: mem.host_ptr(0x8000_0000, chunk).unwrap(),
+                            len: chunk,
+                        };
+                        m.on_guest_packet(&from_guest(op::RW, chunk as u32), &[span], &mem);
+                        sent += chunk;
+                    }
+                    sent >= past
+                        && m.conns
+                            .values()
+                            .any(|c| matches!(c.host(), Host::Pipes(p) if p.in_flight() > 0))
+                });
+                sent
+            })
+            .join()
+            .unwrap()
+        });
+        let mut poller = super::super::poll::Poller::new().unwrap();
+        poller.watch(port.as_raw_handle());
+        let mut got = Vec::new();
+        let mut buf = vec![0u8; chunk];
+        turn_until(
+            &mut m,
+            &mut poller,
+            "every byte its guest sent, at its host",
+            |m| {
+                while m.next_rx(&[]).is_some() {}
+                while let Ok(n) = read_now(&mut client, &mut buf) {
+                    if n == 0 {
+                        break;
+                    }
+                    got.extend_from_slice(buf.get(..n).unwrap_or_default());
+                }
+                got.len() >= sent
+            },
+        );
+        assert_eq!(got.len(), sent, "its stream cut");
+        let wrong = got.iter().enumerate().position(|(at, &b)| b != byte(at));
+        assert_eq!(wrong, None, "a byte of its stream lost or repeated");
+    }
 }
