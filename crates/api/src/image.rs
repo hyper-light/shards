@@ -215,6 +215,64 @@ pub struct ImageShare {
     pub members: Option<PlugFor>,
 }
 
+/// A share another server serves, which the guest sees at `at` (D286): the image run's form of a
+/// direct boot's `--slates-fs-fd`, as `slates shards VOLUME --fd N` hands one a slates volume. Its
+/// server answers the guest's FUSE requests on [`stream`](Self::stream), and the mappings of the
+/// share slot's DAX window where it has one (D189), as slates' does; nothing of the host is
+/// opened for it. It is put in a share slot of the run's microVM after its [`ImageShare`]s', and
+/// mounted and given members as one of those is. A run with one boots on a run host of its own,
+/// never a warm one ([`ImagePools`]): a warm host's share process starts before its run's streams
+/// come. A save of its run is refused ([`SaveRefusal::Unsupported`]): its server keeps the
+/// share's state, which a snapshot cannot hold.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServedShare {
+    pub stream: ServedStream,
+    /// Where the guest sees it: absolute.
+    pub at: String,
+    pub read_only: bool,
+    /// Whether its files may be run from it (D279), as an [`ImageShare`]'s.
+    pub exec: bool,
+    /// The members given it as they start (D277), as an [`ImageShare`]'s.
+    pub members: Option<PlugFor>,
+}
+
+/// The stream a [`ServedShare`]'s server answers on: on Unix a connected stream socket, on
+/// Windows a duplex pipe's end (as `shards run vm --slates-fs-handle` takes one, PM M340). The
+/// run host is given its own copy as the run is asked for, and closes it as the run ends; the
+/// server sees the share end once every copy is closed, this one too, which its holder drops
+/// once the run has started or been refused. Equal to another where it is the same one, and
+/// shown by name alone.
+#[derive(Clone)]
+pub struct ServedStream(Arc<shards_ipc::fd::OwnedFd>);
+
+impl ServedStream {
+    /// `stream`, the served share's end, held from here on.
+    pub fn new(stream: shards_ipc::fd::OwnedFd) -> ServedStream {
+        ServedStream(Arc::new(stream))
+    }
+
+    /// The stream, borrowed: what an [`Images`] boot hands its run host a copy of, as `ImageShards` does with the
+    /// run's request.
+    pub fn as_fd(&self) -> shards_ipc::fd::BorrowedFd<'_> {
+        use shards_ipc::fd::AsFd as _;
+        self.0.as_fd()
+    }
+}
+
+impl std::fmt::Debug for ServedStream {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ServedStream")
+    }
+}
+
+impl PartialEq for ServedStream {
+    fn eq(&self, other: &ServedStream) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for ServedStream {}
+
 /// An image to boot.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImageSpec {
@@ -311,6 +369,10 @@ pub struct ImageSpec {
     /// is not internal): else refused. Empty: nothing past the image's grants. Part of what a
     /// warm host is made for ([`ImagePools`]): its network process is held to it from its start.
     pub egress_ceiling: Vec<MemberCeiling>,
+    /// Its shares another server serves (D286), each in a share slot after
+    /// [`shares`](Self::shares)', none at a place a share or another served share takes. Empty:
+    /// none. A run with any boots on a run host of its own ([`ServedShare`]).
+    pub served: Vec<ServedShare>,
 }
 
 /// Each member's ceiling past its microVM as its spec names them (D278): each member once,
@@ -1301,6 +1363,46 @@ fn plug_roots(roots: &[String]) -> Result<Vec<String>, ImageRefusal> {
     Ok(granted)
 }
 
+/// Where a share is seen and whom it is given to as they start (D277), a served share's alike
+/// (D286), as its request carries them: refused by field where its place is not absolute, or its
+/// members name none or one twice.
+fn share_to(at: &str, members: Option<&PlugFor>) -> Result<Option<wire::ShareTo>, ImageRefusal> {
+    if !at.starts_with('/') {
+        return Err(ImageRefusal::Spec {
+            what: "a share",
+            why: format!("{at:?}: where the guest sees it is an absolute path"),
+        });
+    }
+    let named = match members {
+        None => return Ok(None),
+        Some(PlugFor::Every) => return Ok(Some(wire::ShareTo::Every)),
+        Some(PlugFor::Members(named)) => named,
+    };
+    let mut to: Vec<wire::ShareMember> = Vec::with_capacity(named.len());
+    for m in named {
+        let m = wire::ShareMember {
+            kind: m.kind,
+            name: m.name.clone(),
+        };
+        if to.contains(&m) {
+            return Err(ImageRefusal::Spec {
+                what: "a share's members",
+                why: format!("{at}: {:?} {} named twice", m.kind, m.name),
+            });
+        }
+        to.push(m);
+    }
+    if to.is_empty() {
+        return Err(ImageRefusal::Spec {
+            what: "a share's members",
+            why: format!(
+                "{at}: given to members it names none of; give it to one, or to none for the run's own root alone"
+            ),
+        });
+    }
+    Ok(Some(wire::ShareTo::Members(to)))
+}
+
 /// `spec` as the run host reads it, refused here where it could never be run: a member's
 /// terminal (owed, G24), a share's path that is no UTF-8 or is relative, a variable's key
 /// that holds `=` or a NUL, an argument that holds a NUL, or a key or file the guest would
@@ -1394,48 +1496,24 @@ fn request(spec: &ImageSpec) -> Result<wire::Request, ImageRefusal> {
                     s.host.display()
                 ),
             })?;
-        if !s.at.starts_with('/') {
-            return Err(ImageRefusal::Spec {
-                what: "a share",
-                why: format!("{:?}: where the guest sees it is an absolute path", s.at),
-            });
-        }
-        let members = match &s.members {
-            None => None,
-            Some(PlugFor::Every) => Some(wire::ShareTo::Every),
-            Some(PlugFor::Members(named)) => {
-                let mut to: Vec<wire::ShareMember> = Vec::with_capacity(named.len());
-                for m in named {
-                    let m = wire::ShareMember {
-                        kind: m.kind,
-                        name: m.name.clone(),
-                    };
-                    if to.contains(&m) {
-                        return Err(ImageRefusal::Spec {
-                            what: "a share's members",
-                            why: format!("{}: {:?} {} named twice", s.at, m.kind, m.name),
-                        });
-                    }
-                    to.push(m);
-                }
-                if to.is_empty() {
-                    return Err(ImageRefusal::Spec {
-                        what: "a share's members",
-                        why: format!(
-                            "{}: given to members it names none of; give it to one, or to none for the run's own root alone",
-                            s.at
-                        ),
-                    });
-                }
-                Some(wire::ShareTo::Members(to))
-            }
-        };
         shares.push(wire::ShareAt {
             host: host.into(),
             at: s.at.clone(),
             read_only: s.read_only,
-            members,
+            members: share_to(&s.at, s.members.as_ref())?,
             exec: s.exec,
+        });
+    }
+    // Its shares another server serves (D286): each one's place and members as a share's; its
+    // stream goes beside the request, never in it (`session::Begun::create`).
+    let mut served = Vec::with_capacity(spec.served.len());
+    for s in &spec.served {
+        served.push(wire::ServedAt {
+            at: s.at.clone(),
+            read_only: s.read_only,
+            exec: s.exec,
+            members: share_to(&s.at, s.members.as_ref())?,
+            handle: None,
         });
     }
     // The instant it becomes is nanoseconds since the Unix epoch in a u64, as `ready-by=`
@@ -1575,6 +1653,7 @@ fn request(spec: &ImageSpec) -> Result<wire::Request, ImageRefusal> {
         gpu_report: spec.gpu_report,
         plug_roots: plug_roots(&spec.plug_roots)?,
         egress_ceiling: ceilings(&spec.egress_ceiling)?,
+        served,
     };
     // Past the channel's bound it would never be read; the guest's bound is the same one.
     request.encode().map_err(|e| ImageRefusal::Spec {
@@ -1633,6 +1712,7 @@ mod tests {
             upstream_roots: Vec::new(),
             plug_roots: Vec::new(),
             egress_ceiling: Vec::new(),
+            served: Vec::new(),
             gpu_report: None,
         }
     }
@@ -2065,6 +2145,76 @@ mod tests {
         s.members[0].stdin = true;
         assert!(request(&s).unwrap().members[0].input);
         assert!(!request(&spec()).unwrap().members[0].input);
+    }
+
+    /// D286: a share another server serves rides its request by its place, modes and members
+    /// alone, its stream beside it, never in it. Do: give a spec two, the second read-only,
+    /// its files not to be run, given to its harness. Expect: each carried as asked, in order,
+    /// no handle named, the spec equal to its clone and to no spec of another stream. Do: one
+    /// at a relative place, and one given to its harness twice. Expect: each refused by
+    /// field, as a share's would be.
+    #[test]
+    fn a_served_share_rides_its_request_by_place_alone() {
+        let served = |at: &str, read_only, exec, members| ServedShare {
+            stream: ServedStream::new(std::io::pipe().unwrap().0.into()),
+            at: at.into(),
+            read_only,
+            exec,
+            members,
+        };
+        let mut s = spec();
+        s.served = vec![
+            served("/proj", false, true, None),
+            served(
+                "/data",
+                true,
+                false,
+                Some(PlugFor::Members(vec![MemberName::harness("codex")])),
+            ),
+        ];
+        assert_eq!(
+            request(&s).unwrap().served,
+            [
+                wire::ServedAt {
+                    at: "/proj".into(),
+                    read_only: false,
+                    exec: true,
+                    members: None,
+                    handle: None,
+                },
+                wire::ServedAt {
+                    at: "/data".into(),
+                    read_only: true,
+                    exec: false,
+                    members: Some(wire::ShareTo::Members(vec![wire::ShareMember {
+                        kind: MemberKind::Harness,
+                        name: "codex".into(),
+                    }])),
+                    handle: None,
+                },
+            ]
+        );
+        assert_eq!(s.clone(), s);
+        let mut other = s.clone();
+        other.served[0].stream = ServedStream::new(std::io::pipe().unwrap().0.into());
+        assert_ne!(other, s);
+        let refused = |s: &ImageSpec| match request(s) {
+            Err(ImageRefusal::Spec { what, .. }) => what,
+            other => panic!("{other:?}"),
+        };
+        let mut s = spec();
+        s.served = vec![served("proj", false, true, None)];
+        assert_eq!(refused(&s), "a share");
+        s.served = vec![served(
+            "/proj",
+            false,
+            true,
+            Some(PlugFor::Members(vec![
+                MemberName::harness("codex"),
+                MemberName::harness("codex"),
+            ])),
+        )];
+        assert_eq!(refused(&s), "a share's members");
     }
 
     /// D271: the plug roots a spec grants ride its request as granted, each a top-level

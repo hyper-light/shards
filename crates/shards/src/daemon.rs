@@ -173,9 +173,10 @@ type JoinDoor = (UnixStream, u32);
 type JoinDoor = (UnixStream, u32, std::os::windows::io::OwnedHandle);
 
 /// Whether `handle` is a pipe's (GetFileType): on Windows, a share's that a client serves
-/// (D228), where every other share's is its directory's.
+/// (D228), or that another server serves an image's run (D286, api_run.rs `start_shares`),
+/// where every other share's is its directory's.
 #[cfg(windows)]
-fn is_pipe(handle: &OwnedFd) -> bool {
+pub(crate) fn is_pipe(handle: &OwnedFd) -> bool {
     use std::os::windows::io::AsRawHandle as _;
     use windows_sys::Win32::Storage::FileSystem::{FILE_TYPE_PIPE, GetFileType};
     // SAFETY: GetFileType reads an open handle's type, which this borrows, and touches no

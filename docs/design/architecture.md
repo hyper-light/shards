@@ -3615,7 +3615,9 @@ microVM as virtio-fs shares (virtio 1.3 §5.11; Linux fs/fuse/virtio_fs.c):
   shared-memory object of each file, the range each mapping asks filled. Tests
   (tests/slates_fs.rs, where `SLATES_BIN` names a slates binary): a guest mounts, reads and
   writes a slates volume, and one maps a slates file through its window, its fsynced
-  stores in the volume at slates' first read and slates' write of the file in its map.
+  stores in the volume at slates' first read and slates' write of the file in its map. An
+  orchestrator's image run takes one too (D286: `ImageSpec::served`), in the share slot after
+  its own shares', with a DAX window where its shares have one.
   - **On Windows** (`shards run vm --kernel … --slates-fs-handle V`): the stream is a duplex
     named pipe, since AF_UNIX makes no pair without a socket file and the pipe loses
     nothing at its writer's exit (PM M340).
@@ -41743,6 +41745,100 @@ after; rewritten by lane xnet-v, *Amended* below). Owed (ROOT), at this slice's 
   microVM cannot hold apart", with no wire change. Tests: light,
   `api_run::hosted::tests::a_port_coming_in_to_a_runs_address_on_a_shared_network_is_one_members`;
   real VMs, the contested test's holder granted in beside the other, refused `Unheld`.
+
+### D286. An orchestrator's run given a share another server serves: an image run's form of `--slates-fs-fd` (built: shards-api, the image channel's version 52 and the run host, unit-tested; real-VM runs owed)
+
+**Asked.** kiln's microVM engine shares each agent's slates volume into its guest over slates'
+own virtio-fs device and DAX window, slates serving it on a descriptor handed to Shards and no
+mount of the host's in between (kiln goal 01a1ec34599974448f6b7663ddb07001, Ada 2026-11-18; kiln
+plan T4's CP-T4.4 and CP-T4.5). kiln boots its agents' microVMs as images through Hex
+(`ClassSpec::ShardsImage`, Hex's `hex_node::images::ImageRuntime` in kiln's own process) and so
+through shards-api's image boot (D231), whose `ImageSpec::shares` name host directories alone
+(`ImageShare { host, .. }`): an orchestrator could not hand its run a share another server serves.
+
+**What there is.**
+- *A direct boot's* (`shards run vm --kernel … --slates-fs-fd N`, Windows `--slates-fs-handle V`,
+  the bullet above): its VM process takes the stream as its share slot's, its device framing
+  FUSE on it and its server answering the DAX window's mappings (D189); slates serves a volume
+  so (`slates shards VOLUME --fd N -- shards run …`, slates' A-161, its client's
+  `Client::attach_shards`).
+- *A daemon's run's client's directory* (D228): its relay's stream passed through as the share's,
+  on Unix by the run's share process (share.rs takes a socket at a directory's descriptor and
+  hands it to the VM as it is), on Windows by the daemon (`started_shares`: a pipe in its place,
+  no share process for it, none where every share is a client's).
+- *An image run's channel* (D231): the run host's stdin and stdout, pipes, which carry no
+  descriptor; and on Unix its links socket (D285 slice 4, `wire::LINKS_FD`), on which its
+  orchestrator hands it each link of a shared network (`NET_LINK`), on Windows a link riding its
+  ask duplicated into the run host's process.
+
+**Alternatives** (R02).
+1. *Plugged once the run is up* (`ImageGuest::plug` with a served source, D235's device plug):
+   a member must stand in its working directory as it starts (D231, D277: refused `Workdir`
+   otherwise), which a plug made after its start is not; and a plug lies beneath a plug root,
+   where kiln's project lies anywhere. Not taken for the start's share; a plug of one stays open.
+2. *The stream by a path the run host connects to*: the server listens on a socket file, which
+   slates refuses to make (its R1: no on-disk sockets), and the VM process could not reach it
+   (App Sandbox, Landlock: D30, D141). Not taken.
+3. *Inherited by the run host at its spawn, at a number its command line names* (as
+   `--slates-fs-fd` is): a warm host (D253's pools) is spawned before its run, so it could never
+   take one; and the run host's command line is its exemplar's. Not taken.
+4. *Handed to the run host beside its request, on what already carries descriptors*: on Unix its
+   links socket (`SERVED_SHARES`, `MAX_FDS` a message, sent before `CREATE`), on Windows each
+   pipe duplicated into its process (`shards_ipc::Child::give`, as the daemon gives a VM its
+   handles, D141) and its value named in the request (`ServedAt::handle`). Taken.
+5. *How the VM takes it*: through D228's path, unchanged (the share process passes a socket in a
+   slot on as it is on Unix; on Windows the run host hands the VM the pipe in its place), rather
+   than a second way into the VM's slots (R12). Taken.
+
+**Decision.**
+- *The API.* `ImageSpec::served: Vec<ServedShare>`, each `{ stream: ServedStream, at, read_only,
+  exec, members }`: a share's place, modes and member scope (D277, D279) with a stream in place of
+  a host directory. `ServedStream` holds the stream end (a connected stream socket on Unix, a
+  duplex pipe on Windows, `shards_ipc::fd::OwnedFd`) shared by clones of the spec, equal by
+  identity, shown by name (as `RunLessor` is). The caller's copy is the caller's to drop once the
+  boot has answered; the server sees the share end once every copy is closed (slates' attachment
+  ends with its stream).
+- *The channel* (version 52, `wire::Request::served`, `wire::ServedAt`): each served share's
+  place, modes, members and, on Windows, its handle's value in the run host's process; never its
+  bytes. A pool's exemplar keeps the served shares, each a share slot of the microVM, without
+  their handles.
+- *The run host* takes the streams with the request (`api_run::served_streams`: on Unix those that
+  came whole on its links socket before the request, each a socket, as many as asked; on Windows
+  each value checked as `cli::served_pipe` checks `--slates-fs-handle`'s and owned), counts their
+  slots into its microVM's shape (`run::Shape::shares`, so its template has them, D25), and gives
+  each the slot after the run's own shares' (`hosted::serve`: its setup entry
+  `volume=shards{i}\0{place}\0{ro,noexec}\0` as a bind's, its place absolute, not `/`, and none a
+  share or volume takes, refused `Request` in a bind's words). Members are given it as a share's
+  are (`share_members`).
+- *No pool's* (`pool::pool_of`): a warm host's share process starts before its run asks, so a run
+  with a served share boots on a run host of its own, as one asking its GPU report does (D233);
+  a warm host handed one refuses it `Unfit` (its exemplar is another microVM's). Lifting it: the
+  VM takes served streams in the run's `RUN` beside its share process's link.
+- *No save* (`hosted::save`): a share another server serves keeps its tables in that server, which
+  no snapshot holds (D176's restore takes them from the server it was served by), so a save of a
+  run with one is refused `SaveRefusal::Unsupported`, nothing made.
+- *Owner records* (D38's `trusted.shards.owner`): the server may refuse it, as the bullet above
+  says of `--slates-fs-fd`; its files stay owned as it says.
+
+**Tests (light, R15).**
+- shards-api: `image::wire::tests::each_served_share_rides_the_request_last` (round trip with and
+  without a handle, the exemplar's handles taken out, hostile flags, tags and counts refused by
+  type); `image::tests::a_served_share_rides_its_request_by_place_alone` (carried as asked, the
+  stream beside the request, equality by identity, a relative place and a member named twice
+  refused by field); `image::pool::tests::a_run_with_a_served_share_gets_a_host_of_its_own_and_no_pool`;
+  `image::session::tests::served_streams_go_on_the_links_socket_in_order_a_message_at_most_its_bound`
+  (Unix: `MAX_FDS` and one more, two messages, each descriptor the very socket sent).
+- shards: `api_run::hosted::served::served_shares_take_the_slots_after_the_runs_own_and_mount_as_binds_do`;
+  `api_run::tests::a_served_shares_members_are_given_as_a_shares_are`;
+  `api_run::hosted::tests::a_run_with_a_served_share_is_never_saved`.
+- Every request literal of the earlier tests carries `served`, and the request-end offsets of
+  the earlier versions' tests move by the served shares' count.
+
+**Owed** (the coordinator's, R15): an image run's real-VM test over a slates volume (as
+tests/slates_fs.rs drives a direct boot: a member reads and writes the volume and maps a file
+through its slot's DAX window) on HVF, KVM and WHP; the Windows run host's pass-through of a
+served pipe (`start_shares`, no Windows build here); and kiln's and Hex's sides, which take it
+through Hex's `ShardsImage` (kiln goal 01a1ec34…).
 
 ## 4. Start path (≤ 5 ms budget)
 

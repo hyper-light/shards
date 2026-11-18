@@ -179,7 +179,10 @@ fn sized(request: &wire::Request) -> wire::Request {
 }
 
 fn pool_of(spec: &ImageSpec, request: &wire::Request) -> Result<Option<Of>, ImageRefusal> {
-    if request.gpu_report.is_some() {
+    // A run asking its GPU report (D233), or with shares another server serves (D286), is no
+    // pool's: a warm host's VM process frames no report its run names later, and its share
+    // process starts before its run's streams come.
+    if request.gpu_report.is_some() || !request.served.is_empty() {
         return Ok(None);
     }
     let request = sized(request);
@@ -1956,6 +1959,7 @@ mod tests {
             upstream_roots: Vec::new(),
             plug_roots: Vec::new(),
             egress_ceiling: Vec::new(),
+            served: Vec::new(),
             gpu_report: None,
         }
     }
@@ -1979,6 +1983,7 @@ mod tests {
             upstream_roots: Vec::new(),
             plug_roots: Vec::new(),
             egress_ceiling: Vec::new(),
+            served: Vec::new(),
             gpu_report: None,
         }
     }
@@ -2170,6 +2175,38 @@ mod tests {
         };
         let pooled = boot(&pools, &unscoped);
         hosted.until("the unscoped run's pool warms a host", |l| {
+            l.fresh == 3 && l.begun == 1
+        });
+        drop(pooled);
+        drop(pools);
+        room.balanced();
+    }
+
+    /// D286 through D253's pools: a run with a share another server serves gets a host of its
+    /// own and starts no warm one, as a warm host's share process starts before its run's
+    /// streams come; the same run serving none is pooled as every run is.
+    #[test]
+    fn a_run_with_a_served_share_gets_a_host_of_its_own_and_no_pool() {
+        let (hosted, room) = (Hosted::default(), Room::fits(4));
+        let pools = Pooling::new(hosted.clone(), room.clone(), KEEP_TEST).unwrap();
+        let served = wire::Request {
+            served: vec![wire::ServedAt {
+                at: "/proj".into(),
+                read_only: false,
+                exec: true,
+                members: None,
+                handle: None,
+            }],
+            ..request(1, None)
+        };
+        let run = boot(&pools, &served);
+        let other = boot(&pools, &served);
+        assert_eq!(hosted.log().fresh, 2);
+        drop((run, other));
+        assert_eq!(hosted.log().begun, 0, "no warm host for a run that is no pool's");
+        assert!(pools.held().is_empty());
+        let pooled = boot(&pools, &request(1, None));
+        hosted.until("the run serving none warms its pool's host", |l| {
             l.fresh == 3 && l.begun == 1
         });
         drop(pooled);
