@@ -12689,12 +12689,20 @@ mod tests {
     /// its home once, as it ends (D217): kept as each was heard, two flushes each on macOS,
     /// sixty took 25.9 s once on a loaded host (6f5755ae1). So its bounds, the grace's own,
     /// tell one grace from two whatever the host's load.
+    ///
+    /// Its home has heard a teardown as slow as the grace, the bound by which it hears every
+    /// end. Its stand-ins' VM processes sleep through their SIGKILLs while the test answers
+    /// them in turn. A slice learned from its first answers would take a later one's wait for
+    /// a stall and kill its VM, and a killed stand-in's end is not its run's, as a VM's is: its
+    /// follow, found ended twice, is given up before the test answers (D217; 1 of 2 parallel
+    /// daemon runs on macOS at fbc6880225, c58 and c59 "did not receive an exit event").
     #[test]
     fn stop_ends_every_container_at_once() {
         const N: usize = 60;
         const GRACE: Duration = Duration::from_secs(10);
         let t = Test::new("stop-all");
         t.run(|t| {
+            t.daemon.ends.learn(super::ends::End::Teardown, GRACE);
             let names: Vec<String> = (0..N).map(|i| format!("c{i}")).collect();
             let vms: Vec<_> = names.iter().map(|n| running(t, n)).collect();
             let grace = GRACE.as_secs().to_string();

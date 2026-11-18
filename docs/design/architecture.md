@@ -10714,6 +10714,32 @@ user's host as Docker's.
       ends as its red does. Red of the end rule:
       `progress::tests::an_unreaped_end_is_progress_once_then_gone`,
       lanes/redgreen/own-38h-b2-end.patch.
+    - *Its cost to stand-ins whose end is not their run's* (own-38k, 2026-11-18).
+      `daemon::tests::stop_ends_every_container_at_once` failed 1 of 2 parallel daemon runs on
+      this Mac at fbc6880225: c58 and c59 "did not receive an exit event". Its stand-ins
+      (`warm_vm`'s sleepers) sleep through their SIGKILLs, hold no run socket and are never
+      reaped, while the test answers each in turn. Its first answers taught slices of 13 to 25
+      ms. A later teardown went on with nothing for one, so its VM was killed, and its follow
+      found the sleeper ended at two looks, gone, and gave it up before the test answered: "its
+      process gone on with nothing of its end for 22.054625ms: its VM process has ended" (the
+      run's daemon log). It was a still look, not an unread one. Before this rule, that follow
+      went on until the answer. The test now teaches its home a teardown slice of its grace,
+      the bound by which it hears every end, as the unread-teardown test teaches its own. Its
+      red is the load's: lanes/redgreen/own-38k-stop-all-slice.patch fails only under the
+      parallel suite.
+    - *Open, for ROOT's ruling: on macOS an end found under way may still be its kernel's
+      work.* D215's macOS look takes a set exit time for an end under way. XNU sets that time
+      as the exit begins (kern_exit.c:2210). It then frees the address space
+      (osfmk/kern/task.c:3164, `vm_map_terminate`), closes the descriptors, a VM's run socket
+      among them (kern_exit.c:2384, `fdt_invalidate`), and marks the process a zombie
+      (`SZOMB`, kern_exit.c:2771, 2801). Linux's look finds an end only once its whole group
+      has ended (`Z` or `X`, one thread left: shards-api `taken::exited_field`). So a killed VM
+      whose teardown outlasts an Exit slice past its first look is found ended twice while XNU
+      still frees it, and given up before its run's socket closes. This is unmeasured (R09).
+      XNU's own record of an exit done is `pbi_status == SZOMB`, which `PROC_PIDTBSDINFO` gives
+      of a zombie when asked with a nonzero argument (proc_info.c:2198-2214). Read that way, an
+      exit under way (`PROC_FLAG_INEXIT`, proc_info.c:717-718) would then have to be told from
+      a failed usage read, which fails from `P_REF_DEAD` on.
 - **A look that cannot read its process says why, and gives it up** (the person's rule of
   2026-11-18: no fallbacks; ROOT's ruling, own-38h). A follow's look found its end going on or
   not (`Followed::goes_on`, an `Option`), and a process it could not read was one that went on
@@ -10737,6 +10763,23 @@ user's host as Docker's.
     as it was read is its end (under way, then gone). A slice too short to resolve keeps its
     rule (it goes on, its failure in its log line). The VMM's `Progress` keeps why a read
     failed, its first among them, and its `Look` says it (`unread`).
+  - *Each kernel's order of exit makes it so* (own-38k, 2026-11-18; read in xnu-12377.101.15,
+    this Mac's kernel, and Linux v7.2-rc4). XNU sets `P_LEXIT` as an exit begins
+    (bsd/kern/kern_exit.c:1752), stashes the process's usage with its exit time
+    (`ri_proc_exit_abstime`, kern_exit.c:2207-2215), and only then sets `P_REF_DEAD`
+    (kern_exit.c:2269), after which `proc_find` fails (bsd/kern/kern_proc.c:886-893, 2504).
+    The usage read's `PROC_PIDTASKINFO` looks up no zombie (bsd/kern/proc_info.c:2198-2214) and
+    `proc_pidtaskinfo` never fails (proc_info.c:950-960), so ESRCH from `P_REF_DEAD` on is the
+    only failure an exit makes it. `proc_pid_rusage`, D215's look, answers the stash, exit time
+    set, from the moment it is stashed (proc_info.c:3852-3879; bsd/kern/kern_resource.c:
+    3470-3476). Linux's `/proc/<pid>` files answer until the process is reaped
+    (fs/proc/base.c:789-791; `statm` of one whose memory has gone reads zeros,
+    fs/proc/array.c:712-713), and its CPU clock until its group's pid is detached
+    (kernel/time/posix-cpu-timers.c:94, kernel/exit.c:141-144); D215's look then finds it gone.
+    So a usage read an exit failed is followed by a look that finds the end under way or gone,
+    never a living process: no window of an exit reads as a failure. Windows' reads hold the
+    process by a handle, which keeps an exited one readable (Microsoft, "Terminating a
+    Process"); it has no source to read and was not run here.
   - Tests: `daemon::ends::tests::a_live_process_whose_look_fails_is_unread_with_why` (its
     usage read of a process none has, beside D215's look of this living one, unread with why
     at each look; and a follow that could not begin), `a_process_ending_between_looks_is_its_end_never_unread`
