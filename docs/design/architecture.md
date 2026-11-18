@@ -4118,6 +4118,32 @@ microVM as virtio-fs shares (virtio 1.3 §5.11; Linux fs/fuse/virtio_fs.c):
     guest's `size`, any u32: a directory listed in one request past a frame was refused
     by the device unread, whose next requests then took its leftover bytes for their
     replies. `size` is held to `MAX_WRITE`, the largest read INIT tells the guest.
+  - *A guest's POSIX ACL is its data, never its host file's ACL.* A guest-to-host isolation
+    fix (2026-11-18, kiln goal #39, ROOT's word), found while reading the server for
+    FUSE_POSIX_ACL.
+    - The hole: on a Linux host the server kept a guest's `system.` attributes under their
+      own names, so a guest's `setfacl` on a shared file (`system.posix_acl_access`)
+      became the host file's real ACL. The host's kernel (v6.18 fs/posix_acl.c
+      `set_posix_acl`, `posix_acl_update_mode`) set the file's mode from it, which could
+      take away the owner access `host_perm` keeps for the share process. And it granted
+      the host's users and groups by the guest's ids: a guest could grant a host user
+      access to its files.
+    - The fix: the whole `system.` namespace is kept as `trusted.` and `security.` are,
+      under `user.shards.` (`kept_by_kernel`), as data the guest reads back. The whole
+      namespace, because the host kernel acts on each of its names: NFS's
+      `system.nfs4_acl`, SMB's `system.cifs_acl` and ntfs3's `system.ntfs_security` set
+      those file systems' ACLs and security descriptors. The host's own attributes there
+      (an ACL the host set) are none of the guest's, as the host's own SELinux labels are
+      not.
+    - Other hosts: macOS keeps no namespaces and no ACL in an attribute, so a guest's
+      `system.posix_acl_access` was already data there, under its own name. Windows keeps
+      each guest attribute as an EA of its own (`SH.` and its name's bytes,
+      `ntfs::xattr_ea`), never the file's DACL.
+    - Enforcing the guest's ACLs in the guest (FUSE_POSIX_ACL) is a later piece.
+    - Test: `a_guests_acl_is_its_own_data_never_its_host_files_acl` (the guest reads,
+      lists and removes what it set; the host file's mode is unchanged, and on Linux its
+      ACL; a host file's own ACL is none of the guest's). Red with `system.` left out:
+      lanes/redgreen/own-38d-guest-acl.patch, on Linux.
   - Tests: `fs::server::tests` (`a_mode_change_follows_no_symlink`,
     `special_files_are_never_opened`, `a_listing_comes_a_read_at_a_time`,
     `a_directory_is_read_whole_a_page_at_a_time`,

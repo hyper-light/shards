@@ -1019,17 +1019,18 @@ pub(super) fn fallocate(fd: host::Raw, mode: u32, offset: u64, length: u64) -> R
 unsafe impl Send for DirStream {}
 
 /// Where the host keeps a guest's extended attribute `name`: under its own name on macOS,
-/// which keeps no namespaces; and on Linux, where only a privileged process sets one in
-/// `trusted.` or `security.` (xattr(7)), those under `user.shards.` (overlayfs keeps its
-/// `trusted.overlay.` ones on its upper directory). The guest's names in `user.` are its
-/// own; `user.shards.` is the server's, as the owner's attribute is.
+/// which keeps no namespaces; and on Linux, those of a namespace its kernel acts on
+/// ([`kept_by_kernel`]) under `user.shards.` (overlayfs keeps its `trusted.overlay.` ones
+/// on its upper directory; a guest's POSIX ACL, `system.posix_acl_access`, is its data,
+/// never the host file's ACL). The guest's names in `user.` are its own; `user.shards.` is
+/// the server's, as the owner's attribute is.
 pub(super) fn host_xattr(name: &CStr) -> Result<CString, Errno> {
     let n = name.to_bytes();
     if n.starts_with(PRIVATE_XATTR) {
         return Err(EOPNOTSUPP);
     }
     #[cfg(target_os = "linux")]
-    if n.starts_with(b"trusted.") || n.starts_with(b"security.") {
+    if kept_by_kernel(n) {
         let mut host = PRIVATE_XATTR.to_vec();
         host.extend_from_slice(n);
         return CString::new(host).map_err(|_| EINVAL);
@@ -1037,22 +1038,35 @@ pub(super) fn host_xattr(name: &CStr) -> Result<CString, Errno> {
     Ok(name.to_owned())
 }
 
-/// The prefix the host keeps the guest's `trusted.` and `security.` attributes under on
-/// Linux ([`host_xattr`]), which a guest's own names may not take.
+/// Whether a Linux host's kernel acts on an attribute of this name rather than keeping it
+/// as data (xattr(7)): `trusted.` and `security.`, which only a privileged process sets,
+/// and `system.`, the kernel's own objects: a POSIX ACL there (fs/posix_acl.c
+/// `set_posix_acl`) sets the file's mode and grants the host's users and groups by the ids
+/// it names, and the file systems' handlers there set their ACLs and security descriptors
+/// (`system.nfs4_acl`, `system.cifs_acl`, ntfs3's `system.ntfs_security`).
+#[cfg(target_os = "linux")]
+fn kept_by_kernel(name: &[u8]) -> bool {
+    [&b"trusted."[..], b"security.", b"system."]
+        .iter()
+        .any(|ns| name.starts_with(ns))
+}
+
+/// The prefix the host keeps the guest's attributes of the namespaces its kernel acts on
+/// under on Linux ([`host_xattr`]), which a guest's own names may not take.
 pub(super) const PRIVATE_XATTR: &[u8] = b"user.shards.";
 
 /// The guest's name for a host attribute `host`: [`host_xattr`]'s, turned back; none for
 /// one the guest does not see: the server's own, another of `user.shards.`'s, and on Linux
-/// the host's own `trusted.` and `security.` attributes, which its kernel keeps (an SELinux
-/// label, file capabilities or an IMA hash the host set), where the guest's of those names
-/// are under `user.shards.`, and reading them by those names reaches the guest's alone.
+/// the host's own attributes its kernel acts on (an SELinux label, file capabilities, an
+/// IMA hash or an ACL the host set), where the guest's of those names are under
+/// `user.shards.`, and reading them by those names reaches the guest's alone.
 pub(super) fn guest_xattr(host: &[u8]) -> Option<&[u8]> {
     match host.strip_prefix(PRIVATE_XATTR) {
         #[cfg(target_os = "linux")]
-        Some(rest) if rest.starts_with(b"trusted.") || rest.starts_with(b"security.") => Some(rest),
+        Some(rest) if kept_by_kernel(rest) => Some(rest),
         Some(_) => None,
         #[cfg(target_os = "linux")]
-        None if host.starts_with(b"trusted.") || host.starts_with(b"security.") => None,
+        None if kept_by_kernel(host) => None,
         None => Some(host),
     }
 }

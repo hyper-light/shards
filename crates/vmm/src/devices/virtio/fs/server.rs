@@ -5997,11 +5997,11 @@ mod tests {
         release(&s, again, fa);
     }
 
-    /// The guest's names for the host's attributes: its own `trusted.` and `security.` ones
-    /// as the host keeps them (`user.shards.`), its `user.` ones as they are; and on Linux,
-    /// none for the host's own `trusted.` and `security.` ones (an SELinux label), which the
-    /// guest could list and never read; nor for the server's. Unix's: on Windows each guest
-    /// attribute is an EA of its own name ([`calls::ea_name`]'s test).
+    /// The guest's names for the host's attributes: its own `trusted.`, `security.` and
+    /// `system.` ones as the host keeps them (`user.shards.`), its `user.` ones as they are;
+    /// and on Linux, none for the host's own of those namespaces (an SELinux label, an
+    /// ACL), which the guest could list and never read; nor for the server's. Unix's: on
+    /// Windows each guest attribute is an EA of its own name ([`calls::ea_name`]'s test).
     #[cfg(unix)]
     #[test]
     fn the_guest_sees_its_own_attributes_and_not_the_hosts_security_ones() {
@@ -6009,15 +6009,127 @@ mod tests {
         assert_eq!(guest_xattr(b"user.shards.other"), None);
         let host_label = guest_xattr(b"security.selinux");
         let host_trusted = guest_xattr(b"trusted.ima");
+        let host_acl = guest_xattr(b"system.posix_acl_access");
         if cfg!(target_os = "linux") {
             assert_eq!(
                 guest_xattr(b"user.shards.security.capability"),
                 Some(&b"security.capability"[..])
             );
-            assert_eq!((host_label, host_trusted), (None, None));
+            assert_eq!(
+                guest_xattr(b"user.shards.system.posix_acl_access"),
+                Some(&b"system.posix_acl_access"[..])
+            );
+            assert_eq!((host_label, host_trusted, host_acl), (None, None, None));
         } else {
             assert_eq!(host_label, Some(&b"security.selinux"[..]));
+            assert_eq!(host_acl, Some(&b"system.posix_acl_access"[..]));
         }
+    }
+
+    /// A guest's POSIX ACL is its data, never its host file's ACL (D38, amended 2026-11-18:
+    /// a guest-to-host isolation fix). Set on a Linux host's file as it was, the host's kernel
+    /// took it for that file's ACL: it set the file's mode from it and granted the host's
+    /// users and groups by the guest's ids. The guest reads back and lists what it set, and
+    /// removes it; the host file's mode and ACL stay as they were, its value kept where the
+    /// host keeps the guest's attributes; and on Linux a host file's own ACL is no ACL of the
+    /// guest's.
+    #[test]
+    fn a_guests_acl_is_its_own_data_never_its_host_files_acl() {
+        let (path, s) = dir();
+        std::fs::write(path.join("f"), "f").unwrap();
+        let mode = host_mode(&path.join("f"));
+        let f = found(&s, ROOT, "f");
+        // user::rwx user:12345:rw- group::r-x mask::rw- other::---, as setfacl sets it
+        // (linux/posix_acl_xattr.h: version 2, then each entry's tag, permissions and id).
+        let mut acl = 2u32.to_le_bytes().to_vec();
+        let entries = [
+            (0x01u16, 7u16, u32::MAX),
+            (0x02, 6, 12345),
+            (0x04, 5, u32::MAX),
+            (0x10, 6, u32::MAX),
+            (0x20, 0, u32::MAX),
+        ];
+        for (tag, perm, id) in entries {
+            acl.extend(tag.to_le_bytes());
+            acl.extend(perm.to_le_bytes());
+            acl.extend(id.to_le_bytes());
+        }
+        let fields = |v: &[u32]| v.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>();
+        let with = |head: &[u32], n: &str| {
+            let mut b = fields(head);
+            b.extend(name(n));
+            b
+        };
+        let mut set = with(&[u32::try_from(acl.len()).unwrap(), 0], "system.posix_acl_access");
+        set.extend(&acl);
+        assert_eq!(answer(&s, &req(op::SETXATTR, f, 0, &set)).0, 0);
+        let get = with(&[4096, 0], "system.posix_acl_access");
+        assert_eq!(answer(&s, &req(op::GETXATTR, f, 0, &get)), (0, acl.clone()));
+        assert_eq!(
+            answer(&s, &req(op::LISTXATTR, f, 0, &fields(&[4096, 0]))),
+            (0, b"system.posix_acl_access\0".to_vec())
+        );
+        assert_eq!(host_mode(&path.join("f")), mode, "the host file's mode");
+        #[cfg(unix)]
+        {
+            let kept = if cfg!(target_os = "linux") {
+                c"user.shards.system.posix_acl_access"
+            } else {
+                c"system.posix_acl_access"
+            };
+            let file = std::fs::File::open(path.join("f")).unwrap();
+            assert_eq!(fget_xattr(file.as_raw_fd(), kept), Ok(Some(acl.clone())));
+        }
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::ffi::OsStrExt as _;
+            let host_acl = |p: &std::path::Path| {
+                let p = CString::new(p.as_os_str().as_bytes()).unwrap();
+                // SAFETY: getxattr(2) of two NUL-terminated strings, asking its size alone.
+                let n = unsafe {
+                    libc::getxattr(
+                        p.as_ptr(),
+                        c"system.posix_acl_access".as_ptr(),
+                        std::ptr::null_mut(),
+                        0,
+                    )
+                };
+                if n < 0 { Err(last()) } else { Ok(n) }
+            };
+            assert_eq!(host_acl(&path.join("f")), Err(ENODATA), "the host file's ACL");
+            // A host file's own ACL, where the test's file system keeps one.
+            std::fs::write(path.join("h"), "h").unwrap();
+            let h = CString::new(path.join("h").as_os_str().as_bytes()).unwrap();
+            // SAFETY: setxattr(2) of two NUL-terminated strings and a buffer of its length.
+            let set = unsafe {
+                libc::setxattr(
+                    h.as_ptr(),
+                    c"system.posix_acl_access".as_ptr(),
+                    acl.as_ptr().cast(),
+                    acl.len(),
+                    0,
+                )
+            };
+            if set == 0 {
+                let h = found(&s, ROOT, "h");
+                assert_eq!(answer(&s, &req(op::GETXATTR, h, 0, &get)).0, -ENODATA);
+                assert_eq!(
+                    answer(&s, &req(op::LISTXATTR, h, 0, &fields(&[4096, 0]))),
+                    (0, Vec::new())
+                );
+            } else {
+                eprintln!(
+                    "SKIP (a host file's own ACL): {}",
+                    std::io::Error::last_os_error()
+                );
+            }
+        }
+        assert_eq!(
+            answer(&s, &req(op::REMOVEXATTR, f, 0, &name("system.posix_acl_access"))).0,
+            0
+        );
+        assert_eq!(answer(&s, &req(op::GETXATTR, f, 0, &get)).0, -ENODATA);
+        assert_eq!(host_mode(&path.join("f")), mode, "the host file's mode");
     }
 
     /// What the guest makes that the host cannot hold is kept beside it (D174), as a
