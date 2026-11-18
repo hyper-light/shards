@@ -16,10 +16,16 @@
 //! exponential in nested comprehensions (10 levels 0.19 s, 12 levels 2.3 s, 14 levels
 //! 29 s, measured on an M5 Max), builtin and function calls nested 9999 deep took it 28
 //! and 13 minutes, and a chain of 99993 `+` did not end in 10.
+//!
+//! A shape checked at its deepest is held to grow no faster than linearly in its depth,
+//! on the host it runs on ([`grows_linearly`], D98), and every shape's times print on
+//! every run, past the harness's capture, for comparing hosts.
 
 #![allow(clippy::unwrap_used)]
 
 use std::collections::BTreeMap;
+use std::io::Write as _;
+use std::time::{Duration, Instant};
 
 use serde_json::{Value as Json, json};
 use shards_rego::ast::Term;
@@ -32,6 +38,32 @@ use shards_rego::value::{self, Value};
 
 /// crates/shards' `policy::STACK`.
 const POLICY_STACK: usize = 123 << 20;
+
+/// How many times shallower than a shape's deepest policy the one its growth is read from
+/// is (D98): work linear in the depth takes at most this many times as long at the
+/// deepest, work quadratic in it about its square. A timing error moves the exponent read
+/// over it by its log over log 16, half what it moved over a factor of 4.
+const DEPTH_FACTOR: u32 = 16;
+
+/// How many times each depth is checked, the two interleaved, its least taken (D98): noise
+/// only adds time (Chen and Revels, "Robust benchmarking in noisy environments", 2016), so
+/// a depth's estimate moves only where all its runs were slowed, and a host slowed through
+/// both depths slows them alike.
+const RUNS: usize = 3;
+
+/// Whether `deep`, a shape's check at its deepest, took no longer than linear growth
+/// allows from `shallow`, its check [`DEPTH_FACTOR`] times shallower on the same host:
+/// a ratio of at most DEPTH_FACTOR^(3/2), the bound as far, in ratio, from linear growth
+/// (DEPTH_FACTOR) as from quadratic (its square).
+fn grows_linearly(deep: Duration, shallow: Duration) -> bool {
+    deep.as_secs_f64() <= shallow.as_secs_f64() * f64::from(DEPTH_FACTOR).powf(1.5)
+}
+
+/// Says a line on the test's own stderr, which the harness does not capture, so that a
+/// run that passes shows it too.
+fn say(line: &str) {
+    let _ = writeln!(std::io::stderr(), "depth: {line}");
+}
 
 struct NoHost;
 
@@ -173,20 +205,46 @@ fn policies_nest_as_deep_as_opa_takes_them_and_no_deeper() {
                     Some(a) => json!({"results": a}),
                     None if shape.get("check") == Some(&json!(true)) => want.clone(),
                     None => {
-                        if let Err(e) = parse_module("policy.rego", &text(shape, max)) {
+                        let t0 = Instant::now();
+                        let parsed = parse_module("policy.rego", &text(shape, max));
+                        say(&format!("{name} at {max}: parsed in {:?}", t0.elapsed()));
+                        if let Err(e) = parsed {
                             failed.push(format!("{name} at {max}: refused, as OPA does not: {e}"));
                         }
                         continue;
                     }
                 };
                 let want = &answer;
-                let t0 = std::time::Instant::now();
-                let (kind, got) = check(&text(shape, max));
-                // Measured: under 0.1 s each on an M5 Max, the deepest set's type taking
-                // 41 s while each level copied the type of the levels within it (OPA: 19
-                // minutes); the bound leaves room for a busy host.
-                if t0.elapsed() > std::time::Duration::from_secs(30) {
-                    failed.push(format!("{name} at {max}: checked in {:?}", t0.elapsed()));
+                // Its growth: the deepest against one DEPTH_FACTOR times shallower, each
+                // checked RUNS times on this host, interleaved, its least taken.
+                let timed = |n: usize| {
+                    let t0 = Instant::now();
+                    let checked = check(&text(shape, n));
+                    (t0.elapsed(), checked)
+                };
+                let shallow = max / DEPTH_FACTOR as usize;
+                let (mut smalls, mut deeps, mut first) = (Vec::new(), Vec::new(), None);
+                for _ in 0..RUNS {
+                    smalls.push(timed(shallow).0);
+                    let (t, checked) = timed(max);
+                    deeps.push(t);
+                    if first.is_none() {
+                        first = Some(checked);
+                    }
+                }
+                let (kind, got) = first.unwrap();
+                let small = *smalls.iter().min().unwrap();
+                let deep = *deeps.iter().min().unwrap();
+                let ratio = deep.as_secs_f64() / small.as_secs_f64();
+                let growth = format!(
+                    "{name} at {max}: {deep:?} (least of {deeps:?}); at {shallow}: {small:?} \
+                     (least of {smalls:?}); ratio {ratio:.2}, exponent {:.2} (1 linear, \
+                     2 quadratic, past 1.5 refused)",
+                    ratio.ln() / f64::from(DEPTH_FACTOR).ln()
+                );
+                say(&growth);
+                if !grows_linearly(deep, small) {
+                    failed.push(format!("grew faster than linearly: {growth}"));
                 }
                 if long_text(&got) != want[kind] {
                     let other = if kind == "results" { "error" } else { "results" };

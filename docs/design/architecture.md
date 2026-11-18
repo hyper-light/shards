@@ -26772,6 +26772,76 @@ held to more than OPA's answers:
   policies run in its own process, which Ctrl-C ends, as buildx's end with its build's
   context.
 
+**Amended (own-38d, kiln goal #39, 2026-11-18, ROOT's word): a deep policy's check is held
+to grow no faster than linearly on the host it runs on, not to a chosen 30 s.** CI
+44205094460's x86_64 windows-2025 job (134486647774, at 0f83166da9) failed depth.rs: "every
+at 99990: checked in 30.620016s", past its 30 s.
+- *Not a path quadratic in depth, read from code.* That check parses (one `enter` a level;
+  the term cache's scan stops at once at a new offset), walks the rule once in each stage
+  before local variables (resolveRefs, the var visitor, the keyword check), and rewrites
+  its local variables twice: as `Fast`, then OPA's way, as it errs ("declared var x
+  unused"). Each level's walk of its statement again skips the statement within, which is
+  `Settled` (plain, its scope's declarations as they were), so each pass is linear; the
+  compile stops there.
+- *The host.* That job's other shapes took 8.80 s of its 39.42 s, as usual. The same
+  revision's windows-2022 job (Intel Xeon Platinum 8573C) passed the whole test in 9.85 s;
+  the same image (windows-2025-vs2026 20261103.298.1) on an AMD EPYC 9V74 in 8.99 s (CI
+  44189693085); jupiter, bare metal, in 11.29 and 9.11 s (at 371df2aabf). The failing VM was
+  the only Intel Xeon Platinum 8370C among the logged runs. Its other shapes' 8.80 s
+  against the windows-2022 job's 9.85 s for all of them puts `every`'s usual time near 1 s,
+  so about 30 times that there. The check is memory-heavy: M160 measured 521 MiB at its
+  peak, and a level's time growing 6-fold between 1,000 and 99,990 deep as its working set
+  left the caches. Why that host took so long is unmeasured.
+- *The bound.* The 30 s was a chosen constant (R03). Now each shape checked at its deepest
+  is also checked a sixteenth as deep, on the same host, three times at each depth, the
+  two interleaved. Each depth's least time stands for it (noise only adds time: Chen and
+  Revels, "Robust benchmarking in noisy environments", 2016). Their ratio is held to
+  16^(3/2) = 64, as far from linear growth's ratio (16) as from quadratic's (256): the
+  doubling-ratio experiment of Sedgewick and Wayne (Algorithms, 4th ed., §1.4) over a
+  factor of 16. The exponent read is the ratio's log over log 16: 1 linear, 2 quadratic,
+  refused past 1.5.
+  - What the factor gives: a timing error ε moves the exponent by log(1 + ε)/log 16, half
+    what it moved over a factor of 4, and a level's cost growing μ between the depths
+    moves it by log μ/log 16. (At 4, ROOT's r44 on a quiet M5 Max read object at 1.48,
+    0.02 from the bound.)
+  - What 3 runs give: a depth's estimate moves only where all 3 of its runs were slowed.
+    Interleaved, a period that slows the host through both depths slows them alike. A
+    shape costs about 3.2 times its deepest check.
+  - Against r44 (taken at a factor of 4). Red: array 2.06 (17.2 s against 0.996 s),
+    object 1.96, set 1.93. Array's quadratic work at the deepest is then about 16 s; a
+    sixteenth as deep, about 0.06 s beside its linear part. So near 1.85 at 16, 0.35 past
+    the bound; object about 1.7 (estimates). Green: array 0.88 and parens 0.83, lower at
+    16 (a fixed cost's larger share); set 1.31 and object 1.48, a level's cost growing 1.5
+    and 1.9 times between the depths. At 16 those are expected near 1.2 to 1.35 if that
+    growth holds below a quarter (unmeasured).
+  - Object's 1.48, read from code, has no path superlinear in depth:
+    - its parse takes no backtracking path for a nested object (one `parse_term` a level,
+      cached once);
+    - resolveRefs copies a level's pair and replaces it, the old chain dropped once, a
+      member at a time;
+    - the type check builds a level's type from its child's shared parts and unifies a
+      level a call;
+    - a ground term is found ground once, at its top;
+    - `write_json` writes into one buffer.
+
+    Its time a level went from 4.3 µs at 8,332 deep to 8.4 µs at 33,330, as its working
+    set left the caches, as M160 measured of `every`.
+  - Open, a risk to green: where a sixteenth of the deepest falls below a cache's edge, a
+    level's cost there is lower, and the exponent rises by log μ/log 16. M160 (a loaded M5
+    Max, before 2026-11-08) measured `every` at 2.2 µs a level 5,000 deep and 12.3 µs at
+    99,990: at 6,249 against 99,990 that is near 1.6, past the bound. Its exponent at 16
+    on each host is owed (each run prints it). If a host's caches put it past the bound,
+    the cure is a reference of the same memory checked on the same host, not a wider
+    bound.
+  - Each run prints every shape's times, passing or not (written past the harness's
+    capture): a checked shape's runs at both depths, their least, ratio and exponent; the
+    others' parse at the deepest.
+- *Red*: `lanes/redgreen/own-38d-depth-growth.patch` puts back OPA's types.Nil walk
+  (`has_nil` reading every part whole, as before 846600392a). Each level of a nested
+  array's, set's and object's type then reads the levels within it, so those shapes'
+  exponents are expected near 1.7 to 1.9, past the bound (r44 read 1.93 to 2.06 at a
+  factor of 4). Unbuilt and unrun in this lane: ROOT's red and green are owed.
+
 ### D97. OSI artifacts of several platforms: an index
 
 `shards build agent|harness|mcp DIR --platform LIST -t NAME` makes one manifest per
