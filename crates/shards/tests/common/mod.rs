@@ -2057,7 +2057,8 @@ pub fn shards_net() -> &'static Path {
     V.get_or_init(|| carried().join(format!("shards-net{}", std::env::consts::EXE_SUFFIX)))
 }
 
-/// The directory holding this build's `shards`.
+/// The directory holding this build's `shards`, named by its SHA-256, which each change of
+/// it changes: registered as `{binaries}` in its commands' keys ([`minted`]).
 fn binaries() -> &'static Path {
     static V: OnceLock<PathBuf> = OnceLock::new();
     V.get_or_init(|| {
@@ -2073,6 +2074,7 @@ fn binaries() -> &'static Path {
         let name = format!("shards-{}", digest.get(..16).unwrap());
         let root = workspace().join("target/e2e");
         let dir = root.join(&name);
+        minted(&dir.to_string_lossy(), "{binaries}");
         loop {
             if !dir.exists() {
                 place(&root, &name, &built);
@@ -3749,8 +3751,9 @@ fn finished(status: std::process::ExitStatus, stdout: String, stderr: String, st
 /// ([`WaitKind::of`]), so that one call site's quick refusal never bounds its slow build or
 /// push (#77: build.rs' `policy_eval_answers` and `builds_push_what_they_build` ran many
 /// commands from one closure, a W* of 13.4 ms and 3.49 ms learned from quick ones judging
-/// the rest). They are its program's file stem, then its subcommand's words, each a plain
-/// word (ASCII lowercase letters and `-`, no flag) up to the first that is not:
+/// the rest). They are its program as its key says it ([`program`]), then its subcommand's
+/// words, each a plain word (ASCII lowercase letters and `-`, no flag) up to the first that
+/// is not:
 /// - its first argument;
 /// - its second, only where its first names no command of the CLI's that takes arguments
 ///   itself (shards-cmdline's catalog: `run`, `push`, `build`, whose next word is an image,
@@ -3759,19 +3762,16 @@ fn finished(status: std::process::ExitStatus, stdout: String, stderr: String, st
 ///
 /// So `shards run --rm alpine` is `shards run`, `docker push localhost:5000/x` is `docker
 /// push`, `shards stop daemon` is `shards stop daemon`, and `docker compose up -d` is `docker
-/// compose up`. None of a run's own names, paths or tags is ever a word: each run of a call
-/// site keys the same kinds, whose records it keeps.
+/// compose up`. None of a run's own names, paths or tags is ever a word, nor its build's
+/// hash: each run of a call site, of any build, keys the same kinds, whose records it keeps.
 pub fn command_words(cmd: &Command) -> String {
-    let program = Path::new(cmd.get_program())
-        .file_stem()
-        .map_or_else(String::new, |stem| stem.to_string_lossy().into_owned());
     let plain = |word: &&std::ffi::OsStr| {
         word.to_str().is_some_and(|w| {
             !w.is_empty() && !w.starts_with('-') && w.bytes().all(|b| b.is_ascii_lowercase() || b == b'-')
         })
     };
     let mut args = cmd.get_args();
-    let mut words = vec![program];
+    let mut words = vec![program(cmd)];
     let Some(first) = args.next().filter(plain).and_then(std::ffi::OsStr::to_str) else {
         return words.join(" ");
     };
@@ -3789,11 +3789,12 @@ pub fn command_words(cmd: &Command) -> String {
     words.join(" ")
 }
 
-/// A value this run minted of its own, which a command's line carries (a directory, a port,
-/// a name made of this process's ID), and the placeholder its kind's key says it as
-/// ([`keyed_line`]): each registered by the helper that mints it ([`minted`]), so that
-/// every run of a call site keys its commands as the run before did (ROOT's ruling (a),
-/// 2026-11-13, #77).
+/// A value this run minted of its own, or its build named, which a command's line carries (a
+/// directory, a port, a name made of this process's ID, a path named by cargo's hash), and
+/// the placeholder its kind's key says it as ([`keyed_line`]): each registered by the helper
+/// that mints it ([`minted`]), this process's own once ([`minted_process`]), so that every
+/// run of a call site, of any build, keys its commands as the run before did (ROOT's ruling
+/// (a), 2026-11-13, #77).
 struct Minted {
     value: String,
     placeholder: String,
@@ -3838,27 +3839,56 @@ pub fn minted_port(port: u16) -> u16 {
     port
 }
 
+/// Registers, once, this process's own values ([`minted`]): its ID, which names the slices,
+/// builders and pipes tests make, as `{pid}`; and the names cargo gave what it built for it,
+/// which carry cargo's hash of the build (`NAME-HASH`) and change as the build's dependencies
+/// do (CI 44282442232: testdir's windows-sys changed the test binaries' on Windows alone, and
+/// the records CI keeps from run to run then held each stand-in's kind under both names):
+/// this test binary's file stem, a stand-in's program ([`program`]), as `{self}`, and the
+/// directory shards' build script wrote (OUT_DIR, `target/PROFILE/build/shards-HASH/out`:
+/// the init it made and the helpers it carries), its path and that path made canonical, as
+/// `{out}`.
+fn minted_process() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        minted(&std::process::id().to_string(), "{pid}");
+        if let Some(stem) = std::env::current_exe().ok().as_deref().and_then(Path::file_stem) {
+            minted(&stem.to_string_lossy(), "{self}");
+        }
+        let out = Path::new(env!("OUT_DIR"));
+        for path in std::iter::once(out.to_path_buf()).chain(out.canonicalize()) {
+            minted(&path.to_string_lossy(), "{out}");
+        }
+    });
+}
+
 /// `cmd`'s whole command line as its wait's kind is keyed by it beside its call site
-/// ([`WaitKind::of`]): its program's file stem and every argument, each value this run
+/// ([`WaitKind::of`]): its program ([`program`]) and every argument, each value this run
 /// minted said as its placeholder ([`minted`]): a [`TempDir`] as `{dir NAME}`, the
-/// directory they are all under as `{testdir}`, a port a helper was handed as `{port}`, and
-/// this process's ID, which names the slices, builders and pipes tests make, as `{pid}`.
+/// directory they are all under as `{testdir}`, a port a helper was handed as `{port}`,
+/// this process's ID as `{pid}`, this test binary as `{self}` and the build's directories
+/// as `{out}` and `{binaries}` ([`minted_process`], [`binaries`]).
 /// So one call site's quick refused command is kept apart from its real one (build.rs'
-/// `build --push CTX` and `build --push -t localhost:PORT/team/built:1 CTX`), and each run
-/// keys its commands as the run before did, adding no record of its own.
+/// `build --push CTX` and `build --push -t localhost:PORT/team/built:1 CTX`), and each run,
+/// of any build, keys its commands as the run before did, adding no record of its own.
 pub fn keyed_line(cmd: &Command) -> String {
-    minted(&std::process::id().to_string(), "{pid}");
-    let program = Path::new(cmd.get_program())
-        .file_stem()
-        .map_or_else(String::new, |stem| stem.to_string_lossy().into_owned());
-    let line: Vec<String> = std::iter::once(program)
+    let line: Vec<String> = std::iter::once(program(cmd))
         .chain(cmd.get_args().map(|arg| generic(&arg.to_string_lossy())))
         .collect();
     format!("{line:?}")
 }
 
+/// `cmd`'s program as its kind's key says it: its file stem, said as [`generic`] says a
+/// value, so that a stand-in's, this test binary, is `{self}`.
+fn program(cmd: &Command) -> String {
+    Path::new(cmd.get_program())
+        .file_stem()
+        .map_or_else(String::new, |stem| generic(&stem.to_string_lossy()))
+}
+
 /// `text`, each value this run minted said as its placeholder.
 fn generic(text: &str) -> String {
+    minted_process();
     let mut said = text.to_string();
     for minted in minted_values().iter() {
         said = if minted.number {

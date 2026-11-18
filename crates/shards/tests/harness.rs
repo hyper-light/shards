@@ -1809,48 +1809,80 @@ fn a_daemon_is_settled_once_its_threads_rest() {
 /// never told apart; and a run's own directories and ports key no new record each run.
 /// Do: from one call site, run a stand-in carrying the refused command's line and then the
 /// real one's, each with a context directory and a registry port of its own; then both
-/// again, with new ones. Expect: two records of the call site's on this host, the second
-/// round's keyed as the first's.
+/// again, with new ones. Expect: the four commands' records, named as their waits name them
+/// (`common::WaitKind::kept_at`), two, the second round's the first's. The records this
+/// host keeps are not counted: CI keeps them from run to run, and one an earlier build
+/// keyed otherwise (CI 44282442232: a stand-in's, by its binary's name with cargo's hash in
+/// it, before `{self}`) is an orphan no wait reads.
 #[test]
 fn a_call_sites_commands_are_keyed_by_their_whole_line() {
     #[track_caller]
-    fn run_at(cmd: std::process::Command) -> &'static std::panic::Location<'static> {
+    fn run_at(cmd: std::process::Command) -> std::path::PathBuf {
+        let (words, line) = (common::command_words(&cmd), common::keyed_line(&cmd));
+        let record = common::WaitKind::kept_at(std::panic::Location::caller(), &words, &line);
         let run = common::run_command(cmd, &["stand-in".to_string()]);
         assert_eq!(run.status, Some(0), "{run}");
-        std::panic::Location::caller()
+        record
     }
-    let mut site = None;
+    let mut rounds = Vec::new();
     for _ in 0..2 {
         let ctx = TempDir::new("build-push-ctx");
         let (port, _) = common::writable_registry();
         let ctx = ctx.to_str().unwrap();
         let name = format!("localhost:{port}/team/built:1");
-        for line in [
+        let records: Vec<std::path::PathBuf> = [
             vec!["build", "--push", ctx],
             vec!["build", "--push", "-t", &name, ctx],
-        ] {
-            site = Some(run_at(stand_in_with("exit", &line)));
-        }
+        ]
+        .into_iter()
+        .map(|line| run_at(stand_in_with("exit", &line)))
+        .collect();
+        rounds.push(records);
     }
-    let site = site.unwrap();
-    let prefix: String = format!("{}-{}-{}-", site.file(), site.line(), site.column())
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    let records: Vec<String> = std::fs::read_dir(common::workspace().join("target/judge-records"))
-        .unwrap()
-        .flatten()
-        .flat_map(|host| std::fs::read_dir(host.path()).into_iter().flatten().flatten())
-        .filter_map(|record| record.file_name().into_string().ok())
-        .filter(|name| name.starts_with(&prefix))
-        .collect();
-    assert_eq!(records.len(), 2, "{records:#?}");
+    assert_ne!(
+        rounds[0][0], rounds[0][1],
+        "a refused command keyed as its real one"
+    );
+    assert_eq!(rounds[0], rounds[1], "a run's own directory or port in its key");
+}
+
+/// A command's key carries nothing of its build (`common::command_words`,
+/// `common::keyed_line`): a stand-in's program, this test binary, is `{self}`, the directory
+/// shards' build script wrote (the init it made, the helpers it carries) `{out}`, and the
+/// directory of this build's `shards` `{binaries}`, never their names, which carry cargo's
+/// hash of the build or `shards`' own digest and change with them (CI 44282442232: testdir's
+/// windows-sys changed the test binaries' hash on Windows alone, and each Windows job then
+/// found the stand-ins' records under the name before beside its own). Do: key a stand-in
+/// whose arguments name this binary, an init in that directory and the tests' `shards`.
+/// Expect: none of their names' hashes in its words or its line.
+#[test]
+fn a_commands_key_carries_nothing_of_its_build() {
+    let exe = std::env::current_exe().unwrap();
+    let out = std::path::Path::new(env!("OUT_DIR"));
+    let init = out.join("shards-init");
+    let shards = common::shards();
+    let cmd = stand_in_with(
+        "exit",
+        &[
+            exe.to_str().unwrap(),
+            init.to_str().unwrap(),
+            shards.to_str().unwrap(),
+        ],
+    );
+    let (words, line) = (common::command_words(&cmd), common::keyed_line(&cmd));
+    let carried: Vec<String> = [
+        exe.file_stem(),
+        out.parent().and_then(std::path::Path::file_name),
+        shards.parent().and_then(std::path::Path::file_name),
+    ]
+    .into_iter()
+    .map(|name| name.unwrap().to_string_lossy().into_owned())
+    .filter(|name| {
+        let hash = name.rsplit_once('-').map_or(name.as_str(), |(_, hash)| hash);
+        words.contains(hash) || line.contains(hash)
+    })
+    .collect();
+    assert!(carried.is_empty(), "{carried:?} in its key: {words}: {line}");
 }
 
 /// The two call sites the CI triage at d24ef4cfd found judged by a quick refused command's
