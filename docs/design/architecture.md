@@ -14982,6 +14982,25 @@ comes to made no progress for 399 ms, past the slowest answer of its kind seen o
       not built or run (the lane's rule). Owed (ROOT): that test, the bench on a KVM host, and
       the next EC2 run's Arrival saying its rows `invalid` where its host refused, or its
       refusals' gate.
+    - *A drain refused in such a span* (CI 44379986478 at 4ff00b72a8, goal #36, own-38s). The
+      span's refusals were read only once every request had ended, so a drain whose wait was
+      refused (Part 11's rule) failed the bench first, whatever its span held: rate 40 on EC2's
+      Intel Xeon 6975P-C, 8 requests never ended, its daemon's log holding a burst of refusals
+      (VMX error 7, before and after their guests ran, as in 44245219858, whose rate 40 left 14
+      never ended). Their runs had been handed READY VMs and never started their commands
+      (`Created`), each VM's four vCPU threads runnable among 14 such VMs on the host's 4 CPUs,
+      its CPU time growing 14 s in 51 s, guest ticks most of each vCPU's (the start judge's
+      accounts); that host's KVM runs nested with no pause-loop exiting (`ple_gap` 0), where
+      Azure's AMD EPYC, on which the job passed at d84cb20f9d with no refusal and rate 40's
+      slowest request at 34 s, has a pause filter (`pause_filter_count` 3000). Now the span ends
+      at the drain's end or its refusal, and is read before the drain's outcome
+      (`common::drained`): refused in a span its host's, the requests that never ended are said
+      as a stall's are (its wait's account, what its home shows), their clients ended, and the
+      rate is invalid with the rest of it; refused in any other span, the bench fails as before.
+      `rate_R_done` counts the requests answered. Held by harness.rs
+      `a_drain_refused_in_its_hosts_span_is_its_hosts_and_elsewhere_a_stall`; red:
+      lanes/redgreen/own-38s-drained.patch. What kept those VMs from their commands is not read
+      here (no guest's log of it): ROOT's (R09 on an EC2 Intel runner).
   - *The job's limit after D36's common point* (2026-11-17). The comparison now waits a working
     set's window (`RECORD_FOR`, 1 s on KVM) before it reads each restore's and fleet's memory
     (D36): at most 408 s more a run, 396 restores (6 pairs, 3 warm-ups and 30 runs of each

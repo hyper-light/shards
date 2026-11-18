@@ -1709,6 +1709,37 @@ fn a_drain_whose_requests_stop_ending_is_refused_and_keeps_nothing() {
     drop(end);
 }
 
+/// A rate's drain refused in a span its host refused VM entries in, every refusal its host's by
+/// D261's gate, is its host's, not the bench's failure, as the rest of that rate is
+/// (`common::drained`; ROOT's ruling (c) of 2026-11-18); refused in any other span it is a stall,
+/// the bench's failure; its requests all ended, neither. CI 44379986478's firecracker job, rate
+/// 40 on EC2's nested KVM: 8 requests never ended in a span its host refused entries in, and the
+/// bench failed on the stall before it read its span's refusals. Do: one drain refused after two
+/// of its ends, read with its span its host's and not; one that ended. Expect: its host's, a
+/// stall, and its ends, each with the ends that came.
+#[test]
+fn a_drain_refused_in_its_hosts_span_is_its_hosts_and_elsewhere_a_stall() {
+    let refused = || Err::<Vec<u32>, _>((vec![7, 8], "a request's next end made no progress".to_string()));
+    match common::drained(refused(), true) {
+        common::Drained::HostsSpan(came, why) => assert_eq!(came, [7, 8], "{why}"),
+        common::Drained::Came(_) | common::Drained::Stalled(..) => {
+            panic!("a drain refused in its host's span not taken for its host's")
+        }
+    }
+    match common::drained(refused(), false) {
+        common::Drained::Stalled(came, why) => assert_eq!(came, [7, 8], "{why}"),
+        common::Drained::Came(_) | common::Drained::HostsSpan(..) => {
+            panic!("a drain refused in a span not its host's not taken for a stall")
+        }
+    }
+    match common::drained(Ok(vec![7, 8, 9]), true) {
+        common::Drained::Came(came) => assert_eq!(came, [7, 8, 9]),
+        common::Drained::HostsSpan(..) | common::Drained::Stalled(..) => {
+            panic!("a drain that ended taken for refused")
+        }
+    }
+}
+
 /// A call that blocks until its answer or its run's end (`common::judged`: shards-api's calls
 /// given no bound, `Duration::MAX`, in api_image.rs, member_exec.rs and nesting.rs, and their
 /// reads of a run's channels) goes on while what this test's process started works, as a

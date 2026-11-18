@@ -3573,6 +3573,31 @@ pub fn requests_end<E>(
     Ok(came)
 }
 
+/// What a rate's drain came to (benches/arrival.rs; D209 Part 11, D261): its ends as
+/// [`requests_end`] gave them, read with whether its span, from its start to its drain's end,
+/// was its host's: every VM entry its host refused in it one D261's gate takes for the host's
+/// (`limits::the_hosts_all`).
+pub enum Drained<E> {
+    /// Every request ended.
+    Came(Vec<E>),
+    /// Its wait was refused in a span its host's: those that came, and its wait's account.
+    /// The rest never ended, on a host that had begun to refuse VM entries, so the rate is
+    /// not shards' measurement, as the rest of it is not (ROOT's ruling (c) of 2026-11-18).
+    HostsSpan(Vec<E>, String),
+    /// Its wait was refused in a span not its host's: those that came, and its wait's
+    /// account, for a failure.
+    Stalled(Vec<E>, String),
+}
+
+/// [`Drained`], of `ends` and whether its span was its host's, `hosts_span`.
+pub fn drained<E>(ends: Result<Vec<E>, (Vec<E>, String)>, hosts_span: bool) -> Drained<E> {
+    match ends {
+        Ok(came) => Drained::Came(came),
+        Err((came, refused)) if hosts_span => Drained::HostsSpan(came, refused),
+        Err((came, refused)) => Drained::Stalled(came, refused),
+    }
+}
+
 /// The least a guest gives back at once: one block of its free lists, which free page
 /// reporting hands the host whole (`page_reporting_order`, its pageblock: 2 MiB with 4 KiB
 /// pages, the least a page is, and more with larger pages; mm/page_reporting.c,

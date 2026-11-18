@@ -32,7 +32,10 @@
 //! that a run cut short still shows the rates it finished. Its requests are waited for by
 //! their own progress, their ends ([`answered`], D209 Part 11): a rate whose requests stop
 //! ending fails the bench, saying what its home showed, rather than holding it to its CI
-//! job's limit.
+//! job's limit. Where its span to that refusal is its host's by the gate above, its requests
+//! that never ended are said the same way and their clients ended, and the rate is invalid
+//! as the rest of it is, not a failure ([`never_ended`]; CI 44379986478's rate 40, 8 never
+//! ended, and 44245219858's, 14, both in spans their host refused entries in).
 //!
 //! `cargo bench -p shards --bench arrival [-- --rates 2,5,10 --secs 10]`
 
@@ -175,22 +178,10 @@ fn main() {
         }
         let n = dues.len();
         let clients: Vec<u32> = spawns.iter().take(n).flatten().collect();
-        let came = answered(rate, &ends, &dues, &clients, &mut seen, &home);
-        // The refused entries its daemon's log tells of, read once every request has ended.
+        let drained = answered(&ends, &dues, &clients, &mut seen, &home);
+        // The refused entries its daemon's log tells of, read once every request has ended, or
+        // once its drain's wait was refused: its span's end.
         let refusals = span_refusals(&home, from_us, shards_vmm::vm::limits::now_us());
-        let (mut latency, mut failed, mut refused, mut last) = (Vec::with_capacity(n), 0usize, 0usize, start);
-        for end in came {
-            last = last.max(end.done);
-            if end.ok {
-                latency.push(end.latency_us);
-            } else if by_the_host(rate, &refusals, &end.said) {
-                refused += 1;
-            } else {
-                failed += 1;
-            }
-        }
-        let done_rate = (n - failed - refused) as f64 / last.duration_since(start).as_secs_f64();
-        failures += failed + refused;
         // Its span's refusals, each taken by D261's gate: its host's, not shards' measurement.
         let invalid = match &refusals.span {
             Ok(None) => false,
@@ -216,6 +207,32 @@ fn main() {
             }
         };
         failures += usize::from(invalid);
+        // A drain whose requests stopped ending fails the bench, unless its span is its host's:
+        // then those that never ended are said, with what their home showed, and their clients
+        // ended, as the rest of its rate is not shards' measurement (CI 44379986478 and
+        // 44245219858: rate 40's span on EC2's nested KVM, 8 and 14 requests never ended).
+        let came = match common::drained(drained, invalid) {
+            common::Drained::Came(came) => came,
+            common::Drained::HostsSpan(came, refused) => {
+                failures += never_ended(rate, &came, &clients, &home, &refused).1;
+                came
+            }
+            common::Drained::Stalled(came, refused) => stalled(rate, &came, &clients, &home, &refused),
+        };
+        let (mut latency, mut failed, mut refused, mut last) = (Vec::with_capacity(n), 0usize, 0usize, start);
+        for end in came {
+            last = last.max(end.done);
+            if end.ok {
+                latency.push(end.latency_us);
+            } else if by_the_host(rate, &refusals, &end.said) {
+                refused += 1;
+            } else {
+                failed += 1;
+            }
+        }
+        // The requests answered, over the span to the last answer.
+        let done_rate = latency.len() as f64 / last.duration_since(start).as_secs_f64();
+        failures += failed + refused;
         let name = format!("rate_{rate}");
         let rows = [
             stats(&name, "us", latency),
@@ -396,23 +413,23 @@ fn by_the_host(rate: f64, refusals: &Refusals, said: &str) -> bool {
     host
 }
 
-/// The ends of rate `rate`'s requests, due at `dues`, as `ends` brings them, `clients` their
+/// The ends of a rate's requests, due at `dues`, as `ends` brings them, `clients` their
 /// clients: those that came while they arrived, then the rest, waited for by their own
 /// progress, their ends ([`common::requests_end`], D209 Part 11). `seen` holds the stretches
 /// with requests outstanding and none ending that this run has shown ([`stretches`]): its
 /// template's runs, and each rate's arrivals, this one's added. Waited on with no judge, ten
 /// CI runs' firecracker jobs ran to their 30-minute limit in this step; judged by its party's
 /// CPU, which its daemon and warm microVMs spend whether or not a request ends, an eleventh
-/// did. Refused, the bench fails ([`stalled`]).
+/// did. Refused, those that came and its wait's account: its caller fails the bench
+/// ([`stalled`]) unless its span is its host's.
 #[cfg(unix)]
 fn answered(
-    rate: f64,
     ends: &std::sync::mpsc::Receiver<End>,
     dues: &[std::time::Instant],
     clients: &[u32],
     seen: &mut Vec<std::time::Duration>,
     home: &std::path::Path,
-) -> Vec<End> {
+) -> Result<Vec<End>, (Vec<End>, String)> {
     let mut answered: Vec<End> = ends.try_iter().collect();
     let done: Vec<std::time::Instant> = answered.iter().map(|end| end.done).collect();
     seen.extend(stretches(dues, &done));
@@ -426,11 +443,11 @@ fn answered(
     match common::requests_end(next, rest, &outstanding, |end: &End| end.client, seen, home) {
         Ok(came) => {
             answered.extend(came);
-            answered
+            Ok(answered)
         }
         Err((came, refused)) => {
             answered.extend(came);
-            stalled(rate, &answered, clients, home, &refused)
+            Err((answered, refused))
         }
     }
 }
@@ -463,11 +480,16 @@ fn stretches(dues: &[std::time::Instant], done: &[std::time::Instant]) -> Vec<st
 
 /// Rate `rate`'s requests' wait refused, `refused` its account ([`common::requests_end`]):
 /// says which requests never ended and why its wait was refused, then what their home shows
-/// ([`common::stacks_of`]: its runs, its microVMs' processes, its daemon's log), ends their
-/// clients and stops its daemon, and fails the bench. The home is kept, its daemon's whole
-/// log in it.
+/// ([`common::stacks_of`]: its runs, its microVMs' processes, its daemon's log), and ends their
+/// clients. What it said first, and how many never ended.
 #[cfg(unix)]
-fn stalled(rate: f64, answered: &[End], clients: &[u32], home: &std::path::Path, refused: &str) -> ! {
+fn never_ended(
+    rate: f64,
+    answered: &[End],
+    clients: &[u32],
+    home: &std::path::Path,
+    refused: &str,
+) -> (String, usize) {
     use std::io::Write as _;
     let waited: Vec<u32> = clients
         .iter()
@@ -490,6 +512,14 @@ fn stalled(rate: f64, answered: &[End], clients: &[u32], home: &std::path::Path,
             common::kill_now(pid);
         }
     }
+    (said, waited.len())
+}
+
+/// Rate `rate`'s requests' wait refused on a span not its host's ([`never_ended`]): stops its
+/// daemon and fails the bench. The home is kept, its daemon's whole log in it.
+#[cfg(unix)]
+fn stalled(rate: f64, answered: &[End], clients: &[u32], home: &std::path::Path, refused: &str) -> ! {
+    let (said, _) = never_ended(rate, answered, clients, home, refused);
     // Its daemon stopped, and the bench failed in its own words whatever that stop came to:
     // a stop that failed is said after them, never in their place. CI 44245219858's stop,
     // ended by the harness's watchdog, took the panic's place (`shards failed: status None,
