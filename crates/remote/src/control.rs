@@ -1451,14 +1451,19 @@ mod tests {
 
     /// A lane's ask, its answer waited for as long as its test's own threads run (D215's
     /// judged wait, shards-testwait), each wait of the ask's own as long as the judge's next
-    /// look: what it answered, or why not.
+    /// look: what it answered, or why not; a wait given up on fails its test, said.
     macro_rules! answered {
         ($ask:expr) => {
-            $ask.and_then(|mut ask| {
-                shards_testwait::answer("a lane's ask was not answered", |patience| {
-                    ask.wait(patience)
-                })
-            })
+            match $ask {
+                Err(fault) => Err(fault),
+                Ok(mut ask) => match shards_testwait::answered(|patience| ask.wait(patience)) {
+                    Ok(said) => said,
+                    Err(stall) => panic!(
+                        "a lane's ask was not answered: {}",
+                        shards_testwait::stalled(&stall)
+                    ),
+                },
+            }
         };
     }
 
@@ -1722,7 +1727,7 @@ mod tests {
         use shards_abi::run::managed::InputEnd;
 
         use shards_testwait::{
-            Counted, Record, Unreceived, answer, answered_on, party, receive, received, until, waited,
+            Counted, Record, Unreceived, answered, answered_on, party, receive, received, until, waited,
         };
 
         use super::*;
@@ -3035,10 +3040,9 @@ mod tests {
             loop {
                 wake.drain().unwrap();
                 match try_() {
-                    Ok(None) => answer("no ring: a wake lost", |patience| {
-                        wake.wait(patience).map(|rang| rang.then_some(()))
-                    })
-                    .unwrap(),
+                    Ok(None) => answered(|patience| wake.wait(patience).map(|rang| rang.then_some(())))
+                        .expect("no ring: a wake lost")
+                        .unwrap(),
                     Ok(Some(got)) => return Ok(got),
                     Err(fault) => return Err(fault),
                 }
@@ -3070,10 +3074,9 @@ mod tests {
             let mut ask = execs.mcp(0).unwrap();
             let start = receive("its host was asked no exec", starts);
             start.replies.tell(exec::Reply::Started);
-            let connection = answer("its MCP connection was not answered", |patience| {
-                ask.wait(patience)
-            })
-            .unwrap();
+            let connection = answered(|patience| ask.wait(patience))
+                .expect("its MCP connection was not answered")
+                .unwrap();
             (connection, start)
         }
 
@@ -3403,9 +3406,8 @@ mod tests {
         ) -> Result<(), Fault> {
             match send(steering)? {
                 Some(()) => Ok(()),
-                None => answer("a member's steer was not answered", |patience| {
-                    steering.steered(patience)
-                }),
+                None => answered(|patience| steering.steered(patience))
+                    .expect("a member's steer was not answered"),
             }
         }
 
@@ -3672,7 +3674,9 @@ mod tests {
             let crate::control::Member::Running(crate::control::MemberControl {
                 mut steering,
                 end: _end,
-            }) = answer("member 0's lane was not answered", |patience| ask.wait(patience)).unwrap()
+            }) = answered(|patience| ask.wait(patience))
+                .expect("member 0's lane was not answered")
+                .unwrap()
             else {
                 panic!("member 0 runs");
             };
@@ -3693,8 +3697,7 @@ mod tests {
             );
             go.send(()).unwrap();
             assert_eq!(
-                answer("its signal was not answered", |patience| steering
-                    .steered(patience)),
+                answered(|patience| steering.steered(patience)).expect("its signal was not answered"),
                 Ok(())
             );
             assert_eq!(steering.steered(std::time::Duration::ZERO), Err(Fault::Unawaited));

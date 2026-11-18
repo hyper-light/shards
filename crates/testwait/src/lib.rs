@@ -101,8 +101,10 @@ fn cpu(process: bool) -> u64 {
         tv_nsec: 0,
     };
     // SAFETY: clock_gettime(2) writes one timespec into a local.
-    let read = unsafe { libc::clock_gettime(clock, &raw mut now) };
-    assert_eq!(read, 0, "{}", std::io::Error::last_os_error());
+    if unsafe { libc::clock_gettime(clock, &raw mut now) } != 0 {
+        // POSIX's CPU-time clocks, which every target has: one unread counts nothing.
+        return 0;
+    }
     let secs = u64::try_from(now.tv_sec).unwrap_or(0);
     let nanos = u64::try_from(now.tv_nsec).unwrap_or(0);
     secs.saturating_mul(1_000_000_000).saturating_add(nanos)
@@ -122,7 +124,10 @@ fn cpu(process: bool) -> u64 {
             QueryThreadCycleTime(GetCurrentThread(), &raw mut cycles)
         }
     };
-    assert_ne!(read, 0, "{}", std::io::Error::last_os_error());
+    // Of pseudo-handles that need no opening: a count unread counts nothing.
+    if read == 0 {
+        return 0;
+    }
     cycles
 }
 
@@ -397,17 +402,11 @@ pub fn answered_on<T, E>(
     }
 }
 
-/// [`answered_on`] this process's tests' waits, its party the waiting thread's: its answer,
-/// or what it said instead; a wait given up on fails the test, saying `what`.
-#[expect(
-    clippy::panic,
-    reason = "a test's wait given up on fails its test, as its assert would"
-)]
-pub fn answer<T, E>(what: &str, attempt: impl FnMut(Duration) -> Result<Option<T>, E>) -> Result<T, E> {
-    match answered_on(&WAITS, Counted::here(), attempt) {
-        Ok(said) => said,
-        Err(stall) => panic!("{what}: {}", stalled(&stall)),
-    }
+/// [`answered_on`] this process's tests' waits, its party the waiting thread's: its answer, or
+/// what it said instead; the stall where its wait was given up on, for its caller to fail its
+/// test with ([`stalled`] says it).
+pub fn answered<T, E>(attempt: impl FnMut(Duration) -> Result<Option<T>, E>) -> Result<Result<T, E>, Stall> {
+    answered_on(&WAITS, Counted::here(), attempt)
 }
 
 /// Why [`received`] has no value.

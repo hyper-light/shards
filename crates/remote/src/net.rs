@@ -1481,14 +1481,14 @@ impl<H: Handler> Driver<H> {
             let looked = Instant::now();
             let wait = next.map(|at| whole_ms(at.saturating_duration_since(looked)));
             let planned = wait.filter(|w| !w.is_zero()).and_then(|w| looked.checked_add(w));
-            let ready = {
-                // Under test, its timer is its party's next progress, scheduled: a test's
-                // judged wait on a driver asleep until then has not stalled before it
-                // (shards-testwait's `Waiting`).
-                #[cfg(test)]
-                let _waiting = shards_testwait::Waiting::until(planned);
-                readable(&self.socket, &self.wake, wait)
-            };
+            // Under test, its timer is its party's next progress, scheduled, for as long as it
+            // sleeps on it: a test's judged wait on a driver asleep until then has not stalled
+            // before it (shards-testwait's `Waiting`).
+            #[cfg(test)]
+            let waiting = shards_testwait::Waiting::until(planned);
+            let ready = readable(&self.socket, &self.wake, wait);
+            #[cfg(test)]
+            drop(waiting);
             let back = Instant::now();
             // Waited as planned until its timer, or until what came; past its timer, absent.
             turn.blocked = planned
