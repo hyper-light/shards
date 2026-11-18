@@ -1,0 +1,13 @@
+diff --git a/crates/shards/tests/common/mod.rs b/crates/shards/tests/common/mod.rs
+index d53f49591e..d84b07ff31 100644
+--- a/crates/shards/tests/common/mod.rs
++++ b/crates/shards/tests/common/mod.rs
+@@ -7983,7 +7983,7 @@ impl Vm {
+     /// Its waits' party: its process, and its home's daemon and what descends from it where
+     /// its command names a home, their declarations read in the home its command uses.
+     fn party(&self) -> Party {
+-        Party::client(self.id(), self.home()).declaring_in(self.declares.clone())
++        Party::client(self.id(), self.home())
+     }
+ 
+     /// A wait on its guest's progress, its CPU counted throughout ([`Heard::running`]), its

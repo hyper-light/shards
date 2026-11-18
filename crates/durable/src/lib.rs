@@ -5,10 +5,12 @@
 //! refusal being the write's error; Windows FlushFileBuffers, after FlushViewOfFile for a
 //! view. Each is bracketed by a declaration in the slot file of its process's home
 //! ([`table`]), which whoever follows the process reads to judge a wait on it (D215): a thread
-//! in a durable write is its host's while the write's volume works. A process that installed
-//! no slot file, nor recorded its home ([`install_at`]), declares nothing: the guest's, whose
-//! writes no host judge follows (what they cost the host is its VMM's own durable write, which
-//! declares), and a tool that writes outside any home.
+//! in a durable write is its host's while the write's volume works. A process that recorded
+//! its home makes it at its first durable write where it is not, and says so: no write of
+//! its declares nowhere for want of a home made. A process that installed no slot file, nor
+//! recorded its home ([`install_at`]), declares nothing: the guest's, whose writes no host
+//! judge follows (what they cost the host is its VMM's own durable write, which declares), and
+//! a tool that writes outside any home.
 
 mod sys;
 pub mod table;
@@ -16,7 +18,7 @@ pub mod table;
 use std::io;
 use std::ptr::NonNull;
 
-pub use table::{Declared, FILE, Reader, home, install, install_at, install_file, installed, open};
+pub use table::{Declared, FILE, Reader, home, install, install_at, install_file, installed, make, open};
 
 /// What a durable write is made of: a file's descriptor on Unix, its handle on Windows,
 /// borrowed, as a `&File` and a raw one borrowed both are.

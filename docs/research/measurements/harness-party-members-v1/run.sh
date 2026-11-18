@@ -11,6 +11,9 @@
 #   red-kept-here  the same test fails at ["use", "context", "gpu"] "runs here"
 #   red-vm-home    a_guests_wait_through_a_homes_client_follows_its_daemon fails, its stand-in
 #                  saying "running: ..." with no "no daemon yet in" its home
+#   red-vm-declares  the same test fails, its stand-in's account of the command that names no
+#                  home reading its declarations in this process's home, not its command's
+#                  (own-35i's commit 1b, D286 amended)
 set -uo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 tests=(
@@ -27,7 +30,7 @@ run > "$here/green.log"
 green=$?
 echo "green: exit $green (0 expected)"
 status=$((green != 0))
-for red in invite kept-here vm-home; do
+for red in invite kept-here vm-home vm-declares; do
   if ! git apply "$here/red-$red.patch"; then
     echo "red-$red: does not apply"
     status=1

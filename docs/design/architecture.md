@@ -44886,10 +44886,42 @@ stdout*: Docker's byte-exact texts. *The daemon's IPC*: its children's alone.
   daemon's launch, a run host's, a builder's, and `run --kernel` and `restore`'s CLI)
   makes the slot file and names its home (`--durable HOME`); macOS and Windows grant it the
   file to write (`Access::Write`), Linux opens it before Landlock, as its vCPU records are
-  (D261), and it installs it (`install_file`), its start failing where it cannot. A home not
-  made has no follower (each opens its slot file in it): a write made before its home is
-  made declares nothing, the open tried again at the next; any other failure to open fails
-  the write.
+  (D261), and it installs it (`install_file`), its start failing where it cannot. Any
+  failure to open it fails the write.
+- *A home not made*, amended 2026-11-18 (own-35i's commit 1b; ROOT's ruling, the person's
+  rule: no fallbacks). Before, a home not made took no declaration, and a follower read none
+  there: a write declared nowhere. A run whose command named no home declares in shards'
+  default one (`shards_ipc::home`), which nothing had made on a fresh host, so that its durable
+  writes went unseen by every follower (CI 44282442232's storm originals saving their
+  snapshots, and their waits' parties read no home at all). Now:
+  - A process's first durable write makes the home it recorded where it is not (table.rs
+    `made`), its user's alone: 0700 on Unix, as the daemon makes its home (shards-vmm's
+    `create_private_dir`, which the daemon's `serve` calls before it records its home), and
+    on Windows its parent's access inherited, the user's local application data. It says so
+    on its stderr, never silently: `shards: made HOME, its user's alone, for the declarations
+    of its durable writes (D286)`. A failure to make it or to open its slot file fails the
+    write, as any other open does.
+  - A spawner makes the home and its slot file before it starts a VM or share process
+    (`shards_durable::make`, in `helpers::durable_words`, which every such start calls first:
+    the daemon's launches of runs and builders, `launch.rs`, `api_run.rs`'s run hosts, and
+    `run --kernel` and `restore`'s CLI before its grants broker). So a VM process on macOS and
+    Windows, which opens only what its spawner grants (App Sandbox, AppContainer), and
+    Linux's, which opens it before Landlock, find it there; a share process's `--durable` home
+    is its spawner's, made. The CLI records its home as before (`dispatch`), the daemon its
+    own (`serve`, after making it).
+  - A follower's reader of a home not made yet (`Reader::open`) makes nothing and reads
+    nothing until a read finds the home made, then opens its slot file: one that began before
+    its subject's first durable write reads it. `installed()` gives such a reader of a
+    recorded home, so that a follower in a process whose home is not yet made is not left
+    reading none for its life.
+  - The tests' parties read their members' declarations in the home their command uses
+    (tests/common `declares_in`: `shards_ipc::home_in` over the command's environment, each
+    variable as the command sets or removes it, else this process's; a party of no command
+    this process's own home), for declarations alone: that home's daemon is no member, and
+    only the members' own IDs are read, so that no other process declaring there counts (a
+    person's own daemon on a dev host). A party that names no home of its own says that home
+    in its account. Tests that set `SHARDS_HOME` read it as before; a storm's or a direct
+    boot's reads the slot file of the home its command uses and makes nothing.
 - *Outside it*: the guest's syncs (init's), which no host judge follows, their host cost its
   VMM's declared flush; a tool writing outside any home declares nothing.
 
@@ -44897,7 +44929,11 @@ stdout*: Docker's byte-exact texts. *The daemon's IPC*: its children's alone.
 `claims_past_a_granule_grow_the_file_by_one`, `an_ended_processs_slot_is_taken_back_before_the_file_grows`,
 `a_write_another_process_declares_is_read` (the test binary as a child declaring),
 `a_recorded_home_is_opened_at_its_first_declaration` (a child that recorded its home opens
-its slot file at its first declaration, not before; a home not made declares nothing),
+its slot file at its first declaration, not before), `a_home_not_made_is_made_at_its_first_declaration_and_read`
+(own-35i's commit 1b: a child whose recorded home is not made makes it at its first durable
+write, 0700 on Unix, says so on its stderr, and declares there, read by a follower that began
+before the home was made; red: docs/research/measurements/durable-home-made-v1/red-home-made.patch,
+unrun),
 `only_a_file_system_without_full_fsync_falls_back` (every OS: the three values fall back;
 `ENOENT`, `EINTR`, `EIO`, `ENXIO`, `EBADF`, `ENODEV`, `ENOSPC`, `EROFS`, `EDQUOT`, the
 kernel's `EOPNOTSUPP` (102) and none fail) and, on macOS, `darwins_errno_values_are_libcs`

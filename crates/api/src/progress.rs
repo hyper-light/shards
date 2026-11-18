@@ -478,7 +478,8 @@ struct Volume {
 
 impl Declarations {
     /// This process's own home's, where it installed its slot file or recorded its home
-    /// (`shards_durable::install_at`); none where it did neither, or its home is not made.
+    /// (`shards_durable::install_at`), read once that home is made
+    /// (`shards_durable::Reader::open`); none where it did neither.
     fn installed() -> Option<Declarations> {
         match shards_durable::installed() {
             Ok(reader) => reader.map(|reader| Declarations::of(Source::Installed(reader))),

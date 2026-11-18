@@ -688,18 +688,17 @@ pub fn containers() -> Result<PathBuf, String> {
 
 /// What tells a VM process or a share process this one starts where to declare its durable
 /// writes (`--durable HOME`, D286): this process's home ([`shards_durable::home`]), made
-/// whole here, as the daemon records its own as `.` (runs-02). Its slot file is made first
-/// ([`shards_durable::installed`]), so that it is there for a confined VM to be granted
-/// (D30). None where this process recorded no home, or its home is not made: no follower
-/// reads declarations there. A slot file that cannot be opened fails the start.
+/// whole here, as the daemon records its own as `.` (runs-02). Its slot file, and the home
+/// where it is not made, are made first ([`shards_durable::make`]), so that they are there
+/// for a confined VM to be granted (D30): a VM on macOS and Windows opens only what it is
+/// granted. None where this process recorded no home. A home or slot file that cannot be
+/// made fails the start.
 pub(crate) fn durable_words() -> Result<Vec<std::ffi::OsString>, String> {
     let Some(home) = shards_durable::home() else {
         return Ok(Vec::new());
     };
     let said = |e: std::io::Error| format!("{}: its declarations of durable writes: {e}", home.display());
-    if shards_durable::installed().map_err(said)?.is_none() {
-        return Ok(Vec::new());
-    }
+    shards_durable::make().map_err(said)?;
     let whole = std::path::absolute(home).map_err(said)?;
     Ok(vec![crate::share::DURABLE.into(), whole.into_os_string()])
 }

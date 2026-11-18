@@ -3619,13 +3619,25 @@ pub struct Ended {
 /// A process by its ID and its executable's name.
 pub type Process = (u32, String);
 
-/// The home `cmd` names in its own environment (`SHARDS_HOME`), none where it sets none or
-/// removes it: a wait on it follows that home's daemon ([`Party::client`]), as [`run_command`]'s
-/// and a [`Vm`]'s do.
+/// The home `cmd` names in its own environment (`SHARDS_HOME`), none where it sets none,
+/// removes it or sets it empty, which shards takes for none (`shards_ipc::home_in`): a wait on
+/// it follows that home's daemon ([`Party::client`]), as [`run_command`]'s and a [`Vm`]'s do.
 pub fn home_of(cmd: &Command) -> Option<PathBuf> {
     cmd.get_envs()
         .find(|(k, _)| *k == "SHARDS_HOME")
-        .and_then(|(_, v)| v.map(PathBuf::from))
+        .and_then(|(_, v)| v.filter(|v| !v.is_empty()).map(PathBuf::from))
+}
+
+/// The home `cmd` will declare its durable writes in (D286): shards' home as its process will
+/// find it (`shards_ipc::home_in`), each variable as its own environment sets or removes it,
+/// else as this process's has it. A party reads its members' declarations there
+/// ([`Party::declaring_in`]), its daemon no member where `cmd` names no home ([`home_of`]).
+pub fn declares_in(cmd: &Command) -> Option<PathBuf> {
+    shards_ipc::home_in(|name| match cmd.get_envs().find(|(key, _)| *key == name) {
+        Some((_, value)) => value.map(std::ffi::OsStr::to_os_string),
+        None => std::env::var_os(name),
+    })
+    .ok()
 }
 
 /// [`run_command`]'s run, ended at `end` past its start, a time of its test's own (boot.rs:
@@ -3658,6 +3670,8 @@ fn run_ending(
     let start = Instant::now();
     // Its home, for what is shown of a run that never ends ([`stuck`]).
     let home = home_of(&cmd);
+    // The home it declares its durable writes in, which its party reads (D286).
+    let declares = declares_in(&cmd);
     // The home whose daemon serves it, where its context is another home's of this test's.
     let serving = serving_home(&cmd, home.as_deref());
     let mut child = cmd
@@ -3686,7 +3700,8 @@ fn run_ending(
             format!("{said}\n(still held open by another process)")
         }
     };
-    let mut wait = Wait::begin(kind, child.id(), home.as_deref(), &asked.join(" ")).served_by(serving);
+    let party = Party::client(child.id(), home.as_deref()).declaring_in(declares);
+    let mut wait = Wait::begin_with(kind, party, home.as_deref(), &asked.join(" ")).served_by(serving);
     // Its answer, its client's end, is missing as it begins: its client started just now,
     // so an end its first check finds before any look is its party's answer, which teaches
     // its kind, never one there before it.
@@ -4570,6 +4585,14 @@ pub struct Party {
     /// account of them ([`states`](Self::states)), which says them as that look saw them
     /// (D215; CI 44347282760: a look at four members read it 16 to 20 times).
     listing: shards_api::Listing,
+    /// The home its members' looks read their declarations of durable writes in (D286): its
+    /// own where it has one; else the home its command uses ([`declares_in`],
+    /// [`declaring_in`](Self::declaring_in)), else this process's, which a command started
+    /// with its environment uses. Read for declarations alone, its daemon no member, and of
+    /// its members' own IDs alone, so that no other process declaring there counts (ROOT's
+    /// ruling of 2026-11-18: a run's home that its command did not name, shards' default
+    /// one, was read by none of its waits).
+    declares: Option<PathBuf>,
 }
 
 /// Process `pid`'s status as its OS gives it: Linux its `/proc/<pid>/stat` state (field 3,
@@ -4827,7 +4850,17 @@ impl Party {
             kin: std::collections::BTreeMap::new(),
             delivery: None,
             listing: shards_api::Listing::new(),
+            declares: home.map(Path::to_path_buf).or_else(|| shards_ipc::home().ok()),
         }
+    }
+
+    /// It, its members' declarations read in `home` where given ([`declares_in`]): the home
+    /// its command will declare in, read for declarations alone.
+    pub fn declaring_in(mut self, home: Option<PathBuf>) -> Party {
+        if home.is_some() {
+            self.declares = home;
+        }
+        self
     }
 
     /// Its processes' CPU read as `cpu` says from its next look on.
@@ -5003,9 +5036,9 @@ impl Party {
             if self.watched.contains_key(&pid) {
                 continue;
             }
-            // Its durable writes read from its home's declarations (D286), where it has a home:
+            // Its durable writes read from the declarations of the home its command uses (D286):
             // every process of a home declares there, its VM processes given its slot file.
-            let declaring = |followed: shards_api::Followed| match &self.home {
+            let declaring = |followed: shards_api::Followed| match &self.declares {
                 Some(home) => followed
                     .declaring(home)
                     .unwrap_or_else(|e| panic!("{}'s declarations unread: {e}", home.display())),
@@ -5276,6 +5309,17 @@ impl Party {
                 format!("{who}, served from {}, no daemon living there", serving.display())
             }
             (None, _) => who,
+        };
+        // Where it follows processes and has no home of its own, the one their declarations
+        // are read in (D286).
+        let who = match (&self.home, &self.declares, &self.members) {
+            (_, _, Members::Machine) | (Some(_), _, _) | (None, None, _) => who,
+            (None, Some(declares), _) => {
+                format!(
+                    "{who}, its declarations of durable writes read in {}",
+                    declares.display()
+                )
+            }
         };
         match (&self.home, self.daemon()) {
             (Some(home), Some(daemon)) => format!("{who}, daemon {daemon} of {}", home.display()),
@@ -6070,6 +6114,13 @@ fn asked_of(home: Option<&Path>) -> u64 {
 impl Wait {
     /// A wait beginning now on client `client`'s party, `asked` naming its command.
     pub fn begin(kind: &'static WaitKind, client: u32, home: Option<&Path>, asked: &str) -> Wait {
+        Wait::begin_with(kind, Party::client(client, home), home, asked)
+    }
+
+    /// [`begin`](Self::begin), its party `party`, a client's of `home` ([`Party::client`]) whose
+    /// declarations may be read in the home its command uses ([`Party::declaring_in`]): made
+    /// before its first look, which follows each process it finds with them.
+    fn begin_with(kind: &'static WaitKind, party: Party, home: Option<&Path>, asked: &str) -> Wait {
         if let Some(home) = home {
             ASKED.with(|asked| {
                 let mut asked = asked.borrow_mut();
@@ -6077,7 +6128,7 @@ impl Wait {
                 *n = n.saturating_add(1);
             });
         }
-        let mut wait = Wait::on(kind, Party::client(client, home), asked);
+        let mut wait = Wait::on(kind, party, asked);
         wait.command = true;
         wait
     }
@@ -7717,6 +7768,9 @@ pub struct Vm {
     /// refused its `exec`'s wait, its party the client alone, waiting on its pipes, while its
     /// home's daemon and microVM served it).
     home: Option<PathBuf>,
+    /// The home its command declares its durable writes in ([`declares_in`]), which its
+    /// waits' parties read (D286), its own where it names one.
+    declares: Option<PathBuf>,
 }
 
 /// Lines a process printed, as they came.
@@ -8013,7 +8067,7 @@ impl Vm {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        let home = home_of(&cmd);
+        let (home, declares) = (home_of(&cmd), declares_in(&cmd));
         let mut child = cmd.spawn().unwrap();
         let (tx, lines) = std::sync::mpsc::channel();
         let log = Log::default();
@@ -8037,6 +8091,7 @@ impl Vm {
             log,
             size: String::new(),
             home,
+            declares,
         }
     }
 
@@ -8045,20 +8100,25 @@ impl Vm {
         self.home.as_deref()
     }
 
-    /// A wait on its guest's progress, its CPU counted throughout ([`Heard::running`]): its
-    /// process, and its home's daemon and what descends from it where its command names a
-    /// home.
+    /// Its waits' party: its process, and its home's daemon and what descends from it where
+    /// its command names a home, their declarations read in the home its command uses.
+    fn party(&self) -> Party {
+        Party::client(self.id(), self.home()).declaring_in(self.declares.clone())
+    }
+
+    /// A wait on its guest's progress, its CPU counted throughout ([`Heard::running`]), its
+    /// party its own ([`party`](Self::party)).
     #[track_caller]
     pub fn running(&self) -> Heard<'static> {
-        Heard::running(self.id(), self.home())
+        Heard::running_of(self.party())
     }
 
     /// A wait on its guest's progress by its lines and `streamed`'s bytes, its CPU counted only
     /// before its first line ([`Heard::streaming_sized`]), its kind keyed by its size; its
-    /// party as [`running`](Self::running)'s.
+    /// party its own ([`party`](Self::party)).
     #[track_caller]
     pub fn streaming<'a>(&self, streamed: Option<&'a AtomicU64>) -> Heard<'a> {
-        Heard::streaming_sized(self.id(), self.home(), streamed, &self.size)
+        Heard::streamed(self.party(), streamed, &self.size)
     }
 
     /// Its guest's size (its vCPUs, say), which keys its streamed waits' kinds beside their
@@ -8297,8 +8357,14 @@ impl<'a> Heard<'a> {
         streamed: Option<&'a AtomicU64>,
         size: &str,
     ) -> Heard<'a> {
+        Heard::streamed(Party::client(vm, home), streamed, size)
+    }
+
+    /// [`streaming_sized`](Self::streaming_sized), its party `party` (a [`Vm`]'s).
+    #[track_caller]
+    pub fn streamed(party: Party, streamed: Option<&'a AtomicU64>, size: &str) -> Heard<'a> {
         let kind = WaitKind::of(std::panic::Location::caller(), PROGRESS, size);
-        Heard::keyed(kind, Party::client(vm, home), Guest::Streaming, streamed)
+        Heard::keyed(kind, party, Guest::Streaming, streamed)
     }
 
     /// The guest of the process `vm`, its CPU time counted throughout: for a guest of fewer
@@ -8308,13 +8374,13 @@ impl<'a> Heard<'a> {
     /// VM processes among them, its party's, as [`run_command`]'s party is made.
     #[track_caller]
     pub fn running(vm: u32, home: Option<&Path>) -> Heard<'static> {
-        Heard::with(
-            std::panic::Location::caller(),
-            Party::client(vm, home),
-            Guest::Running,
-            None,
-            "",
-        )
+        Heard::running_of(Party::client(vm, home))
+    }
+
+    /// [`running`](Self::running), its party `party` (a [`Vm`]'s).
+    #[track_caller]
+    pub fn running_of(party: Party) -> Heard<'static> {
+        Heard::with(std::panic::Location::caller(), party, Guest::Running, None, "")
     }
 
     /// Its wait's account ([`Wait::account`]), as [`Patience::account`] says its own.

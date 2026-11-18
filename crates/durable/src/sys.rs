@@ -252,6 +252,18 @@ mod unix {
             .ok_or_else(|| io::Error::other("the clock past 64 bits of nanoseconds"))
     }
 
+    /// The directory `dir` made, and those above it it lacks, its user's alone (0700), as a
+    /// home is made (the daemon's, shards-vmm's `platform::create_private_dir`): a home holds
+    /// its user's runs, layers and keys.
+    pub(crate) fn private_dir(dir: &std::path::Path) -> io::Result<()> {
+        use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(dir)?;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+    }
+
     /// What a slot file grows by and is mapped in: a page (sysconf(3) `_SC_PAGESIZE`), the
     /// least a mapping's offset steps by.
     pub(crate) fn granule() -> io::Result<usize> {
@@ -509,6 +521,13 @@ mod windows {
             .and_then(|n| n.checked_div(hertz))
             .and_then(|n| u64::try_from(n).ok())
             .ok_or_else(|| io::Error::other("the performance counter past 64 bits of nanoseconds"))
+    }
+
+    /// The directory `dir` made, and those above it it lacks, as a home is made on Windows
+    /// (the daemon's, shards-vmm's `platform::create_private_dir`): its access its parent's,
+    /// the user's own local application data (`FOLDERID_LocalAppData`), inherited.
+    pub(crate) fn private_dir(dir: &std::path::Path) -> io::Result<()> {
+        std::fs::create_dir_all(dir)
     }
 
     /// What a slot file grows by and is mapped in: the allocation granularity (GetSystemInfo's

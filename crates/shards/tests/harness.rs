@@ -3768,10 +3768,13 @@ fn a_join_is_served_by_the_home_its_invitation_names() {
 /// windows-2025: plug.rs's `a_host_edit_wakes_a_watch_in_the_guest` refused its `exec`'s wait,
 /// its party its client alone, waiting on its pipes, while its home's daemon and microVM
 /// served it). Do: in a stand-in, whose own VM processes (`common::OwnVm`, every `Vm`'s) no
-/// other test's party counts, a client naming a home and one naming none. Expect: the first's
-/// waits, running and streamed, say that home in their party; the second's name no home. Red
-/// where a `Vm`'s waits drop its home
-/// (`docs/research/measurements/harness-party-members-v1/red-vm-home.patch`).
+/// other test's party counts, a client naming a home and one naming none, its environment
+/// making its home elsewhere. Expect: the first's waits, running and streamed, say that home
+/// in their party; the second's name no home, and read their declarations in the home its
+/// environment makes, which no wait makes (D286 amended, own-35i's commit 1b). Red where a
+/// `Vm`'s waits drop its home
+/// (`docs/research/measurements/harness-party-members-v1/red-vm-home.patch`), or read no
+/// declarations where it names none (`red-vm-declares.patch` there).
 #[test]
 fn a_guests_wait_through_a_homes_client_follows_its_daemon() {
     let run = common::run_command(
@@ -3791,10 +3794,32 @@ fn vm_home() {
     assert!(running.contains(&named), "running: {running}");
     let streamed = client.streaming(None).account();
     assert!(streamed.contains(&named), "streamed: {streamed}");
-    let mut alone = common::Vm::spawn(&["--help"]);
+    assert!(
+        !running.contains("its declarations of durable writes read in"),
+        "{running}"
+    );
+    // A command that names no home declares in the one its environment makes (D286), which its
+    // waits read for declarations alone, its daemon no member.
+    let data = TempDir::new("vm-data");
+    let var = if cfg!(windows) {
+        "LOCALAPPDATA"
+    } else if cfg!(target_os = "macos") {
+        "HOME"
+    } else {
+        "XDG_DATA_HOME"
+    };
+    let made = if cfg!(target_os = "macos") {
+        data.join("Library").join("Application Support").join("shards")
+    } else {
+        data.join("shards")
+    };
+    let mut alone = common::Vm::spawn_env(&["--help"], &[("SHARDS_HOME", ""), (var, data.to_str().unwrap())]);
     assert_eq!(alone.home(), None, "a command that names no home");
     let own = alone.running().account();
     assert!(!own.contains("no daemon yet in"), "no home: {own}");
+    let declares = format!("its declarations of durable writes read in {}", made.display());
+    assert!(own.contains(&declares), "{own}");
+    assert!(!made.exists(), "a follower makes no home");
     client.kill();
     alone.kill();
 }

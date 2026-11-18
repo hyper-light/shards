@@ -15,7 +15,7 @@
 //! claims need, and no constant of ours sizes it (R03).
 
 use std::fs::{File, OpenOptions};
-use std::io;
+use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock, PoisonError};
@@ -162,10 +162,9 @@ pub fn install_file(file: File) -> io::Result<()> {
 }
 
 /// Declares this process's durable writes in the slot file of the home `home`, recorded now
-/// and opened at its first declaration (or [`installed`]), so that a process's start pays no
-/// call for it, and one that writes nothing durable opens nothing (`shards`' launch, PM
-/// M113). A home not made by then has no follower, as each opens its slot file in it: it
-/// takes no declaration, and the next one opens it again. Any other failure to open it fails
+/// and opened at its first declaration, so that a process's start pays no call for it, and
+/// one that writes nothing durable opens nothing (`shards`' launch, PM M113). The home is
+/// made then where it is not ([`made`]): a failure to make it or open its slot file fails
 /// the write. Once a process: a second install is refused.
 pub fn install_at(home: PathBuf) -> io::Result<()> {
     if WRITER.get().is_some() {
@@ -175,23 +174,40 @@ pub fn install_at(home: PathBuf) -> io::Result<()> {
 }
 
 /// The home this process recorded ([`install_at`]): where a process it starts that may not
-/// open the slot file itself is told to declare, granted it by this one.
+/// open the slot file itself is told to declare, granted it by this one, once [`make`] has
+/// made it.
 pub fn home() -> Option<&'static Path> {
     HOME.get().map(PathBuf::as_path)
 }
 
-/// The slot file of `home` ([`open`]); none where `home` is not made, as no follower reads
-/// one there.
-fn made_in(home: &Path) -> io::Result<Option<File>> {
-    match open(home) {
-        Err(e) if e.kind() == io::ErrorKind::NotFound && !home.is_dir() => Ok(None),
-        opened => opened.map(Some),
+/// Makes the slot file of the home this process recorded ([`install_at`]), and the home,
+/// where they are not, as its own first declaration would ([`made`]): for a process it starts
+/// that may open only what it is granted (a VM process on macOS and Windows, D30), which then
+/// finds them there. Nothing where it recorded no home; a failure to make them is the start's.
+pub fn make() -> io::Result<()> {
+    writer().map(|_| ())
+}
+
+/// The slot file of `home` ([`open`]), the home made first where it is not, its user's alone
+/// ([`sys::private_dir`]), which this process says on its stderr: a write declares wherever
+/// it is made, and a home made for it is never made silently (D286 amended, ROOT's ruling of
+/// 2026-11-18: a home not made took no declaration, so that a run's durable writes went
+/// unseen by its follower).
+fn made(home: &Path) -> io::Result<File> {
+    if !home.is_dir() {
+        sys::private_dir(home)?;
+        let _ = writeln!(
+            io::stderr(),
+            "shards: made {}, its user's alone, for the declarations of its durable writes (D286)",
+            home.display()
+        );
     }
+    open(home)
 }
 
 /// This process's writer: the one it installed, else one of the slot file of the home it
-/// recorded, opened now with its reader ([`install_at`]); none where it did neither, or its
-/// home is not made.
+/// recorded, opened now with its reader, the home made where it is not ([`made`]); none where
+/// it did neither.
 fn writer() -> io::Result<Option<&'static Writer>> {
     if let Some(writer) = WRITER.get() {
         return Ok(Some(writer));
@@ -199,9 +215,7 @@ fn writer() -> io::Result<Option<&'static Writer>> {
     let Some(home) = HOME.get() else {
         return Ok(None);
     };
-    let Some(file) = made_in(home)? else {
-        return Ok(None);
-    };
+    let file = made(home)?;
     let reader = Reader::of(file.try_clone()?)?;
     let writer = Writer::of(file)?;
     // Another thread's, opened meanwhile, is kept where it was first: either is the home's.
@@ -216,8 +230,8 @@ fn writer() -> io::Result<Option<&'static Writer>> {
 static READER: OnceLock<Reader> = OnceLock::new();
 
 /// The reader of the home this process installed its slot file of ([`install`]), or recorded
-/// ([`install_at`]), the slot file opened then at the first call; none where it did neither,
-/// or its home is not made (none declares in it). A failure to open it is its error, which a
+/// ([`install_at`]), made at the first call ([`Reader::open`]: a home not made yet is read
+/// once it is); none where it did neither. A failure to open it is its error, which a
 /// follower says, never taken for no declarations.
 pub fn installed() -> io::Result<Option<&'static Reader>> {
     if let Some(reader) = READER.get() {
@@ -226,11 +240,8 @@ pub fn installed() -> io::Result<Option<&'static Reader>> {
     let Some(home) = HOME.get() else {
         return Ok(None);
     };
-    let Some(file) = made_in(home)? else {
-        return Ok(None);
-    };
     // Another thread's, opened meanwhile, is kept where it was first: either is the home's.
-    let _ = READER.set(Reader::of(file)?);
+    let _ = READER.set(Reader::open(home)?);
     Ok(READER.get())
 }
 
@@ -459,33 +470,66 @@ pub(crate) fn declared<T>(file: &impl Target, write: impl FnOnce() -> io::Result
 }
 
 /// A follower's reader of a home's declarations ([`Reader::declared`]): the slot file mapped
-/// once, again only as it grows.
+/// once, again only as it grows; opened at the first read that finds its home made, where it
+/// was not as the reader was made ([`Reader::open`]).
 #[derive(Debug)]
 pub struct Reader {
-    file: File,
+    file: OnceLock<File>,
+    /// The home whose slot file it opens once the home is made; none where it was given its
+    /// file ([`Reader::of`]).
+    home: Option<PathBuf>,
     granule: usize,
     map: Mutex<Option<Map>>,
 }
 
 impl Reader {
-    /// A reader of the home `home`'s slot file, made where none is ([`open`]).
+    /// A reader of the home `home`'s slot file, made where none is ([`open`]). Of a home not
+    /// made yet, it reads none until a read finds the home made, as the first durable write
+    /// of a process declaring there makes it ([`made`]): a follower makes no home, and one
+    /// that began before its subject's first durable write still reads it.
     pub fn open(home: &Path) -> io::Result<Reader> {
-        Reader::of(open(home)?)
+        let reader = Reader {
+            file: OnceLock::new(),
+            home: Some(home.to_path_buf()),
+            granule: sys::granule()?,
+            map: Mutex::new(None),
+        };
+        reader.file()?;
+        Ok(reader)
     }
 
     /// A reader of `file`, a home's slot file [`open`] made.
     pub fn of(file: File) -> io::Result<Reader> {
         Ok(Reader {
-            file,
+            file: OnceLock::from(file),
+            home: None,
             granule: sys::granule()?,
             map: Mutex::new(None),
         })
     }
 
+    /// Its slot file, opened now where its home has been made since it was last asked; none
+    /// while its home is not made, in which no process has declared.
+    fn file(&self) -> io::Result<Option<&File>> {
+        if let Some(file) = self.file.get() {
+            return Ok(Some(file));
+        }
+        let Some(home) = self.home.as_deref().filter(|home| home.is_dir()) else {
+            return Ok(None);
+        };
+        // Another thread's, opened meanwhile, is kept where it was first: either is the home's.
+        let _ = self.file.set(open(home)?);
+        Ok(self.file.get())
+    }
+
     /// The writes process `pid`, started at `start` (as its OS keeps it, `sys::start_of`),
     /// declares now: each its thread's, its volume and when it began. Memory alone, but where
-    /// the file grew since the last read: then it is mapped again, whole.
+    /// the file grew since the last read: then it is mapped again, whole. None while its home
+    /// is not made.
     pub fn declared(&self, pid: u32, start: u64) -> io::Result<Vec<Declared>> {
+        let Some(file) = self.file()? else {
+            return Ok(Vec::new());
+        };
         let mut map = self.map.lock().unwrap_or_else(PoisonError::into_inner);
         let granule = u64::try_from(self.granule).map_err(io::Error::other)?;
         let grown = match map.as_ref() {
@@ -498,8 +542,8 @@ impl Reader {
             }
         };
         if grown {
-            let len = usize::try_from(self.file.metadata()?.len()).map_err(io::Error::other)?;
-            *map = Some(Map::of(&self.file, 0, len, false)?);
+            let len = usize::try_from(file.metadata()?.len()).map_err(io::Error::other)?;
+            *map = Some(Map::of(file, 0, len, false)?);
         }
         let Some(mapped) = map.as_ref() else {
             return Ok(Vec::new());
@@ -662,7 +706,8 @@ mod tests {
     /// [`a_recorded_home_is_opened_at_its_first_declaration`]: it declares a write in the slot
     /// file of `SHARDS_DURABLE_TEST_HOME`, installed there, or with `SHARDS_DURABLE_TEST_AT`
     /// its home recorded alone ([`install_at`]), which opens nothing before that write; says
-    /// so on its stdout, and holds it until a line comes on its stdin.
+    /// so on its stdout, and holds it until a line comes on its stdin. The file it makes
+    /// durable is `SHARDS_DURABLE_TEST_FILE` where given, else its home's `theirs`.
     #[test]
     #[ignore = "a child of a_write_another_process_declares_is_read"]
     fn declares_until_told() {
@@ -679,7 +724,9 @@ mod tests {
         } else {
             install(home).unwrap();
         }
-        let file = File::create(home.join("theirs")).unwrap();
+        let theirs =
+            std::env::var_os("SHARDS_DURABLE_TEST_FILE").map_or_else(|| home.join("theirs"), PathBuf::from);
+        let file = File::create(theirs).unwrap();
         declared(&file, || {
             println!("declared {}", sys::thread()?);
             std::io::stdout().flush()?;
@@ -692,6 +739,12 @@ mod tests {
     /// [`declares_until_told`] run as a process of its own declaring in `home`, its home
     /// recorded alone where `at`, once it has said so: it and its declaring thread's ID.
     fn declaring_child(home: &Path, at: bool) -> (std::process::Child, u64) {
+        declaring_child_of(home, at, None)
+    }
+
+    /// [`declaring_child`], the file it makes durable `file` where given, its stderr then
+    /// piped for its test to read.
+    fn declaring_child_of(home: &Path, at: bool, file: Option<&Path>) -> (std::process::Child, u64) {
         let mut command = std::process::Command::new(std::env::current_exe().unwrap());
         command
             .args([
@@ -705,6 +758,11 @@ mod tests {
             .stdout(std::process::Stdio::piped());
         if at {
             command.env("SHARDS_DURABLE_TEST_AT", "1");
+        }
+        if let Some(file) = file {
+            command
+                .env("SHARDS_DURABLE_TEST_FILE", file)
+                .stderr(std::process::Stdio::piped());
         }
         let mut child = command.spawn().unwrap();
         let mut out = std::io::BufReader::new(child.stdout.take().unwrap());
@@ -744,8 +802,7 @@ mod tests {
 
     /// A process that recorded its home ([`install_at`]) opens its slot file at its first
     /// declaration, not before (the child checks), and that write is read as declared as an
-    /// installed process's is. A home not made has no slot file to open: a write there is
-    /// made undeclared.
+    /// installed process's is.
     #[test]
     fn a_recorded_home_is_opened_at_its_first_declaration() {
         let home = TempDir::new("durable-at").unwrap();
@@ -756,6 +813,46 @@ mod tests {
         assert_eq!(seen[0].thread, thread);
         child.stdin.take().unwrap().write_all(b"\n").unwrap();
         assert!(child.wait().unwrap().success());
-        assert!(made_in(&home.path().join("not-made")).unwrap().is_none());
+    }
+
+    /// A process whose recorded home is not made at its first durable write makes it, its
+    /// user's alone, says so on its stderr, and declares the write there, where a follower
+    /// that began reading that home before it was made reads it (D286 amended, ROOT's ruling
+    /// of 2026-11-18: a home not made took no declaration, so that the durable writes of a
+    /// run whose home no one had made, shards' default one, went unseen by its follower). Its
+    /// file is outside its home, as a run's snapshot is. Red where a home not made takes no
+    /// declaration (docs/research/measurements/durable-home-made-v1/red-home-made.patch).
+    #[test]
+    fn a_home_not_made_is_made_at_its_first_declaration_and_read() {
+        let outside = TempDir::new("durable-unmade").unwrap();
+        let home = outside.path().join("home");
+        let reader = Reader::open(&home).unwrap();
+        assert!(!home.exists(), "a follower makes no home");
+        assert!(
+            reader
+                .declared(std::process::id(), sys::start().unwrap())
+                .unwrap()
+                .is_empty()
+        );
+        let theirs = outside.path().join("theirs");
+        let (mut child, thread) = declaring_child_of(&home, true, Some(theirs.as_path()));
+        let (pid, start) = (child.id(), sys::start_of(child.id()).unwrap().unwrap());
+        let seen = reader.declared(pid, start).unwrap();
+        assert_eq!(seen.len(), 1, "{seen:?}");
+        assert_eq!(seen[0].thread, thread);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(&home).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o700, "{mode:o}");
+        }
+        child.stdin.take().unwrap().write_all(b"\n").unwrap();
+        let out = child.wait_with_output().unwrap();
+        assert!(out.status.success(), "{out:?}");
+        let said = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            said.contains(&format!("shards: made {}", home.display())),
+            "{said}"
+        );
     }
 }
