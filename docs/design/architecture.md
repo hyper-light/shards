@@ -41326,7 +41326,11 @@ connect alone), so UDP was the rule table's alone everywhere already.
   port took (`Conn::accepted`), the gateway's own flows (its names' relay) and peers' frames are
   none of its grants'. Answers learned of names still granted are kept, so a guest that resolved
   one goes on reaching it while its answer lives. On Windows a dial answered after a change is
-  held to the grants as they stand.
+  held to the grants as they stand, by the rule its SYN was admitted by (`Config::tcp_flow`,
+  one function for both), so that the stack's own flows stay its own. Held to `allows` alone,
+  it reset every flow of a build's proxy, which `allows` never admits: the proxy-cap E2E's
+  every proxied request was refused on x86_64 Windows from 27bb01b9ff to 5281944b57
+  (2026-11-18, #36, CI 44227612442).
 - *The calls* (image channel version 36). `ImageGuest::egress() -> Narrowing`, the run's grants
   as its host last said them, written out whole (`Keep::Only` of its image's, told with its
   start, `Started::egress`, and with each change, `NetChanged::egress`);
