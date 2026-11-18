@@ -6966,28 +6966,57 @@ fn run_caches_are_shared_among_concurrent_builds() {
         );
         assert_eq!(seeded.status, Some(0), "{}", seeded.stderr);
         // A holds the record for half a minute; B builds once it does.
-        let (a, b) = std::thread::scope(|s| {
-            let a = s.spawn(|| {
-                build(
-                    "a",
-                    &format!("\"fs\", \"write:/c/a-{sharing}=written-by-a\", \"sleep:30000\""),
-                )
-            });
-            let mut patience = Patience::of(&home);
-            while records() != [true] {
-                assert!(patience.holds(), "no build took the {sharing} cache");
-                std::thread::sleep(patience.next_look());
+        let a_ctx = context(
+            &format!("cache-sharing-{sharing}-a"),
+            &format!(
+                "FROM {image}\nUSER root\nRUN --mount=type=cache,target=/c,id=s-{sharing},sharing={sharing} [\"/bin/testguest\", \"fs\", \"write:/c/a-{sharing}=written-by-a\", \"sleep:30000\"]\n"
+            ),
+        );
+        let a_said = home.join(format!("a-{sharing}.stderr"));
+        let mut a = common::command()
+            .args(["build", "--progress=plain", a_ctx.to_str().unwrap()])
+            .envs(env.iter().copied())
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::fs::File::create(&a_said).unwrap())
+            .spawn()
+            .unwrap();
+        // Waited for while A's client goes on, as well as its daemon and their microVMs (D215:
+        // a wait whose answer is another process's run follows that process). Its client reads
+        // its context and asks its daemon before any of them holds the cache, and a wait on the
+        // daemon alone took that time for its party's stillness (CI 44245219858, windows-2025:
+        // "no build took the shared cache", as case 4's `build_cache_usage_lists_every_record`
+        // was refused on x86_64 gnu).
+        let mut patience = Patience::client(a.id(), &home);
+        while records() != [true] {
+            assert!(patience.holds(), "no build took the {sharing} cache");
+            std::thread::sleep(patience.next_look());
+        }
+        patience.done();
+        let b = build(
+            "b",
+            &format!(
+                "\"fs\", \"write:/c/b-{sharing}=written-by-b\", \"print:/c/zero-{sharing}\", \"print:/c/a-{sharing}\""
+            ),
+        );
+        // A's end, waited for while its client goes on.
+        let mut ending = Patience::client(a.id(), &home);
+        let a_ended = loop {
+            if let Some(status) = a.try_wait().unwrap() {
+                ending.done();
+                break status;
             }
-            patience.done();
-            let b = build(
-                "b",
-                &format!(
-                    "\"fs\", \"write:/c/b-{sharing}=written-by-b\", \"print:/c/zero-{sharing}\", \"print:/c/a-{sharing}\""
-                ),
+            assert!(
+                ending.holds(),
+                "the build holding the {sharing} cache never ended"
             );
-            (a.join().unwrap(), b)
-        });
-        assert_eq!(a.status, Some(0), "{}", a.stderr);
+            std::thread::sleep(ending.next_look());
+        };
+        assert!(
+            a_ended.success(),
+            "{a_ended:?}\n{}",
+            std::fs::read_to_string(&a_said).unwrap_or_default()
+        );
         // The files B found, by what it printed of them: B's own step names neither.
         let found = |text: &str| b.stderr.contains(text);
         match sharing {
