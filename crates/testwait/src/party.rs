@@ -38,7 +38,7 @@ struct Party {
     members: BTreeMap<u64, (Clock, u64)>,
     /// Its living members' threads, by the same keys, as another thread of this process
     /// reads their states ([`hold`]).
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     threads: BTreeMap<u64, Thread>,
     ended: u64,
 }
@@ -164,7 +164,7 @@ impl Member {
             let mut parties = parties();
             let of = parties.entry(party).or_default();
             of.members.insert(key, (clock, 0));
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            #[cfg(any(target_os = "linux", target_os = "macos", windows))]
             of.threads.insert(key, Thread::own());
         }
         PARTY.with(|of| of.set((party, true)));
@@ -179,7 +179,7 @@ impl Drop for Member {
         let Some(party) = parties.get_mut(&self.party) else {
             return;
         };
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        #[cfg(any(target_os = "linux", target_os = "macos", windows))]
         party.threads.remove(&self.key);
         if let Some((clock, waited)) = party.members.remove(&self.key) {
             let ran = clock.ran().unwrap_or(0).saturating_sub(waited);
@@ -190,9 +190,11 @@ impl Drop for Member {
 
 /// What party `id`'s living members but the thread that asks are doing as it asks: D215's
 /// hold (shards-api `Hold::held_since`, ROOT's rule for runnable threads and `run_delay`),
-/// read of threads of this process. None is read on Windows, whose threads' states are in
-/// the system's whole listing alone (13.1 to 13.8 ms a read, PM M606), as shards-api's
-/// `starved` reads none there: its waits keep their overruns alone.
+/// read of threads of this process. Windows keeps its threads' states in the system's whole
+/// listing alone, read once for every member (shards-judge's `threads_held`, the rule
+/// shards-api's judge holds a VM process's threads by: wanting a CPU, or waiting on its
+/// host's paging), 13.1 to 13.8 ms a read (PM M606), so that a wait reads it only at a look
+/// that found its party ran nothing.
 pub fn hold(id: u64) -> Hold {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
@@ -226,7 +228,34 @@ pub fn hold(id: u64) -> Hold {
         }
         hold
     }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(windows)]
+    {
+        let asks = Thread::own();
+        let tids: Vec<u32> = parties()
+            .get(&id)
+            .map(|party| {
+                party
+                    .threads
+                    .values()
+                    .filter(|thread| **thread != asks)
+                    .map(|thread| thread.0)
+                    .collect()
+            })
+            .unwrap_or_default();
+        if tids.is_empty() {
+            return Hold::default();
+        }
+        let Some(held) = shards_judge::threads_held(std::process::id(), &tids) else {
+            return Hold::default();
+        };
+        Hold {
+            read: held.read,
+            runnable: held.runnable,
+            in_kernel: held.paging,
+            ..Hold::default()
+        }
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     {
         let _ = id;
         Hold::default()
@@ -235,11 +264,10 @@ pub fn hold(id: u64) -> Hold {
 
 /// What a look read of a party's members ([`hold`]): how many it read, how many were
 /// runnable (running, or waiting for a CPU) and how many waited uninterruptibly in their
-/// kernel; and (Linux) each one's wait for a CPU so far, in nanoseconds, by its key.
+/// kernel (on Windows, on their host's paging); and (Linux) each one's wait for a CPU so far,
+/// in nanoseconds, by its key.
 #[derive(Debug, Default)]
 pub struct Hold {
-    /// Read where threads' states are read alone: Windows reads none ([`hold`]).
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub read: usize,
     pub runnable: usize,
     pub in_kernel: usize,
@@ -265,7 +293,6 @@ impl Hold {
     /// A stand-in's members as its test says they are: `runnable` of them runnable.
     pub(crate) fn standing(runnable: usize) -> Hold {
         Hold {
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
             read: runnable,
             runnable,
             ..Hold::default()
@@ -284,6 +311,20 @@ struct Thread(libc::pid_t);
 #[cfg(target_os = "macos")]
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Thread(libc::mach_port_t);
+
+/// A member's thread as another thread of this process reads its state ([`hold`]): its ID on
+/// Windows, by which the system's listing names it.
+#[cfg(windows)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct Thread(u32);
+
+#[cfg(windows)]
+impl Thread {
+    fn own() -> Thread {
+        // SAFETY: GetCurrentThreadId takes nothing and always succeeds.
+        Thread(unsafe { windows_sys::Win32::System::Threading::GetCurrentThreadId() })
+    }
+}
 
 /// What a read of a member's thread found: runnable, waiting uninterruptibly in its
 /// kernel, and (Linux) its wait for a CPU so far, in nanoseconds.

@@ -254,7 +254,14 @@ impl<'r> Wait<'r> {
             mine,
             since: began,
             held: Duration::ZERO,
-            hold: party.hold(),
+            // Its members as it begins, which a look's growth in their waits for a CPU is
+            // judged from (Linux); Windows' and macOS's holds are their states at a look
+            // alone, and Windows lists every thread of the system to read them.
+            hold: if cfg!(target_os = "linux") {
+                party.hold()
+            } else {
+                party::Hold::default()
+            },
         }
     }
 
@@ -299,10 +306,14 @@ impl<'r> Wait<'r> {
         let others = self.party.ran();
         let ran = others > std::mem::replace(&mut self.others, others);
         // A member its host holds since the look before: its stillness counted from here,
-        // as D215's judge counts it from a look that found its party held.
-        let hold = self.party.hold();
-        let held = hold.since(&self.hold);
-        self.hold = hold;
+        // as D215's judge counts it from a look that found its party held. Read only where
+        // its party ran nothing, which has progressed whatever its host did.
+        let held = !ran && {
+            let hold = self.party.hold();
+            let held = hold.since(&self.hold);
+            self.hold = hold;
+            held
+        };
         if ran || held {
             (self.since, self.held) = (now, Duration::ZERO);
         }
@@ -558,8 +569,9 @@ mod tests {
 
     /// A party's members are read as their OS shows them (`party::hold`): one that spins is
     /// runnable, one asleep on a channel neither runnable nor waiting in its kernel, and the
-    /// thread that reads is none of them.
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    /// thread that reads is none of them. On Windows from the system's listing (shards-judge's
+    /// `threads_held`); red there where it reads none, as before (0 of 0 read).
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     #[test]
     fn a_partys_members_are_read_as_their_os_shows_them() {
         let mine = party::of_test();
