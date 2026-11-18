@@ -186,8 +186,38 @@ fn greet_once(sock: &Path) -> thread::JoinHandle<String> {
     })
 }
 
+/// Serves one guest connection to host port 5000 at `sock`: reads the guest's line, answers,
+/// and hands the connection back open, read no further, for its caller to hold.
+fn greet_held(sock: &Path) -> thread::JoinHandle<(String, VsockStream)> {
+    let mut path = sock.as_os_str().to_owned();
+    path.push("_5000");
+    let mut host = host_port(path);
+    thread::spawn(move || {
+        let s = host_port_accept(&mut host).unwrap();
+        let mut greeting = BufReader::new(Following::of(&s, None));
+        let mut line = String::new();
+        greeting.read_line(&mut line).unwrap();
+        greeting.get_mut().answered();
+        drop(greeting);
+        (&s).write_all(b"hello from the host\n").unwrap();
+        (line, s)
+    })
+}
+
 /// A snapshot taken while the guest holds a connection to the host: each restored copy
 /// finds that connection closed (its host is gone), dials its own host, and serves.
+///
+/// The original's connection is held through its snapshot, never read to its end. Its end
+/// is its VM process's exit, which comes only once the snapshot is durable (runtime.rs
+/// `Coordinator::take`: `staged.commit()` syncs each file, then `ExitReason::Snapshotted`):
+/// host work, which the wait for that exit follows by the process's CPU and by its waits on
+/// its host's disk ([`Vm::wait_exit_following`]). Read as a guest's stream, whose progress is
+/// its bytes alone once its first has come ([`Following`]), the end was refused 221.4 ms in,
+/// no progress for 207.9 ms past a W* of 110.5 ms, while the VM process committed the
+/// snapshot, a thread of it in the block layer's write throttle (`rq_qos_wait`); it exited 0
+/// within 0.39 s of the refusal (CI 44268931283, x86_64-unknown-linux-gnu). Owed: that the
+/// connection reads its end at once as its VM process exits, checked once that is measured
+/// on Windows and macOS.
 #[test]
 fn restored_copies_find_held_connections_closed() {
     if cannot_run_vms() || cannot_snapshot() {
@@ -196,7 +226,7 @@ fn restored_copies_find_held_connections_closed() {
     let dir = TempDir::new("vsock-held");
     let snap = dir.join("snap");
     let original_sock = dir.join("original.sock");
-    let greeted = greet_once(&original_sock);
+    let greeted = greet_held(&original_sock);
     let mut args = guest_args("vsock_snapshot_held", &original_sock);
     args.extend(["--snapshot-dir".into(), snap.clone().into()]);
     let mut original = Vm::spawn(&os(&args));
@@ -206,7 +236,9 @@ fn restored_copies_find_held_connections_closed() {
         "{}",
         original.seen.join("\n")
     );
-    assert_eq!(greeted.join().unwrap(), "hello from the guest\n");
+    let (line, held) = greeted.join().unwrap();
+    drop(held);
+    assert_eq!(line, "hello from the guest\n");
 
     for (salt, name) in [(1, "a.sock"), (2, "b.sock")] {
         let sock = dir.join(name);
