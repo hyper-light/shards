@@ -2670,7 +2670,9 @@ fn said_by(cmd: &mut Command, home: Option<&Path>) -> String {
 /// ended, and restarts the home's microVMs whose policies say so (daemon/restart.rs
 /// `restart_at_start`). CI 44227612442's x86_64 musl accounts of two commands refused in homes
 /// with no daemon started daemons 21259 and 22143 there, on the host the refusals found slow,
-/// and the second's `ps -q` was refused in turn.
+/// and the second's `ps -q` was refused in turn. A daemon that ends between this check and
+/// the ask is asked all the same, and its client starts the next: accepted (ROOT,
+/// 2026-11-18; D215).
 fn unasked(home: &Path) -> Option<String> {
     if shards_ipc::exiting(home) {
         return Some(format!(

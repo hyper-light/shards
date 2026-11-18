@@ -29776,6 +29776,34 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
       reading and the tests' parties', whose side lands on the move of the tests' party to
       its own crate (crates/testwait). Host saturation (GetSystemTimes' idle) is no hold
       (ROOT, 2026-11-18): the host's, not the party's own (the ruling of 2026-11-13).
+    - *A refusal's account changes nothing of what it describes* (ROOT's ruling (b),
+      2026-11-18; CI 44227612442's x86_64 musl job 134545100600).
+      - Why. That job's accounts of two commands refused in homes with no daemon
+        (`configure disk`, a `build agent`) asked those homes `ps -a` (`stacks_of`). Each
+        started a daemon there (21259, 22143) on the host the refusal had found slow, and the
+        second's `ps -q` was refused in turn. A client asked where no daemon serves starts one
+        (cli/client.rs `ask_slot`), and a daemon as it starts restarts the home's microVMs
+        whose policies say so (daemon/restart.rs `restart_at_start`).
+      - The rule (`unasked`). An account asks nothing of a home whose pid file names no daemon
+        that lives, or whose stopping record names one ending its runs, and says "no daemon
+        running in HOME: none asked". On Windows the debugger attaches to a home's daemon
+        only where its record names one that lives.
+      - Accepted (ROOT): a daemon that ends between that check and the ask is asked all the
+        same, and its client starts the next.
+      - Test: harness.rs `an_account_asks_no_home_no_daemon_serves`. Red:
+        lanes/redgreen/own-38f-account.patch.
+      - Owed, after the tag (ROOT's rulings):
+        - A home whose living daemon is of another build (containers.rs' `Gated`, its
+          `SHARDS_VM_BINARY`). That daemon steps aside for an account's client
+          (daemon.rs:3266-3270), which then starts its own. The account is to ask nothing of
+          a daemon whose build is not its own, read as the client's check reads it, and say
+          "its daemon is another build: none asked".
+        - Two tests' own failure messages ask their homes `shards logs` (saved.rs:1110,
+          build.rs:11699). `logs` is a daemon command, so it starts one where none serves:
+          the same rule.
+        - `top` writes a `top` event to a living daemon's journal (daemon/commands.rs:1118).
+          An account's read is to write nothing: a read-only `top` for accounts, or no event
+          when an account asks.
     - Red/green (harness.rs, stand-ins, no microVM): `a_first_look_past_w_star_judges_nothing`
       (waits-02), `an_answer_already_there_teaches_nothing` (waits-03),
       `a_daemon_named_by_another_start_is_no_party` and `an_unreaped_daemon_is_gone`
