@@ -222,6 +222,48 @@ fn a_party_look_lists_processes_without_starting_one() {
     );
 }
 
+/// A refusal's account changes nothing of what it describes (ROOT, 2026-11-18): it asks no
+/// home that no daemon serves, so it starts no daemon there, nor through one a microVM whose
+/// policy restarts it. CI 44227612442's x86_64 musl accounts of two commands refused in homes
+/// with no daemon each started one there (daemons 21259 and 22143). Red:
+/// lanes/redgreen/own-38f-account.patch, every home asked. Do: take a refusal's account
+/// ([`common::stacks_of`]) and its guests' processes ([`common::guests_processes`]) of an empty
+/// home, then of one whose pid file names a process that is not the one it names (this one,
+/// started at another time). Expect: each says no daemon runs there and none was asked, and the
+/// home keeps what it held: no daemon named in it, nothing made.
+#[test]
+fn an_account_asks_no_home_no_daemon_serves() {
+    let home = TempDir::new("unasked");
+    let none = format!("no daemon running in {}: none asked", home.display());
+    let held = || {
+        let mut names: Vec<_> = std::fs::read_dir(&*home)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        names.sort();
+        names
+    };
+    let stale = format!("{} {}\n", std::process::id(), u64::MAX);
+    for record in [None, Some(stale.as_str())] {
+        if let Some(record) = record {
+            std::fs::write(home.join(shards_ipc::PID), record).unwrap();
+        }
+        let before = held();
+        let account = common::stacks_of(&[], Some(&*home));
+        let guests = common::guests_processes(&home);
+        assert!(account.contains(&none), "{account}");
+        assert!(guests.contains(&none), "{guests}");
+        assert_eq!(held(), before, "{account}");
+        assert_eq!(
+            std::fs::read_to_string(home.join(shards_ipc::PID))
+                .ok()
+                .as_deref(),
+            record,
+            "{account}"
+        );
+    }
+}
+
 /// The memory a give-back stand-in frees, in regions of this many bytes, this many.
 const REGION: usize = 32 << 20;
 const REGIONS: usize = 4;

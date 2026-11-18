@@ -2640,7 +2640,8 @@ fn run_shards_with<S: AsRef<std::ffi::OsStr>>(
 
 /// What a client that never ended shows before it is killed: its home's runs as its daemon
 /// has them (`ps -a`), whether the daemon took its run at all, and what each running one's
-/// guest runs ([`guests_processes`]); and on Windows its threads' stacks and its daemon's,
+/// guest runs ([`guests_processes`]), where a daemon runs there, none started to say it
+/// ([`unasked`]); and on Windows its threads' stacks and its daemon's,
 /// where this host has Microsoft's console debugger (cdb, the Windows SDK's Debugging
 /// Tools), attached without stopping them (`-pv`).
 fn stuck(pid: u32, home: Option<&Path>) -> String {
@@ -2661,11 +2662,34 @@ fn said_by(cmd: &mut Command, home: Option<&Path>) -> String {
     }
 }
 
+/// What an account says of `home` in place of asking it anything, where no daemon serves it:
+/// its pid file names none that lives (`shards_ipc::daemon_lives`), or the one its stopping
+/// record names is ending its runs (`shards_ipc::exiting`); none where one serves. An account
+/// changes nothing of what it describes (ROOT, 2026-11-18): a client asked where none serves
+/// starts a daemon (cli/client.rs `ask_slot`), which takes the place of one ending once it has
+/// ended, and restarts the home's microVMs whose policies say so (daemon/restart.rs
+/// `restart_at_start`). CI 44227612442's x86_64 musl accounts of two commands refused in homes
+/// with no daemon started daemons 21259 and 22143 there, on the host the refusals found slow,
+/// and the second's `ps -q` was refused in turn.
+fn unasked(home: &Path) -> Option<String> {
+    if shards_ipc::exiting(home) {
+        return Some(format!(
+            "\n--- its daemon ending its runs in {}: none asked",
+            home.display()
+        ));
+    }
+    (!shards_ipc::daemon_lives(home))
+        .then(|| format!("\n--- no daemon running in {}: none asked", home.display()))
+}
+
 /// What each microVM running in `home` runs, as `top` lays its processes out (init's dump
 /// of the guest's `/proc`), with each one's state and the kernel function it waits in
 /// (`stat`, `wchan`): where in its guest a client that never ended, or a command that said
-/// nothing more, is held.
+/// nothing more, is held. Where no daemon runs there, it asks nothing ([`unasked`]).
 pub fn guests_processes(home: &Path) -> String {
+    if let Some(unasked) = unasked(home) {
+        return unasked;
+    }
     let mut ids = command();
     ids.args(["ps", "-q", "--no-trunc"])
         .env("SHARDS_HOME", home)
@@ -2691,20 +2715,25 @@ pub fn guests_processes(home: &Path) -> String {
 }
 
 /// [`stuck`]'s view of processes `pids`, each named, as a test that found one of them stuck
-/// shows them: its home's runs and their guests' processes, and on Windows their stacks and
-/// its daemon's.
+/// shows them: its home's runs and their guests' processes, where a daemon runs there
+/// ([`unasked`]), and on Windows their stacks and its daemon's.
 pub fn stacks_of(pids: &[(&str, u32)], home: Option<&Path>) -> String {
     let mut said = String::new();
     if let Some(home) = home {
-        let mut ps = command();
-        ps.args(["ps", "-a", "--no-trunc"])
-            .env("SHARDS_HOME", home)
-            .stdin(Stdio::null());
-        said.push_str(&format!(
-            "\n--- ps -a in its home\n{}",
-            said_by(&mut ps, Some(home))
-        ));
-        said.push_str(&guests_processes(home));
+        match unasked(home) {
+            Some(unasked) => said.push_str(&unasked),
+            None => {
+                let mut ps = command();
+                ps.args(["ps", "-a", "--no-trunc"])
+                    .env("SHARDS_HOME", home)
+                    .stdin(Stdio::null());
+                said.push_str(&format!(
+                    "\n--- ps -a in its home\n{}",
+                    said_by(&mut ps, Some(home))
+                ));
+                said.push_str(&guests_processes(home));
+            }
+        }
         // What its daemon said last, of its runs and their groups' budgets: a run held or
         // stopped says why there alone.
         let log = std::fs::read(home.join("daemon.log")).unwrap_or_default();
@@ -2718,9 +2747,12 @@ pub fn stacks_of(pids: &[(&str, u32)], home: Option<&Path>) -> String {
     {
         let cdb = Path::new(r"C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\cdb.exe");
         if cdb.is_file() {
+            // Its daemon where its record names one that lives: never the process that has
+            // taken a stale record's ID since, which the debugger would attach to.
             let daemon = home
-                .and_then(|h| std::fs::read_to_string(h.join("daemon.pid")).ok())
-                .and_then(|p| p.split_ascii_whitespace().next()?.parse::<u32>().ok());
+                .and_then(|h| shards_ipc::Named::read(&h.join(shards_ipc::PID)))
+                .filter(shards_ipc::Named::lives)
+                .map(|named| named.pid);
             // shards' symbols: its PDB beside the build's own binary, which the copy these
             // tests run names (the test binary's deps directory and the one above it).
             let deps = std::env::current_exe()
