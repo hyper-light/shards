@@ -3169,19 +3169,28 @@ mod tests {
         let mut file = std::fs::File::create(dir.join("written")).unwrap();
         #[cfg(unix)]
         let volume = std::os::unix::fs::MetadataExt::dev(&file.metadata().unwrap());
+        // Its serial on Windows as shards-durable reads it (GetVolumeInformationByHandleW, which
+        // asks no access right of a handle opened to write).
         #[cfg(windows)]
         let volume = {
             use std::os::windows::io::AsRawHandle as _;
-            use windows_sys::Win32::Storage::FileSystem::{
-                BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
+            use windows_sys::Win32::Storage::FileSystem::GetVolumeInformationByHandleW;
+            let mut serial = 0u32;
+            // SAFETY: a handle the test holds; its serial alone asked, into a u32 of its own.
+            let read = unsafe {
+                GetVolumeInformationByHandleW(
+                    file.as_raw_handle(),
+                    std::ptr::null_mut(),
+                    0,
+                    &raw mut serial,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    0,
+                )
             };
-            let mut info = BY_HANDLE_FILE_INFORMATION::default();
-            // SAFETY: a handle the test holds, into a BY_HANDLE_FILE_INFORMATION of its own.
-            assert_ne!(
-                unsafe { GetFileInformationByHandle(file.as_raw_handle(), &raw mut info) },
-                0
-            );
-            u64::from(info.dwVolumeSerialNumber)
+            assert_ne!(read, 0, "{}", std::io::Error::last_os_error());
+            u64::from(serial)
         };
         let device = os::device(volume, std::process::id()).unwrap();
         let first = os::counters(&device).unwrap();
