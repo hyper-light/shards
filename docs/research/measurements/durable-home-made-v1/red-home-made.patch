@@ -1,5 +1,5 @@
 diff --git a/crates/durable/src/table.rs b/crates/durable/src/table.rs
-index 643d82fd36..80e529a568 100644
+index dac03875d6..c7c0db8a5d 100644
 --- a/crates/durable/src/table.rs
 +++ b/crates/durable/src/table.rs
 @@ -215,6 +215,9 @@ fn writer() -> io::Result<Option<&'static Writer>> {
@@ -9,6 +9,6 @@ index 643d82fd36..80e529a568 100644
 +    if !home.is_dir() {
 +        return Ok(None);
 +    }
-     let file = made(home)?;
+     let file = made_home(home)?;
      let reader = Reader::of(file.try_clone()?)?;
      let writer = Writer::of(file)?;

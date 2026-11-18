@@ -44895,7 +44895,7 @@ stdout*: Docker's byte-exact texts. *The daemon's IPC*: its children's alone.
   writes went unseen by every follower (CI 44282442232's storm originals saving their
   snapshots, and their waits' parties read no home at all). Now:
   - A process's first durable write makes the home it recorded where it is not (table.rs
-    `made`), its user's alone: 0700 on Unix, as the daemon makes its home (shards-vmm's
+    `made_home`), its user's alone: 0700 on Unix, as the daemon makes its home (shards-vmm's
     `create_private_dir`, which the daemon's `serve` calls before it records its home), and
     on Windows its parent's access inherited, the user's local application data. It says so
     on its stderr, never silently: `shards: made HOME, its user's alone, for the declarations

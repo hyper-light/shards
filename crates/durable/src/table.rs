@@ -164,7 +164,7 @@ pub fn install_file(file: File) -> io::Result<()> {
 /// Declares this process's durable writes in the slot file of the home `home`, recorded now
 /// and opened at its first declaration, so that a process's start pays no call for it, and
 /// one that writes nothing durable opens nothing (`shards`' launch, PM M113). The home is
-/// made then where it is not ([`made`]): a failure to make it or open its slot file fails
+/// made then where it is not ([`made_home`]): a failure to make it or open its slot file fails
 /// the write. Once a process: a second install is refused.
 pub fn install_at(home: PathBuf) -> io::Result<()> {
     if WRITER.get().is_some() {
@@ -181,7 +181,7 @@ pub fn home() -> Option<&'static Path> {
 }
 
 /// Makes the slot file of the home this process recorded ([`install_at`]), and the home,
-/// where they are not, as its own first declaration would ([`made`]): for a process it starts
+/// where they are not, as its own first declaration would ([`made_home`]): for a process it starts
 /// that may open only what it is granted (a VM process on macOS and Windows, D30), which then
 /// finds them there. Nothing where it recorded no home; a failure to make them is the start's.
 pub fn make() -> io::Result<()> {
@@ -193,7 +193,7 @@ pub fn make() -> io::Result<()> {
 /// it is made, and a home made for it is never made silently (D286 amended, ROOT's ruling of
 /// 2026-11-18: a home not made took no declaration, so that a run's durable writes went
 /// unseen by its follower).
-fn made(home: &Path) -> io::Result<File> {
+fn made_home(home: &Path) -> io::Result<File> {
     if !home.is_dir() {
         sys::private_dir(home)?;
         let _ = writeln!(
@@ -206,7 +206,7 @@ fn made(home: &Path) -> io::Result<File> {
 }
 
 /// This process's writer: the one it installed, else one of the slot file of the home it
-/// recorded, opened now with its reader, the home made where it is not ([`made`]); none where
+/// recorded, opened now with its reader, the home made where it is not ([`made_home`]); none where
 /// it did neither.
 fn writer() -> io::Result<Option<&'static Writer>> {
     if let Some(writer) = WRITER.get() {
@@ -215,7 +215,7 @@ fn writer() -> io::Result<Option<&'static Writer>> {
     let Some(home) = HOME.get() else {
         return Ok(None);
     };
-    let file = made(home)?;
+    let file = made_home(home)?;
     let reader = Reader::of(file.try_clone()?)?;
     let writer = Writer::of(file)?;
     // Another thread's, opened meanwhile, is kept where it was first: either is the home's.
@@ -485,7 +485,7 @@ pub struct Reader {
 impl Reader {
     /// A reader of the home `home`'s slot file, made where none is ([`open`]). Of a home not
     /// made yet, it reads none until a read finds the home made, as the first durable write
-    /// of a process declaring there makes it ([`made`]): a follower makes no home, and one
+    /// of a process declaring there makes it ([`made_home`]): a follower makes no home, and one
     /// that began before its subject's first durable write still reads it.
     pub fn open(home: &Path) -> io::Result<Reader> {
         let reader = Reader {
