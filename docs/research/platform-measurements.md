@@ -26507,3 +26507,62 @@ the counts are a process's, not a thread's. n is one run of each child.
   0.55 (x86_64 musl) minutes, which a bar of two would have lowered those limits on, to 11, 26
   and 28 (the script run so as an exercise over the same runs). The script derives the limits
   again as runs gather; limits.py (M613) still splits a job's builds and hangs from its logs.
+
+### M620. A DAX window's three edge cases through real WHP guests (D189, D197's slice 4)
+
+- **Question.** M341 and M412 measured the window's mechanism with one vCPU, or with no guest at all, and the window's own
+  tests record stage 2 and read through its host side. What does a real guest get from a real `Window` where a view is
+  shorter than its range, where a view begins at each of a range's 64 KiB granules, and where several vCPUs are at a range
+  while another thread replaces it?
+- **Method.** `crates/vmm/src/devices/virtio/fs/window_whp_guest.rs`, `cargo test -p shards-vmm --lib --profile
+  test-release -- --nocapture --test-threads=1 window::`. A partition, a real `Window` over WHP's stage 2, and vCPUs in long
+  mode run by `Vcpu::run`, each polling a mailbox in its RAM. Their memory exits ask the window as a VM's do; what the
+  window does not take falls to the bus's MMIO, and is counted ("fell").
+  - The storm: vCPUs read an epoch from RAM, load a stamp through the window, and store the epoch back through it, while
+    the host stamps the section to come with a round's number, replaces a two-range mapping with it, and only then publishes
+    that round as the epoch. So a load that reads less than its epoch read the old section after the replace returned, and
+    a store carrying that epoch found in the section replaced reached it afterwards. Paced, each replace waits for every
+    vCPU to go through the last section, so each of its stores must be found. Unpaced, the host replaces as fast as it can.
+  - Hosts: jupiter (AMD Ryzen AI Max+ 395, 32 logical, Windows 10.0.26200, 2026-11-04, other agents' builds running beside
+    it); and windows-2025 (AMD EPYC 7763, 4 logical, Windows 10.0.26100, image win25-vs2026 20261030.294.1, slates
+    `diag-shards-whp-4`, run 41981896876, 2026-11-05).
+- **Found: a view shorter than its range.** It holds to a guest at each place a file can end (1 byte; a page; a page and a
+  byte; a granule; a granule and a byte; the page before the last; a byte short; the whole range): the file's bytes, zeros
+  past them, each store where the design says, and a grown file's bytes once followed. A section ending within a mapping's
+  range is refused EIO, its earlier ranges freed, and each takes a whole view after.
+- **Found: granules.** A view from each of a range's 32 granules holds each way. 6 offsets between granules are refused
+  EINVAL, with what was mapped left in place.
+- **Found: several vCPUs at a section's replace.** It holds: nothing fell, no load or store was stale, and every paced store
+  was found.
+
+  | host | vCPUs | replaces | faults run again, paced | stores found, paced | a paced run took |
+  |---|---|---|---|---|---|
+  | jupiter | 2 | 20,000 | 39,654 | 39,998 of 39,998 | not kept |
+  | jupiter | 4 | 20,000 | 79,232 | 79,996 of 79,996 | 1.005 s |
+  | jupiter | 8 | 20,000 | 158,573 | 159,992 of 159,992 | 2.059 s |
+  | windows-2025, 5 runs | 2 | 20,000 | 39,098 to 39,539 | 39,998 of 39,998 | 4.95 to 5.38 s |
+  | windows-2025, 5 runs | 4 | 20,000 | 46,259 to 47,708 | 79,996 of 79,996 | 480.9 to 524.8 s |
+
+  A spinning vCPU meets nearly every replace: a fault here is the common case under load, not a rarity. On a host with fewer
+  cores than the vCPUs, the beside vCPU and the host's thread (4 logical against 6 runnable), a paced replace took about 24 ms
+  against 0.26 ms, so a width past the cores now makes 1,000 replaces.
+- **Found: several vCPUs at a share's own file, followed and cut: a bug.** `Window::reconcile` and `Window::evict` counted
+  their change after letting the lock go. A vCPU whose fault had waited for that lock could read the old count, and a
+  second fault at one address at one count is taken for the guest's own, so a live range's load read a bus's 0xff and its
+  store was lost. Counted under the lock, as `map`, `map_zeros` and `unmap` already did:
+
+  | host, 6,400 followings at 2 vCPUs | accesses that fell, before | changes seen uncounted of 20,000, before | fell, after |
+  |---|---|---|---|
+  | jupiter, 3 runs | 2, 36, 38 | 3, 9, 12 | 0, at 2, 4 and 8 vCPUs, 3 runs |
+  | windows-2025, 5 runs | 407, 604, 308, 416, 614 | 184, 174, 155, 220, 208 | 0, at 2 and 4 vCPUs, 5 runs |
+
+  It reaches a share's own file alone, as a server's section is never followed.
+
+  With these patches as they stand, slates' `diag-shards-whp-5`, run 41987826160, 2026-11-05, on the same image: 201, 797, 291,
+  357 and 588 fell before the fix, and after it none in 5 of 5, every window test passing in 43.5 to 49.5 s a run where the
+  width past the cores had taken 506 to 548 s.
+- **Non-vacuity.** Never asking the window: 40,657 accesses fell in a 2-vCPU paced run. The epoch published before the
+  replace, so that a load may rightly see the old section: 757,450,579 loads and 39,974 stores counted stale. Both on
+  jupiter.
+- **Consequence.** D189: a change to what a window's ranges hold is counted before its lock is let go. The window's other
+  claims of its edge cases stand, now through guests.

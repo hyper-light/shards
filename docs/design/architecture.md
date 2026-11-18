@@ -3933,7 +3933,9 @@ microVM as virtio-fs shares (virtio 1.3 §5.11; Linux fs/fuse/virtio_fs.c):
       where a restore's server cannot answer. The section reaches past every range asked of
       it and is committed before the answer, so there is no file end to follow, and a fault
       in a mapped range is only a vCPU racing a replace: WHP's memory-access exit asks the
-      window first and runs the access again once. A range mapped to be written is all
+      window first and runs the access again once. What changes a range is counted before
+      the window's lock is let go, or a vCPU whose fault waited for it takes a live range's fault
+      for the guest's own (PM M620). A range mapped to be written is all
       held (patch 0009). The ask is the Unix one plus the VM's pid (le32) and its stream
       handle's value (le64), 38 bytes. The server duplicates the section only into a process
       holding the share's own stream, and answers with its value. The device adopts a value
