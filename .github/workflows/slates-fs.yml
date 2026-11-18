@@ -27,10 +27,12 @@ permissions:
 
 env:
   TOOLCHAIN: "1.98.1"
-  # slates' main with the Windows `{handle}` hand-off (A-181).
-  SLATES_REV: f71282e1f613e129914150d7e6dc2b02ea4db4fe
+  # slates' main with the Windows `{handle}` hand-off (A-181), and since: the stream taking init's owner word (A-281),
+  # a guest's trusted./security. attributes and POSIX ACLs kept as its data (A-290, A-302), and SAVE/RESTORE answered
+  # with tables (A-303, D176 part 5).
+  SLATES_REV: ac30fc77aae4bd91f6f1bc2da1517db7bdc75c2a
   # slates' own pin, its rust-toolchain.toml's.
-  SLATES_TOOLCHAIN: "1.98.0"
+  SLATES_TOOLCHAIN: "1.98.1"
   # AWS-LC's x64 assembly from source in both trees (vendor/README.md; slates' ci.yml).
   AWS_LC_SYS_PREBUILT_NASM: "0"
 
