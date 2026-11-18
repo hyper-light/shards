@@ -22,7 +22,8 @@
 //!
 //! [`period`] is D191's derivation from g, shared by every governor that holds threads to a
 //! share of a CPU: the hold's (vm/hold.rs), a share its rate's, and Windows' priority
-//! governor's (`windows_thread`), one thread's half a CPU.
+//! governor's (`windows_thread`), one thread's half a CPU. `credited` is that governor's
+//! account of a share from one look to the next, pure, so that its bound is held on every host.
 
 use std::io;
 use std::num::NonZeroU64;
@@ -156,6 +157,38 @@ pub fn period(vcpus: u64, milli: NonZeroU64, g: Duration) -> Result<Duration, Ou
     u64::try_from(ns).map(Duration::from_nanos).map_err(|_| outgrown)
 }
 
+/// The most credit a share of `cpus` CPUs keeps over `period`, in nanoseconds, and the most it
+/// owes: what one look can charge it, the whole period of each CPU (every step of the period
+/// landing on its runs).
+#[cfg(any(windows, test))]
+pub fn most_credit(period: Duration, cpus: u64) -> i64 {
+    let period = i64::try_from(period.as_nanos()).unwrap_or(i64::MAX);
+    period.saturating_mul(i64::try_from(cpus).unwrap_or(i64::MAX))
+}
+
+/// A share's credit at a look, in nanoseconds: `credit`, once `passed` has gone by since the
+/// last look and its threads used `used` nanoseconds of CPU time on `cpus` CPUs, given half of
+/// each CPU's time ([`HALF_CPU`]), charged what they used, and kept to a period of each CPU
+/// ([`most_credit`]) either way. Above none, its threads may be raised; what a look charges
+/// past it is owed, and the halves of later looks pay it before they are raised again. Kept
+/// to none, a share raised on a few nanoseconds of credit was forgiven the rest of a look it
+/// ran past it each time it drained (D191, 2026-11-18). At D191's period of 2g, no look within
+/// a step of its period charges a share it found above none a period past its credit: three
+/// steps at most, of which it credits one and more. So the floor forgives no raised look's
+/// overrun, only what a thread at its host's priority runs past a period's debt.
+#[cfg(any(windows, test))]
+pub fn credited(credit: i64, passed: Duration, used: u64, cpus: u64, period: Duration) -> i64 {
+    let half =
+        passed.as_nanos().saturating_mul(u128::from(HALF_CPU.get())) / u128::from(crate::vm::MILLI_PER_CPU);
+    let half = i64::try_from(half).unwrap_or(i64::MAX);
+    let most = most_credit(period, cpus);
+    credit
+        .saturating_add(half.saturating_mul(i64::try_from(cpus).unwrap_or(i64::MAX)))
+        .saturating_sub(i64::try_from(used).unwrap_or(i64::MAX))
+        .min(most)
+        .max(most.saturating_neg())
+}
+
 static WOKE: OnceLock<()> = OnceLock::new();
 
 /// What a governor needs known before it holds anything, measured once a process on the
@@ -275,6 +308,73 @@ mod tests {
             })
         );
         assert!(period(1, milli(1), huge).is_err());
+    }
+
+    /// D191's bound over any stretch: a share of one CPU, raised while its credit is above none
+    /// and then running all of it, its looks each a little after its period and charged the
+    /// clock's whole steps (GetThreadTimes', PM M294), runs raised no more than half of the time
+    /// passed and two periods (its credit, and one look's run past it) at every look; it says
+    /// the share of its CPU it took. Its credit kept to none forgave what each draining look
+    /// charged past it: raised two looks in three past the first drain, 2/3 of its CPU, it
+    /// passed the bound at the ninth look.
+    #[test]
+    fn a_share_takes_half_its_cpu_and_two_periods_over_any_stretch() {
+        let step = Duration::from_micros(15_625);
+        let period = period(1, HALF_CPU, step).unwrap();
+        // The least a look can come after its period and be credited more than half of one:
+        // `credited` halves whole nanoseconds.
+        let late = Duration::from_nanos(2);
+        // To the first look at which a share whose overruns are forgiven passes the bound:
+        // charged two steps a look and credited one and a nanosecond, its full credit of two
+        // steps is gone at the third look, and it is raised two looks in three after it, 7
+        // periods by the ninth against 4.5 and two.
+        const LOOKS: usize = 9;
+        let (mut credit, mut raised) = (most_credit(period, 1), true);
+        let (mut at, mut ran) = (Duration::ZERO, Duration::ZERO);
+        // Each look: raised through it, what it had run raised by its end, and its bound then.
+        let mut looks = Vec::new();
+        for _ in 0..LOOKS {
+            let next = at + period + late;
+            // The clock's steps that fell in the look, each charged to the share where raised.
+            let steps = next.as_nanos() / step.as_nanos() - at.as_nanos() / step.as_nanos();
+            let used = if raised {
+                step * u32::try_from(steps).unwrap()
+            } else {
+                Duration::ZERO
+            };
+            credit = credited(
+                credit,
+                next - at,
+                u64::try_from(used.as_nanos()).unwrap(),
+                1,
+                period,
+            );
+            (at, ran) = (next, ran + used);
+            looks.push((raised, ran, at / 2 + period * 2));
+            raised = credit > 0;
+        }
+        let ways: String = looks
+            .iter()
+            .map(|(raised, ..)| if *raised { 'R' } else { 'L' })
+            .collect();
+        let drained = looks
+            .iter()
+            .position(|(raised, ..)| !raised)
+            .expect("never lowered");
+        let after = &looks[drained..];
+        let past = after.iter().filter(|(raised, ..)| *raised).count() as f64 / after.len() as f64;
+        let said = format!(
+            "raised {ran:?} of {at:?}, {:.3} of its CPU, {past:.3} past its first drain ({ways})",
+            ran.as_secs_f64() / at.as_secs_f64()
+        );
+        println!("{said}");
+        for (look, (_, ran, bound)) in looks.iter().enumerate() {
+            assert!(
+                ran <= bound,
+                "look {}: raised {ran:?}, past its bound {bound:?}; {said}",
+                look + 1
+            );
+        }
     }
 
     /// The cold wake is measured, not assumed: one shortest wait, its lateness the host's own

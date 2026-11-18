@@ -16019,6 +16019,30 @@ four 1-vCPU microVMs of a daemon held to one CPU (started under an affinity mask
 vCPUs across unheld microVMs; the host spinner's CPU time over 60 s, each vCPU's priority
 changes, n=20 a side, before and after, through `cpu-elastic/phases.py`.
 
+**2026-11-18, a share's overrun owed, not forgiven (#36; ROOT's ruling; CI 44245219858).** A
+credit, a thread's and a pool's, was kept to none (`credited`), and its threads raised while it
+was above none, however little. Each look comes later than its period, by its sleep's
+lateness and its own time, so a share that runs all of its CPU, charged the two clock steps
+of each 2g look and credited half of it, kept a few nanoseconds after its second raised look,
+was raised for a third, and was forgiven what that third ran past its credit: raised two
+looks in three, 2/3 of its CPU, past the bound below (half, and two periods more) by its
+ninth look. Now a credit falls below none by what a look charged past it, owed until the
+halves of later looks pay it, and its threads are raised only with credit left after its
+debt, kept to a period of each CPU either way (`granule::credited`, `granule::most_credit`,
+moved from `windows_thread` so that every host holds them to the bound). No value is chosen:
+the half is `HALF_CPU`, the period D191's 2g, and the floor the cap's own bound, a period of
+each CPU. No look within a step of its period charges a share it found above none a period
+past its credit (three steps at most, of which it credits one and more), so the floor
+forgives no raised look's overrun: only a lowered thread's run at its host's priority past a
+period's debt, which re-raises such a thread at most a look later than before. Held on every
+host: granule's `a_share_takes_half_its_cpu_and_two_periods_over_any_stretch` (looks 2 ns
+after a 2g period, the least `credited`'s halving keeps, each charged its clock steps; it says
+the share it took: 0.500 of its CPU past its first drain, where forgiven 0.667 and past the
+bound at the ninth look). The governor's Windows tests keep their arithmetic: none of their
+credits falls below none. Red: lanes/redgreen/own-35e-governor.patch (the credit kept to none
+again). Owed, ROOT's: that test on every host, and the governor's Windows tests on
+windows-2022, windows-2025 and jupiter.
+
 **The priority governor's period and credit (platform-11, 2026-11-14).** `PERIOD` (100 ms,
 the hold's old period) is gone: each look's period is D191's for one thread held to half a
 CPU (`HALF`, 500 milli-CPU: the most a fair scheduler gives a thread that contends for its CPU
