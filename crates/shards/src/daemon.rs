@@ -16127,7 +16127,8 @@ mod tests {
     /// Run `id` started on `vm`, on a daemon thread, as a visit's is: handed its VM, the time
     /// taken before its RUN is sent, then waited for until its VM holds (`await_holding`),
     /// then followed. The thread returns what the wait for its hold found. Unix's, as its
-    /// test's busy stand-in is.
+    /// test's busy stand-in is. With its VM's end of the run's socket, which only this test
+    /// holds ([`holding_on`] gives one its VM holds).
     #[cfg(unix)]
     fn holding<'s>(
         t: &In<'s, '_, Real>,
@@ -16135,6 +16136,20 @@ mod tests {
         vm: Arc<shards_ipc::Child>,
     ) -> (std::thread::ScopedJoinHandle<'s, Result<(), String>>, UnixStream) {
         let (ours, theirs) = UnixStream::pair().unwrap();
+        (holding_on(t, id, vm, ours), theirs)
+    }
+
+    /// [`holding`], the daemon's end of its run's socket `ours`, whose other end its caller
+    /// gave `vm` as a VM process holds its own ([`running_stand_in`]): so that `vm`'s end,
+    /// whatever ends it, closes it, and the daemon hears the run's end there, as a VM's
+    /// (`take_messages`).
+    #[cfg(unix)]
+    fn holding_on<'s>(
+        t: &In<'s, '_, Real>,
+        id: &str,
+        vm: Arc<shards_ipc::Child>,
+        ours: UnixStream,
+    ) -> std::thread::ScopedJoinHandle<'s, Result<(), String>> {
         lock(&t.t.vms).push(vm.clone());
         let ready = Ready {
             vm,
@@ -16189,7 +16204,34 @@ mod tests {
             daemon.follow(threads, id.clone(), inbox);
             held
         });
-        (run, theirs)
+        run
+    }
+
+    /// A busy stand-in for a VM that runs, as a warm VM is before a run is handed to it: it
+    /// holds `run`, its end of its run's socket, at descriptor 3, as a VM process holds its
+    /// own, and spins once its own code runs, which it says first with a byte at descriptor 4,
+    /// waited for here. A macOS launch is its host's work before that code (PM M166: amfid,
+    /// syspolicyd), through which it runs nothing; a stand-in handed its run then was still to
+    /// its handoff's judge, refused, killed, and followed to the end of its test's step (CI
+    /// 44138098584's shape). A stand-in that ends before it says it runs fails the wait.
+    #[cfg(unix)]
+    fn running_stand_in(run: &UnixStream) -> Arc<shards_ipc::Child> {
+        let (mut runs, said) = std::io::pipe().unwrap();
+        let vm = shards_ipc::spawn(
+            Path::new("/bin/sh"),
+            &[
+                OsStr::new("-c"),
+                OsStr::new("printf r >&4; exec 4>&-; while :; do :; done"),
+            ],
+            &[(run.as_fd(), 3), (said.as_fd(), 4)],
+            false,
+        )
+        .unwrap();
+        drop(said);
+        let mut byte = [0u8; 1];
+        let got = std::io::Read::read(&mut runs, &mut byte).unwrap();
+        assert_eq!(got, 1, "the stand-in ended before it said it runs");
+        Arc::new(vm)
     }
 
     /// Waits until run `id` is registered (`register`): its VM's TAKEN read, its handoff's
@@ -16208,31 +16250,27 @@ mod tests {
     /// whole such window, said so, with how long. It was refused at READY_TIMEOUT's minute,
     /// judged each READY_STALL's 10 s, picked (ROOT's (3), R03).
     ///
-    /// Both stand-ins run until their runs are registered. The handoff before is judged on the
-    /// stand-in's process too (`Answers::take`, which the first TAKEN teaches), while this
-    /// thread says its TAKEN: a sleep there was refused once this thread was slower than that
-    /// judge allows, killed, and the wait for its hold then followed it unreaped, its end
-    /// under way, its connection this test's, to the step's limit (CI 44138098584, x86_64
-    /// musl, 58 minutes).
+    /// Each stand-in is a VM that runs, as a warm VM is before its run is handed to it
+    /// ([`running_stand_in`]): it says so once its own code runs, past a macOS launch, and
+    /// holds its run's socket as a VM process holds its own. The handoff is judged on its
+    /// process (`Answers::take`, which the first TAKEN teaches), while this thread says its
+    /// TAKEN: a stand-in still in its launch, or a sleep, was refused there and killed, and
+    /// the wait for its hold then followed it unreaped, its end under way, its connection
+    /// this test's, to the step's limit (CI 44138098584, x86_64 musl, 58 minutes; this Mac
+    /// 9 of 100 at b6301e2f1a, 9 of 60 at 1799412f9b, CI's macOS job at b6301e2f1a). The
+    /// second stand-in's socket is its alone once its run is registered, this thread letting
+    /// go of its copy: whatever ends it, its run's end is heard as a VM's, and a wait for its
+    /// hold that outlives it fails in its words. Its end is the test's last act: SIGKILL, its
+    /// run ended by its socket's close, as a VM's is.
     #[cfg(unix)]
     #[test]
     fn a_visits_vm_is_waited_for_while_it_starts_and_refused_once_still_past_the_slowest_hold() {
         let late = Duration::from_millis(1500);
         let t = Test::new("holding");
         t.run(|t| {
-            let busy = || {
-                Arc::new(
-                    shards_ipc::spawn(
-                        Path::new("/bin/sh"),
-                        &[OsStr::new("-c"), OsStr::new("while :; do :; done")],
-                        &[],
-                        false,
-                    )
-                    .unwrap(),
-                )
-            };
             let id = t.create("slow");
-            let (run, vm) = holding(t, &id, busy());
+            let (ours, vm) = UnixStream::pair().unwrap();
+            let run = holding_on(t, &id, running_stand_in(&vm), ours);
             assert_eq!(heard(&vm).0, kind::RUN);
             say(&vm, kind::TAKEN, &[]);
             std::thread::sleep(late);
@@ -16246,21 +16284,23 @@ mod tests {
             until_ended(&t.t.daemon, &id);
 
             let id = t.create("still");
-            let still = busy();
+            let (ours, vm) = UnixStream::pair().unwrap();
+            let still = running_stand_in(&vm);
             let began = Instant::now();
-            let (run, vm) = holding(t, &id, still.clone());
+            let run = holding_on(t, &id, still.clone(), ours);
             assert_eq!(heard(&vm).0, kind::RUN);
             say(&vm, kind::TAKEN, &[]);
             until_registered(&t.t.daemon, &id);
+            drop(vm);
             still.kill(shards_ipc::signal::SIGSTOP).unwrap();
             let refused = joined(run).unwrap_err();
-            assert!(began.elapsed() >= late, "{:?}", began.elapsed());
             assert!(
                 refused.contains("ran nothing of its start for")
                     && refused.contains("past the slowest hold seen"),
                 "{refused}"
             );
-            say(&vm, kind::DONE, &[0]);
+            assert!(began.elapsed() >= late, "{:?}", began.elapsed());
+            still.kill(shards_ipc::signal::SIGKILL).unwrap();
             until_ended(&t.t.daemon, &id);
         });
     }
