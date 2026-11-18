@@ -950,8 +950,8 @@ fn clock_in_step(cpus: usize, when: &str) -> Result<(), String> {
 /// record is written exactly once.
 ///
 /// Its checks done, it says `storm checked`, and gives its verdict once the host has
-/// connected to port 1235 and sent a byte: the host stops streaming first, so every round
-/// ends with the guest alive.
+/// connected to port 1235 and sent its word ([`host_word`]): the host stops streaming first,
+/// so every round ends with the guest alive. Any other stream to 1235 fails it, naming itself.
 fn storm() -> Result<(), String> {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -1111,6 +1111,18 @@ fn storm() -> Result<(), String> {
     let listener = vsock_listen(ECHO_PORT)?;
     thread::spawn(move || serve_echo(&listener));
     let done = vsock_listen(DONE_PORT)?;
+    // Each stream that comes to port 1235 is taken as it comes ([`host_word`]): the host's
+    // word lets the storm give its verdict, and any other stream fails it at once, naming
+    // itself (ROOT, 2026-11-18: on jupiter a stream the host never opened as its word let the
+    // verdict come while the host still streamed through the echo).
+    let (word, heard) = std::sync::mpsc::channel::<Result<(), String>>();
+    thread::spawn(move || {
+        let said = host_word(&done);
+        if let Err(e) = &said {
+            let _ = report(format_args!("SHARDS-TEST FAIL {e}"));
+        }
+        let _ = word.send(said);
+    });
     let _ = writeln!(io::stdout(), "SHARDS-TEST READY");
 
     // The snapshot lands in the thick of it: after the storm is up and the host's stream is.
@@ -1271,14 +1283,69 @@ fn storm() -> Result<(), String> {
     // host streamed ended with the guest alive: its main thread watched no more.
     beats.store(u64::MAX, Ordering::Relaxed);
     report(format_args!("SHARDS-TEST INFO storm checked"))?;
-    // The host's side of the connection is up only once it has read its OK, after this
-    // side's accept: its byte, or its close, says so. The host connects once the round it
-    // streams ends, and gives up on its connection at its own quiet.
-    let mut host = vsock_accept(&done)?;
-    let mut byte = [0u8; 1];
-    std::io::Read::read(&mut host, &mut byte)
-        .map(drop)
-        .map_err(|e| format!("waiting for the host's word: {e}"))
+    // The host's word ([`host_word`]): it connects once the round it streams ends.
+    heard
+        .recv()
+        .map_err(|_| "waiting for the host's word: its taker ended".to_string())?
+}
+
+/// What the host writes to port 1235 once it has stopped streaming through the storm's echo
+/// (snapshot.rs `DONE_WORD`, the same bytes).
+const DONE_WORD: &[u8] = b"SHARDS-DONE\n";
+
+/// The first stream that comes to `done`, the storm's port 1235: the host's word
+/// ([`DONE_WORD`]), or a failure naming the stream that came instead, by the host port it came
+/// from, its first bytes and when it came on this guest's clock (CLOCK_MONOTONIC). A stream
+/// of the host's echo rounds, or any the host did not open as its word, is a failure of the
+/// path that brought it here, never the host's word.
+fn host_word(done: &std::fs::File) -> Result<(), String> {
+    let (mut stream, from) = vsock_accept_from(done)?;
+    let came = monotonic_ns();
+    let mut first = Vec::new();
+    let mut buf = [0u8; 64];
+    while first.len() < DONE_WORD.len() {
+        match std::io::Read::read(&mut stream, &mut buf) {
+            Ok(0) => break,
+            Ok(n) => first.extend_from_slice(buf.get(..n).unwrap_or_default()),
+            Err(e) => {
+                return Err(format!(
+                    "waiting for the host's word on port {DONE_PORT}, from host port {from}: {e}"
+                ));
+            }
+        }
+    }
+    if first.starts_with(DONE_WORD) {
+        return Ok(());
+    }
+    Err(format!(
+        "port {DONE_PORT} took a stream that is not the host's word: from host port {from}, its first bytes {:?}, at {came} ns of this guest's CLOCK_MONOTONIC",
+        String::from_utf8_lossy(&first)
+    ))
+}
+
+/// [`vsock_accept`], with the port of the peer whose stream it is (accept(2)'s address, a
+/// sockaddr_vm: the host's port for a stream the host opened).
+fn vsock_accept_from(listener: &std::fs::File) -> Result<(std::fs::File, u32), String> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+    // SAFETY: plain data, for accept4 to fill.
+    let mut peer: libc::sockaddr_vm = unsafe { std::mem::zeroed() };
+    let mut len = libc::socklen_t::try_from(std::mem::size_of::<libc::sockaddr_vm>())
+        .map_err(|e| format!("a sockaddr_vm's length: {e}"))?;
+    // SAFETY: accept(2) on our listening socket, its peer's address into a sockaddr_vm of
+    // `len` bytes.
+    let fd = unsafe {
+        libc::accept4(
+            listener.as_raw_fd(),
+            (&raw mut peer).cast(),
+            &raw mut len,
+            libc::SOCK_CLOEXEC,
+        )
+    };
+    if fd < 0 {
+        return Err(format!("vsock accept: {}", io::Error::last_os_error()));
+    }
+    // SAFETY: a fresh descriptor nothing else owns.
+    Ok((unsafe { std::fs::File::from_raw_fd(fd) }, peer.svm_port))
 }
 
 /// Watches the storm's main thread from its snapshot on, by the count it adds to at each

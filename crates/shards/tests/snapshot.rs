@@ -458,6 +458,10 @@ mod storm {
     const ECHO_PORT: u32 = 1234;
     /// Where the host tells a storm it has stopped streaming.
     const DONE_PORT: u32 = 1235;
+    /// What the host writes to `DONE_PORT` once it has stopped streaming: the guest's verdict
+    /// waits for these bytes alone, and any other stream there fails it, naming itself
+    /// (testguest linux.rs `DONE_WORD`, `host_word`).
+    const DONE_WORD: &[u8] = b"SHARDS-DONE\n";
 
     /// The memory of a storm of `cpus` vCPUs, in MiB: 256 for 64 vCPUs or fewer, and as much
     /// a vCPU past that. What binds is the kernel's thread limit, an eighth of the memory free
@@ -717,7 +721,7 @@ mod storm {
         let checked = start.elapsed();
         stop.store(true, Ordering::Relaxed);
         let rounds = streamer.join().unwrap();
-        assert!(line.contains("storm checked"), "{}", vm.seen.join("\n"));
+        assert!(line.contains("storm checked"), "{}", said_with_vsock(vm));
         // Connected, then a byte: the guest waits for it, so it lives until the host has
         // read its OK. Past it the storm's workers have stopped and its vCPUs wait, whatever
         // their count: its end is waited on with its VM process's CPU its progress
@@ -725,10 +729,10 @@ mod storm {
         // are work, not a spin (HVF at e6fb55548: a restored 2-vCPU storm's end refused
         // 93 to 131 ms in, past a W* of 16.5 ms, its CPU read as its liveness alone).
         let told = common::vsock_connect(sock, DONE_PORT)
-            .and_then(|mut s| s.write_all(b"\n").map_err(|e| e.to_string()));
+            .and_then(|mut s| s.write_all(DONE_WORD).map_err(|e| e.to_string()));
         if let Err(e) = told {
             vm.wait_exit_streamed(None);
-            panic!("telling the guest it may finish: {e}\n{}", vm.seen.join("\n"));
+            panic!("telling the guest it may finish: {e}\n{}", said_with_vsock(vm));
         }
         (rounds, checked)
     }
@@ -744,6 +748,33 @@ mod storm {
             .and_then(|n| n.parse().ok())
             .unwrap_or_else(|| panic!("{what}: no clock check {when}:\n{said}"));
         assert!(reads >= 100, "{what}: {reads} clock reads {when}:\n{said}");
+    }
+
+    /// A storm's VM process logs at info, so that its vsock muxer says each host connection's
+    /// ports as it takes it ([`said_with_vsock`]); its wait counts any new line as progress,
+    /// and a connect line comes only as the host begins a round, so none masks a stalled one.
+    const VSOCK_LOGGED: &[(&str, &str)] = &[("SHARDS_LOG", "info")];
+
+    /// What `vm`'s guest said, and below it its VM process's own `vsock:` lines, every one it
+    /// printed whether read or not: a failure then names the stream its muxer took and the
+    /// port it gave it (ROOT, 2026-11-18), which the harness, keeping no failing test's
+    /// directory, would otherwise lose.
+    fn said_with_vsock(vm: &Vm) -> String {
+        let vsock: Vec<String> = vm
+            .log()
+            .lock()
+            .map(|log| {
+                log.iter()
+                    .filter(|line| line.contains("vsock:"))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        format!(
+            "{}\n--- its VM process's vsock lines\n{}",
+            vm.seen.join("\n"),
+            vsock.join("\n")
+        )
     }
 
     /// Every round came back whole, but for connections refused before the guest listened,
@@ -876,7 +907,8 @@ mod storm {
             let stop = Arc::new(AtomicBool::new(false));
             let carried = Arc::new(AtomicU64::new(0));
             let start = Instant::now();
-            let mut original = Vm::spawn(&storm_args(&s, cpus, &sock, "stop")).sized(size(cpus));
+            let mut original =
+                Vm::spawn_env(&storm_args(&s, cpus, &sock, "stop"), VSOCK_LOGGED).sized(size(cpus));
             let streamer = stream(
                 sock.clone(),
                 size(cpus),
@@ -890,7 +922,7 @@ mod storm {
             // Its stream breaks where it stopped, at the snapshot.
             stop.store(true, Ordering::Relaxed);
             drop(streamer.join().unwrap());
-            let said = original.seen.join("\n");
+            let said = said_with_vsock(&original);
             assert_eq!(code, Some(0), "{cpus} vCPUs: {said}");
             assert!(!said.contains("SHARDS-TEST FAIL"), "{cpus} vCPUs: {said}");
 
@@ -902,12 +934,15 @@ mod storm {
                 let stop = Arc::new(AtomicBool::new(false));
                 let carried = Arc::new(AtomicU64::new(0));
                 let start = Instant::now();
-                let mut copy = Vm::spawn(&[
-                    "restore".as_ref(),
-                    s.snapshot().as_os_str(),
-                    "--vsock".as_ref(),
-                    sock.as_os_str(),
-                ])
+                let mut copy = Vm::spawn_env(
+                    &[
+                        "restore".as_ref(),
+                        s.snapshot().as_os_str(),
+                        "--vsock".as_ref(),
+                        sock.as_os_str(),
+                    ],
+                    VSOCK_LOGGED,
+                )
                 .sized(size(cpus));
                 let streamer = stream(
                     sock.clone(),
@@ -921,7 +956,7 @@ mod storm {
                 let (rounds, checked) = storm_done(&mut copy, &sock, &stop, streamer, &carried, start);
                 let code = copy.wait_exit_following();
                 let what = format!("{cpus} vCPUs, restore {i} (storm checked {checked:?} in)");
-                let said = copy.seen.join("\n");
+                let said = said_with_vsock(&copy);
                 assert_eq!(code, Some(0), "{what}: {said}");
                 assert!(said.contains("SHARDS-TEST PASS"), "{what}: {said}");
                 assert!(said.contains("generation=1"), "{what}: {said}");
@@ -949,7 +984,8 @@ mod storm {
             let stop = Arc::new(AtomicBool::new(false));
             let carried = Arc::new(AtomicU64::new(0));
             let start = Instant::now();
-            let mut vm = Vm::spawn(&storm_args(&s, cpus, &sock, "resume")).sized(size(cpus));
+            let mut vm =
+                Vm::spawn_env(&storm_args(&s, cpus, &sock, "resume"), VSOCK_LOGGED).sized(size(cpus));
             let streamer = stream(
                 sock.clone(),
                 size(cpus),
@@ -961,7 +997,7 @@ mod storm {
             );
             let (rounds, checked) = storm_done(&mut vm, &sock, &stop, streamer, &carried, start);
             let code = vm.wait_exit_following();
-            let said = vm.seen.join("\n");
+            let said = said_with_vsock(&vm);
             assert_eq!(code, Some(0), "{cpus} vCPUs: {said}");
             assert!(said.contains("SHARDS-TEST PASS"), "{cpus} vCPUs: {said}");
             assert!(said.contains("generation=0"), "{cpus} vCPUs: {said}");
