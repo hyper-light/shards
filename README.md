@@ -65,18 +65,45 @@ took 7 ms, most of it process start and exit. The saved microVM runs the test pr
 
 Download `shards` for your machine from the
 [latest release](https://github.com/hyper-light/shards/releases/latest), and check it
-against the release's `SHA256SUMS` (`sha256sum -c` on Linux):
+against the release's `SHA256SUMS`.
+
+macOS (Apple silicon):
 
 ```sh
-os=$(uname -s | tr A-Z a-z); arch=$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')
 base=https://github.com/hyper-light/shards/releases/latest/download
-curl -fL -O $base/shards-$os-$arch -O $base/SHA256SUMS
-grep " shards-$os-$arch\$" SHA256SUMS | shasum -a 256 -c
-chmod +x shards-$os-$arch && mv shards-$os-$arch ~/.local/bin/shards
+curl -fL -O $base/shards-darwin-arm64 -O $base/SHA256SUMS
+grep ' shards-darwin-arm64$' SHA256SUMS | shasum -a 256 -c
+chmod +x shards-darwin-arm64 && mkdir -p ~/.local/bin && mv shards-darwin-arm64 ~/.local/bin/shards
 ```
 
-On Linux, `shards-linux-amd64-musl` and `shards-linux-arm64-musl` are static, for any
-distribution; on Windows, download `shards-windows-amd64.exe` or `shards-windows-arm64.exe`.
+Linux (x86_64 or arm64; on Alpine, `apk add curl` first):
+
+```sh
+file=shards-linux-$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')
+[ -e /lib/ld-musl-$(uname -m).so.1 ] && file=$file-musl   # musl systems, such as Alpine
+base=https://github.com/hyper-light/shards/releases/latest/download
+curl -fL -O $base/$file -O $base/SHA256SUMS
+grep " $file\$" SHA256SUMS | sha256sum -c
+chmod +x $file && mkdir -p ~/.local/bin && mv $file ~/.local/bin/shards
+```
+
+The `-musl` builds are static and run on any distribution.
+
+Windows (x64 or ARM64, in PowerShell):
+
+```powershell
+$arch = if ([Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq 'Arm64') { 'arm64' } else { 'amd64' }
+$file = "shards-windows-$arch.exe"
+$base = 'https://github.com/hyper-light/shards/releases/latest/download'
+Invoke-WebRequest "$base/$file" -OutFile $file -UseBasicParsing
+Invoke-WebRequest "$base/SHA256SUMS" -OutFile SHA256SUMS -UseBasicParsing
+$want = (Select-String -Path SHA256SUMS -Pattern " $file$").Line.Split(' ')[0]
+if ((Get-FileHash $file -Algorithm SHA256).Hash -ne $want) { throw "$file does not match SHA256SUMS" }
+Rename-Item $file shards.exe
+```
+
+Then move `shards.exe` to a folder on your `PATH`.
+
 Or build it from source with
 Rust 1.98 (pinned by the toolchain file):
 
