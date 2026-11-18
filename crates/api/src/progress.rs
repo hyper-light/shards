@@ -4447,7 +4447,11 @@ mod tests {
         // SAFETY: waitid(2) of this test's own child into `info`; WNOWAIT leaves it unreaped.
         let waited = unsafe { libc::waitid(libc::P_PID, pid, &raw mut info, libc::WEXITED | libc::WNOWAIT) };
         assert_eq!(waited, 0);
-        let mut followed = Followed { pid, started };
+        let mut followed = Followed {
+            pid,
+            started,
+            declarations: Declarations::installed(),
+        };
         let look = followed.look().unwrap().unwrap();
         assert!(look.ending, "a zombie's look says its end is under way");
         // Linux tells its exit (waitid, its state `Z`) before its last switch from its CPU,

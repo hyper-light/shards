@@ -242,7 +242,7 @@ fn a_party_in_a_long_durable_write_is_held_while_its_volume_works() {
         writer.wait().unwrap();
         judged
     }
-    let home = TempDir::new("durable-held").unwrap();
+    let home = TempDir::new("durable-held");
     let round = |bytes: u64, forget: bool| round(&home, bytes, forget);
     round(0, true).unwrap();
     round(1 << 30, false).unwrap();
