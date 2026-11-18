@@ -707,12 +707,19 @@ mod tests {
             command.env("SHARDS_DURABLE_TEST_AT", "1");
         }
         let mut child = command.spawn().unwrap();
-        let mut lines = std::io::BufReader::new(child.stdout.take().unwrap()).lines();
-        let thread: u64 = lines
-            .by_ref()
-            .map(|l| l.unwrap())
-            .find_map(|l| l.strip_prefix("declared ").map(|t| t.parse().unwrap()))
-            .expect("the child declared nothing");
+        let mut out = std::io::BufReader::new(child.stdout.take().unwrap());
+        let mut line = String::new();
+        let thread = loop {
+            line.clear();
+            assert_ne!(out.read_line(&mut line).unwrap(), 0, "the child declared nothing");
+            if let Some(thread) = line.trim_end().strip_prefix("declared ") {
+                break thread.parse().unwrap();
+            }
+        };
+        // Its stdout stays open until it is waited for: libtest reports the child's test on
+        // stdout after it ends, and a pipe nobody reads fails that write with EPIPE, which
+        // fails the child.
+        child.stdout = Some(out.into_inner());
         (child, thread)
     }
 
@@ -750,23 +757,5 @@ mod tests {
         child.stdin.take().unwrap().write_all(b"\n").unwrap();
         assert!(child.wait().unwrap().success());
         assert!(made_in(&home.path().join("not-made")).unwrap().is_none());
-    }
-
-    /// What a file system without F_FULLFSYNC holds is made durable with fsync instead, as
-    /// SQLite's `full_fsync` falls back: /dev/null refuses F_FULLFSYNC and takes fsync, as an
-    /// SMB share does, where std's `sync_all` fails (review 1.13); and a directory's names.
-    /// One test for the three copies of this fallback that vmm, ipc and image had.
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn a_file_without_full_fsync_is_synced_still() {
-        use std::os::fd::AsRawFd as _;
-        let null = OpenOptions::new().write(true).open("/dev/null").unwrap();
-        // SAFETY: fcntl(2) of a descriptor this test holds.
-        let full = unsafe { libc::fcntl(null.as_raw_fd(), libc::F_FULLFSYNC) };
-        assert_eq!(full, -1, "/dev/null took F_FULLFSYNC");
-        crate::data(&null).unwrap();
-        crate::all(&null).unwrap();
-        let held = TempDir::new("sync").unwrap();
-        crate::entries(File::open(held.path()).unwrap()).unwrap();
     }
 }

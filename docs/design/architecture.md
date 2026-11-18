@@ -44532,8 +44532,8 @@ stdout*: Docker's byte-exact texts. *The daemon's IPC*: its children's alone.
 
 **Decided.**
 - *One helper* (crates/durable, `shards-durable`, on libc and windows-sys alone): `data`
-  (Linux fdatasync, macOS `F_FULLFSYNC` else fsync as SQLite's `full_fsync` falls back,
-  Windows FlushFileBuffers), `all` (fsync where Linux's `data` is fdatasync), `entries` (a
+  (Linux fdatasync, macOS `F_FULLFSYNC`, and fsync only where the file system does not
+  implement it (below), Windows FlushFileBuffers), `all` (fsync where Linux's `data` is fdatasync), `entries` (a
   directory's names; on Windows a handle that may write, which vmm's `sync_entries` reopens),
   `view` (msync `MS_SYNC`, FlushViewOfFile), `mapped` (vmm's `sync_mapped`) and `ahead`
   (macOS's write-back thread). Commit 3 makes it the only way to sync: clippy's
@@ -44547,6 +44547,36 @@ stdout*: Docker's byte-exact texts. *The daemon's IPC*: its children's alone.
   system lacks it, as every other); vmm's `sync_entries` and `sync_dir` stay, the handle
   Windows reopens to write (FlushFileBuffers asks GENERIC_WRITE) before `entries`. The
   guest's syncs (init, testguest) go through it too, declaring nothing.
+- *Where `F_FULLFSYNC` is not implemented* (amended 2026-11-18, own-35h; ROOT's ruling: a
+  real I/O error is never retried as fsync). fsync is made in its place only where
+  `F_FULLFSYNC` was refused with `ENOTSUP`, `ENOTTY` or `EINVAL` (sys.rs
+  `lacks_full_fsync`). These are the values XNU itself reads as "the underlying filesystem
+  doesn't support it" when it retries an `F_BARRIERFSYNC` as `F_FULLFSYNC`
+  (bsd/kern/kern_descrip.c:3978-3988, xnu-12377.101.15, the kernel this Mac runs). `ENOTSUP`
+  is what a file system without an ioctl of its own answers: VNOP_IOCTL (kpi_vfs.c:4139)
+  calls the file system's default routine for every operation it left unfilled
+  (vfs_init.c:236-240; a kext's, kpi_vfs.c:1155-1159), conventionally vn_default_error
+  (vfs_init.c:136-139), or err_ioctl (vfs_support.c:279-282). `ENOTTY` and `EINVAL` are what a
+  file system's own ioctl answers to a command it does not know. Every other errno is the
+  write's error, its errno kept (the fs server hands it to its guest): a writeback that failed
+  (`EIO`) may have dropped the pages it could not write, so an fsync after it can succeed and
+  hide the loss. A descriptor that is no vnode's is refused with `EBADF` before any file
+  system sees it (kern_descrip.c:3964-3966). `EINTR` makes the call again, as std
+  (library/std/src/sys/fs/unix.rs:1413-1428, Rust 1.98.1) and Go do for their syncs, which
+  the converted `sync_all` and `sync_data` sites had. Live on this Mac (aarch64,
+  xnu-12377.101.15): devfs's directories refuse it with `ENOTSUP` (err_ioctl,
+  devfs_vnops.c:1711) and take fsync, so `entries` of `/dev` is made with fsync; `/dev/null`'s
+  driver refuses it with `ENODEV` (mmioctl, bsd/dev/mem.c:150) and takes fsync, so its `data`
+  fails with `ENODEV`; a pipe and a socket get `EBADF`. *Alternatives*: SQLite's `full_fsync`
+  (os_unix.c:3817-3829, 3.54.1), which this crate followed before, makes fsync after any
+  failure, `EIO` among them. Go's `Fsync` (src/internal/poll/fd_fsync_darwin.go:21-31,
+  go1.27.4) does so after `ENOTSUP` alone (an SMB mount, go.dev/issue/64215), so every durable
+  write would fail on a file system whose own ioctl refuses an unknown command with `ENOTTY`
+  or `EINVAL`, though fsync is that file system's durable write. std's `sync_all` and
+  `sync_data` never fall back, and fail on an SMB share. One difference from XNU's own use of
+  the three values: XNU retries with a stronger call, this with a weaker one, so a file system
+  that implements `F_FULLFSYNC` but fails it with `ENOTTY` or `EINVAL` would be written with
+  fsync. Unchecked: APFS's source is not published, and no other file system's was read here.
 - *Declared*, where the process installed its home's slot file (`install`; a sandboxed VM
   process given it by its spawner): `<home>/durable-v1`, a file of 64-byte slots (the least
   power of two its five words fit, so that slots tile every granule) mapped shared by every
@@ -44583,16 +44613,27 @@ stdout*: Docker's byte-exact texts. *The daemon's IPC*: its children's alone.
 - *Outside it*: the guest's syncs (init's), which no host judge follows, their host cost its
   VMM's declared flush; a tool writing outside any home declares nothing.
 
-**Verified** (light tests, none run here; ROOT's): shards-durable `a_write_is_declared_while_it_goes_on`,
+**Verified** (light tests; ROOT's, but for own-35h's runs named below): shards-durable `a_write_is_declared_while_it_goes_on`,
 `claims_past_a_granule_grow_the_file_by_one`, `an_ended_processs_slot_is_taken_back_before_the_file_grows`,
 `a_write_another_process_declares_is_read` (the test binary as a child declaring),
 `a_recorded_home_is_opened_at_its_first_declaration` (a child that recorded its home opens
-its slot file at its first declaration, not before; a home not made declares nothing) and,
-on macOS, `a_file_without_full_fsync_is_synced_still` (the one test of the fallback vmm, ipc
-and image each had); D215's tests above. scripts/lint's `F_FULLFSYNC` check: clean on the
+its slot file at its first declaration, not before; a home not made declares nothing),
+`only_a_file_system_without_full_fsync_falls_back` (every OS: the three values fall back;
+`ENOENT`, `EINTR`, `EIO`, `ENXIO`, `EBADF`, `ENODEV`, `ENOSPC`, `EROFS`, `EDQUOT`, the
+kernel's `EOPNOTSUPP` (102) and none fail) and, on macOS, `darwins_errno_values_are_libcs`
+and `a_full_fsync_refused_falls_back_only_where_unimplemented` (live: `/dev` with fsync,
+`/dev/null` failed with `ENODEV`, an APFS directory by `F_FULLFSYNC`; it replaces
+`a_file_without_full_fsync_is_synced_still`, whose `/dev/null` passed only through the
+fallback after any failure); D215's tests above. Run by own-35h on aarch64-apple-darwin:
+`cargo test --locked -p shards-durable`, 8 passed, 1 ignored (the child), after the child's
+stdout was held open until it is waited for (libtest's report to a closed pipe failed the
+child with `EPIPE`, so the three child tests had failed on every OS); clippy `-D warnings` on
+the seven targets, clean. Mutations: the decision falling back on any errno fails both
+F_FULLFSYNC tests, and the call site ignoring it fails the live one. scripts/lint's `F_FULLFSYNC` check: clean on the
 tree, and an untracked file naming it refused (commit 3's lane log). **Owed:** clippy on
-the seven targets, each entry resolving (or, absent there, allowed) and no raw sync left
-(ROOT's); a VM process's install on each OS (macOS's grant, Windows' AppContainer handle,
+the seven targets for the whole workspace, each entry resolving (or, absent there, allowed)
+and no raw sync left (ROOT's); `mapped`'s msync-then-fsync path live on a file system
+without `F_FULLFSYNC` that can be mapped (an SMB share), which this Mac's devfs cannot be; a VM process's install on each OS (macOS's grant, Windows' AppContainer handle,
 Linux before Landlock), live; R14 per durable write (one volume call, one clock read, two
 stores; a claim once a thread; the first write's open of the slot file) and per look (a
 scan of the slots; a declared volume's counters, one read); and the build writer (Linux,

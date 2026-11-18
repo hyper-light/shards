@@ -11,11 +11,38 @@ pub(crate) use unix::*;
 #[cfg(windows)]
 pub(crate) use windows::*;
 
+/// Darwin's `EINVAL`, `ENOTTY` and `ENOTSUP` (XNU bsd/sys/errno.h:114, :117, :146), named here
+/// rather than taken from libc so that [`lacks_full_fsync`] is built and tested on every OS;
+/// its macOS test holds them to libc's.
+#[cfg(any(target_os = "macos", test))]
+const DARWIN_EINVAL: i32 = 22;
+#[cfg(any(target_os = "macos", test))]
+const DARWIN_ENOTTY: i32 = 25;
+#[cfg(any(target_os = "macos", test))]
+const DARWIN_ENOTSUP: i32 = 45;
+
+/// Whether an `F_FULLFSYNC` refused with `errno` was refused because its file's file system
+/// does not implement it, so that fsync(2), that file system's own durable write, is made in
+/// its place. These are the three values XNU itself takes to mean "the underlying filesystem
+/// doesn't support it" when it retries an `F_BARRIERFSYNC` as `F_FULLFSYNC`
+/// (bsd/kern/kern_descrip.c:3978-3988, xnu-12377.101.15). `ENOTSUP` is what a file system
+/// without an ioctl of its own answers: VNOP_IOCTL (kpi_vfs.c:4139) calls the file system's
+/// default routine for every operation it left unfilled (vfs_init.c:236-240; a kext's,
+/// kpi_vfs.c:1155-1159), conventionally vn_default_error (vfs_init.c:136-139), or err_ioctl
+/// (vfs_support.c:279-282). `ENOTTY` and `EINVAL` are what a file system's own ioctl answers
+/// to a command it does not know. Any other errno is the write's failure and is never retried
+/// as fsync: a writeback that failed (`EIO`) may have dropped the pages it could not write,
+/// and an fsync after it would find nothing left to write and report success.
+#[cfg(any(target_os = "macos", test))]
+fn lacks_full_fsync(errno: i32) -> bool {
+    matches!(errno, DARWIN_ENOTSUP | DARWIN_ENOTTY | DARWIN_EINVAL)
+}
+
 #[cfg(unix)]
 mod unix {
     use std::fs::File;
     use std::io;
-    use std::os::fd::{AsFd, AsRawFd as _, RawFd};
+    use std::os::fd::{AsRawFd as _, RawFd};
     use std::ptr::NonNull;
 
     use crate::Target;
@@ -29,16 +56,32 @@ mod unix {
         }
     }
 
-    /// `F_FULLFSYNC`, the drive's cache flushed with the file's data (fcntl(2)), else fsync(2)
-    /// where its file system lacks it (`ENOTSUP`, `EINVAL`), as SQLite falls back.
-    #[cfg(target_os = "macos")]
-    fn full(fd: RawFd) -> io::Result<()> {
-        // SAFETY: fcntl(2) of a descriptor the caller holds.
-        if unsafe { libc::fcntl(fd, libc::F_FULLFSYNC) } == 0 {
-            return Ok(());
+    /// `call`, made again while a signal interrupts it (`EINTR`), as std's own syncs are
+    /// (library/std/src/sys/fs/unix.rs:1413-1428, Rust 1.98.1); its error otherwise.
+    fn retried(mut call: impl FnMut() -> libc::c_int) -> io::Result<()> {
+        loop {
+            match said(call()) {
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                done => return done,
+            }
         }
+    }
+
+    /// `F_FULLFSYNC`, which writes the file's data and then flushes the drive's cache
+    /// (fcntl(2)). Where the file system does not implement it ([`super::lacks_full_fsync`]):
+    /// `first`, then fsync(2). Any other refusal is returned with its errno.
+    #[cfg(target_os = "macos")]
+    fn full(fd: RawFd, first: impl FnOnce() -> io::Result<()>) -> io::Result<()> {
+        // SAFETY: fcntl(2) of a descriptor the caller holds.
+        let Err(refused) = retried(|| unsafe { libc::fcntl(fd, libc::F_FULLFSYNC) }) else {
+            return Ok(());
+        };
+        if !refused.raw_os_error().is_some_and(super::lacks_full_fsync) {
+            return Err(refused);
+        }
+        first()?;
         // SAFETY: fsync(2) of the same descriptor.
-        said(unsafe { libc::fsync(fd) })
+        retried(|| unsafe { libc::fsync(fd) })
     }
 
     fn fd(file: &impl Target) -> RawFd {
@@ -47,18 +90,18 @@ mod unix {
 
     pub(crate) fn data(file: &impl Target) -> io::Result<()> {
         #[cfg(target_os = "macos")]
-        return full(fd(file));
+        return full(fd(file), || Ok(()));
         #[cfg(not(target_os = "macos"))]
         // SAFETY: fdatasync(2) of a descriptor the caller holds.
-        return said(unsafe { libc::fdatasync(fd(file)) });
+        return retried(|| unsafe { libc::fdatasync(fd(file)) });
     }
 
     pub(crate) fn all(file: &impl Target) -> io::Result<()> {
         #[cfg(target_os = "macos")]
-        return full(fd(file));
+        return full(fd(file), || Ok(()));
         #[cfg(not(target_os = "macos"))]
         // SAFETY: fsync(2) of a descriptor the caller holds.
-        return said(unsafe { libc::fsync(fd(file)) });
+        return retried(|| unsafe { libc::fsync(fd(file)) });
     }
 
     /// # Safety
@@ -72,17 +115,9 @@ mod unix {
     /// `ptr..ptr + len` is a shared mapping of `file`, mapped for the call.
     pub(crate) unsafe fn mapped(file: &impl Target, ptr: NonNull<u8>, len: usize) -> io::Result<()> {
         #[cfg(target_os = "macos")]
-        {
-            let fd = fd(file);
-            // SAFETY: fcntl(2) of a descriptor the caller holds.
-            if unsafe { libc::fcntl(fd, libc::F_FULLFSYNC) } == 0 {
-                return Ok(());
-            }
-            // SAFETY: forwarded caller contract.
-            unsafe { view(ptr, len) }?;
-            // SAFETY: fsync(2) of the same descriptor.
-            said(unsafe { libc::fsync(fd) })
-        }
+        // SAFETY: forwarded caller contract, for the msync(2) made before an fsync(2) where
+        // F_FULLFSYNC, which writes a mapping's dirty pages back too, is not implemented.
+        return full(fd(file), || unsafe { view(ptr, len) });
         #[cfg(not(target_os = "macos"))]
         {
             let _ = (ptr, len);
@@ -95,7 +130,7 @@ mod unix {
         {
             let back = |file: &File| {
                 // SAFETY: fsync(2) of the descriptor `file` holds.
-                crate::table::declared(file, || said(unsafe { libc::fsync(file.as_raw_fd()) }))
+                crate::table::declared(file, || retried(|| unsafe { libc::fsync(file.as_raw_fd()) }))
             };
             let own = file.try_clone()?;
             let spawned = std::thread::Builder::new()
@@ -188,8 +223,14 @@ mod unix {
     #[cfg(target_os = "macos")]
     pub(crate) fn thread() -> io::Result<u64> {
         let mut id = 0u64;
-        // SAFETY: the calling thread's ID (none named) into a u64 of ours.
-        said(unsafe { libc::pthread_threadid_np(std::ptr::null_mut(), &raw mut id) })?;
+        // SAFETY: the calling thread's ID into a u64 of ours: a null pthread_t (libc's
+        // `uintptr_t`) names the calling thread (libpthread src/pthread.c:1119-1130,
+        // libpthread-539.100.4).
+        let rc = unsafe { libc::pthread_threadid_np(0, &raw mut id) };
+        // It returns its error number and leaves errno alone, as pthread(3) calls do.
+        if rc != 0 {
+            return Err(io::Error::from_raw_os_error(rc));
+        }
         Ok(id)
     }
 
@@ -304,7 +345,7 @@ mod unix {
 mod windows {
     use std::fs::File;
     use std::io;
-    use std::os::windows::io::{AsHandle, AsRawHandle as _, FromRawHandle as _, RawHandle};
+    use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, RawHandle};
     use std::ptr::NonNull;
 
     use windows_sys::Win32::Foundation::{CloseHandle, ERROR_INVALID_PARAMETER, FILETIME, WAIT_OBJECT_0};
@@ -598,5 +639,88 @@ mod windows {
             // SAFETY: UnlockFileEx of the byte this locked.
             unsafe { UnlockFileEx(self.0.as_raw_handle(), 0, 1, 0, &raw mut at) };
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// Darwin's errno values (XNU bsd/sys/errno.h, xnu-12377.101.15) that are not
+    /// [`super::lacks_full_fsync`]'s, each an `F_FULLFSYNC` that failed: `ENOENT`, `EINTR`
+    /// (made again before it gets here), `EIO`, `ENXIO`, `EBADF` (a descriptor that is no
+    /// vnode's, kern_descrip.c:3964-3966), `ENODEV` (a device's driver), `ENOSPC`, `EROFS`,
+    /// `EDQUOT` and the kernel's `EOPNOTSUPP` (102, apart from `ENOTSUP` there).
+    const FAILED: [i32; 10] = [2, 4, 5, 6, 9, 19, 28, 30, 69, 102];
+
+    /// A file system that does not implement `F_FULLFSYNC` falls back to fsync; an
+    /// `F_FULLFSYNC` refused for any other reason fails.
+    #[test]
+    fn only_a_file_system_without_full_fsync_falls_back() {
+        for errno in [super::DARWIN_ENOTSUP, super::DARWIN_ENOTTY, super::DARWIN_EINVAL] {
+            assert!(super::lacks_full_fsync(errno), "{errno} failed");
+        }
+        for errno in FAILED.into_iter().chain([0, -1, i32::MAX]) {
+            assert!(!super::lacks_full_fsync(errno), "{errno} fell back");
+        }
+    }
+
+    /// The Darwin values named for every OS are macOS's own.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn darwins_errno_values_are_libcs() {
+        assert_eq!(
+            [super::DARWIN_ENOTSUP, super::DARWIN_ENOTTY, super::DARWIN_EINVAL],
+            [libc::ENOTSUP, libc::ENOTTY, libc::EINVAL]
+        );
+        assert_eq!(
+            FAILED,
+            [
+                libc::ENOENT,
+                libc::EINTR,
+                libc::EIO,
+                libc::ENXIO,
+                libc::EBADF,
+                libc::ENODEV,
+                libc::ENOSPC,
+                libc::EROFS,
+                libc::EDQUOT,
+                libc::EOPNOTSUPP,
+            ]
+        );
+    }
+
+    /// Live on this host's kernel, both outcomes. devfs does not implement `F_FULLFSYNC`:
+    /// its directories' ioctl is err_ioctl (XNU bsd/miscfs/devfs/devfs_vnops.c:1711, ENOTSUP)
+    /// and their fsync nop_fsync (:1715), so a durable write of `/dev` is made with fsync, as
+    /// one on an SMB share is (ENOTSUP, go.dev/issue/64215). `/dev/null`'s driver refuses every
+    /// ioctl it does not know with ENODEV (mmioctl, bsd/dev/mem.c:150) and takes fsync
+    /// (spec_fsync), so a durable write of it that succeeded would be a fallback after a
+    /// failure: it fails, with that errno.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_full_fsync_refused_falls_back_only_where_unimplemented() {
+        use std::fs::{File, OpenOptions};
+        use std::os::fd::AsRawFd as _;
+        let refused = |file: &File| {
+            // SAFETY: fcntl(2) of a descriptor this test holds.
+            let rc = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_FULLFSYNC) };
+            assert_eq!(rc, -1, "F_FULLFSYNC taken");
+            std::io::Error::last_os_error().raw_os_error()
+        };
+        let devfs = File::open("/dev").unwrap();
+        assert_eq!(refused(&devfs), Some(libc::ENOTSUP));
+        crate::entries(&devfs).unwrap();
+        crate::all(&devfs).unwrap();
+        crate::data(&devfs).unwrap();
+        let null = OpenOptions::new().write(true).open("/dev/null").unwrap();
+        assert_eq!(refused(&null), Some(libc::ENODEV));
+        // SAFETY: fsync(2) of a descriptor this test holds.
+        let synced = unsafe { libc::fsync(null.as_raw_fd()) };
+        assert_eq!(synced, 0, "/dev/null refused fsync");
+        for made in [crate::data(&null), crate::all(&null)] {
+            assert_eq!(made.unwrap_err().raw_os_error(), Some(libc::ENODEV));
+        }
+        // An APFS directory takes F_FULLFSYNC itself (PM M46).
+        let held = shards_testdir::TempDir::new("sync").unwrap();
+        crate::entries(File::open(held.path()).unwrap()).unwrap();
     }
 }

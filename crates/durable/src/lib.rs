@@ -1,7 +1,8 @@
 //! Every write shards makes durable, declared (D286). One helper, whose calls are each OS's
 //! own: Linux fdatasync(2) or fsync(2); macOS `F_FULLFSYNC`, the one call whose data is on the
-//! drive's media when it returns, and fsync(2) where a file system lacks it, as SQLite's
-//! `full_fsync` falls back (os_unix.c); Windows FlushFileBuffers, after FlushViewOfFile for a
+//! drive's media when it returns, and fsync(2) only where a file system does not implement it,
+//! by the errno values XNU itself reads that way (sys.rs `lacks_full_fsync`), any other
+//! refusal being the write's error; Windows FlushFileBuffers, after FlushViewOfFile for a
 //! view. Each is bracketed by a declaration in the slot file of its process's home
 //! ([`table`]), which whoever follows the process reads to judge a wait on it (D215): a thread
 //! in a durable write is its host's while the write's volume works. A process that installed
