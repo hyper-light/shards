@@ -451,6 +451,9 @@ pub struct Judge<'a> {
     /// Whether its party is refused for its work alone ([`by_work`](Self::by_work)): past
     /// C*, whatever its rate.
     by_work: bool,
+    /// Its due looks that found its party past C* and waited on
+    /// ([`waited_past_most`](Self::waited_past_most)).
+    waited_past_most: u32,
 }
 
 impl<'a> Judge<'a> {
@@ -470,6 +473,7 @@ impl<'a> Judge<'a> {
             unsure: false,
             floor: Duration::ZERO,
             by_work: false,
+            waited_past_most: 0,
         }
     }
 
@@ -582,7 +586,14 @@ impl<'a> Judge<'a> {
         match found {
             Found::Progressed => {
                 (self.since, self.held) = (span.ended, Duration::ZERO);
-                self.slower_than_any_answer(span.work, now, window, seen)
+                let judged = self.slower_than_any_answer(span.work, now, window, seen);
+                if judged.is_ok()
+                    && let (Some(cpu), Some(rated)) = (span.work, seen.rated)
+                    && self.past_most(cpu, window, rated)
+                {
+                    self.waited_past_most = self.waited_past_most.saturating_add(1);
+                }
+                judged
             }
             Found::Held | Found::Based => {
                 (self.since, self.held) = (span.ended, Duration::ZERO);
@@ -629,10 +640,27 @@ impl<'a> Judge<'a> {
             over: self.unheld,
         };
         let slow = self.by_work || rate.below(&rated.least);
-        if rated.answers < SPREAD || self.unheld < window || !slow || cpu <= rated.most {
+        if !slow || !self.past_most(cpu, window, rated) {
             return Ok(());
         }
         Err(Stall::slow(now.saturating_duration_since(self.began), rate, seen))
+    }
+
+    /// Whether a party that has done `cpu` since its start is past its kind's C*: seen to run
+    /// unheld a whole `window` or more, its work more than any answer took, once [`SPREAD`]
+    /// answers have taught it.
+    fn past_most(&self, cpu: Duration, window: Duration, rated: Rated) -> bool {
+        rated.answers >= SPREAD && self.unheld >= window && cpu > rated.most
+    }
+
+    /// How many of its due looks found its party past C* ([`past_most`](Self::past_most))
+    /// and waited on: none of a judge [`by_work`](Self::by_work), which refuses at the first;
+    /// a judge by rate may wait on such a party, its rate above R*. What a test of a judge by
+    /// work tells its red from a host that held its party by (D215, CI 44268931283: a test
+    /// that counted its own looks past C* beside the judge's ended a wait its judge rightly
+    /// held, its host holding the party, as the red's).
+    pub fn waited_past_most(&self) -> u32 {
+        self.waited_past_most
     }
 
     /// [`found`](Self::found), the look made at `now`: the look clock, which a test sets.

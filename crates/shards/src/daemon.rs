@@ -500,6 +500,13 @@ fn poll_timeout(ms: libc::c_int) -> Option<Duration> {
 #[cfg(test)]
 static LOGGED: AtomicU64 = AtomicU64::new(0);
 
+/// How many due looks of each VM's start's judge found it past C* and waited on, by its pid,
+/// as its wait goes on ([`ready`], `shards_api::Follow::waited_past_most`): a test of a start
+/// judged by its work reads none, where its red's judge, by rate, reaches `LOOKS_TO_REFUSE`.
+#[cfg(test)]
+static WAITED_PAST_MOST: Mutex<std::collections::BTreeMap<u32, u32>> =
+    Mutex::new(std::collections::BTreeMap::new());
+
 /// The setup entry carrying a microVM's own engine's token (D181), `engine=` and its bytes in
 /// lowercase hex, which init makes its command's socket by.
 fn engine_entry(token: &[u8; shards_abi::run::TOKEN]) -> Vec<u8> {
@@ -10518,6 +10525,8 @@ fn ready(socket: &UnixStream, pid: u32, record: &shards_api::Record) -> Result<(
                 "VM {pid} was not ready: its process could not be read: {failure}"
             )),
         })?;
+        #[cfg(test)]
+        lock(&WAITED_PAST_MOST).insert(pid, followed.waited_past_most());
         if let (false, shards_api::Seen::Learned { slowest, .. }) = (said, record.seen()) {
             said = true;
             log(format!(
@@ -11027,12 +11036,14 @@ mod tests {
     /// held for ever, and the runs and the stop that waited on them with them. Its kind taught
     /// twice, one start at a CPU's two-hundredth (R*) and one of 50 ms (C*), so that the
     /// stand-in, however its host shares its CPU, runs above R*. The green's wait ends by its
-    /// judge alone. The red's (lanes/redgreen/own-38f-startwork.patch, `Bound::Rate`) never
-    /// does: that is its bug. So the test reads the stand-in's work itself, a W* apart, and
-    /// once LOOKS_TO_REFUSE of its looks have found that work past C* and grown since the one
-    /// before, each a look at which the work judge refuses, closes its socket: the red's
-    /// wait ends then, not refused. No count of the test's own: W*, C* and the looks are the
-    /// record's and the judge's.
+    /// judge alone, at its first due look past C*. The red's (lanes/redgreen/
+    /// own-38f-startwork.patch, `Bound::Rate`) never does: its judge waits on at each such
+    /// look, which it counts (`WAITED_PAST_MOST`), and once LOOKS_TO_REFUSE of them have, the
+    /// test closes its socket: the red's wait ends then, not refused. The judge's own looks,
+    /// not the test's beside them: CI 44268931283 (aarch64 gnu) counted the test's own, its
+    /// host holding the party from the judge's windows, and closed a wait the green's judge
+    /// rightly held. No count of the test's own: W*, C* and the looks are the record's and
+    /// the judge's.
     #[cfg(unix)]
     #[test]
     fn a_start_that_works_past_c_star_without_ready_is_given_up() {
@@ -11048,22 +11059,11 @@ mod tests {
         )
         .unwrap();
         let (ours, theirs) = UnixStream::pair().unwrap();
-        let followed = shards_api::Followed::of_pid(busy.id()).unwrap().unwrap();
-        let mut watch = shards_api::Watch::of(followed).unwrap().unwrap();
-        let (from, most) = (watch.cpu(), Duration::from_millis(50));
+        let waited_past_most = || lock(&WAITED_PAST_MOST).get(&busy.id()).copied().unwrap_or(0);
         let waited = std::thread::scope(|s| {
             let waiting = party::spawn_in(s, || ready(&ours, busy.id(), &record));
-            // Each look of the stand-in's own a W* apart at which its work, grown since the
-            // look before, is past C*: one at which the work judge, by then, refuses.
-            let (mut past, mut last) = (0, from);
-            while !waiting.is_finished() && past < shards_api::LOOKS_TO_REFUSE {
+            while !waiting.is_finished() && waited_past_most() < shards_api::LOOKS_TO_REFUSE {
                 std::thread::sleep(slowest);
-                let _ = watch.look().unwrap();
-                let cpu = watch.cpu();
-                if cpu.saturating_sub(from) > most && cpu > last {
-                    past += 1;
-                }
-                last = cpu;
             }
             // Its socket closed: a wait still under way ends, its VM ended before it was ready.
             drop(theirs);

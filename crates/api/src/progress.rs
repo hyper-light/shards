@@ -852,6 +852,12 @@ impl<'a> Follow<'a> {
         judged
     }
 
+    /// How many of its due looks found its VM process past C* and waited on
+    /// ([`Judge::waited_past_most`]).
+    pub fn waited_past_most(&self) -> u32 {
+        self.judge.waited_past_most()
+    }
+
     /// Its party answered: its kind learns from the answer, its VM process read now; its
     /// slowest alone where it could not be read (D215: only work read through an answer
     /// teaches R* and C*).
