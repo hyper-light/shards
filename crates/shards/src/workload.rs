@@ -250,7 +250,7 @@ pub enum Request<'a> {
 
 /// Told how a run's writable layer came: saved whole or kept in its own file, with what it
 /// uses where its guest said, or why it did not come.
-pub type LayerTold = dyn Fn(Result<Option<u64>, String>) + Sync;
+pub type LayerTold<'a> = dyn Fn(Result<Option<u64>, String>) + Sync + 'a;
 
 /// A request, as served: the command, whether it reads stdin, the microVM's log if its
 /// output is kept, and what to call once the command runs.
@@ -274,11 +274,11 @@ pub struct Asked<'a> {
     /// nothing it does not need.
     pub told: Option<&'a Told<'a>>,
     /// Told the layer is saved whole, with what it uses where its guest said; or why not.
-    pub saved: Option<&'a LayerTold>,
+    pub saved: Option<&'a LayerTold<'a>>,
     /// Told the layer stays in its own file (D190), its guest's journal written in place:
     /// where the VM's layer is one and no joiner of its network outlives the
     /// run, in place of a save; or why not.
-    pub kept: Option<&'a LayerTold>,
+    pub kept: Option<&'a LayerTold<'a>>,
     /// Given the records of the processes the run's members start and end (D123).
     pub processes: Option<&'a Records<'a>>,
     /// Given each member's end, where the run asked to hear them (D231): its
