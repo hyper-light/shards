@@ -8693,8 +8693,10 @@ fn a_logs_history_is_what_its_user_set() {
     );
     let shown = shards(&["configure", "disk"]);
     assert!(shown.stdout.contains("log-history         131072\n"), "{shown}");
-    // A file its user broke by hand: no run, until it is reset.
-    std::fs::write(home.join("disk"), "# by hand\nlog-history lots\n").unwrap();
+    // A file its user broke by hand, the one `shards` reads: its newest version, which on
+    // Windows `configure disk` lands beside the name (platform `write_in`). No run, until it
+    // is reset.
+    std::fs::write(common::newest(&home, "disk"), "# by hand\nlog-history lots\n").unwrap();
     let broken = shards(&["run", "--rm", "--pull", "never", &image, "exit", "0"]);
     assert_ne!(broken.status, Some(0), "{broken}");
     assert!(broken.stderr.contains("disk:2: "), "{broken}");
