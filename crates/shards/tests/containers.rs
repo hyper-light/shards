@@ -11378,7 +11378,16 @@ fn an_interrupted_save_leaves_nothing_behind() {
             });
         }
         let mut save = common::interruptible(&mut save).spawn().unwrap();
-        eventually(&home, "the save's temporary file", || !left().is_empty());
+        // The save's client among its party: it makes the file before it starts the home's
+        // daemon, none there before it, and a party of that daemon and this test's VM
+        // processes alone was gone 3.3 ms in, the file not yet made (CI 44205094460,
+        // windows-2022).
+        let mut patience = Patience::client(save.id(), &home);
+        while left().is_empty() {
+            assert!(patience.holds(), "the save's temporary file");
+            std::thread::sleep(patience.next_look());
+        }
+        patience.done();
         #[cfg(unix)]
         {
             // SAFETY: kill(2) of the client this test started.
