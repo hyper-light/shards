@@ -1134,6 +1134,25 @@ struct Ended {
     named: bool,
 }
 
+/// A run whose end on Windows waits for its VM process's (D281): what of its files its VM and
+/// share processes still hold open or mapped once its command has ended, which NTFS renames
+/// no directory beneath, whatever their sharing (MS-FSA 2.1.5.15.11, 2.1.4.2), is let go of
+/// as its VM process ends ([`Daemon::vm_let_go`]), and its end told then. Kept by its VM's
+/// process ID.
+#[cfg(windows)]
+struct Parked {
+    id: String,
+    /// Its named volumes, let go of once its VM process has ended.
+    holds: crate::volumes::Holds,
+    /// Its share processes, ended once its VM process has: they serve nothing past it.
+    shares: Vec<Arc<shards_ipc::Child>>,
+    /// Whether its end is told only then: not where its VM goes on serving joiners of its
+    /// network (D119), whose provider's end is told at once.
+    told_after: bool,
+    /// Its end, once [`Daemon::tell_end`] came to tell it, held for its VM process's end.
+    ended: Option<Ended>,
+}
+
 struct Inbox {
     socket: Arc<RunSocket>,
     /// The warm VM's process ID, for the log.
@@ -1544,6 +1563,10 @@ struct Daemon<D: Disk = Real> {
     /// completes once they have, so that none holds a file of its volumes or binds as they
     /// go, which NTFS renames no directory beneath (D197).
     shared_by: Mutex<HashMap<String, Vec<Arc<shards_ipc::Child>>>>,
+    /// The runs whose holds, share processes and told end wait for their VM process's end
+    /// (D281, Windows), by its process ID ([`Parked`]).
+    #[cfg(windows)]
+    parked: Mutex<HashMap<u32, Parked>>,
     /// Each microVM's share processes' notices of what their host changes (D235), by its
     /// ID: the pipes they tell them on, until its run starts, when each is its guest's
     /// NOTICE built-in's stdin.
@@ -2460,6 +2483,8 @@ impl<D: Disk> Daemon<D> {
             disk_claims: devices::DiskClaims::default(),
             join_shares: Mutex::default(),
             shared_by: Mutex::default(),
+            #[cfg(windows)]
+            parked: Mutex::default(),
             noticing: Mutex::default(),
             joiner_links: Mutex::default(),
             members: Mutex::default(),
@@ -5227,6 +5252,182 @@ impl<D: Disk> Daemon<D> {
         }
     }
 
+    /// Keeps run `id`'s volumes `holds`, its share processes and, where `told_after`, its end
+    /// until its VM process has ended (D281, Windows): NTFS renames no directory under which a
+    /// file is open or mapped, whatever its sharing (MS-FSA 2.1.5.15.11, 2.1.4.2), and its VM
+    /// and share processes hold its files so until its VM ends, past its command's end, once
+    /// its layer is kept or sent and its guest has powered off. Only a run whose VM is its own
+    /// and followed to its end ([`follows_vm`](Self::follows_vm)), and that holds a volume or
+    /// has share processes; a provider whose VM goes on for its joiners (D119) has its end
+    /// told at once (`told_after` false). Else, or as the daemon stops, let go of now; its
+    /// share processes ended first where its VM has ended already.
+    #[cfg(windows)]
+    fn park_end(&self, id: &str, holds: crate::volumes::Holds, told_after: bool) {
+        let vm = match lock(&self.runs).get(id) {
+            Some(RunState::Tracked(t)) if t.joined.is_none() => Some(t.vm.clone()),
+            _ => None,
+        };
+        let shares = lock(&self.shared_by).get(id).cloned().unwrap_or_default();
+        let Some(vm) = vm else {
+            return;
+        };
+        if (holds.is_empty() && shares.is_empty()) || self.stopping.load(Ordering::SeqCst) {
+            return;
+        }
+        // Looked at under the lock its end takes it out under, so that none is kept past it.
+        let mut ending = lock(&self.parked);
+        if vm.has_ended() {
+            drop(ending);
+            for share in &shares {
+                let _ = share.kill(shards_ipc::signal::SIGKILL);
+                let _ = share.ended();
+            }
+            return;
+        }
+        if !self.follows_vm(vm.id()) {
+            return;
+        }
+        ending.insert(
+            vm.id(),
+            Parked {
+                id: id.to_string(),
+                holds,
+                shares,
+                told_after,
+                ended: None,
+            },
+        );
+    }
+
+    /// Run `id`'s end, unless it is to be told as its VM process ends ([`park_end`](Self::park_end)),
+    /// which then keeps it until then.
+    #[cfg(windows)]
+    fn held_for_vm(&self, id: &str, ended: Ended) -> Option<Ended> {
+        let mut ending = lock(&self.parked);
+        match ending.values_mut().find(|e| e.id == id && e.told_after) {
+            Some(e) => {
+                e.ended = Some(ended);
+                None
+            }
+            None => Some(ended),
+        }
+    }
+
+    /// VM process `pid` has ended (the followers' loop, `process_ended`): what its run kept
+    /// waiting for that is let go of, its share processes ended first, then its volumes, and
+    /// its end told where it was kept ([`park_end`](Self::park_end)); a command waiting for it
+    /// ([`await_parked`](Self::await_parked)) looks again.
+    #[cfg(windows)]
+    fn vm_let_go(&self, pid: u32) {
+        let Some((holds, shares)) = lock(&self.parked)
+            .get_mut(&pid)
+            .map(|e| (std::mem::take(&mut e.holds), std::mem::take(&mut e.shares)))
+        else {
+            return;
+        };
+        for share in &shares {
+            let _ = share.kill(shards_ipc::signal::SIGKILL);
+            let _ = share.ended();
+        }
+        drop(holds);
+        let taken = lock(&self.parked).remove(&pid);
+        if let Some(Parked {
+            id,
+            ended: Some(ended),
+            ..
+        }) = taken
+        {
+            self.tell_end(&id, ended);
+        }
+        // Under the lock its waiters look under, so that none misses it.
+        drop(lock(&self.runs));
+        self.resolved.notify_all();
+    }
+
+    /// Waits until the ends kept for their VM processes' as it is called have been told
+    /// ([`park_end`](Self::park_end)), so that a command sees what any client has seen of a
+    /// run (`settle`): each judged as D215 judges a wait on a VM process, by the record of its
+    /// kind (`Answers::vm_end`): its VM's party looked at once each W* past its kind's slowest
+    /// end, and refused where it did nothing since the look before ([`refuse_parked`](
+    /// Self::refuse_parked)). A kind with no end heard yet waits on its VM's end alone, as
+    /// every cold record of D215's does.
+    #[cfg(windows)]
+    fn await_parked(&self) {
+        let parked: Vec<u32> = lock(&self.parked)
+            .iter()
+            .filter(|(_, e)| e.told_after)
+            .map(|(pid, _)| *pid)
+            .collect();
+        for pid in parked {
+            let mut judged = health::Judged::of(pid, &self.answers.vm_end);
+            // When its judge asks next: at once the first time, then at the time it names (none
+            // where its kind waits on its end alone), never on another run's wakeup, which
+            // would shorten what it judges a look's stillness over.
+            let mut next: Option<Option<Instant>> = None;
+            let mut runs = lock(&self.runs);
+            loop {
+                match lock(&self.parked).get(&pid).map(|e| e.told_after) {
+                    None => {
+                        judged.answered();
+                        break;
+                    }
+                    Some(false) => break,
+                    Some(true) => {}
+                }
+                let asks = match next {
+                    None => true,
+                    Some(Some(at)) => Instant::now() >= at,
+                    Some(None) => false,
+                };
+                if asks {
+                    // Out of the runs' lock: it may read its VM's party.
+                    drop(runs);
+                    match judged.judge() {
+                        Ok(due) => next = Some(due),
+                        Err(why) => {
+                            self.refuse_parked(pid, &why);
+                            break;
+                        }
+                    }
+                    runs = lock(&self.runs);
+                    continue;
+                }
+                runs = match next
+                    .flatten()
+                    .map(|d| d.saturating_duration_since(Instant::now()))
+                {
+                    Some(left) => {
+                        self.resolved
+                            .wait_timeout(runs, left)
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .0
+                    }
+                    None => self.resolved.wait(runs).unwrap_or_else(PoisonError::into_inner),
+                };
+            }
+        }
+    }
+
+    /// A kept end whose VM did nothing toward its end for a W* of its kind ([`await_parked`](
+    /// Self::await_parked)): its end told now and said in the log, its volumes and share
+    /// processes kept until its VM ends, as its files are in use while it goes on.
+    #[cfg(windows)]
+    fn refuse_parked(&self, pid: u32, why: &io::Error) {
+        let refused = lock(&self.parked).get_mut(&pid).map(|e| {
+            e.told_after = false;
+            (e.id.clone(), e.ended.take())
+        });
+        let Some((id, ended)) = refused else {
+            return;
+        };
+        log(format!(
+            "container {id}: its VM {pid} went on with nothing toward its end ({why}): its end told, its volumes held while it goes on"
+        ));
+        if let Some(ended) = ended {
+            self.tell_end(&id, ended);
+        }
+    }
+
     /// [`start_shares`](Self::start_shares)'s process on Windows, for `dirs`, some (D197):
     /// the daemon makes each share's stream, a duplex pipe, its server end the share
     /// process's and its other the VM's, which the run's request hands it, as a stream the
@@ -7038,6 +7239,10 @@ impl<D: Disk> Daemon<D> {
         for (id, inbox) in runs {
             self.take_messages(&id, &inbox);
         }
+        // On Windows a run whose client has its status is told ended once its VM process has
+        // ended, what it held of its files let go of (D281): waited for, judged.
+        #[cfg(windows)]
+        self.await_parked();
         // Answered once what it answers with is recorded, or behind (audit A15).
         self.await_recorded();
     }
@@ -7249,7 +7454,14 @@ impl<D: Disk> Daemon<D> {
         lock(&self.joiner_links).remove(id);
         lock(&self.join_shares).remove(id);
         // Its named volumes let go of (D281): their clearing is refused no more for its sake.
-        inbox.volumes = crate::volumes::Holds::default();
+        // On Windows once its VM process has ended, its share processes and its told end with
+        // them ([`park_end`](Self::park_end)): its VM and share processes hold its files open
+        // and mapped until then, which NTFS renames no directory beneath.
+        let holds = std::mem::take(&mut inbox.volumes);
+        #[cfg(windows)]
+        self.park_end(id, holds, inbox.joiners == 0 && !inbox.visit);
+        #[cfg(not(windows))]
+        drop(holds);
         // On the host's network (D124): the host's ports of its guest's binds let go, but
         // its joiners', which go as each of them ends (D119).
         if inbox.joiners == 0 {
@@ -7325,6 +7537,11 @@ impl<D: Disk> Daemon<D> {
     /// Tells run `id`'s end: its microVM stopped, its waiters, `die`, and its restart or
     /// removal, as its policy has it.
     pub(super) fn tell_end(&self, id: &str, ended: Ended) {
+        // On Windows told as its VM process ends, where its files wait for that (D281).
+        #[cfg(windows)]
+        let Some(ended) = self.held_for_vm(id, ended) else {
+            return;
+        };
         let Ended {
             pid,
             started,

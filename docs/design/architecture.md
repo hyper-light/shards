@@ -42259,6 +42259,49 @@ directories before it removes its anonymous volumes.**
   lets the directories go after the removal; green on Unix either way. Owed: that test on
   jupiter, then api_image's test above on WHP.
 
+**Amended (own-36b, kiln goal #37, 2026-11-18, ROOT's word): on Windows a daemon run's volumes,
+share processes and told end wait for its VM process's end.** CI 44189693085's windows-2025 job
+failed `a_volume_a_daemon_run_holds_is_cleared_only_once_it_stops` ("remove mounted: Access is
+denied. (os error 5)") and `a_volumes_data_outlives_the_microvm_that_wrote_it` ("remove work:
+…"); both pass on bare-metal WHP (jupiter r11, r21): a race. `run_ended` let a run's holds go
+at its DONE, while its share processes (in no Job of their own: they end as their streams
+close) and its VM's DAX window (window_whp.rs: each mapped node's file handle and the views of
+its section, D197) hold the volume's files until its VM process ends, after its layer is kept
+or sent and its guest has powered off. NTFS renames no directory beneath which anything is
+open, whatever its sharing: MS-FSA 2.1.5.15.11 (FileRenameInformation) fails it
+STATUS_ACCESS_DENIED where 2.1.4.2 finds an open under it, and 2.1.4.2 counts every open, only
+an oplock that breaks giving way. So neither FILE_SHARE_DELETE nor a POSIX rename passes
+`Store::set_aside`.
+- *Unix keeps DONE's order.* rename(2) and unlink(2) take a name whatever holds it open, and a
+  run's end told at DONE is what `settle` gives a command right after its client returns:
+  warm.rs `finish` sends DONE before EXIT "so a command sees what any client has seen", and
+  containers.rs `start_runs_a_stopped_microvm_again_over_its_own_files` starts a microVM again
+  the moment its attached run returns. One order for every OS would hold each Unix command
+  after a run for its VM's teardown, for nothing Unix needs.
+- *Decided (Windows).* `run_ended` keeps a run's holds (`park_end`), with its share processes
+  and its end (`tell_end` keeps it, `held_for_vm`), by its VM's process ID, where its VM is
+  its own, followed to its end (`follows_vm`), and the run holds a volume or has share
+  processes. The followers' loop, hearing that VM end (`process_ended`), ends its share
+  processes, lets go of its volumes, then tells its end (`vm_let_go`). A provider whose VM
+  goes on for joiners (D119) has its end told at once, its volumes kept to its VM's end. A
+  VM ended already lets go at once; a daemon stopping, or a VM nothing follows, keeps DONE's
+  order.
+- *Commands.* `settle` waits for the ends kept as it is called (`await_parked`), so that
+  `start`, `ps` and `volume rm` right after a run's client returns find it ended and its files
+  let go. Judged as D215 judges a wait on a VM process, by a record of its own
+  (`Answers::vm_end`): the VM's party looked at once each W* past its kind's slowest end, and
+  the wait refused where it did nothing since the look before: its end told then, said in the
+  daemon's log, its volumes and share processes kept until its VM ends, as its files are in
+  use. A kind with no end heard yet waits on its VM's end alone, as every D215 record does
+  before its first answer.
+- *Tested* (written, not run in this lane): containers.rs
+  `a_volume_is_removed_once_the_run_that_wrote_it_returns`, every OS: `run --rm -v data:/d`
+  writing a file, then at once `volume rm data`. Red on Windows with `park_end` letting go at
+  once (`redgreen/win-a1.patch`); green on Unix either way. Owed: its runs on jupiter, this
+  Mac and CI windows-2022/2025, with the D281 test above; and its cost (R14): a command right
+  after a run waits for that VM's end on Windows, `shards run --rm IMAGE true` then
+  `shards ps -a` timed on jupiter with and without this, n/p50/p90/p99/max.
+
 ### D285. Networks shared by runs: a member of one microVM reaches a member of another on a named network, each flow granted at both of its ends (designed 2026-11-16; slices 1 to 5, a network's leases held across processes, the daemon's runs on them, the network process's switch, the API, wire and run host, and the guest's side, built; slice 6, a network made and removed by shards-api and a run's names withdrawn as its link ends and, first of all, as its VM ends, built, its real-VM tests written, their runs lane xnet-v's)
 
 **Asked.** The person's live changes, with no rebuild or restart (kiln plan 01a1dd2e… P6b.1, its

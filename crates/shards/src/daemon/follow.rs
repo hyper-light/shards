@@ -353,6 +353,16 @@ impl<D: Disk> Daemon<D> {
         }
     }
 
+    /// Whether VM process `pid` is followed to its end ([`follow_vm`](Self::follow_vm)): its end
+    /// comes to [`process_ended`](Self::process_ended), which lets go of what its run kept for
+    /// it (D281, Windows).
+    #[cfg(windows)]
+    pub(super) fn follows_vm(&self, pid: u32) -> bool {
+        lock(&self.followers.processes)
+            .values()
+            .any(|p| matches!(p, Process::Vm { vm, .. } if vm.id() == pid))
+    }
+
     /// Follows VM `vm`, and its network process `net`, to their ends on the followers'
     /// loop, rather than on a thread each (PM M90): each reaped as it ends, the VM taken
     /// out of `pool` if it ends waiting there, its network process followed to its end as
@@ -454,6 +464,10 @@ impl<D: Disk> Daemon<D> {
         match process {
             Process::Vm { vm, pool, net, .. } => {
                 let pid = vm.id();
+                // What its run kept of its files for its end is let go of, and its end told
+                // where it was kept (D281, Windows: `park_end`).
+                #[cfg(windows)]
+                self.vm_let_go(pid);
                 // It has ended: no wait. Reaped once the ports held by its pid are freed.
                 let status = vm.ended_status();
                 let waited = pool.is_some_and(|key| {

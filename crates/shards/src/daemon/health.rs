@@ -167,6 +167,10 @@ pub(super) struct Answers {
     pub run_send: Record,
     /// A VM's guest times, its `GUEST_TIMED` after its `GUEST_TIME` (`commands::guest_times_of`).
     pub guest_time: Record,
+    /// A run's VM process's end once its command's end has come, which its told end, volumes
+    /// and share processes wait for on Windows (`daemon::await_parked`, D281).
+    #[cfg(windows)]
+    pub vm_end: Record,
     /// A starting VM's launch, its spawn to its first request for access (`daemon::launch`,
     /// macOS): the host's to admit (PM M166), followed by its liveness alone, said once past
     /// its slowest.
@@ -205,6 +209,8 @@ impl Default for Answers {
             held: Record::new(),
             run_send: Record::new(),
             guest_time: Record::new(),
+            #[cfg(windows)]
+            vm_end: Record::new(),
             #[cfg(target_os = "macos")]
             launches: Record::new(),
             #[cfg(target_os = "macos")]

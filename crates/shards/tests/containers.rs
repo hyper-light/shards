@@ -13148,6 +13148,33 @@ fn a_volume_a_daemon_run_holds_is_cleared_only_once_it_stops() {
     assert_eq!(shards(&["remove", "vm", "holder"]).status, Some(0));
 }
 
+/// D281: a volume is removed the moment the run that wrote it returns, as `docker run --rm -v
+/// NAME:/d …` then `docker volume rm NAME` remove one. On Windows the run's end waits for its VM
+/// process's, its share processes and its hold let go of first, which hold its files until then
+/// and NTFS renames no directory beneath (MS-FSA 2.1.4.2): before, CI 44189693085's
+/// windows-2025 removals after a run said "Access is denied. (os error 5)".
+#[test]
+fn a_volume_is_removed_once_the_run_that_wrote_it_returns() {
+    let Some((home, image)) = home("containers-volume-after") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let wrote = run_in(
+        &home,
+        &image,
+        &["--rm", "-u", "0", "-v", "data:/d"],
+        &["fs", "write:/d/f=kept"],
+    );
+    assert_eq!(wrote.status, Some(0), "{wrote}");
+    let removed = shards(&["volume", "rm", "data"]);
+    assert_eq!(
+        (removed.status, removed.stdout.as_str()),
+        (Some(0), "data\n"),
+        "{removed}"
+    );
+    assert_eq!(shards(&["volume", "ls", "-q"]).stdout, "");
+}
+
 /// `--restart` (D39): `on-failure:N` restarts a failing
 /// command N times; `always` until stopped, a stop ending it for good; as the daemon
 /// starts again, `unless-stopped` and `always` start again what its stop ended, and not
