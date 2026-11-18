@@ -1524,6 +1524,7 @@ dependencies = [
  "shards-abi",
  "shards-ipc",
  "shards-testdir",
+ "shards-testwait",
  "windows-sys 0.61.2",
 ]
 

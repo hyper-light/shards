@@ -27,6 +27,8 @@ shards-abi = { path = "../abi" }
 
 [dev-dependencies]
 shards-testdir = { path = "../testdir" }
+# Its tests' waits, judged on their own threads (D215, #77), as the daemon's are.
+shards-testwait = { path = "../testwait" }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

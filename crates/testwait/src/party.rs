@@ -11,31 +11,36 @@
 //! of no party (made by another crate, or by std itself) counts for no party's wait, and a
 //! wait on a thread of none counts this process's threads, as before parties were.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 thread_local! {
-    /// The party this thread is of (0: none), and whether it is one of its members, made
-    /// by one of its party's threads, rather than its test's own.
+    /// The party this thread is of (0: none), and whether it is one of its members, whose
+    /// run its party counts: made by one of its party's threads, or its test's own
+    /// ([`of_test`]).
     static PARTY: Cell<(u64, bool)> = const { Cell::new((0, false)) };
+    /// Its key among its party's members, where it is one: a wait it makes counts none of
+    /// its own run ([`ran`]).
+    static KEY: Cell<Option<u64>> = const { Cell::new(None) };
+    /// A test's own thread as a member of the party it made ([`of_test`]), to its end.
+    static OWN: RefCell<Option<Member>> = const { RefCell::new(None) };
 }
 
 static NEXT: AtomicU64 = AtomicU64::new(1);
 static NEXT_MEMBER: AtomicU64 = AtomicU64::new(0);
 
-/// A party: its members living, by a key of each one's; what those that ended ran; and
-/// what those of them that waited in a judged wait ran as they waited.
+/// A party: its members living, by a key of each one's, each one's clock and what it ran as
+/// it waited in a judged wait; and what those that ended ran, less what they ran so.
 #[derive(Default)]
 struct Party {
-    members: BTreeMap<u64, Clock>,
+    members: BTreeMap<u64, (Clock, u64)>,
     /// Its living members' threads, by the same keys, as another thread of this process
     /// reads their states ([`hold`]).
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     threads: BTreeMap<u64, Thread>,
     ended: u64,
-    waited: u64,
 }
 
 static PARTIES: Mutex<BTreeMap<u64, Party>> = Mutex::new(BTreeMap::new());
@@ -45,17 +50,23 @@ fn parties() -> MutexGuard<'static, BTreeMap<u64, Party>> {
 }
 
 /// The party of this thread, a test's: a new one where it is of none yet, as a test's
-/// thread is as it begins (libtest runs each test on a thread of its own).
+/// thread is as it begins (libtest runs each test on a thread of its own), this thread its
+/// member from then to its end. What it runs between its waits is its test's progress
+/// too, which a member's wait on its next step counts (shards-remote's stand-in hosts wait
+/// on its steers): a test's thread its host holds, or runs, holds that wait as D215
+/// counts a held host (ROOT, 2026-11-17). What it runs as it waits is none ([`waited`]),
+/// and its own waits count none of its run ([`ran`]) and read none of its state
+/// ([`hold`]): they are judged as before.
 pub fn of_test() -> u64 {
-    PARTY.with(|party| {
-        let (id, member) = party.get();
-        if id != 0 {
-            return id;
-        }
-        let id = NEXT.fetch_add(1, Ordering::Relaxed);
-        party.set((id, member));
-        id
-    })
+    let id = current();
+    if id != 0 {
+        return id;
+    }
+    let id = NEXT.fetch_add(1, Ordering::Relaxed);
+    // Of its party whether or not its clock reads: a member where it does.
+    let own = Member::join(id);
+    OWN.with(|slot| *slot.borrow_mut() = own);
+    id
 }
 
 /// The party of this thread; 0 where it is of none.
@@ -97,29 +108,39 @@ where
     std::thread::spawn(carried(f))
 }
 
-/// What party `id`'s members ran, the living and those that ended, less what they ran
-/// as they waited, in the units of this crate's CPU reads (nanoseconds on Unix, cycles on
-/// Windows).
+/// What party `id`'s members ran, the living and those that ended, less what each ran as it
+/// waited, in the units of this crate's CPU reads (nanoseconds on Unix, cycles on Windows):
+/// all but the thread that asks, where it is one of them, whose own run is none of its own
+/// wait's, its clock not read, so that no CPU it spends between its looks reads as its
+/// party's.
 pub(crate) fn ran(id: u64) -> i128 {
+    let asks = KEY.with(Cell::get);
     let parties = parties();
     let Some(party) = parties.get(&id) else {
         return 0;
     };
     let living = party
         .members
-        .values()
-        .filter_map(Clock::ran)
+        .iter()
+        .filter(|(key, _)| Some(**key) != asks)
+        .filter_map(|(_, (clock, waited))| Some(clock.ran()?.saturating_sub(*waited)))
         .fold(0, u64::saturating_add);
-    i128::from(living.saturating_add(party.ended)) - i128::from(party.waited)
+    i128::from(living.saturating_add(party.ended))
 }
 
 /// This thread, waiting judged on party `id`, ran `cpu` more as it waited: none of its
-/// party's run, where it is one of its members (its test's own thread is none).
+/// party's run as another's wait on it counts it, where it is one of its members (its
+/// test's own thread among them, [`of_test`]).
 pub(crate) fn waited(id: u64, cpu: u64) {
-    if PARTY.with(Cell::get) == (id, true)
-        && let Some(party) = parties().get_mut(&id)
+    let Some(key) = KEY.with(Cell::get) else {
+        return;
+    };
+    if PARTY.with(Cell::get).0 == id
+        && let Some((_, waited)) = parties()
+            .get_mut(&id)
+            .and_then(|party| party.members.get_mut(&key))
     {
-        party.waited = party.waited.saturating_add(cpu);
+        *waited = waited.saturating_add(cpu);
     }
 }
 
@@ -142,11 +163,12 @@ impl Member {
         {
             let mut parties = parties();
             let of = parties.entry(party).or_default();
-            of.members.insert(key, clock);
+            of.members.insert(key, (clock, 0));
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             of.threads.insert(key, Thread::own());
         }
         PARTY.with(|of| of.set((party, true)));
+        KEY.with(|of| of.set(Some(key)));
         Some(Member { party, key })
     }
 }
@@ -159,8 +181,9 @@ impl Drop for Member {
         };
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         party.threads.remove(&self.key);
-        if let Some(clock) = party.members.remove(&self.key) {
-            party.ended = party.ended.saturating_add(clock.ran().unwrap_or(0));
+        if let Some((clock, waited)) = party.members.remove(&self.key) {
+            let ran = clock.ran().unwrap_or(0).saturating_sub(waited);
+            party.ended = party.ended.saturating_add(ran);
         }
     }
 }

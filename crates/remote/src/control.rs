@@ -1448,15 +1448,16 @@ mod tests {
     use super::*;
     use crate::handshake::{Side, connect};
 
-    /// How long a test waits for what it awaits: a patience of its own.
-    const PATIENCE: std::time::Duration = std::time::Duration::from_secs(10);
-
-    /// A lane's ask, its answer waited for within the tests' patience: what it answered, or
-    /// why not.
+    /// A lane's ask, its answer waited for as long as its test's own threads run (D215's
+    /// judged wait, shards-testwait), each wait of the ask's own as long as the judge's next
+    /// look: what it answered, or why not.
     macro_rules! answered {
         ($ask:expr) => {
-            $ask.and_then(|mut ask| ask.wait(PATIENCE))
-                .map(|got| got.expect("answered within the tests' patience"))
+            $ask.and_then(|mut ask| {
+                shards_testwait::answer("a lane's ask was not answered", |patience| {
+                    ask.wait(patience)
+                })
+            })
         };
     }
 
@@ -1719,6 +1720,8 @@ mod tests {
 
         use shards_abi::run::managed::InputEnd;
 
+        use shards_testwait::{Unreceived, answer, party, receive, received, until, waited};
+
         use super::*;
         use crate::managed::input::{Next, Said};
         use crate::managed::{DATA_HEAD, State};
@@ -1821,6 +1824,8 @@ mod tests {
                 Option<mpsc::Receiver<exec::MemberStart>>,
             ) {
                 let out = admitted(RECORD, RECORD + DATA_HEAD);
+                // Its test's party, before any thread of it is made: its waits count its own.
+                party::of_test();
                 let (endpoint, served) = Endpoint::bind(
                     vm,
                     controller,
@@ -1837,7 +1842,7 @@ mod tests {
                 let address = endpoint.address;
                 let driver = std::thread::Builder::new()
                     .name("control-endpoint".into())
-                    .spawn(move || endpoint.run())
+                    .spawn(party::carried(move || endpoint.run()))
                     .unwrap();
                 let Served {
                     outputs,
@@ -1854,7 +1859,7 @@ mod tests {
                 let told = Arc::clone(&input);
                 std::thread::Builder::new()
                     .name("control-relay".into())
-                    .spawn(move || {
+                    .spawn(party::carried(move || {
                         let mut written = 0u64;
                         loop {
                             match relay.next() {
@@ -1868,7 +1873,7 @@ mod tests {
                                 Next::Gone => return,
                             }
                         }
-                    })
+                    }))
                     .unwrap();
                 (
                     Serving {
@@ -2054,9 +2059,15 @@ mod tests {
             /// A controller under `own`, which pinned `vm`, dialing `to`; once connected or
             /// refused.
             fn dial(own: &Identity, vm: Fingerprint, to: SocketAddr) -> Live {
+                party::of_test();
+                // As the product's controller's (`managed::transport_of`): no idle timeout and no
+                // keep-alive of QUIC's, its liveness judged at use (D180), so that no timer of a
+                // connection idle wakes its party.
                 let mut transport = TransportConfig::default();
                 transport.max_concurrent_bidi_streams(hyper_quic::VarInt::from_u32(0));
                 transport.max_concurrent_uni_streams(hyper_quic::VarInt::from_u32(0));
+                transport.max_idle_timeout(None);
+                transport.keep_alive_interval(None);
                 let (heard_tx, heard) = mpsc::channel();
                 let (mut driver, asks) = Driver::bind_bounded(
                     loopback(),
@@ -2078,7 +2089,7 @@ mod tests {
                 .unwrap();
                 let driver = std::thread::Builder::new()
                     .name("controller".into())
-                    .spawn(move || driver.run())
+                    .spawn(party::carried(move || driver.run()))
                     .unwrap();
                 asks.send(Command::Handler(Ask::Connect(to))).unwrap();
                 let mut live = Live {
@@ -2096,7 +2107,7 @@ mod tests {
             /// Takes the next thing heard into what is kept of it; whether it was the
             /// connection made.
             fn hear(&mut self) -> bool {
-                match self.heard.recv_timeout(PATIENCE * 2).unwrap() {
+                match receive("its controller heard nothing", &self.heard) {
                     Heard::Connected => return true,
                     Heard::Bytes(lane, bytes) => self.bytes[lane].extend_from_slice(&bytes),
                     Heard::End(lane) => self.ends[lane] = Some(Heard::End(lane)),
@@ -2213,7 +2224,10 @@ mod tests {
             let mut frame = Vec::new();
             input::record(0, line, &mut frame).unwrap();
             live.send(STDIN, &frame);
-            assert_eq!(serving.records.recv_timeout(PATIENCE).unwrap(), line.to_vec());
+            assert_eq!(
+                receive("the member's stdin was relayed nothing", &serving.records),
+                line.to_vec()
+            );
             let at = line.len() as u64;
             assert_eq!(live.take(STDIN, said), Said::Taken { accepted: at, room });
             live.send(STDIN, &input::end(at, 0));
@@ -2625,7 +2639,7 @@ mod tests {
             replies.tell(exec::Reply::Started);
             let (stderr, stderr_control) = stderr.unwrap();
             let steered = replies.try_clone().unwrap();
-            let steering = std::thread::spawn(move || {
+            let steering = party::spawn_member(move || {
                 while let Ok(taken) = steer.recv() {
                     let said = match taken {
                         exec::Steer::Resize(size) => format!("resize {}x{}", size.rows, size.cols),
@@ -2696,13 +2710,13 @@ mod tests {
                 kind: exec::Kind::Exec(Box::new(spec.clone())),
             };
             live.open(0, &ask.frame().unwrap());
-            let start = starts.recv_timeout(PATIENCE).unwrap();
+            let start = receive("its host was asked no exec", &starts);
             assert_eq!(
                 (start.exec, &start.ask.kind),
                 (0, &exec::Kind::Exec(Box::new(spec.clone())))
             );
             assert!(start.stderr.is_some() && start.stdin.is_some());
-            let host = std::thread::spawn(move || stand_in(start));
+            let host = party::spawn_member(move || stand_in(start));
             assert_eq!(live.take(0, told), exec::Told::Started(0));
             live.open(1, &managed::subscribe(exec_scope(Channel::Stdout), 0));
             live.open(2, &managed::subscribe(exec_scope(Channel::Stderr), 0));
@@ -2775,7 +2789,7 @@ mod tests {
                 assert_eq!(live.end(lane), Heard::End(lane));
             }
             live.open(3, &asked(run(), GENERATION, 0));
-            let start = starts.recv_timeout(PATIENCE).unwrap();
+            let start = receive("its host was asked no exec", &starts);
             start
                 .replies
                 .tell(exec::Reply::Unstarted(exec::Unstarted::Capacity));
@@ -2817,14 +2831,11 @@ mod tests {
                 kind: exec::Kind::Exec(Box::default()),
             };
             live.open(0, &ask.frame().unwrap());
-            let start = starts.recv_timeout(PATIENCE).unwrap();
+            let start = receive("its host was asked no exec", &starts);
             start.replies.tell(exec::Reply::Started);
             assert_eq!(live.take(0, told), exec::Told::Started(0));
             let newer = Live::dial(&kiln, vm.fingerprint(), serving.address);
-            assert_eq!(
-                start.steer.recv_timeout(PATIENCE),
-                Err(mpsc::RecvTimeoutError::Disconnected)
-            );
+            assert_eq!(received(&start.steer), Err(Unreceived::Gone));
             drop(newer);
         }
 
@@ -2854,9 +2865,9 @@ mod tests {
             );
             let execs = dialed.execs.as_ref().unwrap();
             // Its host: the first exec it runs, the second it says did not start.
-            let host = std::thread::spawn(move || {
-                stand_in(starts.recv_timeout(PATIENCE).unwrap());
-                let refused = starts.recv_timeout(PATIENCE).unwrap();
+            let host = party::spawn_member(move || {
+                stand_in(receive("its host was asked no exec", &starts));
+                let refused = receive("its host was asked no exec", &starts);
                 refused
                     .replies
                     .tell(exec::Reply::Unstarted(exec::Unstarted::Refused));
@@ -2978,12 +2989,12 @@ mod tests {
             );
             let execs = dialed.execs.as_ref().unwrap();
             // Its host: the first, a harness that echoes; the second, a member with no bridge.
-            let host = std::thread::spawn(move || {
-                let start = starts.recv_timeout(PATIENCE).unwrap();
+            let host = party::spawn_member(move || {
+                let start = receive("its host was asked no exec", &starts);
                 assert_eq!((start.exec, &start.ask.kind), (0, &exec::Kind::Mcp));
                 assert!(start.stderr.is_none() && start.stdin.is_some());
                 mcp_stand_in(start);
-                let refused = starts.recv_timeout(PATIENCE).unwrap();
+                let refused = receive("its host was asked no exec", &starts);
                 assert_eq!(refused.ask.kind, exec::Kind::Mcp);
                 refused
                     .replies
@@ -3015,17 +3026,16 @@ mod tests {
 
         /// Tries `try_` until it says other than none yet (its `WouldBlock`), the controller's
         /// wake drained before each try and waited for after each none, as one controller
-        /// thread of many lanes does: a wake lost leaves the wait ringless at the tests'
-        /// patience, which fails.
-        #[allow(clippy::panic_in_result_fn)]
+        /// thread of many lanes does: a wake lost leaves the wait ringless while its test's
+        /// own threads run nothing more, which is given up on and fails (D215's judged wait).
         fn woken<T>(wake: &Wake, mut try_: impl FnMut() -> Result<Option<T>, Fault>) -> Result<T, Fault> {
             loop {
                 wake.drain().unwrap();
                 match try_() {
-                    Ok(None) => assert!(
-                        wake.wait(PATIENCE).unwrap(),
-                        "no ring within patience: a wake lost"
-                    ),
+                    Ok(None) => answer("no ring: a wake lost", |patience| {
+                        wake.wait(patience).map(|rang| rang.then_some(()))
+                    })
+                    .unwrap(),
                     Ok(Some(got)) => return Ok(got),
                     Err(fault) => return Err(fault),
                 }
@@ -3055,12 +3065,12 @@ mod tests {
         /// An MCP connection (D254) of member 0 its host has started, and the host's side of it.
         fn mcp(execs: &Execs, starts: &mpsc::Receiver<exec::Start>) -> (McpConnection, exec::Start) {
             let mut ask = execs.mcp(0).unwrap();
-            let start = starts.recv_timeout(PATIENCE).unwrap();
+            let start = receive("its host was asked no exec", starts);
             start.replies.tell(exec::Reply::Started);
-            let connection = ask
-                .wait(PATIENCE)
-                .unwrap()
-                .expect("answered within the tests' patience");
+            let connection = answer("its MCP connection was not answered", |patience| {
+                ask.wait(patience)
+            })
+            .unwrap();
             (connection, start)
         }
 
@@ -3212,7 +3222,7 @@ mod tests {
                 start,
             ) = mcp(execs, &starts);
             let (wrote_tx, wrote) = mpsc::channel();
-            let writer = std::thread::spawn(move || {
+            let writer = party::spawn_member(move || {
                 let _ = wrote_tx.send(to.write(b"never taken"));
             });
             let (relay, _input) = start.stdin.as_ref().unwrap();
@@ -3223,12 +3233,12 @@ mod tests {
             assert_eq!(bytes, b"never taken");
             let_go(end);
             assert_eq!(
-                start.steer.recv_timeout(PATIENCE),
-                Err(mpsc::RecvTimeoutError::Disconnected),
+                received(&start.steer),
+                Err(Unreceived::Gone),
                 "its host hears the hangup, the record in flight untaken"
             );
             assert_eq!(
-                wrote.recv_timeout(PATIENCE),
+                received(&wrote),
                 Ok(Err(Fault::Revoked)),
                 "the write waiting on the record in flight ends"
             );
@@ -3253,6 +3263,8 @@ mod tests {
         /// is refused alone, typed.
         #[test]
         fn an_endpoint_of_no_member_stream_takes_asks_in_the_zero_run() {
+            // Its test's party, before its endpoint's and its host's threads are made.
+            party::of_test();
             let (vm, kiln) = (Identity::generate().unwrap(), Identity::generate().unwrap());
             let streams = Streams {
                 outputs: &[],
@@ -3263,16 +3275,16 @@ mod tests {
             };
             let (endpoint, served) = Endpoint::bind(&vm, kiln.fingerprint(), loopback(), streams).unwrap();
             let address = endpoint.address;
-            let _serving = std::thread::spawn(move || endpoint.run());
+            let _serving = party::spawn_member(move || endpoint.run());
             let (starts, members) = (served.execs.unwrap(), served.members.unwrap());
-            let host = std::thread::spawn(move || {
+            let host = party::spawn_member(move || {
                 for _ in 0..2 {
-                    let start = starts.recv_timeout(PATIENCE).unwrap();
+                    let start = receive("its host was asked no exec", &starts);
                     let asked = (start.ask.run, start.ask.generation, start.ask.member);
                     assert_eq!(asked, (RunId([0; 32]), 0, 5));
                     mcp_stand_in(start);
                 }
-                let member = members.recv_timeout(PATIENCE).unwrap();
+                let member = receive("its host was asked no member's lane", &members);
                 assert_eq!(member.ask.member, 5);
                 member.replies.tell(exec::Reply::Exited(7));
             });
@@ -3352,7 +3364,7 @@ mod tests {
                 steer,
                 replies,
                 ..
-            } = starts.recv_timeout(PATIENCE).unwrap();
+            } = receive("its host was asked no exec", &starts);
             let (_errors, stderr) = stderr.unwrap();
             stdout.1.finish().unwrap();
             stderr.finish().unwrap();
@@ -3365,10 +3377,7 @@ mod tests {
             assert_eq!(live.end(2), Heard::End(2));
             assert_eq!(live.take(0, told), exec::Told::Exit(0));
             assert_eq!(live.end(0), Heard::End(0));
-            assert_eq!(
-                steer.recv_timeout(PATIENCE),
-                Err(mpsc::RecvTimeoutError::Disconnected)
-            );
+            assert_eq!(received(&steer), Err(Unreceived::Gone));
             assert_eq!(live.lost, None);
         }
 
@@ -3383,6 +3392,20 @@ mod tests {
             .unwrap()
         }
 
+        /// A member's steer, sent by `send` at once (a patience of none), its answer then waited
+        /// for as long as its test's own threads run (D215's judged wait): taken, or why not.
+        fn steer(
+            steering: &mut MemberSteering,
+            send: impl FnOnce(&mut MemberSteering) -> Result<Option<()>, Fault>,
+        ) -> Result<(), Fault> {
+            match send(steering)? {
+                Some(()) => Ok(()),
+                None => answer("a member's steer was not answered", |patience| {
+                    steering.steered(patience)
+                }),
+            }
+        }
+
         /// A member's own lane: its host says the member runs, and the lane says so, naming it;
         /// each steer reaches its host in turn and its answer is told, a refusal typed; an end
         /// its host says while a steer it was handed awaits its answer is told after that
@@ -3393,7 +3416,7 @@ mod tests {
             let (serving, members) = Serving::with_members(&vm, kiln.fingerprint());
             let mut live = Live::dial(&kiln, vm.fingerprint(), serving.address);
             live.open(0, &member_ask(run(), GENERATION, 0));
-            let start = members.recv_timeout(PATIENCE).unwrap();
+            let start = receive("its host was asked no member's lane", &members);
             assert_eq!(
                 start.ask,
                 exec::Ask {
@@ -3411,12 +3434,12 @@ mod tests {
                 (exec::Steer::Resize(size), Err(exec::Unsteered::Terminal)),
             ] {
                 live.send(0, &exec::steering(steer).unwrap());
-                assert_eq!(start.steer.recv_timeout(PATIENCE), Ok(steer));
+                assert_eq!(received(&start.steer), Ok(steer));
                 start.replies.tell(exec::Reply::Steered(answer));
                 assert_eq!(live.take(0, told), exec::Told::Steered(answer));
             }
             live.send(0, &exec::steering(exec::Steer::Signal(2)).unwrap());
-            assert_eq!(start.steer.recv_timeout(PATIENCE), Ok(exec::Steer::Signal(2)));
+            assert_eq!(received(&start.steer), Ok(exec::Steer::Signal(2)));
             start.replies.tell(exec::Reply::Exited(130));
             start
                 .replies
@@ -3427,10 +3450,7 @@ mod tests {
             );
             assert_eq!(live.take(0, told), exec::Told::Exit(130));
             assert_eq!(live.end(0), Heard::End(0));
-            assert_eq!(
-                start.steer.recv_timeout(PATIENCE),
-                Err(mpsc::RecvTimeoutError::Disconnected)
-            );
+            assert_eq!(received(&start.steer), Err(Unreceived::Gone));
             assert_eq!(live.lost, None);
         }
 
@@ -3455,12 +3475,12 @@ mod tests {
                 assert_eq!(live.end(lane), Heard::End(lane));
             }
             live.open(3, &member_ask(run(), GENERATION, 0));
-            let ended = members.recv_timeout(PATIENCE).unwrap();
+            let ended = receive("its host was asked no member's lane", &members);
             ended.replies.tell(exec::Reply::Exited(137));
             assert_eq!(live.take(3, told), exec::Told::Exit(137));
             assert_eq!(live.end(3), Heard::End(3));
             live.open(4, &member_ask(run(), GENERATION, 0));
-            let unserved = members.recv_timeout(PATIENCE).unwrap();
+            let unserved = receive("its host was asked no member's lane", &members);
             unserved
                 .replies
                 .tell(exec::Reply::Unstarted(exec::Unstarted::Failed));
@@ -3483,14 +3503,11 @@ mod tests {
             let (serving, members) = Serving::with_members(&vm, kiln.fingerprint());
             let mut live = Live::dial(&kiln, vm.fingerprint(), serving.address);
             live.open(0, &member_ask(run(), GENERATION, 0));
-            let start = members.recv_timeout(PATIENCE).unwrap();
+            let start = receive("its host was asked no member's lane", &members);
             start.replies.tell(exec::Reply::Running);
             assert_eq!(live.take(0, told), exec::Told::Running(0));
             let newer = Live::dial(&kiln, vm.fingerprint(), serving.address);
-            assert_eq!(
-                start.steer.recv_timeout(PATIENCE),
-                Err(mpsc::RecvTimeoutError::Disconnected)
-            );
+            assert_eq!(received(&start.steer), Err(Unreceived::Gone));
             drop(newer);
         }
 
@@ -3520,31 +3537,25 @@ mod tests {
             );
             let execs = dialed.execs.as_ref().unwrap();
             let size = shards_abi::run::Size { rows: 50, cols: 132 };
-            let host = std::thread::spawn(move || {
-                let running = members.recv_timeout(PATIENCE).unwrap();
+            let host = party::spawn_member(move || {
+                let running = receive("its host was asked no member's lane", &members);
                 running.replies.tell(exec::Reply::Running);
-                assert_eq!(running.steer.recv_timeout(PATIENCE), Ok(exec::Steer::Signal(15)));
+                assert_eq!(received(&running.steer), Ok(exec::Steer::Signal(15)));
                 running.replies.tell(exec::Reply::Steered(Ok(())));
-                assert_eq!(
-                    running.steer.recv_timeout(PATIENCE),
-                    Ok(exec::Steer::Resize(size))
-                );
+                assert_eq!(received(&running.steer), Ok(exec::Steer::Resize(size)));
                 running
                     .replies
                     .tell(exec::Reply::Steered(Err(exec::Unsteered::Terminal)));
                 running.replies.tell(exec::Reply::Exited(143));
-                assert_eq!(
-                    running.steer.recv_timeout(PATIENCE),
-                    Err(mpsc::RecvTimeoutError::Disconnected)
-                );
-                let ended = members.recv_timeout(PATIENCE).unwrap();
+                assert_eq!(received(&running.steer), Err(Unreceived::Gone));
+                let ended = receive("its host was asked no member's lane", &members);
                 ended.replies.tell(exec::Reply::Exited(0));
-                let termed = members.recv_timeout(PATIENCE).unwrap();
+                let termed = receive("its host was asked no member's lane", &members);
                 termed.replies.tell(exec::Reply::Running);
                 termed.replies.tell(exec::Reply::Signaled(15));
-                let killed = members.recv_timeout(PATIENCE).unwrap();
+                let killed = receive("its host was asked no member's lane", &members);
                 killed.replies.tell(exec::Reply::Signaled(9));
-                let unserved = members.recv_timeout(PATIENCE).unwrap();
+                let unserved = receive("its host was asked no member's lane", &members);
                 unserved
                     .replies
                     .tell(exec::Reply::Unstarted(exec::Unstarted::Failed));
@@ -3556,27 +3567,31 @@ mod tests {
             else {
                 panic!("member 0 runs");
             };
-            assert_eq!(steering.signal(15, PATIENCE), Ok(Some(())));
             assert_eq!(
-                steering.signal(0, PATIENCE),
+                steer(&mut steering, |s| s.signal(15, std::time::Duration::ZERO)),
+                Ok(())
+            );
+            assert_eq!(
+                steer(&mut steering, |s| s.signal(0, std::time::Duration::ZERO)),
                 Err(Fault::Refused(Reason::Protocol))
             );
             assert_eq!(
-                steering.signal(shards_abi::run::NSIG + 1, PATIENCE),
+                steer(&mut steering, |s| s
+                    .signal(shards_abi::run::NSIG + 1, std::time::Duration::ZERO)),
                 Err(Fault::Refused(Reason::Protocol))
             );
             assert_eq!(
-                steering.resize(size, PATIENCE),
+                steer(&mut steering, |s| s.resize(size, std::time::Duration::ZERO)),
                 Err(Fault::Unsteered(exec::Unsteered::Terminal))
             );
             assert_eq!(end.wait(), Ok(exec::End::Exited(143)));
             assert_eq!(end.wait(), Ok(exec::End::Exited(143)));
             assert_eq!(
-                steering.signal(9, PATIENCE),
+                steer(&mut steering, |s| s.signal(9, std::time::Duration::ZERO)),
                 Err(Fault::Unsteered(exec::Unsteered::Ended))
             );
             assert_eq!(
-                steering.resize(size, PATIENCE),
+                steer(&mut steering, |s| s.resize(size, std::time::Duration::ZERO)),
                 Err(Fault::Unsteered(exec::Unsteered::Ended))
             );
             assert!(matches!(
@@ -3630,31 +3645,31 @@ mod tests {
             let (go, held) = mpsc::channel::<()>();
             let (seen_tx, seen) = mpsc::channel::<&'static str>();
             let short = std::time::Duration::from_millis(20);
-            let host = std::thread::spawn(move || {
-                let running = members.recv_timeout(PATIENCE).unwrap();
+            let host = party::spawn_member(move || {
+                let running = receive("its host was asked no member's lane", &members);
                 seen_tx.send("asked").unwrap();
                 held.recv().unwrap();
                 running.replies.tell(exec::Reply::Running);
-                assert_eq!(running.steer.recv_timeout(PATIENCE), Ok(exec::Steer::Signal(15)));
+                assert_eq!(received(&running.steer), Ok(exec::Steer::Signal(15)));
                 seen_tx.send("signalled").unwrap();
                 held.recv().unwrap();
                 running.replies.tell(exec::Reply::Steered(Ok(())));
                 // The resize refused while the signal awaited its answer never came.
-                assert_eq!(running.steer.recv_timeout(PATIENCE), Ok(exec::Steer::Signal(9)));
+                assert_eq!(received(&running.steer), Ok(exec::Steer::Signal(9)));
                 running.replies.tell(exec::Reply::Steered(Ok(())));
                 // One ask reached the endpoint, however many waits followed it.
                 assert!(matches!(members.try_recv(), Err(mpsc::TryRecvError::Empty)));
                 running
             });
             let mut ask = execs.member(0).unwrap();
-            assert_eq!(seen.recv_timeout(PATIENCE), Ok("asked"), "sent before any wait");
+            assert_eq!(received(&seen), Ok("asked"), "sent before any wait");
             assert!(matches!(ask.wait(std::time::Duration::ZERO), Ok(None)));
             assert!(matches!(ask.wait(short), Ok(None)));
             go.send(()).unwrap();
-            let Some(crate::control::Member::Running(crate::control::MemberControl {
+            let crate::control::Member::Running(crate::control::MemberControl {
                 mut steering,
                 end: _end,
-            })) = ask.wait(PATIENCE).unwrap()
+            }) = answer("member 0's lane was not answered", |patience| ask.wait(patience)).unwrap()
             else {
                 panic!("member 0 runs");
             };
@@ -3664,14 +3679,21 @@ mod tests {
             ));
             assert_eq!(steering.steered(std::time::Duration::ZERO), Err(Fault::Unawaited));
             assert_eq!(steering.signal(15, std::time::Duration::ZERO), Ok(None));
-            assert_eq!(seen.recv_timeout(PATIENCE), Ok("signalled"));
+            assert_eq!(received(&seen), Ok("signalled"));
             assert_eq!(steering.steered(short), Ok(None));
             assert_eq!(
-                steering.resize(shards_abi::run::Size { rows: 24, cols: 80 }, PATIENCE),
+                steering.resize(
+                    shards_abi::run::Size { rows: 24, cols: 80 },
+                    std::time::Duration::ZERO
+                ),
                 Err(Fault::Awaiting)
             );
             go.send(()).unwrap();
-            assert_eq!(steering.steered(PATIENCE), Ok(Some(())));
+            assert_eq!(
+                answer("its signal was not answered", |patience| steering
+                    .steered(patience)),
+                Ok(())
+            );
             assert_eq!(steering.steered(std::time::Duration::ZERO), Err(Fault::Unawaited));
             assert_eq!(steering.signal(9, std::time::Duration::MAX), Ok(Some(())));
             drop(host.join().unwrap());
@@ -3702,12 +3724,12 @@ mod tests {
             let execs = dialed.execs.as_ref().unwrap();
 
             let ask = execs.member(0).unwrap();
-            let running = members.recv_timeout(PATIENCE).unwrap();
+            let running = receive("its host was asked no member's lane", &members);
             drop(ask);
             running.replies.tell(exec::Reply::Running);
             assert_eq!(
-                running.steer.recv_timeout(PATIENCE),
-                Err(mpsc::RecvTimeoutError::Disconnected),
+                received(&running.steer),
+                Err(Unreceived::Gone),
                 "the member's lane, opened after its asker had gone, is closed"
             );
 
@@ -3717,18 +3739,18 @@ mod tests {
                 ..shards_abi::run::Spec::default()
             };
             let ask = execs.exec(0, spec).unwrap();
-            let start = starts.recv_timeout(PATIENCE).unwrap();
+            let start = receive("its host was asked no exec", &starts);
             drop(ask);
             start.replies.tell(exec::Reply::Started);
             assert_eq!(
-                start.steer.recv_timeout(PATIENCE),
-                Err(mpsc::RecvTimeoutError::Disconnected),
+                received(&start.steer),
+                Err(Unreceived::Gone),
                 "the exec, started after its asker had gone, is hung up"
             );
 
             // The connection goes on: a lane asked after is answered.
             let ask = execs.member(0);
-            let running = members.recv_timeout(PATIENCE).unwrap();
+            let running = receive("its host was asked no member's lane", &members);
             running.replies.tell(exec::Reply::Exited(0));
             assert!(matches!(
                 answered!(ask),
@@ -3744,10 +3766,11 @@ mod tests {
             to: SocketAddr,
             subscriptions: Subscriptions<'_>,
         ) -> (Dialed, JoinHandle<Result<(), managed::Error>>) {
+            party::of_test();
             let (controller, dialed) = super::super::Controller::dial(own, vm, to, subscriptions).unwrap();
             let driver = std::thread::Builder::new()
                 .name("controller".into())
-                .spawn(move || controller.run())
+                .spawn(party::carried(move || controller.run()))
                 .unwrap();
             (dialed, driver)
         }
@@ -3826,7 +3849,7 @@ mod tests {
             }
             let mut relayed = Vec::new();
             while relayed.len() < line.len() {
-                let record = serving.records.recv_timeout(PATIENCE).unwrap();
+                let record = receive("the member's stdin was relayed nothing", &serving.records);
                 assert!(record.len() <= RECORD);
                 relayed.extend_from_slice(&record);
             }
@@ -3982,8 +4005,9 @@ mod tests {
         }
 
         /// One record in flight, acknowledged only as the controller asks for the next: the
-        /// endpoint holds a record handed out until then, and its next comes after, at its
-        /// cursor.
+        /// endpoint holds a record handed out until then, its test's threads gone still with
+        /// it unacknowledged (D215's stillness, what a judged wait on them refuses: all they
+        /// had to do done), and its next comes after, at its cursor.
         #[test]
         fn a_record_is_acknowledged_only_as_the_next_is_asked_for() {
             let (vm, kiln) = (Identity::generate().unwrap(), Identity::generate().unwrap());
@@ -4002,8 +4026,16 @@ mod tests {
             );
             serving.submit(STDOUT, b"first");
             let mut stdout = dialed.outputs.remove(0);
+            // Read on a thread of its test's party and waited for judged: an answer of its
+            // tests' waits, which the stillness below is judged by.
+            let (read, first) = mpsc::channel();
+            party::spawn_member(move || {
+                let got = stdout.next_record();
+                let _ = read.send((stdout, got));
+            });
+            let (mut stdout, first) = receive("its first record never came", &first);
             assert_eq!(
-                stdout.next_record().unwrap(),
+                first.unwrap(),
                 Got::Record {
                     at: 0,
                     bytes: b"first".to_vec()
@@ -4013,22 +4045,22 @@ mod tests {
                 accepted: 5,
                 consumed: 0,
             };
-            std::thread::sleep(PATIENCE / 10);
+            // Its party still a whole W* past every deadline it waits until: nothing it had to
+            // do is left, an acknowledgement sent with the record's handing out among it.
+            waited(|| false).unwrap_err();
             assert_eq!(
                 serving.outputs[STDOUT].1.progress(),
                 held,
                 "acknowledged while held"
             );
             assert_eq!(stdout.cursor(), 0);
-            let reader = std::thread::spawn(move || {
+            let reader = party::spawn_member(move || {
                 let next = stdout.next_record();
                 (stdout, next)
             });
-            let asked = std::time::Instant::now();
-            while serving.outputs[STDOUT].1.progress().consumed != 5 {
-                assert!(asked.elapsed() < PATIENCE, "never acknowledged");
-                std::thread::sleep(PATIENCE / 100);
-            }
+            until("never acknowledged", || {
+                serving.outputs[STDOUT].1.progress().consumed == 5
+            });
             serving.submit(STDOUT, b"second");
             let (stdout, next) = reader.join().unwrap();
             assert_eq!(
@@ -4069,7 +4101,7 @@ mod tests {
             let mut stdout = dialed.outputs.remove(0);
             assert_eq!(stdout.next_record(), Ok(Got::Record { at: 0, bytes: big }));
             // Asking for the next acknowledges it, which gives its producer room for the next.
-            let reader = std::thread::spawn(move || {
+            let reader = party::spawn_member(move || {
                 let next = stdout.next_record();
                 (stdout, next)
             });
@@ -4240,11 +4272,17 @@ mod tests {
                 Err(Fault::Lost(Ended::Closed(By::Peer, Reason::Stale)))
             );
             assert_eq!(newer.inputs[0].write(b"more").unwrap(), 4);
-            assert_eq!(serving.records.recv_timeout(PATIENCE).unwrap(), b"in");
-            assert_eq!(serving.records.recv_timeout(PATIENCE).unwrap(), b"more");
+            assert_eq!(
+                receive("the member's stdin was relayed nothing", &serving.records),
+                b"in"
+            );
+            assert_eq!(
+                receive("the member's stdin was relayed nothing", &serving.records),
+                b"more"
+            );
             // Asking for the next acknowledges "once", which makes the endpoint's room for it.
             let mut stdout = newer.outputs.remove(0);
-            let reader = std::thread::spawn(move || stdout.next_record());
+            let reader = party::spawn_member(move || stdout.next_record());
             serving.submit(STDOUT, b"twice");
             assert_eq!(
                 reader.join().unwrap().unwrap(),
@@ -4424,16 +4462,16 @@ mod tests {
             let room = RECORD - exec::LOG_OUTPUT_HEAD;
             let (more_tx, more) = mpsc::channel();
             let served = kept.clone();
-            let host = std::thread::spawn(move || {
+            let host = party::spawn_member(move || {
                 let mut let_go = Vec::new();
                 for _ in 0..4 {
-                    let start = starts.recv_timeout(PATIENCE).unwrap();
+                    let start = receive("its host was asked no exec", &starts);
                     assert!(start.stderr.is_none() && start.stdin.is_none());
                     let_go.push(log_stand_in(start, &served, 1, None));
                 }
-                let start = starts.recv_timeout(PATIENCE).unwrap();
+                let start = receive("its host was asked no exec", &starts);
                 let_go.push(log_stand_in(start, &served, 1, Some(more)));
-                let start = starts.recv_timeout(PATIENCE).unwrap();
+                let start = receive("its host was asked no exec", &starts);
                 let_go.push(log_stand_in(start, &served, 1, None));
                 let_go
             });
@@ -4571,9 +4609,9 @@ mod tests {
             // Each source the run keeps, the command's and a member's.
             let sources = [LogSource::Command, LogSource::Member(0)];
             let served = kept.clone();
-            let host = std::thread::spawn(move || {
+            let host = party::spawn_member(move || {
                 (0..sources.len())
-                    .map(|_| log_stand_in(starts.recv_timeout(PATIENCE).unwrap(), &served, 1, None))
+                    .map(|_| log_stand_in(receive("its host was asked no exec", &starts), &served, 1, None))
                     .collect::<Vec<_>>()
             });
             for source in sources {
