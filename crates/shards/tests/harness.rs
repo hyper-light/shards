@@ -218,6 +218,8 @@ fn a_party_in_a_long_durable_write_is_held_while_its_volume_works() {
         while !said.contains("written") {
             said.clear();
             if out.read_line(&mut said).unwrap() == 0 {
+                let _ = writer.kill();
+                let _ = writer.wait();
                 return Err("the stand-in ended unwritten".to_string());
             }
         }
@@ -232,16 +234,19 @@ fn a_party_in_a_long_durable_write_is_held_while_its_volume_works() {
                 let mut said = String::new();
                 while !said.contains("durable") {
                     said.clear();
-                    assert_ne!(
-                        out.read_line(&mut said).unwrap(),
-                        0,
-                        "the stand-in ended undurable"
-                    );
+                    if out.read_line(&mut said).unwrap() == 0 {
+                        return;
+                    }
                 }
             },
         );
-        writer.wait().unwrap();
-        judged
+        let status = writer.wait().unwrap();
+        judged?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!("the stand-in ended undurable: {status}"))
+        }
     }
     let home = TempDir::new("durable-held");
     let round = |bytes: u64, forget: bool| round(&home, bytes, forget);
