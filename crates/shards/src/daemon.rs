@@ -10216,8 +10216,13 @@ enum Fault {
 mod tests {
     use std::io::{Read, Write};
 
-    use shards_api::{Found, Judge, Record, Seen};
-    use shards_testwait::{Unreceived, latest_deadline_of, receive, received, stalled, until, waited};
+    use shards_api::Record;
+    // Their tests are Unix's alone: `under_limit`, the ready and visit waits.
+    #[cfg(unix)]
+    use shards_api::{Found, Judge, Seen};
+    #[cfg(unix)]
+    use shards_testwait::latest_deadline_of;
+    use shards_testwait::{Unreceived, receive, received, stalled, until, waited};
     use shards_vmm::platform::{IDLE_VM_CPU, progressed};
 
     /// A run handed over as `hand_over` hands it, its VM's party this process and its kind
