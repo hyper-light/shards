@@ -176,7 +176,7 @@ fn durable(bytes: u64) {
     let mut left = bytes;
     while left > 0 {
         let n = left.min(chunk.len() as u64);
-        file.write_all(&chunk[..n as usize]).unwrap();
+        file.write_all(chunk.get(..n as usize).unwrap()).unwrap();
         left -= n;
     }
     let mut out = std::io::stdout();
@@ -217,11 +217,9 @@ fn a_party_in_a_long_durable_write_is_held_while_its_volume_works() {
         // Written first, outside the wait: its writing is its CPU.
         while !said.contains("written") {
             said.clear();
-            assert_ne!(
-                out.read_line(&mut said).unwrap(),
-                0,
-                "the stand-in ended unwritten"
-            );
+            if out.read_line(&mut said).unwrap() == 0 {
+                return Err("the stand-in ended unwritten".to_string());
+            }
         }
         let mut go = writer.stdin.take().unwrap();
         let party = common::Party::client(writer.id(), Some(home));
