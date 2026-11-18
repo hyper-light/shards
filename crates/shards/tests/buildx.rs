@@ -94,12 +94,13 @@ fn buildx_builds_with_its_own_builder_in_a_microvm() {
         format!("FROM {image}\nRUN [\"/bin/testguest\", \"fs\", \"write:/tmp/built=yes\"]\n"),
     )
     .unwrap();
-    // The CLI's own config, its plugin the host's buildx, and no credential helper.
+    // The CLI's own config, its plugin the host's buildx, and no credential helper. The
+    // plugin, which docker execs, copied by a process of its own: no exec of it fails ETXTBSY.
     let config = home.join("docker-config");
     std::fs::create_dir_all(config.join("cli-plugins")).unwrap();
-    std::fs::copy(
+    shards_testdir::program_copy(
         &buildx,
-        config
+        &config
             .join("cli-plugins")
             .join(format!("docker-buildx{}", std::env::consts::EXE_SUFFIX)),
     )

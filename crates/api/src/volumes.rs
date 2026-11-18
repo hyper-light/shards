@@ -404,13 +404,12 @@ mod tests {
         );
     }
 
-    /// `script` as an executable stand-in for `shards`, in `dir`.
+    /// `script` as an executable stand-in for `shards`, in `dir`, written by a process of its
+    /// own (`shards_testdir::program`): no exec of it fails ETXTBSY.
     #[cfg(unix)]
     fn stand_in(dir: &Path, script: &str) -> std::path::PathBuf {
-        use std::os::unix::fs::PermissionsExt as _;
         let path = dir.join("shards");
-        std::fs::write(&path, format!("#!/bin/sh\n{script}")).unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        shards_testdir::program(&path, &format!("#!/bin/sh\n{script}")).unwrap();
         path
     }
 

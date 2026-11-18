@@ -1294,13 +1294,13 @@ mod tests {
         ));
     }
 
-    /// `script` as an executable stand-in for `shards`, in `dir`.
+    /// `script` as an executable stand-in for `shards`, in `dir`, written by a process of its
+    /// own (`shards_testdir::program`): one this process wrote itself failed its exec ETXTBSY
+    /// where another test's child held it (CI 44379986478, aarch64 gnu, `Text file busy`).
     #[cfg(unix)]
     fn stand_in(dir: &Path, script: &str) -> PathBuf {
-        use std::os::unix::fs::PermissionsExt as _;
         let path = dir.join("shards");
-        std::fs::write(&path, format!("#!/bin/sh\n{script}")).unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        shards_testdir::program(&path, &format!("#!/bin/sh\n{script}")).unwrap();
         path
     }
 

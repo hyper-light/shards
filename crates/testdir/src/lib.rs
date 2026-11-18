@@ -389,6 +389,9 @@ fn write_apart(path: &Path, source: Source<'_>) -> io::Result<()> {
     if pid < 0 {
         return Err(io::Error::last_os_error());
     }
+    // As the program is written, where another test thread's fork can come.
+    #[cfg(test)]
+    tests::forked::while_written(path);
     let mut status = 0;
     // SAFETY: waitpid(2) of this function's own child, into a local.
     while unsafe { libc::waitpid(pid, &mut status, 0) } != pid {
@@ -811,5 +814,134 @@ mod tests {
         };
         program_copy(&dir.join("source"), &dir.join("copied")).unwrap();
         program(&dir.join("written"), "#!/bin/sh\nexit 0\n").unwrap();
+    }
+
+    /// A child forked as a program is written, as another test thread's can be, which holds
+    /// every descriptor this process had at the fork until it execs: here until its test
+    /// lets it go.
+    #[cfg(unix)]
+    pub(crate) mod forked {
+        use super::*;
+        use std::io::Write as _;
+        use std::os::fd::AsRawFd as _;
+
+        /// A test's watch on the next program written on its thread: the pipe its child
+        /// reads until it is let go, then that child's ID and whether this process held the
+        /// program open to write as it forked.
+        struct Watch {
+            release: (std::io::PipeReader, std::io::PipeWriter),
+            forked: Option<(libc::pid_t, bool)>,
+        }
+
+        thread_local! {
+            static WATCH: std::cell::RefCell<Option<Watch>> = const { std::cell::RefCell::new(None) };
+        }
+
+        /// [`write_apart`]'s hook as it writes `path`: where its thread's test watches, a
+        /// child forked, which reads the watch's pipe until a byte comes, or its end as this
+        /// process ends, and exits.
+        pub(crate) fn while_written(path: &Path) {
+            WATCH.with_borrow_mut(|watch| {
+                let Some(watch) = watch else {
+                    return;
+                };
+                let held = held_to_write(path);
+                let (read, write) = (watch.release.0.as_raw_fd(), watch.release.1.as_raw_fd());
+                let interrupted = || io::Error::last_os_error().kind() == io::ErrorKind::Interrupted;
+                // SAFETY: fork(2); the child calls only close(2), read(2) and _exit(2), which
+                // are async-signal-safe, and reads errno, on memory made before the fork.
+                let pid = unsafe { libc::fork() };
+                if pid == 0 {
+                    let mut byte = 0u8;
+                    // SAFETY: close(2) of the child's copy of the write end, so that the pipe
+                    // ends with this process's; read(2) of a byte into a local, again where a
+                    // signal cut it; _exit(2).
+                    unsafe {
+                        libc::close(write);
+                        while libc::read(read, (&raw mut byte).cast(), 1) < 0 && interrupted() {}
+                        libc::_exit(0)
+                    }
+                }
+                assert!(pid > 0, "fork: {}", io::Error::last_os_error());
+                watch.forked = Some((pid, held));
+            });
+        }
+
+        /// Whether this process holds the file at `path` open to write: a descriptor of its
+        /// own, each of which /dev/fd names (on Linux, /proc/self/fd), open for writing on it.
+        fn held_to_write(path: &Path) -> bool {
+            use std::os::unix::ffi::OsStrExt as _;
+            let path = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+            // SAFETY: stat is a C struct of integers, which all-zero bytes are a value of.
+            let (mut file, mut st): (libc::stat, libc::stat) = unsafe { std::mem::zeroed() };
+            // SAFETY: stat(2) of a NUL-terminated path, into a local.
+            if unsafe { libc::stat(path.as_ptr(), &mut file) } != 0 {
+                return false;
+            }
+            let fds = std::fs::read_dir("/dev/fd").unwrap().flatten();
+            fds.filter_map(|fd| fd.file_name().to_str()?.parse::<libc::c_int>().ok())
+                .any(|fd| {
+                    // SAFETY: fcntl(2) of a descriptor's status flags, and fstat(2) of it into
+                    // a local: one closed since /dev/fd named it fails either.
+                    let (flags, stated) =
+                        unsafe { (libc::fcntl(fd, libc::F_GETFL), libc::fstat(fd, &mut st)) };
+                    flags >= 0
+                        && flags & libc::O_ACCMODE != libc::O_RDONLY
+                        && stated == 0
+                        && (st.st_dev, st.st_ino) == (file.st_dev, file.st_ino)
+                })
+        }
+
+        /// `write`, which writes the program at `path`, watched; then the program run while
+        /// the child forked as it was written lives. Whether this process held the program
+        /// open to write as that child forked, and the run's exit code.
+        fn run_while_held(
+            path: &Path,
+            write: impl FnOnce() -> io::Result<()>,
+        ) -> (bool, io::Result<Option<i32>>) {
+            WATCH.set(Some(Watch {
+                release: std::io::pipe().unwrap(),
+                forked: None,
+            }));
+            write().unwrap();
+            let mut watch = WATCH.take().unwrap();
+            let (child, held) = watch.forked.unwrap();
+            let ran = std::process::Command::new(path).status().map(|s| s.code());
+            watch.release.1.write_all(&[0]).unwrap();
+            let mut status = 0;
+            // SAFETY: waitpid(2) of the child `while_written` forked, into a local.
+            assert_eq!(unsafe { libc::waitpid(child, &mut status, 0) }, child);
+            (held, ran)
+        }
+
+        /// A program runs at once though a child this process forked as it was written lives
+        /// on, as a child another test thread forks lives until it execs: the descriptor that
+        /// writes the program is never this process's, so no fork copies it ([`write_apart`]).
+        /// Do: write a program, and copy one, each watched. Expect: neither held open to write
+        /// by this process as its child forked, and each runs, exiting 7. Red with the program
+        /// written by a descriptor of this process, as `std::fs::write` writes (`api`'s
+        /// stand-ins, CI 44379986478): held as its child forks, and on Linux, whose exec
+        /// refuses a file open to write (ETXTBSY), not run.
+        #[test]
+        fn a_program_runs_while_a_child_forked_as_it_was_written_lives() {
+            let dir = TempDir::new("forked").unwrap();
+            let text = "#!/bin/sh\nexit 7\n";
+            // Read alone, never run.
+            std::fs::write(dir.join("source"), text).unwrap();
+            let (written, copied) = (dir.join("written"), dir.join("copied"));
+            let seen = [
+                ("written", run_while_held(&written, || program(&written, text))),
+                (
+                    "copied",
+                    run_while_held(&copied, || program_copy(&dir.join("source"), &copied)),
+                ),
+            ];
+            for (name, (held, ran)) in seen {
+                assert!(
+                    !held && matches!(ran, Ok(Some(7))),
+                    "{name}: held to write as its child forked: {held}; its run: {ran:?}"
+                );
+            }
+        }
     }
 }
