@@ -10471,9 +10471,29 @@ user's host as Docker's.
   slice, or is stopped or frozen. It was PM M357's idle CPU (`Progress`, 63 ms in 10 s),
   which ended a teardown that ran slower than an idle microVM (red at 2b89e8504:
   `an_end_goes_on_at_any_rate_and_not_asleep_or_stopped`, a fiftieth of a CPU). A killed VM
-  process is followed the same way, its host freeing it, before its end is given up on. A
-  joiner's VM is its provider's, which runs the provider's command too: a joiner is held to
-  one slice, then sent SIGKILL again, as before.
+  process is followed the same way, its host freeing it, before its end is given up on.
+- **A joiner's teardown is followed in its provider's VM** (ROOT's ruling, 2026-11-18; CI
+  44245219858, x86_64 gnu). A joiner's VM is its provider's (D119), which runs the
+  provider's command too and ticks whether or not the joiner's end goes on.
+  - Before: a joiner was followed by nothing. It was held to one teardown slice, sent
+    SIGKILL again, then held to a killed VM process's slice (`End::Exit`, 5.98 ms in that
+    home) and given up while its provider's guest still tore it down: `stop -t 1` of a
+    joiner exited 1 (`a_joiner_takes_volumes_as_a_container_does`).
+  - Now its teardown, after its SIGKILL and after its SIGKILL again (`KilledAgain`), is
+    followed in its provider's VM process by that process's work beyond an idle microVM's
+    (`Followed::of_provider`; `IDLE_VM_CPU`, PM M357's 63 ms of CPU in 10 s), judged over no
+    less than the CPU reading resolves. Its host holding it and what its host frees of it are
+    no sign there: an idle provider's ticks wait on a loaded host's CPUs as work would, and
+    its give-back frees it too.
+  - Its ends are learned as teardowns (`End::Teardown`), never as a VM process's exit.
+  - The cost: a joiner's teardown that runs slower than an idle microVM, the case D217's own
+    rule left PM M357's rate for, is given up after a slice of no such work. A provider runs
+    its own command, so no lower bound tells its ticks from that teardown.
+  - Tests: `daemon::ends::tests::a_joiners_teardown_goes_on_by_its_providers_work_beyond_an_idle_microvm`
+    (a spinning provider goes on; one trickling a fiftieth of a CPU does not) and
+    `daemon::tests::a_joiners_kill_hears_its_end_while_its_providers_vm_works` (the end
+    comes twenty learned slices past SIGKILL, the provider spinning). Red:
+    lanes/redgreen/own-35d-joiner-end.patch.
 - **A network or share process is followed the same way** (2026-11-13, PM M546; the
   person's ruling: a wait follows the party's liveness and progress, then the slowest
   answer seen). Once its VM has gone and its spawner holds nothing of it, it goes as its

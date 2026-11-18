@@ -1805,14 +1805,16 @@ impl<D: crate::containers::Disk> Daemon<D> {
     /// SIGKILL sent to the command of run `id` ([`signal`](Self::signal)): how long its
     /// teardown is given before it is looked at (this host's slice, D217: none while this
     /// home has heard no teardown, which is then followed by its liveness alone), and the
-    /// teardown followed from then on, in its microVM where that is its own. A SIGKILL that
-    /// cannot be sent leaves its guest nothing to end it by, nor to say its end on: no wait.
+    /// teardown followed from then on, in its microVM, or a joiner's (D119) in its provider's
+    /// by that VM process's work beyond an idle microVM's ([`Followed::of_provider`]). A
+    /// SIGKILL that cannot be sent leaves its guest nothing to end it by, nor to say its end
+    /// on: no wait.
     fn kill_command(&self, id: &str) -> (Option<Duration>, Followed) {
-        let own = match lock(&self.runs).get(id) {
-            Some(RunState::Tracked(t)) => t.joined.is_none().then(|| t.vm.id()),
-            _ => None,
+        let teardown = match lock(&self.runs).get(id) {
+            Some(RunState::Tracked(t)) if t.joined.is_none() => Followed::of(Some(t.vm.id())),
+            Some(RunState::Tracked(t)) => Followed::of_provider(t.vm.id()),
+            _ => Followed::of(None),
         };
-        let teardown = Followed::of(own);
         let wait = if self.signal(id, 9) {
             self.ends.slice(End::Teardown)
         } else {
@@ -2031,7 +2033,9 @@ impl<D: crate::containers::Disk> Daemon<D> {
     /// Ends every microVM's command of `targets` (its index, ID, signal and grace) at once,
     /// from one loop: the signal, then SIGKILL once its grace is up, then its VM once its
     /// guest's teardown has gone on no more for a slice, then giving up once the killed VM
-    /// process has gone on with its end no more for a slice, each slice this host's own
+    /// process has gone on with its end no more for a slice; a joiner's (D119) SIGKILL again in
+    /// its VM's place, its provider's, and giving up once its teardown there has gone on no
+    /// more for a slice of its own kind ([`Followed::of_provider`]); each slice this host's own
     /// and each end heard learned by it, timed as the loop woke for it, and kept in the home
     /// once, after the last ([`super::ends`], D217): no end waits on the record's flush, nor
     /// counts the loop's work on the ends before it as its own. A signal that cannot be sent
@@ -2048,10 +2052,13 @@ impl<D: crate::containers::Disk> Daemon<D> {
             Killed,
             Escalated,
             VmKilled,
+            /// A joiner's (D119) SIGKILL sent again on its own connection, its VM its
+            /// provider's, which its end must not take: its teardown followed there again.
+            KilledAgain,
         }
         let how = |p: &Phase| match p {
             Phase::Signalled => How::Signal,
-            Phase::Killed => How::Kill,
+            Phase::Killed | Phase::KilledAgain => How::Kill,
             Phase::Escalated => How::Escalated,
             Phase::VmKilled => How::Vm,
         };
@@ -2063,7 +2070,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
             phase: Phase,
             deadline: Option<Instant>,
             /// Its end followed once its command is sent SIGKILL, and again once its VM
-            /// is killed.
+            /// is killed or, a joiner's, its SIGKILL sent again.
             followed: Followed,
             /// When it was sent SIGKILL, or its VM killed: how long its end took.
             since: Instant,
@@ -2162,8 +2169,9 @@ impl<D: crate::containers::Disk> Daemon<D> {
                                 continue;
                             }
                             // A joiner's VM is its provider's (D119), which its end must
-                            // not take: its own SIGKILL again, on its own connection.
-                            let (socket, vm) = match lock(&self.runs).get(&e.id) {
+                            // not take: its own SIGKILL again, on its own connection, its
+                            // teardown followed in its provider's VM again.
+                            let (socket, vm, provider) = match lock(&self.runs).get(&e.id) {
                                 Some(RunState::Tracked(t)) if t.joined.is_none() => {
                                     super::log(format!(
                                         "container {}: its command not ended {:?} after it was signalled, its microVM gone on with nothing of its end for {:?}: its microVM killed",
@@ -2175,10 +2183,10 @@ impl<D: crate::containers::Disk> Daemon<D> {
                                     if let Err(err) = t.vm.kill(shards_ipc::signal::SIGKILL) {
                                         super::log(format!("container {}: killing its microVM: {err}", e.id));
                                     }
-                                    (None, Some(t.vm.id()))
+                                    (None, Some(t.vm.id()), None)
                                 }
-                                Some(RunState::Tracked(t)) => (Some(t.socket.clone()), None),
-                                _ => (None, None),
+                                Some(RunState::Tracked(t)) => (Some(t.socket.clone()), None, Some(t.vm.id())),
+                                _ => (None, None, None),
                             };
                             if let Some(socket) = socket {
                                 let _ = socket.send(
@@ -2188,19 +2196,37 @@ impl<D: crate::containers::Disk> Daemon<D> {
                                     &[],
                                 );
                             }
-                            e.phase = Phase::VmKilled;
-                            (e.followed, e.since) = (Followed::of(vm), Instant::now());
-                            e.deadline = self.ends.slice(End::Exit).and_then(after);
-                        }
-                        Phase::VmKilled => {
-                            if let Some(look) = e.followed.goes_on() {
-                                // Its host still ending it: another slice.
+                            if let Some(provider) = provider {
                                 super::log(format!(
-                                    "container {}: its microVM not yet ended {:?} after its kill, its process going on with its end: {look}",
+                                    "container {}: its command not ended {:?} after SIGKILL, its provider's microVM gone on with no more than an idle microVM's work for {:?}: SIGKILL sent again",
+                                    e.id,
+                                    Duration::from_secs(e.since.elapsed().as_secs()),
+                                    self.ends.slice(End::Teardown).unwrap_or_default()
+                                ));
+                                e.phase = Phase::KilledAgain;
+                                (e.followed, e.since) = (Followed::of_provider(provider), Instant::now());
+                                e.deadline = self.ends.slice(End::Teardown).and_then(after);
+                            } else {
+                                e.phase = Phase::VmKilled;
+                                (e.followed, e.since) = (Followed::of(vm), Instant::now());
+                                e.deadline = self.ends.slice(End::Exit).and_then(after);
+                            }
+                        }
+                        Phase::VmKilled | Phase::KilledAgain => {
+                            // A killed VM process's exit, or a joiner's teardown in its
+                            // provider's VM after its SIGKILL again: each its own kind of end.
+                            let (end, what) = match e.phase {
+                                Phase::KilledAgain => (End::Teardown, "its provider's microVM"),
+                                _ => (End::Exit, "its process"),
+                            };
+                            if let Some(look) = e.followed.goes_on() {
+                                // Its host, or its provider's guest, still ending it: another slice.
+                                super::log(format!(
+                                    "container {}: not yet ended {:?} after its last kill, {what} going on with its end: {look}",
                                     e.id,
                                     Duration::from_secs(e.since.elapsed().as_secs())
                                 ));
-                                e.deadline = self.ends.slice(End::Exit).and_then(after);
+                                e.deadline = self.ends.slice(end).and_then(after);
                                 i += 1;
                                 continue;
                             }
@@ -2212,19 +2238,23 @@ impl<D: crate::containers::Disk> Daemon<D> {
                             let mut byte = [0u8; 1];
                             let ended = matches!((&gone.told).read(&mut byte), Ok(1));
                             if ended {
-                                self.ends.learn(End::Exit, gone.since.elapsed());
+                                self.ends.learn(end, gone.since.elapsed());
                                 learned = true;
                             } else {
                                 super::log(format!(
-                                    "microVM {}: no end heard {:?} after it was killed, its process gone on with nothing of its end for {:?}: {}",
+                                    "microVM {}: no end heard {:?} after it was killed, {what} gone on with nothing of its end for {:?}: {}",
                                     gone.id,
                                     Duration::from_secs(gone.since.elapsed().as_secs()),
                                     // Its deadline came: the home has a slice.
-                                    self.ends.slice(End::Exit).unwrap_or_default(),
+                                    self.ends.slice(end).unwrap_or_default(),
                                     self.unheard(&gone.id)
                                 ));
                             }
-                            done(gone.index, ended, if ended { How::Vm } else { How::Lost });
+                            done(
+                                gone.index,
+                                ended,
+                                if ended { how(&gone.phase) } else { How::Lost },
+                            );
                             continue;
                         }
                     }
@@ -2265,7 +2295,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 // What this host's ends take, learned for the next (D217).
                 let kind = match gone.phase {
                     _ if !ended => None,
-                    Phase::Killed | Phase::Escalated => Some(End::Teardown),
+                    Phase::Killed | Phase::Escalated | Phase::KilledAgain => Some(End::Teardown),
                     Phase::VmKilled => Some(End::Exit),
                     Phase::Signalled => None,
                 };

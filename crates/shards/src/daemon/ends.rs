@@ -16,7 +16,10 @@
 //! for a slice, or is stopped or frozen. A killed VM process is followed the same way. So is
 //! a run's network or share process once its VM has gone and its spawner holds nothing of it
 //! (`netproc::reap`): it goes as its VM's links close, and one that neither runs nor frees
-//! what it holds for a slice is ended (PM M546).
+//! what it holds for a slice is ended (PM M546). A joiner's teardown (D119) runs in its
+//! provider's microVM, whose VM process also runs the provider's own command and ticks: it
+//! goes on only by that process's work beyond an idle microVM's (PM M357,
+//! [`Followed::of_provider`]).
 //!
 //! The slice is this host's own, W*: the slowest end of its kind this home's processes have
 //! heard (the home's [`RECORD`]), kept as each is heard, so that a host whose guests stall on
@@ -203,10 +206,9 @@ impl Ends {
     }
 }
 
-/// A SIGKILLed command's teardown in its own microVM, a killed VM process's end, or a
-/// network or share process's once its VM has gone, followed by what its process runs and
-/// frees from then on; none for a joiner (D119), whose VM is its provider's and runs the
-/// provider's command too, so that it is held to one slice.
+/// A SIGKILLed command's teardown in its own microVM or, a joiner's (D119), in its provider's,
+/// a killed VM process's end, or a network or share process's once its VM has gone, followed
+/// by what its process runs and frees from then on.
 #[derive(Debug)]
 pub(crate) struct Followed {
     /// Its CPU and what its host does to it, as D215's readers see them, and when they last
@@ -215,6 +217,8 @@ pub(crate) struct Followed {
     looked: Instant,
     /// What it holds, which its host frees as its end goes on, and what it did, for the log.
     usage: Option<Progress>,
+    /// Whether its process is a joiner's provider's ([`Followed::of_provider`]).
+    provider: bool,
 }
 
 impl Followed {
@@ -227,6 +231,24 @@ impl Followed {
             watch,
             looked: Instant::now(),
             usage: pid.map(Progress::of),
+            provider: false,
+        }
+    }
+
+    /// A joiner's teardown (D119), from now, in its provider's microVM, whose VM process is
+    /// `pid` (ROOT's ruling, 2026-11-18). That process runs the provider's own command and
+    /// ticks whether or not the joiner's end goes on. So it goes on only by work beyond an idle
+    /// microVM's (`IDLE_VM_CPU`, PM M357: 63 ms of CPU in 10 s, the most an idle run's microVM
+    /// took, on windows-2025; 31 ms on windows-2022). Neither its host holding it from running
+    /// nor what its host frees of it is a sign: an idle provider's ticks wait on a loaded
+    /// host's CPUs as its work would, and its give-back frees it too. Before, a joiner's
+    /// teardown was followed by nothing: held to one slice, then to a killed VM process's,
+    /// and given up while its provider's guest still tore it down (CI 44245219858, x86_64
+    /// gnu: `stop -t 1` of a joiner exited 1, 5.98 ms into the second slice).
+    pub(crate) fn of_provider(pid: u32) -> Followed {
+        Followed {
+            provider: true,
+            ..Followed::of(Some(pid))
         }
     }
 
@@ -242,6 +264,17 @@ impl Followed {
             .watch
             .as_ref()
             .is_some_and(|watch| self.looked.elapsed() < watch.resolution());
+        // A provider's work is judged over no less than its CPU reading resolves: until the
+        // slices since add up to that, the look before is kept, and it goes on.
+        if self.provider && unresolved {
+            let usage = self.usage.as_ref()?;
+            return Some(Look {
+                ran: true,
+                before: None,
+                now: None,
+                over: usage.since(),
+            });
+        }
         let found = match self.watch.as_mut() {
             Some(_) if unresolved => None,
             watch => {
@@ -250,6 +283,9 @@ impl Followed {
             }
         };
         let look = self.usage.as_mut()?.look();
+        if self.provider {
+            return look.ran.then_some(look);
+        }
         let freed = matches!((look.before, look.now), (Some(b), Some(n)) if n.resident < b.resident);
         let went = unresolved
             || matches!(
@@ -375,7 +411,7 @@ mod tests {
     }
 
     /// An end is waited on past its slice while its VM process runs: this process spinning
-    /// a CPU is seen to go on, and a joiner's, which has no VM of its own to follow, never is.
+    /// a CPU is seen to go on, and one with no process to follow never is.
     #[test]
     fn an_end_is_followed_while_its_vm_process_runs() {
         let mut busy = Followed::of(Some(std::process::id()));
@@ -471,6 +507,52 @@ mod tests {
             .resolution();
         std::thread::sleep(resolution);
         assert!(sleeping.goes_on().is_none(), "stopped, it goes on with nothing");
+    }
+
+    /// A joiner's teardown (D119) goes on by its provider's VM process's work beyond an idle
+    /// microVM's alone (`IDLE_VM_CPU`, PM M357, ROOT's ruling of 2026-11-18). This process
+    /// spinning a CPU goes on. One trickling a fiftieth of a CPU, below an idle microVM's rate,
+    /// as an idle provider's ticks are, does not, where a teardown in its own VM goes on at
+    /// that rate (D217). Red (lanes/redgreen/own-35d-joiner-end.patch) with a joiner's
+    /// teardown followed by nothing, as before: the spinning provider is no going on.
+    #[cfg(unix)]
+    #[test]
+    fn a_joiners_teardown_goes_on_by_its_providers_work_beyond_an_idle_microvm() {
+        let mut busy = Followed::of_provider(std::process::id());
+        let t0 = std::time::Instant::now();
+        let mut x = 0u64;
+        while t0.elapsed() < Duration::from_millis(300) {
+            x = std::hint::black_box(x.wrapping_add(1));
+        }
+        assert!(busy.goes_on().is_some(), "a provider spinning a CPU goes on");
+        let trickler = Killed(
+            std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "daemon::ends::tests::an_end_goes_on_at_any_rate_and_not_asleep_or_stopped",
+                ])
+                .env(TRICKLE, "1")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        let pid = trickler.0.id();
+        // Settled into its trickle: a window in which it ran no more than an idle microVM's
+        // rate, as it does once its start's own CPU is past.
+        let mut settling = Progress::of(pid);
+        loop {
+            std::thread::sleep(Duration::from_millis(300));
+            if !settling.look().ran {
+                break;
+            }
+        }
+        let mut provider = Followed::of_provider(pid);
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(
+            provider.goes_on().is_none(),
+            "a fiftieth of a CPU, an idle provider's ticks, is no joiner's end going on"
+        );
     }
 
     /// A child killed as it drops.

@@ -12427,6 +12427,60 @@ mod tests {
         });
     }
 
+    /// A joiner's teardown runs in its provider's microVM (D119): its kill waits for its end
+    /// while that VM process works beyond an idle microVM's (`IDLE_VM_CPU`, PM M357), however
+    /// many of this home's slices that takes, and hears it (ROOT's ruling, 2026-11-18). This
+    /// home's slices are learned short here, though long enough that a spinning process
+    /// shares a loaded host's CPUs within each. The provider is a stand-in spinning a CPU, as
+    /// a guest tearing a joiner down works, and the joiner's end comes twenty slices past its
+    /// SIGKILL. Red (lanes/redgreen/own-35d-joiner-end.patch) with a joiner followed by
+    /// nothing, as before: its kill gives its end up a slice of each kind past its SIGKILL and
+    /// fails, as CI 44245219858's `stop -t 1` of a joiner did (x86_64 gnu, exit 1).
+    #[cfg(unix)]
+    #[test]
+    fn a_joiners_kill_hears_its_end_while_its_providers_vm_works() {
+        let t = Test::new("joiner-end");
+        t.run(|t| {
+            // This home's slices, learned of ends that took 50 ms.
+            let slice = Duration::from_millis(50);
+            t.daemon.ends.learn(super::ends::End::Teardown, slice);
+            t.daemon.ends.learn(super::ends::End::Exit, slice);
+            let id = t.create("joiner");
+            let starting = t.start(&id);
+            let (mut ready, vm) = t.warm_vm(None);
+            // Its VM its provider's: a stand-in spinning a CPU.
+            let provider = Arc::new(
+                shards_ipc::spawn(
+                    Path::new("/bin/sh"),
+                    &[OsStr::new("-c"), OsStr::new("while :; do :; done")],
+                    &[],
+                    false,
+                )
+                .unwrap(),
+            );
+            lock(&t.vms).push(provider.clone());
+            ready.vm = provider;
+            ready.joined = Some("provider".into());
+            ready.pooled = None;
+            starting.warm.send(ready).unwrap();
+            assert_eq!(heard(&vm).0, kind::RUN);
+            say(&vm, kind::TAKEN, &[]);
+            say(&vm, kind::STARTED, &[]);
+            t.until("the run started", |d| {
+                lock(&d.containers)
+                    .get(&id)
+                    .is_some_and(|c| c.state == Life::Running)
+            });
+            let asked = t.asking(&["kill", "joiner"]);
+            assert_eq!(heard(&vm), signal(9));
+            std::thread::sleep(slice * 20);
+            say(&vm, kind::DONE, &[137]);
+            let (status, out, err) = joined(asked);
+            assert_eq!((status, out.as_str(), err.as_str()), (0, "joiner\n", ""));
+            let _ = joined(starting.run);
+        });
+    }
+
     /// A daemon told to stop starts no run still pending: its warm VM hears nothing, its
     /// microVM keeps the code of a start that failed, and those waiting for it hear
     /// that code.
