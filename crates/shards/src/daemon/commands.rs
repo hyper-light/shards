@@ -2035,7 +2035,8 @@ impl<D: crate::containers::Disk> Daemon<D> {
     /// guest's teardown has gone on no more for a slice, then giving up once the killed VM
     /// process has gone on with its end no more for a slice; a joiner's (D119) SIGKILL again in
     /// its VM's place, its provider's, and giving up once its teardown there has gone on no
-    /// more for a slice of its own kind ([`Followed::of_provider`]); each slice this host's own
+    /// more for a slice of its own kind ([`Followed::of_provider`]); neither given up before the
+    /// daemon has taken what its run's socket holds (`take_messages`); each slice this host's own
     /// and each end heard learned by it, timed as the loop woke for it, and kept in the home
     /// once, after the last ([`super::ends`], D217): no end waits on the record's flush, nor
     /// counts the loop's work on the ends before it as its own. A signal that cannot be sent
@@ -2290,6 +2291,25 @@ impl<D: crate::containers::Disk> Daemon<D> {
                                 e.deadline = self.ends.slice(end).and_then(after);
                                 i += 1;
                                 continue;
+                            }
+                            // Come to give it up (`GIVING_UP`).
+                            #[cfg(test)]
+                            {
+                                *lock(&super::GIVING_UP).entry(e.id.clone()).or_default() += 1;
+                            }
+                            // What its run's socket holds is the daemon's own to take: its VM's
+                            // last words, its DONE among them, and its end, which the followers'
+                            // loop may not have reached. Taken here, its waiter still registered
+                            // to hear what they tell, after any taker under way, as a run's name
+                            // and ports are freed: no end is given up while the daemon has yet
+                            // to take it, and that work is bounded by what the socket holds
+                            // (D217, own-38n). A run no longer followed has had its end told.
+                            let inbox = match lock(&self.runs).get(&e.id) {
+                                Some(RunState::Tracked(t)) => Some(t.inbox.clone()),
+                                _ => None,
+                            };
+                            if let Some(inbox) = inbox {
+                                self.take_messages(&e.id, &inbox);
                             }
                             let gone = going.swap_remove(i);
                             let _ = poller.remove(&gone.told);

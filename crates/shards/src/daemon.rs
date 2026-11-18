@@ -517,6 +517,14 @@ static WAITED_PAST_MOST: Mutex<std::collections::BTreeMap<u32, u32>> =
 static TEARDOWN_WENT_ON: Mutex<std::collections::BTreeMap<String, u32>> =
     Mutex::new(std::collections::BTreeMap::new());
 
+/// How many times `end_all` came to give each microVM's end up, by its ID: at a look past its
+/// last kill that found its end going on no more, before it takes what its run's socket holds
+/// (D217, own-38n). Its test holds the run's messages, as a taker slowed past its VM's end
+/// holds them, until `end_all` comes to it, whose red gives the end up there.
+#[cfg(test)]
+static GIVING_UP: Mutex<std::collections::BTreeMap<String, u32>> =
+    Mutex::new(std::collections::BTreeMap::new());
+
 /// The setup entry carrying a microVM's own engine's token (D181), `engine=` and its bytes in
 /// lowercase hex, which init makes its command's socket by.
 fn engine_entry(token: &[u8; shards_abi::run::TOKEN]) -> Vec<u8> {
@@ -13123,6 +13131,73 @@ mod tests {
             assert_eq!(heard(&vm), signal(9));
             // Its run's socket the stand-in's alone from here: its end closes it.
             drop(vm);
+            let (status, out, err) = joined(asked);
+            assert_eq!((status, out.as_str(), err.as_str()), (0, "sleeper\n", ""));
+            let _ = joined(starting.run);
+        });
+    }
+
+    /// A killed VM's end that its daemon has yet to take is heard, never given up (D217,
+    /// own-38n): before `end_all` gives an end up, the daemon takes what its run's socket
+    /// holds, after any taker under way. ROOT's parallel daemon suite on this Mac at
+    /// fbc6880225 (g121-tmp/batch1/daemon1.log:1236-1242) gave up two killed stand-ins' ends
+    /// at that look, one while the daemon's own thread held its messages ("its messages being
+    /// taken"), the other's lying untaken ("nothing of its end taken"): "did not receive an
+    /// exit event". Here the test holds the run's messages from the kill's SIGKILL on, as a
+    /// taker slowed past its VM's end holds them, while its DONE, its last frame, and its end
+    /// wait unread, and lets go once `end_all` has come to give the end up (`GIVING_UP`). The
+    /// stand-in, asleep through its SIGKILL and holding its run's socket, is killed at its
+    /// teardown's first look and found gone at its exit's. Red
+    /// (lanes/redgreen/own-38n-own-work.patch, nothing taken there, as before): the kill gives
+    /// the end up, "did not receive an exit event".
+    #[cfg(unix)]
+    #[test]
+    fn a_kill_hears_an_end_its_daemon_has_yet_to_take() {
+        let t = Test::new("end-untaken");
+        t.run(|t| {
+            // This home's slices, learned of ends that took 50 ms.
+            let slice = Duration::from_millis(50);
+            t.daemon.ends.learn(super::ends::End::Teardown, slice);
+            t.daemon.ends.learn(super::ends::End::Exit, slice);
+            let id = t.create("sleeper");
+            let starting = t.start(&id);
+            let (mut ready, vm) = t.warm_vm(None);
+            // Its VM a stand-in asleep, whatever its SIGKILL, holding its run's socket.
+            let sleeper = Arc::new(
+                shards_ipc::spawn(
+                    Path::new("/bin/sh"),
+                    &[OsStr::new("-c"), OsStr::new("exec sleep 600")],
+                    &[(vm.as_fd(), 3)],
+                    false,
+                )
+                .unwrap(),
+            );
+            lock(&t.vms).push(sleeper.clone());
+            ready.vm = sleeper;
+            ready.pooled = None;
+            starting.warm.send(ready).unwrap();
+            assert_eq!(heard(&vm).0, kind::RUN);
+            say(&vm, kind::TAKEN, &[]);
+            say(&vm, kind::STARTED, &[]);
+            t.until("the run started", |d| {
+                lock(&d.containers)
+                    .get(&id)
+                    .is_some_and(|c| c.state == Life::Running)
+            });
+            let asked = t.asking(&["kill", "sleeper"]);
+            assert_eq!(heard(&vm), signal(9));
+            // Its messages held from here, past its kill's `settle`, as a taker slowed past its
+            // VM's end holds them: its DONE and its end unread meanwhile.
+            let inbox = t.daemon.inbox_of(&id).unwrap();
+            let taking = lock(&inbox);
+            say(&vm, kind::DONE, &[137]);
+            // Its run's socket the stand-in's alone from here: its end closes it.
+            drop(vm);
+            let giving_up = || lock(&GIVING_UP).get(&id).copied().unwrap_or(0);
+            while !asked.is_finished() && giving_up() == 0 {
+                std::thread::sleep(slice);
+            }
+            drop(taking);
             let (status, out, err) = joined(asked);
             assert_eq!((status, out.as_str(), err.as_str()), (0, "sleeper\n", ""));
             let _ = joined(starting.run);

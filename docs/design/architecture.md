@@ -10794,6 +10794,53 @@ user's host as Docker's.
     not built or run (the lane's rule). Owed (ROOT): those tests, clippy on every target.
   - Unchanged: D215's hold readers (`os::hold`, every judge's) take a file they cannot read
     for no hold (its fields none or false), unsaid; that is D215's own to rule on.
+- **No end is given up while its daemon has yet to take it** (own-38n, 2026-11-18; goal #36).
+  `end_all` gave a killed VM's end up (`VmKilled`, and a joiner's `KilledAgain`) at the look
+  that found it going on no more, by its waiter alone: it read whether the end had been told,
+  and never took what its run's socket held. That socket is the daemon's own to read, and the
+  followers' loop reads every run's in turn.
+  - *Found.* ROOT's parallel daemon suite on this Mac at fbc6880225
+    (g121-tmp/batch1/daemon1.log:1236-1242) gave up two ends at that look, c58 and c59 of
+    `stop_ends_every_container_at_once`: one while the daemon's own thread held its messages,
+    taking them ("its VM process has ended, its messages being taken"), the other's untaken
+    ("nothing of its end taken"). The stop failed, "did not receive an exit event". Since
+    `shards_api::Watch::look`'s end rule (e2d9cf630c), a killed process found ended at two
+    looks is gone, so the give-up also comes where the daemon's own reading is all that is
+    left.
+  - *Decided.* Before it gives an end up, `end_all` takes the run's messages itself
+    (`take_messages`, as `run` frees a name and the port check frees ports), its waiter still
+    registered: after any taker under way, which holds the run's inbox, then what the socket
+    holds, without waiting on it (`Incoming::take`, `Arriving::take`). An end among them, a
+    DONE or the socket's end (told with no DONE as a VM's end, 255, as before), is told and
+    heard, as the followers' loop would tell it. That work is bounded by what the socket holds.
+    The lock's holder takes the same messages, and its sends to the VM are judged by D215
+    (`RunSocket::send`). No clock, reader or state is added. An end is given up only where its
+    socket held none: its VM process lives on, stopped, frozen or stuck in its exit, or has
+    ended with its socket still open.
+  - *Considered.* Waiting for the followers' loop and giving the end up once that thread is
+    judged stuck by D215 (its CPU, `shards_vmm::platform::ThreadClock`), as ROOT's brief put
+    it. Not taken: with the taking on the thread that decides, no wait on another thread is
+    left but the inbox's lock, whose holder may be any taker (the followers' loop, a command's
+    `settle`, `run`'s name check, the port check), so one thread's clock would not witness it.
+  - *What it costs.* The client's thread that stops the run takes its end where the followers'
+    loop has not: the same work (its record, its events, its removal), once, on that thread.
+  - *Unchanged.* A layer still settling holds no end (D37): the end is told at its DONE, and
+    commands that need the layer wait for it (`await_settled`). An end taken whose telling
+    waits for its capture (D240, which ends with its stream from the VM: `run_credits`,
+    `Owner::cut`) or its relays (`RELAY_WAIT`) is still given up where it has not come by that
+    look ("its end taken"). Waiting on it there would wait on the VM's stream too, and telling
+    a VM process that has ended from one that lives on needs the follow to say which
+    (`GoesOn::Still` covers both): its own change, unmeasured. On macOS an end found under way
+    may still be its kernel's (the open item above). And
+    `stop_ends_every_container_at_once` keeps own-38k's slice: its stand-ins' ends are not
+    their runs', and a run whose test has yet to say its DONE has nothing to take.
+  - Test: `daemon::tests::a_kill_hears_an_end_its_daemon_has_yet_to_take` (Unix). The test
+    holds the run's messages from its SIGKILL on, as a slowed taker would, while its DONE and
+    its end lie unread, and lets go once `end_all` has come to give the end up (`GIVING_UP`,
+    test builds alone): the kill is answered. Red: lanes/redgreen/own-38n-own-work.patch
+    (nothing taken there, as before): "did not receive an exit event", the daemon's log saying
+    "its messages being taken". Written, not built or run (the lane's rule). Owed (ROOT): the
+    test and its red, the daemon suite in parallel on macOS, clippy on the seven targets.
 - **A network or share process is followed the same way** (2026-11-13, PM M546; the
   person's ruling: a wait follows the party's liveness and progress, then the slowest
   answer seen). Once its VM has gone and its spawner holds nothing of it, it goes as its
