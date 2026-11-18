@@ -736,7 +736,7 @@ fn read(slot: &Slot, owner: u64, start: u64) -> Option<Words> {
 mod tests {
     use super::*;
     use shards_testdir::TempDir;
-    use std::io::{BufRead as _, Write as _};
+    use std::io::BufRead as _;
 
     /// The slot file every test of this binary declares in through [`declared`]: one a process,
     /// as a process installs one; its directory left for the next test process to sweep.

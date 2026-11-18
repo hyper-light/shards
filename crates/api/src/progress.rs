@@ -4734,7 +4734,11 @@ mod tests {
         }
         #[cfg(not(windows))]
         {
-            let look = |cpu| Look { cpu, ending: false };
+            let look = |cpu| Look {
+                cpu,
+                ending: false,
+                exited: false,
+            };
             let (before, now) = (look(tick * 2), look(tick * 2 + Duration::from_nanos(1_234)));
             assert_eq!(now.work().saturating_sub(before.work()), Work::of(1_234));
         }
@@ -5150,15 +5154,19 @@ mod tests {
             assert_eq!(waited, 0);
             info.si_pid != 0
         };
-        let mut watch = Watch::of(Followed::of_pid(pid).unwrap().unwrap())
+        let mut watch = Watch::of(Followed::of_pid(pid).unwrap().unwrap(), &Listing::new())
             .unwrap()
             .unwrap();
         while !watch.ended() {
-            assert_ne!(watch.look().unwrap(), Found::Gone, "gone before its exit began");
+            assert_ne!(
+                watch.look(&Listing::new()).unwrap(),
+                Found::Gone,
+                "gone before its exit began"
+            );
         }
         for look in ["the look after its exit was found begun", "the next"] {
             assert_eq!(
-                watch.look().unwrap(),
+                watch.look(&Listing::new()).unwrap(),
                 Found::Progressed,
                 "{look}: its end under way"
             );
@@ -5184,12 +5192,16 @@ mod tests {
         );
         assert!(reapable(0));
         assert_eq!(
-            watch.look().unwrap(),
+            watch.look(&Listing::new()).unwrap(),
             Found::Progressed,
             "a zombie: its end, first found done"
         );
         assert!(watch.exited());
-        assert_eq!(watch.look().unwrap(), Found::Gone, "found exited again: gone");
+        assert_eq!(
+            watch.look(&Listing::new()).unwrap(),
+            Found::Gone,
+            "found exited again: gone"
+        );
         leader.wait().unwrap();
     }
 

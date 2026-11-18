@@ -755,7 +755,7 @@ mod tests {
             ..Followed::of(None)
         };
         assert_eq!(unread.work(), Err(why.clone()));
-        assert_eq!(unread.past(Some(Duration::from_millis(1))), Err(why.clone()));
+        assert_eq!(unread.past(Some(shards_api::Work::of(1))), Err(why.clone()));
         assert_eq!(unread.past(None), Ok(None), "no C*, no bound to judge");
         assert_eq!(unread.worked(), Err(why));
         let mut none = Followed::of(None);

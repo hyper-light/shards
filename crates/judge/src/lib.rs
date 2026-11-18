@@ -935,7 +935,7 @@ mod tests {
                 work: w(ms(2)),
                 over: ms(3),
             },
-            most: ms(2),
+            most: w(ms(2)),
             answers: 1,
         });
         assert_eq!(
@@ -982,7 +982,7 @@ mod tests {
                         work: w(ms(2)),
                         over: ms(3),
                     },
-                    most: ms(2),
+                    most: w(ms(2)),
                     answers: 1,
                 })
             }
@@ -1616,8 +1616,8 @@ mod tests {
     fn its_hosts_hold_its_subject_measured_is_out_of_its_stillness_and_its_rate() {
         let ms = Duration::from_millis;
         let record = Record::new();
-        record.teach(ms(100), ms(50));
-        record.teach(ms(100), ms(50));
+        record.teach(ms(100), w(ms(50)));
+        record.teach(ms(100), w(ms(50)));
         let look = |judge: &Judge<'_>, at: u64, held: u64| Span {
             held: ms(held),
             ..Span::at(judge.began + ms(at))
@@ -1638,7 +1638,7 @@ mod tests {
         let progress = |judge: &mut Judge<'_>, held: u64| {
             [30u64, 60, 90].into_iter().zip(1u64..).try_for_each(|(cpu, n)| {
                 let span = Span {
-                    work: Some(ms(cpu)),
+                    work: Some(w(ms(cpu))),
                     held: ms(held),
                     ..Span::at(judge.began + ms(100 * n))
                 };
