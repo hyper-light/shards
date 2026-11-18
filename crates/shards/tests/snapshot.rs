@@ -277,10 +277,20 @@ impl Unwritable {
             // SAFETY: geteuid(2) takes nothing and cannot fail.
             mounted: unsafe { libc::geteuid() } == 0 && read_only_over_itself(dir),
         };
-        // What it is for, checked: a test given a directory it could write in proves nothing.
+        // What it is for, checked as the run writes there first: a file, its snapshot's lock
+        // (vmm `snapshot::staging`), which a directory's FILE_ADD_FILE grants (icacls' WD), not
+        // a directory, which its FILE_ADD_SUBDIRECTORY does (icacls' AD; Microsoft's File Access
+        // Rights Constants). The icacls reference calls the deny's `W` write-only access and
+        // does not say which of the two it holds: why a directory was made past it on the
+        // hosted windows-2025 runner (CI 44189693085) is unexplained. A test given a directory
+        // it could write in proves nothing.
         let probe = dir.join("probe");
         assert!(
-            std::fs::create_dir(&probe).is_err(),
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&probe)
+                .is_err(),
             "{} is writable, by this test itself",
             dir.display()
         );
