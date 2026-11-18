@@ -4139,6 +4139,15 @@ microVM as virtio-fs shares (virtio 1.3 §5.11; Linux fs/fuse/virtio_fs.c):
       `system.posix_acl_access` was already data there, under its own name. Windows keeps
       each guest attribute as an EA of its own (`SH.` and its name's bytes,
       `ntfs::xattr_ea`), never the file's DACL.
+    - Found beside it, the same kind of hole on macOS. A guest's process may send an
+      attribute name of no Linux namespace, as virtio-fs takes every name (v6.18
+      fs/fuse/xattr.c, its one handler of prefix ""). On macOS such a name reached the
+      host's own attributes: a guest could read them, and take `com.apple.quarantine` off a
+      host file in a shared folder so that Gatekeeper would not look at it. Windows kept
+      such a name as any other. Now every host refuses it (EOPNOTSUPP) as Linux's does
+      (`namespaced`). Test: `a_guest_reaches_no_host_attribute_outside_linuxs_namespaces`.
+      Red: lanes/redgreen/own-38d-namespaced.patch (macOS and Windows; Linux refused it
+      already).
     - Enforcing the guest's ACLs in the guest (FUSE_POSIX_ACL) is a later piece.
     - Test: `a_guests_acl_is_its_own_data_never_its_host_files_acl` (the guest reads,
       lists and removes what it set; the host file's mode is unchanged, and on Linux its

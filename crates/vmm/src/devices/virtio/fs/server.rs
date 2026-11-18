@@ -2094,6 +2094,9 @@ impl Server {
                 if hidden(&name) {
                     return Err(ENODATA);
                 }
+                if !namespaced(&name) {
+                    return Err(EOPNOTSUPP);
+                }
                 let host_name = host_xattr(&name).map_err(|_| ENODATA)?;
                 let fd = node_fd(s, nodeid)?;
                 let value = fget_xattr(fd.raw(), &host_name)?.ok_or(ENODATA)?;
@@ -2131,6 +2134,9 @@ impl Server {
                 if hidden(&name) {
                     return Err(EOPNOTSUPP);
                 }
+                if !namespaced(&name) {
+                    return Err(EOPNOTSUPP);
+                }
                 let host_name = host_xattr(&name)?;
                 let fd = node_fd_to_change(s, nodeid)?;
                 // What the file's attributes grow by, in whole units, takes the share's bound
@@ -2160,6 +2166,9 @@ impl Server {
                 let name = a.cstr()?;
                 if hidden(&name) {
                     return Err(ENODATA);
+                }
+                if !namespaced(&name) {
+                    return Err(EOPNOTSUPP);
                 }
                 let host_name = host_xattr(&name).map_err(|_| ENODATA)?;
                 let fd = node_fd_to_change(s, nodeid)?;
@@ -3715,6 +3724,20 @@ fn let_go_beneath(s: &mut State, dir: u64, keep: [u64; 2]) {
 fn hidden(name: &CStr) -> bool {
     let n = name.to_bytes();
     n == OWNER_XATTR.as_bytes() || n.strip_prefix(b"user.") == Some(OWNER_XATTR.as_bytes())
+}
+
+/// Whether `name` is of a namespace a Linux file's attributes take (xattr(7): `user.`,
+/// `trusted.`, `security.`, `system.`). A guest's process may send any name, as virtio-fs
+/// takes every one (v6.18 fs/fuse/xattr.c, its one handler of prefix ""), and one of none
+/// is refused (EOPNOTSUPP) as a Linux host refuses it: on macOS it reached the host's own
+/// attributes (a guest could take `com.apple.quarantine` off a host file in a shared folder,
+/// and Gatekeeper would not look at it), and Windows kept it as any other (D38, amended
+/// 2026-11-18).
+fn namespaced(name: &CStr) -> bool {
+    let n = name.to_bytes();
+    [&b"user."[..], b"trusted.", b"security.", b"system."]
+        .iter()
+        .any(|ns| n.starts_with(ns))
 }
 
 /// A listing's `d_type` of a node of kind `kind` (`S_IFCHR` and the rest).
@@ -6130,6 +6153,49 @@ mod tests {
         );
         assert_eq!(answer(&s, &req(op::GETXATTR, f, 0, &get)).0, -ENODATA);
         assert_eq!(host_mode(&path.join("f")), mode, "the host file's mode");
+    }
+
+    /// A guest's attribute is of a namespace a Linux file's attributes take, or none it may
+    /// set, read or remove (EOPNOTSUPP), as a Linux host answers it: on macOS one of no such
+    /// namespace reached the host's own attributes, which the guest read and took off a host
+    /// file (`com.apple.quarantine`), and Windows kept it as any other (D38, amended
+    /// 2026-11-18). Linux's namespaces stay the guest's.
+    #[test]
+    fn a_guest_reaches_no_host_attribute_outside_linuxs_namespaces() {
+        let (path, s) = dir();
+        std::fs::write(path.join("f"), "f").unwrap();
+        // One the host keeps of no Linux namespace, where it keeps one: macOS's.
+        #[cfg(target_os = "macos")]
+        {
+            let file = std::fs::File::open(path.join("f")).unwrap();
+            fset_xattr(file.as_raw_fd(), c"com.example.host", b"kept", 0).unwrap();
+        }
+        let f = found(&s, ROOT, "f");
+        let fields = |v: &[u32]| v.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>();
+        let with = |head: &[u32], n: &str| {
+            let mut b = fields(head);
+            b.extend(name(n));
+            b
+        };
+        let mut set = with(&[1, 0], "com.example.guest");
+        set.push(b'x');
+        assert_eq!(answer(&s, &req(op::SETXATTR, f, 0, &set)).0, -EOPNOTSUPP);
+        let get = with(&[64, 0], "com.example.host");
+        assert_eq!(answer(&s, &req(op::GETXATTR, f, 0, &get)).0, -EOPNOTSUPP);
+        let gone = name("com.example.host");
+        assert_eq!(answer(&s, &req(op::REMOVEXATTR, f, 0, &gone)).0, -EOPNOTSUPP);
+        #[cfg(target_os = "macos")]
+        {
+            let file = std::fs::File::open(path.join("f")).unwrap();
+            let kept = fget_xattr(file.as_raw_fd(), c"com.example.host");
+            assert_eq!(kept, Ok(Some(b"kept".to_vec())), "the host's own");
+            assert_eq!(fget_xattr(file.as_raw_fd(), c"com.example.guest"), Ok(None));
+        }
+        let mut user = with(&[1, 0], "user.x");
+        user.push(b'y');
+        assert_eq!(answer(&s, &req(op::SETXATTR, f, 0, &user)).0, 0);
+        let user = with(&[64, 0], "user.x");
+        assert_eq!(answer(&s, &req(op::GETXATTR, f, 0, &user)), (0, b"y".to_vec()));
     }
 
     /// What the guest makes that the host cannot hold is kept beside it (D174), as a
