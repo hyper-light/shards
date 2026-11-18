@@ -16473,6 +16473,91 @@ credits falls below none. Red: lanes/redgreen/own-35e-governor.patch (the credit
 again). Owed, ROOT's: that test on every host, and the governor's Windows tests on
 windows-2022, windows-2025 and jupiter.
 
+**2026-11-18, a thread out of credit goes below its host's threads, not to their priority
+(#36, own-35j; CI 44347282760).** On windows-2022 (Windows Server 2022, 4 vCPUs, job
+134953501724, at d84cb20f9d, overruns already owed)
+`raised_threads_sharing_a_cpu_take_no_more_than_half_of_it` failed "the normal thread never
+ran" (windows_thread.rs:659): the normal spinner pinned beside three governed ones was charged
+no GetThreadTimes step in its 3 s, though the test had seen each of the three at
+THREAD_PRIORITY_NORMAL; as in CI 44245219858, before overruns were owed. It passed in that run
+on windows-2025 (job 134953502265) and windows-11-arm.
+- *Cause: a lowered thread was at its host's threads' own priority, where the rest of the CPU
+  is not theirs.* The pools charge what their threads ran raised and leave the rest to the
+  host, and a thread out of credit went to THREAD_PRIORITY_NORMAL for as little as one look
+  (2g, 31.25 ms at 15.625 ms steps). A running thread gives way to one of its priority only as
+  "the quantum of a thread expired, and another thread with at least the same priority is
+  ready"; the other reasons, a higher priority's readiness and a wait (Microsoft, Context
+  Switches), do not arise between equals that spin. Windows Server's quanta are fixed, of a
+  length that "varies across different Windows platforms" (Win32_OperatingSystem,
+  `QuantumType`; Windows Internals' 12 clock intervals for servers and 2 for clients, in its
+  "Quantum" section, not read: unverified), and no look of the governor ends one; a running
+  thread that a raised one preempts "goes back to the head of its ready queue", ahead of the
+  host's thread (Solomon, Russinovich and Polze, Windows OS Internals curriculum, unit 4.4,
+  2005, of Windows Internals 4th ed., read; 7th ed.'s "Scheduling scenarios", not read). So a
+  lowered spinner kept its CPU past the look that raised the three again, and the normal thread
+  ran only where a quantum happened to expire inside a lowered look, else as Windows rescues a
+  thread it has starved, "every 4 seconds or so" (Windows Internals, 7th ed., part 1, p. 228,
+  read; the balance set manager's boost to priority 15 for a quantum, its "Priority boosts"
+  section, not read: unverified), later than the test's 3 s. Whether a quantum expired there
+  turns on the phase of the quanta against the looks (a reading of the sources, no trace of the
+  quanta taken): so windows-2022 failing and windows-2025 passing the same code, and a
+  client's variable, shorter quanta ("Windows defaults to variable length quantums",
+  `QuantumType`) passing. The 0 ns is GetThreadTimes' steps (15.625 ms, each charged to the
+  thread running as it falls, PM M294), which cannot show that a thread never ran; but the
+  half its pool left it, 1.5 s less two periods, would have been charged some 90 steps.
+- *Affinity and CPU sets on the 4-vCPU runner.* The test pins by affinity mask
+  (SetThreadAffinityMask), which "is respected above any conflicting CPU Set assignment" (CPU
+  Sets), and threads with affinity constraints wait in their processor's own ready queue
+  (Windows Internals, 7th ed., part 1, p. 229): the four contend on the last CPU alone. Other
+  threads of the test process may run there too: they take from the three and the normal
+  thread alike, and never add to the three's use.
+- *So both.* (a) A defect: the pools bounded what the raised threads took, but lowered they
+  took the rest too, at the host's own priority, where shards promises its host half of the
+  CPUs they run on (two periods of each aside); (b) the test's premise: it asked only that the
+  normal thread had run at all, by a clock of 15.625 ms steps, over a window shorter than
+  Windows' rescue, not the bound its name states.
+- *Decision.* A watched thread out of credit, or whose pool has none, goes to
+  THREAD_PRIORITY_BELOW_NORMAL, base priority 7 in a NORMAL_PRIORITY_CLASS process against its
+  host's threads' 8 (Scheduling Priorities): the least step below them, as the raise is the
+  least above. Threads "are scheduled in a round-robin fashion at each priority level, and only
+  when there are no executable threads at a higher level does scheduling of threads at a lower
+  level take place" (SetThreadPriority), and an "explicit lowering of priority" of the running
+  thread is itself a switch, to the next ready thread (curriculum, unit 4.4), so a host's
+  thread ready on the CPU has it from the look that lowers the governed ones, whatever its
+  quantum, until one raises them. No value is chosen: the level is the table's neighbour of
+  the host's. The states are explicit (`Level`): NORMAL before the governor first sets a thread
+  and once it lets go of it (no period derived), RAISED or LOWERED at each look; a thread
+  watched while its pool has none is lowered at once, where it was left at NORMAL.
+- *Costs.* A lowered thread waits behind every ready thread at NORMAL, where it shared with
+  them in turn. It has used its half; its credit grows while it waits, and a look raises it
+  again once its debt and its pool's, a period of each at most, are paid. Beside k ≥ 1 busy
+  host threads a busy thread so gets half a CPU, no less than a fair share, 1 / (k + 1); m
+  governed threads on CPUs with k < m busy host threads get half of them where a fair share
+  would be m / (m + k): the pool's bound, now kept. A thread lowered while holding a lock a
+  host's thread waits on runs at its next raised look at the latest. Windows' boost on a
+  satisfied wait still lifts a lowered thread above its base, as it lifts the host's threads, a
+  level less each time slice it completes (Priority Boosts).
+- *Alternatives refused.* The pool charged for lowered runs too: lowered threads would stay at
+  their host's priority, where the quantum, not the governor, says who runs. Lowered until the
+  pool is full again: still shorter than a server's quantum, and no change to who runs. The
+  boost turned off for watched threads: it changes how governed threads wake beside each
+  other, unmeasured, and the host's share does not need it.
+- *Tested (light, Windows; unbuilt in this lane).*
+  `raised_threads_sharing_a_cpu_take_no_more_than_half_of_it` pins the normal thread first,
+  then three watched spinners with their boost on waking off (SetThreadPriorityBoost: "the
+  thread's priority is not boosted"), and holds what its name states: the three's use, read
+  from their own clocks (the steps the governor charges them), no more than half of the window
+  and two periods; and the normal thread charged a step. Its 10 ms look at transient priorities
+  is gone. `a_thread_run_long_goes_back_to_normal_and_is_raised_again_as_it_waits` is
+  `a_thread_run_long_is_lowered_and_raised_again_as_it_waits`, now waiting for LOWERED. Red:
+  lanes/redgreen/own-35j-raised.patch (LOWERED back to NORMAL): the three's use past the bound
+  on any Windows host, as at their host's priority they take the lowered looks too. Owed,
+  ROOT's: `cargo test -p shards-vmm --lib --profile test-release platform::windows_thread` red
+  and green on jupiter (a client), then CI's windows-2022, windows-2025 and windows-11-arm;
+  clippy for x86_64- and aarch64-pc-windows-msvc; R14: PM M495's contended start
+  (`cpu-elastic/phases.py`) with lowered vCPUs below their host's busy loops, and Windows E2E
+  timings beside it.
+
 **The priority governor's period and credit (platform-11, 2026-11-14).** `PERIOD` (100 ms,
 the hold's old period) is gone: each look's period is D191's for one thread held to half a
 CPU (`HALF`, 500 milli-CPU: the most a fair scheduler gives a thread that contends for its CPU
