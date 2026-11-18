@@ -29,6 +29,11 @@
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
+#[cfg(windows)]
+pub mod threads;
+#[cfg(windows)]
+pub use threads::{ThreadsHeld, threads_held, threads_said};
+
 /// A CPU rate: CPU time had over a wall time, kept as the pair it was measured as.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Rate {

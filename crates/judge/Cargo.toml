@@ -8,5 +8,14 @@ repository.workspace = true
 rust-version.workspace = true
 publish = false
 
+[target.'cfg(windows)'.dependencies]
+# Windows' listing of every process's threads, their states and wait reasons
+# (NtQuerySystemInformation's SystemProcessInformation; KWAIT_REASON).
+windows-sys = { workspace = true, features = [
+  "Wdk_System_SystemInformation",
+  "Wdk_System_SystemServices",
+  "Win32_System_WindowsProgramming",
+] }
+
 [lints]
 workspace = true
