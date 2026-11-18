@@ -8,7 +8,7 @@ use std::io::Write as _;
 #[cfg(unix)]
 use std::os::fd::{AsFd, OwnedFd};
 
-use crate::daemon::ends::{End, Ends, Followed};
+use crate::daemon::ends::{End, Ends, Followed, GoesOn};
 
 /// A socket handed to a network process (a published port's host socket, a peer's link):
 /// a descriptor on Unix; on Windows a socket, which Winsock closes (closesocket).
@@ -518,8 +518,17 @@ fn reap_by(net: &NetProcess, ends: &Ends, slice: Option<std::time::Duration>) {
             }
             return;
         }
-        if followed.goes_on().is_none() {
-            break;
+        match followed.goes_on() {
+            GoesOn::Went(_) => {}
+            GoesOn::Still => break,
+            GoesOn::Unread(why) => {
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "shards: network or share process {}: its end could not be read at its look, so it is ended: {why}",
+                    net.id()
+                );
+                break;
+            }
         }
     }
     let _ = net.kill(shards_ipc::signal::SIGKILL);

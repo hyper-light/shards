@@ -20,7 +20,7 @@ use shards_ipc::{ExitWatch, Poller};
 #[cfg(unix)]
 use shards_vmm::platform::{ExitWatch, Poller};
 
-use super::ends::End;
+use super::ends::{End, GoesOn};
 use super::{Daemon, Inbox, Threads, lock, log};
 use crate::containers::{Disk, Removal};
 
@@ -325,17 +325,21 @@ impl<D: Disk> Daemon<D> {
                         continue;
                     }
                     let goes_on = match unpublishing.as_mut() {
-                        Some(followed) => Some(followed.goes_on().is_some()),
-                        None => following
-                            .as_mut()
-                            .map(|(_, followed)| followed.goes_on().is_some()),
+                        Some(followed) => Some(followed.goes_on()),
+                        None => following.as_mut().map(|(_, followed)| followed.goes_on()),
                     };
                     let next = match goes_on {
-                        Some(true) => self
+                        Some(GoesOn::Went(_)) => self
                             .ends
                             .slice(End::Helper)
                             .and_then(|slice| Instant::now().checked_add(slice)),
-                        Some(false) => {
+                        Some(still) => {
+                            if let GoesOn::Unread(why) = still {
+                                log(format!(
+                                    "network process {}: its end could not be read at its look, so it is ended: {why}",
+                                    child.id()
+                                ));
+                            }
                             *following = None;
                             *unpublishing = None;
                             let _ = child.kill(shards_ipc::signal::SIGKILL);

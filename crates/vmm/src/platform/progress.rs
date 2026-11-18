@@ -32,18 +32,22 @@ pub fn progressed(before: Option<u64>, after: Option<u64>, window: Duration) -> 
 #[derive(Debug)]
 pub struct Progress {
     pid: u32,
-    last: Option<Usage>,
+    /// Its usage at the look before, or why it could not be read then.
+    last: Result<Usage, String>,
     at: Instant,
 }
 
 /// What one look found of a process since the look before ([`Progress::look`]): whether it
-/// ran ([`progressed`]), its usage then and now, and the time between.
-#[derive(Debug, Clone, Copy)]
+/// ran ([`progressed`]), its usage then and now, and the time between; and why its usage could
+/// not be read now, or at the look before, where it could not: its process gone among the
+/// reasons, which its caller tells from a failure by what else it reads of it.
+#[derive(Debug, Clone)]
 pub struct Look {
     pub ran: bool,
     pub before: Option<Usage>,
     pub now: Option<Usage>,
     pub over: Duration,
+    pub unread: Option<String>,
 }
 
 impl Progress {
@@ -51,7 +55,7 @@ impl Progress {
     pub fn of(pid: u32) -> Progress {
         Progress {
             pid,
-            last: process_usage(pid).ok(),
+            last: usage(pid),
             at: Instant::now(),
         }
     }
@@ -68,17 +72,29 @@ impl Progress {
 
     /// Looks at it again: what it did since the look before.
     pub fn look(&mut self) -> Look {
-        let (now, at) = (process_usage(self.pid).ok(), Instant::now());
+        let (read, at) = (usage(self.pid), Instant::now());
         let over = at.saturating_duration_since(self.at);
+        let unread = match (&self.last, &read) {
+            (_, Err(why)) => Some(why.clone()),
+            (Err(why), Ok(_)) => Some(format!("{why}, at the look before")),
+            (Ok(_), Ok(_)) => None,
+        };
+        let (before, now) = (self.last.as_ref().ok().copied(), read.as_ref().ok().copied());
         let look = Look {
-            ran: progressed(self.last.map(|u| u.cpu_ns), now.map(|u| u.cpu_ns), over),
-            before: self.last,
+            ran: progressed(before.map(|u| u.cpu_ns), now.map(|u| u.cpu_ns), over),
+            before,
             now,
             over,
+            unread,
         };
-        (self.last, self.at) = (now, at);
+        (self.last, self.at) = (read, at);
         look
     }
+}
+
+/// Process `pid`'s usage, or why it could not be read.
+fn usage(pid: u32) -> Result<Usage, String> {
+    process_usage(pid).map_err(|e| format!("process {pid}'s usage: {e}"))
 }
 
 /// Its CPU time and page faults, and what each grew by since the look before, for a log:
@@ -86,7 +102,10 @@ impl Progress {
 impl std::fmt::Display for Look {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let Some(now) = self.now else {
-            return write!(f, "its CPU time unread");
+            return match &self.unread {
+                Some(why) => write!(f, "its CPU time unread: {why}"),
+                None => write!(f, "its CPU time unread"),
+            };
         };
         let ms = |ns: u64| ns / 1_000_000;
         write!(f, "its CPU time {} ms", ms(now.cpu_ns))?;
@@ -101,6 +120,10 @@ impl std::fmt::Display for Look {
         write!(f, ", {} page faults", now.faults)?;
         if let Some(before) = self.before {
             write!(f, " (+{})", now.faults.saturating_sub(before.faults))?;
+        }
+        // Its usage unread at the look before: what it grew by is unknown, and why is said.
+        if let Some(why) = &self.unread {
+            write!(f, "; {why}")?;
         }
         Ok(())
     }
@@ -139,16 +162,40 @@ mod tests {
         assert!(said.contains(" page faults (+"), "{said}");
     }
 
-    /// A process whose usage cannot be read is never seen to run, and says so.
+    /// A process whose usage cannot be read is never seen to run, and says why, as its look
+    /// and the look after (the person's rule of 2026-11-18: no failure taken for nothing).
     #[test]
-    fn a_process_unread_never_runs() {
-        let mut progress = Progress {
-            pid: u32::MAX,
-            last: None,
-            at: Instant::now(),
-        };
+    fn a_process_unread_never_runs_and_says_why() {
+        let mut progress = Progress::of(u32::MAX);
         let look = progress.look();
         assert!(!look.ran);
-        assert_eq!(look.to_string(), "its CPU time unread");
+        let said = look.to_string();
+        assert!(
+            said.starts_with("its CPU time unread: process 4294967295's usage: "),
+            "{said}"
+        );
+        assert_eq!(look.unread.as_deref(), said.strip_prefix("its CPU time unread: "));
+    }
+
+    /// A process whose usage could not be read as it began to be followed says so at the look
+    /// after, which reads it: what it grew by is unknown, never taken for none.
+    #[test]
+    fn a_usage_unread_at_the_look_before_is_said() {
+        let mut progress = Progress::of(std::process::id());
+        progress.last = Err("process 1's usage: refused".to_string());
+        let look = progress.look();
+        assert!(
+            !look.ran && look.before.is_none() && look.now.is_some(),
+            "{look:?}"
+        );
+        assert_eq!(
+            look.unread.as_deref(),
+            Some("process 1's usage: refused, at the look before")
+        );
+        let said = look.to_string();
+        assert!(
+            said.ends_with(" page faults; process 1's usage: refused, at the look before"),
+            "{said}"
+        );
     }
 }

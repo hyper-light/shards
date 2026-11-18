@@ -10647,6 +10647,43 @@ user's host as Docker's.
       ends as its red does. Red of the end rule:
       `progress::tests::an_unreaped_end_is_progress_once_then_gone`,
       lanes/redgreen/own-38h-b2-end.patch.
+- **A look that cannot read its process says why, and gives it up** (the person's rule of
+  2026-11-18: no fallbacks; ROOT's ruling, own-38h). A follow's look found its end going on or
+  not (`Followed::goes_on`, an `Option`), and a process it could not read was one that went on
+  with nothing: D215's look failing (`Watch::look`), or its usage unread (`Progress::look`,
+  which dropped the failure, its first read's as the follow began among them). Its microVM was
+  killed, its network process ended, its home's lock holder refused, each said to have done
+  nothing for a slice: a failure of shards' own reading put down to the process.
+  - *Three looks.* Each is one of three (`GoesOn`): it went on, with what it did for the log;
+    it is still, stopped or frozen, or has ended (gone, or no process to follow); or it is
+    unread, with why. An unread look gives its end up at that look, as a still one does, its
+    reason said where the stillness would have been: in the daemon's log for a teardown
+    (`end_all`, the daemon's own stop), a killed VM process's exit and a joiner's provider,
+    and for a network process the followers' loop ends (`follow.rs`); on its run host's stderr
+    for one that host reaps (`netproc::reap`); and typed for a home's lock holder
+    (`HolderStalled::Unread`, the waiting daemon's error). It is never waited on for another
+    slice: a failure that recurs at each look would be followed for ever, the unbounded wait
+    the person's rule rules out, so it ends as D215's judge ends a wait on a process it cannot
+    read (`Refusal::Process`). The work bound (C*) is not asked at such a look.
+  - *An end is not a failure.* Its usage is read first, then D215's look. A usage unread is a
+    failure only where that look finds the process living and not ending: a process that ended
+    as it was read is its end (under way, then gone). A slice too short to resolve keeps its
+    rule (it goes on, its failure in its log line). The VMM's `Progress` keeps why a read
+    failed, its first among them, and its `Look` says it (`unread`).
+  - Tests: `daemon::ends::tests::a_live_process_whose_look_fails_is_unread_with_why` (its
+    usage read of a process none has, beside D215's look of this living one, unread with why
+    at each look; and a follow that could not begin), `a_process_ending_between_looks_is_its_end_never_unread`
+    (Unix: a child killed between looks is its end under way, then gone), the VMM's
+    `a_process_unread_never_runs_and_says_why` and `a_usage_unread_at_the_look_before_is_said`,
+    and `daemon::tests::a_teardown_whose_look_fails_is_given_up_with_its_reason_in_the_log`. No
+    host fails a read on purpose: that test's stand-in, asleep through its SIGKILL, has its
+    usage reads fail by `ends::UNREADABLE` (test builds alone), in a child of the test whose
+    stderr, its daemon's log, the test reads: its microVM killed at its first slice look, the
+    log saying why. Red: lanes/redgreen/own-38h-goes-on-unread.patch (a usage unread taken for
+    nothing, as before: the log says the microVM went on with nothing of its end). Written,
+    not built or run (the lane's rule). Owed (ROOT): those tests, clippy on every target.
+  - Unchanged: D215's hold readers (`os::hold`, every judge's) take a file they cannot read
+    for no hold (its fields none or false), unsaid; that is D215's own to rule on.
 - **A network or share process is followed the same way** (2026-11-13, PM M546; the
   person's ruling: a wait follows the party's liveness and progress, then the slowest
   answer seen). Once its VM has gone and its spawner holds nothing of it, it goes as its

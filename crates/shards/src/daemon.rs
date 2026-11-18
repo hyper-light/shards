@@ -2445,23 +2445,37 @@ struct Judged {
 }
 
 /// Why a daemon waiting for its home's lock waits no longer (runs-11 TAKEOVER): the daemon
-/// that holds it has made no slots' lists, and ran nothing, freed nothing and was held by
-/// its host from nothing (`ends::Followed::goes_on`, D215's readers) for a whole `slice`,
-/// the slowest start this host has shown (`ends::End::Start`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct HolderStalled {
-    holder: shards_ipc::Named,
-    slice: Duration,
+/// that holds it has made no slots' lists, and either ran nothing, freed nothing and was
+/// held by its host from nothing (`ends::Followed::goes_on`, D215's readers) for a whole
+/// `slice`, the slowest start this host has shown (`ends::End::Start`), or lives and could
+/// not be read, which is never taken for a stillness nor waited on (`ends::GoesOn::Unread`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum HolderStalled {
+    Still {
+        holder: shards_ipc::Named,
+        slice: Duration,
+    },
+    Unread {
+        holder: shards_ipc::Named,
+        why: String,
+    },
 }
 
 impl std::fmt::Display for HolderStalled {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "the daemon {} that holds this home has not served, and went on with nothing for \
-             {:?}, the slowest start this host has shown",
-            self.holder.pid, self.slice
-        )
+        match self {
+            HolderStalled::Still { holder, slice } => write!(
+                f,
+                "the daemon {} that holds this home has not served, and went on with nothing for \
+                 {slice:?}, the slowest start this host has shown",
+                holder.pid
+            ),
+            HolderStalled::Unread { holder, why } => write!(
+                f,
+                "the daemon {} that holds this home has not served, and could not be read: {why}",
+                holder.pid
+            ),
+        }
     }
 }
 
@@ -2487,8 +2501,10 @@ fn judge_holder(home: &Path, slice: Duration, judged: &mut Option<Judged>) -> Re
     if judged.due.is_none_or(|due| now < due) {
         return Ok(());
     }
-    if judged.followed.goes_on().is_none() {
-        return Err(HolderStalled { holder, slice });
+    match judged.followed.goes_on() {
+        ends::GoesOn::Went(_) => {}
+        ends::GoesOn::Still => return Err(HolderStalled::Still { holder, slice }),
+        ends::GoesOn::Unread(why) => return Err(HolderStalled::Unread { holder, why }),
     }
     judged.due = now.checked_add(slice);
     Ok(())
@@ -8110,17 +8126,21 @@ impl<D: Disk> Daemon<D> {
                 };
                 match &mut stop.killed {
                     Some(teardown) => {
-                        let went = teardown.goes_on().is_some();
+                        let went = teardown.goes_on();
                         // More work than any teardown took (C*), its command not ended: given
                         // up whatever its rate (D217, ROOT's ruling of 2026-11-18). Its work
-                        // unread, the bound takes nothing from this look, and says why.
-                        let past = teardown.past(self.ends.most_work()).unwrap_or_else(|why| {
-                            log(format!(
-                                "container {id}: its teardown's work unread, judged by its stillness alone at this look: {why}"
-                            ));
-                            None
-                        });
-                        if went && past.is_none() {
+                        // unread, the bound takes nothing from this look, and says why. A look
+                        // that could not read it gives it up already, saying why.
+                        let past = match went {
+                            ends::GoesOn::Unread(_) => None,
+                            _ => teardown.past(self.ends.most_work()).unwrap_or_else(|why| {
+                                log(format!(
+                                    "container {id}: its teardown's work unread, judged by its stillness alone at this look: {why}"
+                                ));
+                                None
+                            }),
+                        };
+                        if matches!(went, ends::GoesOn::Went(_)) && past.is_none() {
                             // Its guest still at its end: another slice.
                             shards_vmm::stage!("container {id}: its guest's teardown goes on: another slice");
                             stop.next = self
@@ -8130,11 +8150,14 @@ impl<D: Disk> Daemon<D> {
                             continue;
                         }
                         if let Some(vm) = &stop.vm {
-                            let why = match past {
-                                Some((work, most)) => format!(
+                            let why = match (&went, past) {
+                                (ends::GoesOn::Unread(unread), _) => {
+                                    format!("its microVM's teardown could not be read at its look: {unread}")
+                                }
+                                (_, Some((work, most))) => format!(
                                     "its microVM having run {work:?} of CPU since its SIGKILL, more than any teardown took ({most:?})"
                                 ),
-                                None => format!(
+                                (_, None) => format!(
                                     "its microVM gone on with nothing of its end for {:?}",
                                     // Its deadline came: the home has a slice.
                                     self.ends.slice(ends::End::Teardown).unwrap_or_default()
@@ -12805,6 +12828,93 @@ mod tests {
                 went_on()
             );
             assert_eq!((status, out.as_str(), err.as_str()), (0, "spinner\n", ""));
+            let _ = joined(starting.run);
+        });
+    }
+
+    /// A teardown whose look cannot read its VM process is given up at that look, its microVM
+    /// killed, and the daemon's log says why, never that it went on with nothing (the person's
+    /// rule of 2026-11-18: no fallbacks; ROOT's ruling, own-38h). No host fails a read on
+    /// purpose: the stand-in, asleep through its SIGKILL and holding its run's socket, has its
+    /// usage reads fail by `ends::UNREADABLE`, in a child of this test whose stderr, where its
+    /// daemon logs, the test reads. Red (lanes/redgreen/own-38h-goes-on-unread.patch) with a
+    /// usage unread taken for nothing, as before: the log says its microVM went on with
+    /// nothing of its end, a kill whose reason is not the one it had.
+    #[cfg(unix)]
+    #[test]
+    fn a_teardown_whose_look_fails_is_given_up_with_its_reason_in_the_log() {
+        const CHILD: &str = "SHARDS_UNREAD_TEARDOWN_TEST";
+        const WHY: &str = "refused by this test";
+        if std::env::var_os(CHILD).is_none() {
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "daemon::tests::a_teardown_whose_look_fails_is_given_up_with_its_reason_in_the_log",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .stdin(std::process::Stdio::null())
+                .output()
+                .unwrap();
+            let log = String::from_utf8_lossy(&out.stderr);
+            assert!(
+                out.status.success(),
+                "{}\n{log}",
+                String::from_utf8_lossy(&out.stdout)
+            );
+            assert!(
+                log.contains(&format!(
+                    "its microVM's teardown could not be read at its look: {WHY}: its microVM killed"
+                )),
+                "its microVM's kill not said with its reason:\n{log}"
+            );
+            assert!(!log.contains("its microVM gone on with nothing"), "{log}");
+            return;
+        }
+        let t = Test::new("teardown-unread");
+        t.run(|t| {
+            // This home's teardown slice, learned of ends that took 50 ms; its exit's long, as
+            // a killed VM's end is heard as its run's socket closes, which only a failing
+            // green waits past.
+            t.daemon
+                .ends
+                .learn(super::ends::End::Teardown, Duration::from_millis(50));
+            t.daemon
+                .ends
+                .learn(super::ends::End::Exit, Duration::from_secs(10));
+            let id = t.create("sleeper");
+            let starting = t.start(&id);
+            let (mut ready, vm) = t.warm_vm(None);
+            // Its VM a stand-in asleep, whatever its SIGKILL, holding its run's socket, its
+            // usage unreadable.
+            let sleeper = Arc::new(
+                shards_ipc::spawn(
+                    Path::new("/bin/sh"),
+                    &[OsStr::new("-c"), OsStr::new("exec sleep 600")],
+                    &[(vm.as_fd(), 3)],
+                    false,
+                )
+                .unwrap(),
+            );
+            lock(&super::ends::UNREADABLE).push((sleeper.id(), WHY.into()));
+            lock(&t.vms).push(sleeper.clone());
+            ready.vm = sleeper.clone();
+            ready.pooled = None;
+            starting.warm.send(ready).unwrap();
+            assert_eq!(heard(&vm).0, kind::RUN);
+            say(&vm, kind::TAKEN, &[]);
+            say(&vm, kind::STARTED, &[]);
+            t.until("the run started", |d| {
+                lock(&d.containers)
+                    .get(&id)
+                    .is_some_and(|c| c.state == Life::Running)
+            });
+            let asked = t.asking(&["kill", "sleeper"]);
+            assert_eq!(heard(&vm), signal(9));
+            // Its run's socket the stand-in's alone from here: its end closes it.
+            drop(vm);
+            let (status, out, err) = joined(asked);
+            assert_eq!((status, out.as_str(), err.as_str()), (0, "sleeper\n", ""));
             let _ = joined(starting.run);
         });
     }

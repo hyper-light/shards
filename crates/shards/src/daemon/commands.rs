@@ -51,7 +51,7 @@ impl CopyUserRefusal {
     }
 }
 
-use super::ends::{End, Followed};
+use super::ends::{End, Followed, GoesOn};
 
 /// How a microVM [`end_all`](Daemon::end_all) ended came to its end: it had already,
 /// by the signal it was sent, by SIGKILL asked for, by SIGKILL once its grace was up, by
@@ -2161,14 +2161,18 @@ impl<D: crate::containers::Disk> Daemon<D> {
                             // More work than any teardown took (C*), its command not ended:
                             // given up whatever its rate (D217, ROOT's ruling of 2026-11-18). Its
                             // work unread, the bound takes nothing from this look, and says why.
-                            let past = e.followed.past(self.ends.most_work()).unwrap_or_else(|why| {
-                                super::log(format!(
-                                    "container {}: its teardown's work unread, judged by its stillness alone at this look: {why}",
-                                    e.id
-                                ));
-                                None
-                            });
-                            if let (Some(look), None) = (&went, past) {
+                            // A look that could not read it gives it up already, saying why.
+                            let past = match went {
+                                GoesOn::Unread(_) => None,
+                                _ => e.followed.past(self.ends.most_work()).unwrap_or_else(|why| {
+                                    super::log(format!(
+                                        "container {}: its teardown's work unread, judged by its stillness alone at this look: {why}",
+                                        e.id
+                                    ));
+                                    None
+                                }),
+                            };
+                            if let (GoesOn::Went(look), None) = (&went, past) {
                                 // A look past C* that went on: the bound's red alone makes one
                                 // (`TEARDOWN_WENT_ON`).
                                 #[cfg(test)]
@@ -2193,11 +2197,16 @@ impl<D: crate::containers::Disk> Daemon<D> {
                             // teardown followed in its provider's VM again.
                             let (socket, vm, provider) = match lock(&self.runs).get(&e.id) {
                                 Some(RunState::Tracked(t)) if t.joined.is_none() => {
-                                    let why = match past {
-                                        Some((work, most)) => format!(
+                                    let why = match (&went, past) {
+                                        (GoesOn::Unread(unread), _) => {
+                                            format!(
+                                                "its microVM's teardown could not be read at its look: {unread}"
+                                            )
+                                        }
+                                        (_, Some((work, most))) => format!(
                                             "its microVM having run {work:?} of CPU since its SIGKILL, more than any teardown took ({most:?})"
                                         ),
-                                        None => format!(
+                                        (_, None) => format!(
                                             "its microVM gone on with nothing of its end for {:?}",
                                             // Its deadline came: the home has a slice.
                                             self.ends.slice(End::Teardown).unwrap_or_default()
@@ -2214,7 +2223,15 @@ impl<D: crate::containers::Disk> Daemon<D> {
                                     (None, Some(t.vm.id()), None)
                                 }
                                 Some(RunState::Tracked(t)) => (Some(t.socket.clone()), None, Some(t.vm.id())),
-                                _ => (None, None, None),
+                                _ => {
+                                    if let GoesOn::Unread(unread) = &went {
+                                        super::log(format!(
+                                            "container {}: its teardown could not be read at its look: {unread}",
+                                            e.id
+                                        ));
+                                    }
+                                    (None, None, None)
+                                }
                             };
                             if let Some(socket) = socket {
                                 let _ = socket.send(
@@ -2225,11 +2242,21 @@ impl<D: crate::containers::Disk> Daemon<D> {
                                 );
                             }
                             if let Some(provider) = provider {
+                                let why = match &went {
+                                    GoesOn::Unread(unread) => {
+                                        format!(
+                                            "its provider's microVM could not be read at its look: {unread}"
+                                        )
+                                    }
+                                    _ => format!(
+                                        "its provider's microVM gone on with no more than an idle microVM's work for {:?}",
+                                        self.ends.slice(End::Teardown).unwrap_or_default()
+                                    ),
+                                };
                                 super::log(format!(
-                                    "container {}: its command not ended {:?} after SIGKILL, its provider's microVM gone on with no more than an idle microVM's work for {:?}: SIGKILL sent again",
+                                    "container {}: its command not ended {:?} after SIGKILL, {why}: SIGKILL sent again",
                                     e.id,
                                     Duration::from_secs(e.since.elapsed().as_secs()),
-                                    self.ends.slice(End::Teardown).unwrap_or_default()
                                 ));
                                 e.phase = Phase::KilledAgain;
                                 (e.followed, e.since) = (Followed::of_provider(provider), Instant::now());
@@ -2247,7 +2274,8 @@ impl<D: crate::containers::Disk> Daemon<D> {
                                 Phase::KilledAgain => (End::Teardown, "its provider's microVM"),
                                 _ => (End::Exit, "its process"),
                             };
-                            if let Some(look) = e.followed.goes_on() {
+                            let went = e.followed.goes_on();
+                            if let GoesOn::Went(look) = &went {
                                 // An end that went on past its last kill (`TEARDOWN_WENT_ON`).
                                 #[cfg(test)]
                                 {
@@ -2270,16 +2298,31 @@ impl<D: crate::containers::Disk> Daemon<D> {
                             let _ = gone.told.set_nonblocking(true);
                             let mut byte = [0u8; 1];
                             let ended = matches!((&gone.told).read(&mut byte), Ok(1));
+                            let why = match &went {
+                                GoesOn::Unread(unread) => {
+                                    format!("{what} could not be read at its look: {unread}")
+                                }
+                                // Its deadline came: the home has a slice.
+                                _ => format!(
+                                    "{what} gone on with nothing of its end for {:?}",
+                                    self.ends.slice(end).unwrap_or_default()
+                                ),
+                            };
                             if ended {
                                 self.ends.learn(end, gone.since.elapsed());
                                 learned = true;
+                                // A look that failed is said, its end heard or not.
+                                if matches!(went, GoesOn::Unread(_)) {
+                                    super::log(format!(
+                                        "microVM {}: its end heard as it was given up, {why}",
+                                        gone.id
+                                    ));
+                                }
                             } else {
                                 super::log(format!(
-                                    "microVM {}: no end heard {:?} after it was killed, {what} gone on with nothing of its end for {:?}: {}",
+                                    "microVM {}: no end heard {:?} after it was killed, {why}: {}",
                                     gone.id,
                                     Duration::from_secs(gone.since.elapsed().as_secs()),
-                                    // Its deadline came: the home has a slice.
-                                    self.ends.slice(end).unwrap_or_default(),
                                     self.unheard(&gone.id)
                                 ));
                             }

@@ -279,6 +279,12 @@ impl Ends {
     }
 }
 
+/// Processes whose usage reads fail at their follows' looks in this test process, each with
+/// what its read says: a look that fails, which no host fails on purpose, followed through the
+/// daemon's callers to its log ([`GoesOn::Unread`]).
+#[cfg(test)]
+pub(crate) static UNREADABLE: Mutex<Vec<(u32, String)>> = Mutex::new(Vec::new());
+
 /// A SIGKILLed command's teardown in its own microVM or, a joiner's (D119), in its provider's,
 /// a killed VM process's end, or a network or share process's once its VM has gone, followed
 /// by what its process runs and frees from then on.
@@ -321,12 +327,11 @@ impl Followed {
     /// Process `pid` followed by D215's readers: none where no process has it; why not where
     /// it could not be read.
     fn watch(pid: u32) -> Result<Option<shards_api::Watch>, String> {
-        let Some(followed) =
-            shards_api::Followed::of_pid(pid).map_err(|e| format!("its VM process {pid}: {e}"))?
+        let Some(followed) = shards_api::Followed::of_pid(pid).map_err(|e| format!("process {pid}: {e}"))?
         else {
             return Ok(None);
         };
-        shards_api::Watch::of(followed).map_err(|e| format!("its VM process {pid}'s CPU: {e}"))
+        shards_api::Watch::of(followed).map_err(|e| format!("process {pid}'s CPU: {e}"))
     }
 
     /// Where its VM process, a microVM's own, has done more work since it began to be
@@ -400,14 +405,24 @@ impl Followed {
         }
     }
 
-    /// Whether its VM process went on with its end since it was last looked at: ran any CPU,
-    /// or held less than it did, its host freeing it, or its host held it from running, which
-    /// is no stall of its own (ROOT's ruling, 2026-11-13); and what it did, for the log.
-    /// Waited on for another slice if so; given up on if not, as one stopped or frozen is,
-    /// and one whose CPU could not be read, as before. A slice shorter than its CPU reading
-    /// shows (`Watch::resolution`, a clock tick) is no evidence of a stall: it goes on, the
-    /// look before kept, until the slices since add up to one.
-    pub(crate) fn goes_on(&mut self) -> Option<Look> {
+    /// What its process did with its end since it was last looked at ([`GoesOn`]): went on
+    /// where it ran any CPU, or held less than it did, its host freeing it, or its host held it
+    /// from running, which is no stall of its own (ROOT's ruling, 2026-11-13), and what it did,
+    /// for the log; still where it did none of these, or is stopped or frozen, or has gone;
+    /// unread where it lives and could not be read, then or as it began to be followed, which
+    /// its caller gives up on as one still, saying why (the person's rule of 2026-11-18: no
+    /// failure taken for a stillness, nor waited on for another slice; as D215's judge gives up
+    /// a process it cannot read, `Refusal::Process`). A slice shorter than its CPU reading shows
+    /// (`Watch::resolution`, a clock tick) is no evidence of a stall: it goes on, the look
+    /// before kept, until the slices since add up to one.
+    pub(crate) fn goes_on(&mut self) -> GoesOn {
+        if let Some(why) = &self.unread {
+            return GoesOn::Unread(why.clone());
+        }
+        // No process to follow: gone before its end was.
+        let Some(usage) = self.usage.as_mut() else {
+            return GoesOn::Still;
+        };
         let unresolved = self
             .watch
             .as_ref()
@@ -415,38 +430,88 @@ impl Followed {
         // A provider's work is judged over no less than its CPU reading resolves: until the
         // slices since add up to that, the look before is kept, and it goes on.
         if self.provider && unresolved {
-            let usage = self.usage.as_ref()?;
-            return Some(Look {
+            return GoesOn::Went(Look {
                 ran: true,
                 before: None,
                 now: None,
                 over: usage.since(),
+                unread: Some("its slices since the look before shorter than its CPU reading resolves".into()),
             });
         }
+        // Its usage first, then D215's look: a usage unread as its process ends is told by
+        // that look, which then finds it ending or gone.
+        let look = usage.look();
+        // A test's failed read (`UNREADABLE`): what its usage read says replaced by the failure.
+        #[cfg(test)]
+        let look = match lock(&UNREADABLE).iter().find(|(pid, _)| *pid == usage.pid()) {
+            Some((_, why)) => Look {
+                ran: false,
+                now: None,
+                unread: Some(why.clone()),
+                ..look
+            },
+            None => look,
+        };
         let found = match self.watch.as_mut() {
             Some(_) if unresolved => None,
-            watch => {
+            Some(watch) => {
                 self.looked = Instant::now();
-                watch.map(shards_api::Watch::look)
+                match watch.look() {
+                    Ok(shards_api::Found::Gone) => return GoesOn::Still,
+                    Ok(found) => Some(found),
+                    Err(e) => return GoesOn::Unread(format!("process {}'s CPU: {e}", usage.pid())),
+                }
             }
+            // Gone as its follow began.
+            None => return GoesOn::Still,
         };
-        let look = self.usage.as_mut()?.look();
-        if self.provider {
-            return look.ran.then_some(look);
+        let ending = self.watch.as_ref().is_some_and(shards_api::Watch::ended);
+        if let Some(why) = &look.unread
+            && found.is_some()
+            && !ending
+        {
+            return GoesOn::Unread(why.clone());
         }
-        let freed = matches!((look.before, look.now), (Some(b), Some(n)) if n.resident < b.resident);
-        let went = unresolved
-            || matches!(
-                found,
-                Some(Ok(shards_api::Found::Progressed | shards_api::Found::Held))
-            );
-        (went || freed).then_some(look)
+        let went = if self.provider {
+            look.ran
+        } else {
+            let freed = matches!((look.before, look.now), (Some(b), Some(n)) if n.resident < b.resident);
+            freed
+                || unresolved
+                || matches!(
+                    found,
+                    Some(shards_api::Found::Progressed | shards_api::Found::Held)
+                )
+        };
+        if went { GoesOn::Went(look) } else { GoesOn::Still }
     }
+}
+
+/// What a look at an end found of its process since the look before ([`Followed::goes_on`]).
+#[derive(Debug)]
+pub(crate) enum GoesOn {
+    /// It went on with its end: what it did, for the log.
+    Went(Look),
+    /// It went on with nothing of its end, or is stopped or frozen, or has gone, or there was
+    /// no process to follow.
+    Still,
+    /// It lives and could not be read: why. Given up on as one still is, and said.
+    Unread(String),
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Whether a look found its end going on: a look that could not read it fails the test,
+    /// saying why.
+    fn went_on(found: GoesOn) -> bool {
+        match found {
+            GoesOn::Went(_) => true,
+            GoesOn::Still => false,
+            GoesOn::Unread(why) => panic!("its look could not read it: {why}"),
+        }
+    }
 
     /// The record as a later process reads it: its newest version.
     fn recorded(home: &Path) -> String {
@@ -598,7 +663,7 @@ mod tests {
         };
         let mut own = Followed::of(Some(std::process::id()));
         spin();
-        assert!(own.goes_on().is_some());
+        assert!(went_on(own.goes_on()));
         let (work, said) = own.past(Some(most)).unwrap().expect("past C*");
         assert!(work > most && said == most, "{work:?} {said:?}");
         assert_eq!(own.past(None), Ok(None));
@@ -615,7 +680,7 @@ mod tests {
     /// no process to follow has no work, which is a reading.
     #[test]
     fn a_teardowns_unread_work_is_said_never_taken_for_none() {
-        let why = "its VM process 1: refused".to_string();
+        let why = "process 1: refused".to_string();
         let mut unread = Followed {
             unread: Some(why.clone()),
             ..Followed::of(None)
@@ -629,6 +694,69 @@ mod tests {
         assert_eq!(none.worked(), Ok(None));
     }
 
+    /// A look that cannot read its living process is unread, with why, never still nor gone on
+    /// (the person's rule of 2026-11-18: no fallbacks): here its usage, read of a process none
+    /// has beside D215's look of this one, which lives, at each look; and a follow that could
+    /// not begin, at its first. Its caller gives it up at that look, saying why. Red
+    /// (lanes/redgreen/own-38h-goes-on-unread.patch) with a usage unread taken for nothing, as
+    /// before: D215's look alone judged it.
+    #[test]
+    fn a_live_process_whose_look_fails_is_unread_with_why() {
+        let mut unreadable = Followed {
+            usage: Some(Progress::of(u32::MAX)),
+            ..Followed::of(Some(std::process::id()))
+        };
+        let resolution = unreadable.watch.as_ref().unwrap().resolution();
+        for _ in 0..2 {
+            std::thread::sleep(resolution);
+            match unreadable.goes_on() {
+                GoesOn::Unread(why) => assert!(why.starts_with("process 4294967295's usage: "), "{why}"),
+                found => panic!("a live process unread was found {found:?}"),
+            }
+        }
+        let why = "process 1: refused".to_string();
+        let mut unbegun = Followed {
+            unread: Some(why.clone()),
+            ..Followed::of(None)
+        };
+        assert!(matches!(unbegun.goes_on(), GoesOn::Unread(said) if said == why));
+    }
+
+    /// A process that ends between two looks is its end, never unread, whatever its usage
+    /// reads of it then: under way at the look that first finds it ended, then gone (D215's
+    /// look, read after its usage, tells an end from a failure).
+    #[cfg(unix)]
+    #[test]
+    fn a_process_ending_between_looks_is_its_end_never_unread() {
+        let child = Killed(
+            std::process::Command::new("/bin/sleep")
+                .arg("60")
+                .stdin(std::process::Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        let pid = child.0.id();
+        let mut ending = Followed::of(Some(pid));
+        let resolution = ending.watch.as_ref().unwrap().resolution();
+        let id = libc::pid_t::try_from(pid).unwrap();
+        // SAFETY: kill(2) of this test's own child.
+        assert_eq!(unsafe { libc::kill(id, libc::SIGKILL) }, 0);
+        // SAFETY: a siginfo_t, plain data, for waitid(2) to fill.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        // SAFETY: waitid(2) of this test's own child, to its end; WNOWAIT leaves it unreaped.
+        let waited = unsafe { libc::waitid(libc::P_PID, pid, &raw mut info, libc::WEXITED | libc::WNOWAIT) };
+        assert_eq!(waited, 0);
+        std::thread::sleep(resolution);
+        let first = ending.goes_on();
+        assert!(matches!(first, GoesOn::Went(_)), "its end under way: {first:?}");
+        std::thread::sleep(resolution);
+        let then = ending.goes_on();
+        assert!(
+            matches!(then, GoesOn::Still),
+            "its end found again, gone: {then:?}"
+        );
+    }
+
     /// An end is waited on past its slice while its VM process runs: this process spinning
     /// a CPU is seen to go on, and one with no process to follow never is.
     #[test]
@@ -639,8 +767,8 @@ mod tests {
         while t0.elapsed() < Duration::from_millis(300) {
             x = std::hint::black_box(x.wrapping_add(1));
         }
-        assert!(busy.goes_on().is_some());
-        assert!(Followed::of(None).goes_on().is_none());
+        assert!(went_on(busy.goes_on()));
+        assert!(!went_on(Followed::of(None).goes_on()));
     }
 
     /// Set in the child of `an_end_goes_on_at_any_rate_and_not_asleep_or_stopped`: it runs a
@@ -686,7 +814,7 @@ mod tests {
         let mut trickling = Followed::of(Some(trickler.0.id()));
         std::thread::sleep(Duration::from_millis(300));
         assert!(
-            trickling.goes_on().is_some(),
+            went_on(trickling.goes_on()),
             "a fiftieth of a CPU is its end going on"
         );
         // Asleep over a window as long as its reading shows (`Watch::resolution`: a shorter
@@ -701,13 +829,13 @@ mod tests {
             let from = witness.cpu();
             let mut sleeping = Followed::of(Some(pid));
             std::thread::sleep(witness.resolution());
-            while trickling.goes_on().is_none() {
+            while !went_on(trickling.goes_on()) {
                 std::thread::yield_now();
             }
-            let went = sleeping.goes_on();
+            let went = went_on(sleeping.goes_on());
             witness.look().unwrap();
             if witness.cpu() == from {
-                assert!(went.is_none(), "asleep, it goes on with nothing");
+                assert!(!went, "asleep, it goes on with nothing");
                 break sleeping;
             }
         };
@@ -725,7 +853,7 @@ mod tests {
             .unwrap()
             .resolution();
         std::thread::sleep(resolution);
-        assert!(sleeping.goes_on().is_none(), "stopped, it goes on with nothing");
+        assert!(!went_on(sleeping.goes_on()), "stopped, it goes on with nothing");
     }
 
     /// A joiner's teardown (D119) goes on by its provider's VM process's work beyond an idle
@@ -743,7 +871,7 @@ mod tests {
         while t0.elapsed() < Duration::from_millis(300) {
             x = std::hint::black_box(x.wrapping_add(1));
         }
-        assert!(busy.goes_on().is_some(), "a provider spinning a CPU goes on");
+        assert!(went_on(busy.goes_on()), "a provider spinning a CPU goes on");
         let trickler = Killed(
             std::process::Command::new(std::env::current_exe().unwrap())
                 .args([
@@ -769,7 +897,7 @@ mod tests {
         let mut provider = Followed::of_provider(pid);
         std::thread::sleep(Duration::from_millis(300));
         assert!(
-            provider.goes_on().is_none(),
+            !went_on(provider.goes_on()),
             "a fiftieth of a CPU, an idle provider's ticks, is no joiner's end going on"
         );
     }
