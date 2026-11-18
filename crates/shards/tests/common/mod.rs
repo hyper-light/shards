@@ -3245,8 +3245,13 @@ pub const REPORTED: u64 = 2 << 20;
 /// fall, which it waits on for as long as the process lives. Begun before what it gives
 /// back is freed, its first fall spans the free and its guest's whole wait before it
 /// reports (mm/page_reporting.c `PAGE_REPORTING_DELAY`, D151), which each later report
-/// only waits again. A fall is one report's at least, [`REPORTED`] below the level its last
-/// fall left or its memory rose to since: less is its process's own memory moving.
+/// only waits again; but not where a pass was already due as the free came, as a free asks
+/// for none while one is (`__page_reporting_request`): its first fall then comes sooner
+/// than that delay, and a cold settle can end between passes, each at most
+/// `PAGE_REPORTING_CAPACITY` blocks. A caller that needs the whole give-back has its guest
+/// report what waits at once first (`page_reporting.flush`, resources/kernel/patches/0005).
+/// A fall is one report's at least, [`REPORTED`] below the level its last fall left or its
+/// memory rose to since: less is its process's own memory moving.
 pub struct Falling {
     pid: u32,
     wait: Wait,

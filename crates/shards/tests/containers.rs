@@ -4034,8 +4034,10 @@ fn what_a_microvm_holds_cold_is_given_back_at_its_hosts_word() {
     let built = run_shards_env(&[], &["build", "-q", "-t", "big:1", ctx.to_str().unwrap()], &env);
     assert_eq!(built.status, Some(0), "{built}");
     std::fs::remove_file(ctx.join("big")).unwrap();
+    // Privileged, for a /sys its root's execs may write (init setup.rs `privileged`), where
+    // its guest is asked to report what it freed (below).
     let provider = shards(
-        &run_args(&image, &["-d", "--name", "prov"], &["sleep"])
+        &run_args(&image, &["-d", "--name", "prov", "--privileged"], &["sleep"])
             .iter()
             .map(String::as_str)
             .collect::<Vec<_>>(),
@@ -4067,10 +4069,26 @@ fn what_a_microvm_holds_cold_is_given_back_at_its_hosts_word() {
     // free. A second read of a file its guest's kernel finds the first's still holding makes
     // its pages active, which a give-back takes none of (`reclaim_cold`, `inactive_file`),
     // and an idle measured as it went on giving back had the file read twice and gave back
-    // nothing of it on Fedora, once in 6.
+    // nothing of it on Fedora, once in 6. What it freed is reported at once before idle is
+    // read, as a template's init and a builder's report theirs (`page_reporting.flush`,
+    // resources/kernel/patches/0005, root's alone): a pass already due as it freed the GiB
+    // brought the first fall in sooner than the kernel's two seconds between passes, the
+    // settle ended between them, and the read took the guest's free pages not yet reported,
+    // which its host still held (CI 44007524337, 44138098584 and 44282442232 on x86_64 Linux:
+    // its last fall 1.8 s in, then 30 MiB more after the read, or 122 and 130 MiB less).
     let falling = Falling::begin(pid);
     let grown = shards(&["exec", "prov", "/bin/testguest", "alloc-free", "1024", "0"]);
     assert_eq!(grown.status, Some(0), "{grown}");
+    let reported = shards(&[
+        "exec",
+        "-u",
+        "0",
+        "prov",
+        "/bin/testguest",
+        "fs",
+        "write:/sys/module/page_reporting/parameters/flush=1",
+    ]);
+    assert_eq!(reported.status, Some(0), "{reported}");
     let idle = falling.settled();
     // Its guest holds what its joiner read, read once.
     let read = shards(&["exec", "reader", "/bin/testguest", "read", "/big"]);

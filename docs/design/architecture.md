@@ -13975,6 +13975,26 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
         - So the settle now says when and at what level it ended, and its last fall, on
           stderr, which a failing test prints. The harness test's 32 MiB regions are falls
           still.
+      - *A pass already due* (amended 2026-11-18, #36, ROOT's ruling: test-side, before the
+        tag). The cold rule's premise fails where a pass was due as the free came: a free asks
+        for no pass while one is due or running (v6.18 mm/page_reporting.c
+        `__page_reporting_request`), so the first fall comes sooner than
+        `PAGE_REPORTING_DELAY` (2 s, l. 50), and each pass gives back at most
+        `PAGE_REPORTING_CAPACITY` blocks of an order (32: 128 MiB of 4 MiB blocks, l. 180),
+        the next one 2 s on (l. 345).
+        - CI's x86_64 Linux jobs, after the fall's amendment: 44007524337 (musl),
+          44138098584 and 44282442232 (gnu) settled 3.6 to 3.8 s in, their last fall 1.76 to
+          1.84 s in, where their passing runs settled 76 to 147 s in, their last fall 25 to
+          42 s in. The read then took the guest's free pages not yet reported, which its
+          allocator takes first (reported ones go to the free lists' tail) and its host still
+          held: 897060864 bytes after it from an idle of 865595392, 875163648 from
+          1003089920, 870436864 from 1006747648, one pass's 128 MiB given back meanwhile.
+        - So containers.rs' cold-memory test has its guest report what waits at once
+          (`page_reporting.flush`, resources/kernel/patches/0005) before it settles: its
+          provider privileged, whose /sys init leaves writable (setup.rs `privileged`), the
+          parameter root's. `Falling` still follows the falls the flush brings.
+        - Owed after the tag (ROOT's ruling): at D188's word, a guest reports at once what
+          it holds free, not only after it reclaimed files (init run.rs `reclaim_files`).
       - No 500 ms, 4 MiB or 128 MiB is left. tests/harness.rs
         `a_give_back_is_followed_while_its_memory_falls` holds it to a stand-in that unmaps
         four 32 MiB regions 200 ms of busy CPU apart, the first 400 ms in. Twice from one call
