@@ -12752,6 +12752,114 @@ mod tests {
         });
     }
 
+    /// Case 5 on a host that starves the provider (D217, ROOT's ruling of 2026-11-18): the
+    /// joiner's kill waits for its end while its provider's VM works, however little of a CPU
+    /// its host gives that VM, and hears it. The provider is a stand-in spinning a CPU under
+    /// SCHED_IDLE, pinned to one CPU beside a spinner of the default policy, so that it is
+    /// runnable throughout and almost never run (sched(7)): a slice it ran nothing in is its
+    /// host's hold, and one it ran in shows its rate over the time its host let it run.
+    /// Red (lanes/redgreen/own-38h-provider-starved.patch, its work judged over the whole
+    /// slice, as before): its kill given up within a few slices, "did not receive an exit
+    /// event", as case 5 failed under the parallel suite (2 to 24 ms of CPU a 50 ms slice).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_joiners_kill_hears_its_end_while_its_host_starves_its_providers_vm() {
+        let t = Test::new("joiner-starved");
+        t.run(|t| {
+            // This home's slices, learned of ends that took 50 ms.
+            let slice = Duration::from_millis(50);
+            t.daemon.ends.learn(super::ends::End::Teardown, slice);
+            t.daemon.ends.learn(super::ends::End::Exit, slice);
+            let id = t.create("joiner");
+            let starting = t.start(&id);
+            let (mut ready, vm) = t.warm_vm(None);
+            let spinner = || {
+                Arc::new(
+                    shards_ipc::spawn(
+                        Path::new("/bin/sh"),
+                        &[OsStr::new("-c"), OsStr::new("while :; do :; done")],
+                        &[],
+                        false,
+                    )
+                    .unwrap(),
+                )
+            };
+            // Its VM its provider's: a stand-in spinning under SCHED_IDLE, beside a spinner of
+            // the default policy on its one CPU.
+            let cpu = first_cpu();
+            let neighbour = spinner();
+            lock(&t.vms).push(neighbour.clone());
+            pin(neighbour.id(), cpu, false);
+            let provider = spinner();
+            lock(&t.vms).push(provider.clone());
+            pin(provider.id(), cpu, true);
+            ready.vm = provider;
+            ready.joined = Some("provider".into());
+            ready.pooled = None;
+            starting.warm.send(ready).unwrap();
+            assert_eq!(heard(&vm).0, kind::RUN);
+            say(&vm, kind::TAKEN, &[]);
+            say(&vm, kind::STARTED, &[]);
+            t.until("the run started", |d| {
+                lock(&d.containers)
+                    .get(&id)
+                    .is_some_and(|c| c.state == Life::Running)
+            });
+            let asked = t.asking(&["kill", "joiner"]);
+            assert_eq!(heard(&vm), signal(9));
+            std::thread::sleep(slice * 20);
+            say(&vm, kind::DONE, &[137]);
+            let (status, out, err) = joined(asked);
+            assert_eq!((status, out.as_str(), err.as_str()), (0, "joiner\n", ""));
+            let _ = joined(starting.run);
+        });
+    }
+
+    /// The first CPU this test's thread may run on (sched_getaffinity(2)).
+    #[cfg(target_os = "linux")]
+    fn first_cpu() -> usize {
+        // SAFETY: a cpu_set_t, plain data, for sched_getaffinity to fill.
+        let mut set: libc::cpu_set_t = unsafe { std::mem::zeroed() };
+        // SAFETY: sched_getaffinity(2) of this thread into a local set of its size.
+        let got = unsafe { libc::sched_getaffinity(0, size_of::<libc::cpu_set_t>(), &raw mut set) };
+        assert_eq!(got, 0);
+        let cpus = usize::try_from(libc::CPU_SETSIZE).unwrap();
+        // SAFETY: CPU_ISSET reads a bit of a set filled above, below CPU_SETSIZE.
+        (0..cpus)
+            .find(|&cpu| unsafe { libc::CPU_ISSET(cpu, &set) })
+            .unwrap()
+    }
+
+    /// Pins process `pid`, a stand-in of one thread, to `cpu` alone (sched_setaffinity(2)),
+    /// and where `idle` puts it under SCHED_IDLE, the least weight a thread may have, which
+    /// needs no privilege (sched(7), since Linux 2.6.39): the raw call, as musl's wrapper
+    /// refuses every policy (ENOSYS: POSIX's policy is the process's, Linux's the thread's).
+    #[cfg(target_os = "linux")]
+    fn pin(pid: u32, cpu: usize, idle: bool) {
+        let pid = libc::pid_t::try_from(pid).unwrap();
+        // SAFETY: a cpu_set_t, plain data; CPU_SET sets a bit below CPU_SETSIZE in it.
+        let mut set: libc::cpu_set_t = unsafe { std::mem::zeroed() };
+        // SAFETY: as above.
+        unsafe { libc::CPU_SET(cpu, &mut set) };
+        // SAFETY: sched_setaffinity(2) of this test's own child, to a set of its size.
+        let got = unsafe { libc::sched_setaffinity(pid, size_of::<libc::cpu_set_t>(), &raw const set) };
+        assert_eq!(got, 0);
+        if idle {
+            // SAFETY: a sched_param, plain data, its priority 0 as SCHED_IDLE requires.
+            let param: libc::sched_param = unsafe { std::mem::zeroed() };
+            // SAFETY: sched_setscheduler(2) of this test's own child, reading `param`.
+            let got = unsafe {
+                libc::syscall(
+                    libc::SYS_sched_setscheduler,
+                    pid,
+                    libc::SCHED_IDLE,
+                    &raw const param,
+                )
+            };
+            assert_eq!(got, 0);
+        }
+    }
+
     /// A teardown that has done more work than any teardown took (C*), its command never
     /// ended, is given up and its microVM killed, whatever its rate (D217 by D215's rule for
     /// starts, (b); ROOT's ruling of 2026-11-18): CI 44245219858's nine VMs, their guests

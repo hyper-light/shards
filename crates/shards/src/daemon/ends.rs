@@ -33,7 +33,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use shards_vmm::platform::{Look, Progress};
+use shards_vmm::platform::{Look, Progress, progressed};
 
 use super::lock;
 
@@ -390,14 +390,18 @@ impl Followed {
 
     /// A joiner's teardown (D119), from now, in its provider's microVM, whose VM process is
     /// `pid` (ROOT's ruling, 2026-11-18). That process runs the provider's own command and
-    /// ticks whether or not the joiner's end goes on. So it goes on only by work beyond an idle
+    /// ticks whether or not the joiner's end goes on. So it goes on by work beyond an idle
     /// microVM's (`IDLE_VM_CPU`, PM M357: 63 ms of CPU in 10 s, the most an idle run's microVM
-    /// took, on windows-2025; 31 ms on windows-2022). Neither its host holding it from running
-    /// nor what its host frees of it is a sign: an idle provider's ticks wait on a loaded
-    /// host's CPUs as its work would, and its give-back frees it too. Before, a joiner's
-    /// teardown was followed by nothing: held to one slice, then to a killed VM process's,
-    /// and given up while its provider's guest still tore it down (CI 44245219858, x86_64
-    /// gnu: `stop -t 1` of a joiner exited 1, 5.98 ms into the second slice).
+    /// took, on windows-2025; 31 ms on windows-2022) over the time in a slice its host let it
+    /// run: the slice less its threads' wait for a CPU in it (`Watch::waited`), so that a
+    /// working provider its host starves shows its own rate (case 5 under the parallel suite:
+    /// 2 to 24 ms of CPU a 50 ms slice, some slices below an idle microVM's rate, its joiner's
+    /// kill given up). A slice it ran nothing in, its host holding it (D215's `Held`), goes on
+    /// too, as no stall of its own. What its host frees of it is no sign: an idle provider's
+    /// give-back frees it too. Before, a joiner's teardown was followed by nothing: held to one
+    /// slice, then to a killed VM process's, and given up while its provider's guest still
+    /// tore it down (CI 44245219858, x86_64 gnu: `stop -t 1` of a joiner exited 1, 5.98 ms into
+    /// the second slice).
     pub(crate) fn of_provider(pid: u32) -> Followed {
         Followed {
             provider: true,
@@ -473,7 +477,18 @@ impl Followed {
             return GoesOn::Unread(why.clone());
         }
         let went = if self.provider {
-            look.ran
+            // Its wait for a CPU in the slice, none counted on Windows; unread, the look is.
+            let waited = match self.watch.as_ref().map(shards_api::Watch::waited) {
+                Some(Ok(waited)) => waited,
+                Some(Err(e)) => return GoesOn::Unread(format!("process {}: {e}", usage.pid())),
+                None => None,
+            };
+            found == Some(shards_api::Found::Held)
+                || progressed(
+                    look.before.map(|u| u.cpu_ns),
+                    look.now.map(|u| u.cpu_ns),
+                    look.over.saturating_sub(waited.unwrap_or_default()),
+                )
         } else {
             let freed = matches!((look.before, look.now), (Some(b), Some(n)) if n.resident < b.resident);
             freed

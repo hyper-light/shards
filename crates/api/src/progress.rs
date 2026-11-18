@@ -456,6 +456,8 @@ pub struct Watch {
     /// What its last look read of its host's work for a thread of it waiting in its kernel
     /// ([`Hold::kernel_since`]): for a refusal's or a hold's account (D215, R-D).
     kernel: Option<String>,
+    /// Its threads' wait for a CPU in the window its last look closed ([`waited`](Watch::waited)).
+    waited: Result<Option<Duration>, String>,
     /// Linux: each CPU's idle and iowait ticks as the last look that found a thread of it in
     /// its kernel read them, and when (`os::idle`): unused by the rule, said in its reading.
     #[cfg(target_os = "linux")]
@@ -551,6 +553,7 @@ impl Watch {
             threads: None,
             stored: false,
             kernel: None,
+            waited: Ok(None),
             #[cfg(target_os = "linux")]
             idle: None,
             #[cfg(target_os = "linux")]
@@ -607,6 +610,11 @@ impl Watch {
             return Ok(Found::Gone);
         }
         let hold = std::mem::replace(&mut self.hold, self.followed.hold());
+        #[cfg(unix)]
+        {
+            self.waited =
+                os::waited(hold.queued, self.hold.queued, look.cpu.saturating_sub(before.cpu)).map(Some);
+        }
         self.stored = self.hold.io.grown_since(&hold.io);
         self.kernel = self.hold.kernel_since(&hold);
         // Each CPU's idle and iowait ticks since the look before, beside the stalls: unused by
@@ -653,6 +661,21 @@ impl Watch {
     /// The CPU time its process's threads have had by the look before.
     pub fn cpu(&self) -> Duration {
         self.last.cpu
+    }
+
+    /// Its threads' wait for a CPU in the window its last look closed, from the look before it,
+    /// as its scheduler counts it: the time in that window its host did not let it run, which a
+    /// joiner's provider's work is judged without (D217). Linux: their `run_delay` grown
+    /// (Documentation/scheduler/sched-stats.rst), which the kernel adds as a wait ends
+    /// (kernel/sched/stats.h `sched_info_arrive`), so a wait under way as a look reads it shows
+    /// at the first look after it ends, all of it; macOS: their runnable time grown
+    /// (proc_pid_rusage(2)'s `ri_runnable_time`, running or waiting), less the CPU they ran.
+    /// None before its second look, and on Windows, whose threads keep no count of a wait
+    /// that has ended (its listing reads a thread's state as it is looked at, and its switches
+    /// in; a wait's length is its event tracing's alone, ETW's context switch events). Why
+    /// not where its count could not be read at either end of the window.
+    pub fn waited(&self) -> Result<Option<Duration>, String> {
+        self.waited.clone()
     }
 
     /// Whether the look before found it ended: on Unix its process exited and not yet
@@ -1192,6 +1215,19 @@ mod os {
         (ran != 0 || waited != 0 || slices != 0).then_some(waited)
     }
 
+    /// Its threads' wait for a CPU between the looks that read `before` and `now` ([`Watch::waited`](super::Watch::waited)):
+    /// their `run_delay` grown, a thread gone meanwhile taking its own out of the sum (none
+    /// below none); why not where either look read none.
+    pub(super) fn waited(before: Queued, now: Queued, _ran: Duration) -> Result<Duration, String> {
+        match (before, now) {
+            (Queued::Waited(was), Queued::Waited(is)) => Ok(Duration::from_nanos(is.saturating_sub(was))),
+            _ => Err(
+                "its threads' wait for a CPU unread: no task of it had a schedstat to read (a kernel without CONFIG_SCHED_INFO, or its tasks unreadable)"
+                    .to_string(),
+            ),
+        }
+    }
+
     /// Whether the cgroup at `dir` holds process `pid` alone: its `cgroup.procs` lists that
     /// pid and no other.
     fn alone(dir: &Path, pid: u32) -> bool {
@@ -1540,6 +1576,21 @@ mod os {
         // RUSAGE_INFO_V4 names.
         let code = unsafe { libc::proc_pid_rusage(id, libc::RUSAGE_INFO_V4, (&raw mut info).cast()) };
         (code == 0).then_some(info)
+    }
+
+    /// Its threads' wait for a CPU between the looks that read `before` and `now`, `ran` the
+    /// CPU they ran meanwhile ([`Watch::waited`](super::Watch::waited)): their runnable time grown, less
+    /// what they ran (none below none); why not where either look read none.
+    pub(super) fn waited(before: Queued, now: Queued, ran: Duration) -> Result<Duration, String> {
+        match (before, now) {
+            (Queued::Waited(was), Queued::Waited(is)) => {
+                let runnable = mach(u128::from(is.saturating_sub(was))).map_err(|e| e.to_string())?;
+                Ok(runnable.saturating_sub(ran))
+            }
+            _ => Err(
+                "its threads' runnable time unread: proc_pid_rusage(2) RUSAGE_INFO_V4 read none".to_string(),
+            ),
+        }
     }
 
     /// Process `id`'s BSD status (`pbi_status`); none where it could not be read.
@@ -3653,6 +3704,22 @@ mod tests {
         assert!(watch.ended());
         assert_eq!(watch.look().unwrap(), Found::Gone, "found ended again: gone");
         child.wait().unwrap();
+    }
+
+    /// A watch reads its threads' wait for a CPU over the window its last look closed (D217, a
+    /// joiner's provider): none before its second look; after it, on Linux and macOS, a reading,
+    /// whose failure would be said, never taken for none; on Windows none, which counts no wait
+    /// that has ended.
+    #[test]
+    fn a_watch_reads_its_threads_wait_for_a_cpu_over_its_last_window() {
+        let followed = Followed::of_pid(std::process::id()).unwrap().unwrap();
+        let mut watch = Watch::of(followed).unwrap().unwrap();
+        assert_eq!(watch.waited(), Ok(None));
+        watch.look().unwrap();
+        #[cfg(unix)]
+        assert!(matches!(watch.waited(), Ok(Some(_))), "{:?}", watch.waited());
+        #[cfg(windows)]
+        assert_eq!(watch.waited(), Ok(None));
     }
 
     /// A child of this test's running `script` in a shell: its pid once waitid(2) has seen it

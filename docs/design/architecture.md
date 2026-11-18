@@ -10576,9 +10576,9 @@ user's host as Docker's.
   - Now its teardown, after its SIGKILL and after its SIGKILL again (`KilledAgain`), is
     followed in its provider's VM process by that process's work beyond an idle microVM's
     (`Followed::of_provider`; `IDLE_VM_CPU`, PM M357's 63 ms of CPU in 10 s), judged over no
-    less than the CPU reading resolves. Its host holding it and what its host frees of it are
+    less than the CPU reading resolves. Its host holding it and what its host frees of it were
     no sign there: an idle provider's ticks wait on a loaded host's CPUs as work would, and
-    its give-back frees it too.
+    its give-back frees it too (its host's hold amended below, item 5).
   - Its ends are learned as teardowns (`End::Teardown`), never as a VM process's exit.
   - The cost: a joiner's teardown that runs slower than an idle microVM, the case D217's own
     rule left PM M357's rate for, is given up after a slice of no such work. A provider runs
@@ -10588,6 +10588,64 @@ user's host as Docker's.
     `daemon::tests::a_joiners_kill_hears_its_end_while_its_providers_vm_works` (the end
     comes twenty learned slices past SIGKILL, the provider spinning). Red:
     lanes/redgreen/own-35d-joiner-end.patch.
+  - *Amended 2026-11-18 (ROOT's ruling, item 5; own-38h): judged over the time its host let
+    it run.* Case 5's test failed under the parallel daemon suite on macOS (main 2 of 2,
+    (b2) 1 of 2; alone 5 of 5): its provider stand-in, a spinner its host starved, ran 2 to
+    24 ms of CPU a 50 ms slice, some slices no more than an idle microVM's rate (63 ms in 10
+    s: 0.315 ms a slice), and its joiner's kill was given up, "did not receive an exit event".
+    Its work was judged over the whole slice, and its host's hold was no sign.
+    - Now its CPU in a slice is judged against `IDLE_VM_CPU`'s rate over the time its host
+      let it run: the slice less its threads' wait for a CPU in it (`Watch::waited`). Linux:
+      their schedstat `run_delay` grown, which the kernel adds as a wait ends
+      (kernel/sched/stats.h `sched_info_arrive`), so a wait under way shows at the first look
+      after it, whole. macOS: their `ri_runnable_time` grown (proc_pid_rusage(2), running or
+      waiting), less the CPU they ran. A working provider its host starves shows its own rate
+      (a 2 ms run over 2 ms let run is all of it). A slice it ran nothing in, its host holding
+      it (D215's `Held`, its host's hold as D215 reads one, a thread of it runnable as it is
+      looked at among them), goes on too: no stall of its own. What its host frees of it stays
+      no sign.
+    - No number is added: the rate is `IDLE_VM_CPU`'s, the wait its scheduler's own count.
+    - A wait that cannot be read (Linux: no task of it had a schedstat; macOS:
+      `RUSAGE_INFO_V4` read none) makes the look unread, said, and its end given up at that
+      look ("A look that cannot read its process says why", below): never judged without it.
+    - Windows counts no wait that has ended. Its listing (`SYSTEM_THREAD_INFORMATION`, read by
+      `NtQuerySystemInformation(SystemProcessInformation)`) gives, exactly: each thread's state
+      as it is looked at (`ThreadState`, values as WMI's `Win32_Thread` documents them: ready 1,
+      standby 3 want a CPU), its switches in (`ContextSwitches`, winternl.h's `Reserved3`,
+      phnt ntexapi.h), and its CPU times, kept in clock ticks (15.625 ms). `WaitTime`
+      (`Reserved2`) is the kernel's tick count at the thread's last state change (KTHREAD's
+      `WaitTime`, by which the balance set manager finds threads ready about four seconds:
+      Windows Internals 7e part 1, ch. 4, "Priority boosts for CPU starvation"; ReactOS's
+      `KiScanReadyQueues`, an independent implementation, compares it with `KeTickCount`). It
+      measures a wait only against the current tick count in those units, which no documented
+      user-mode call returns (`GetTickCount64` returns milliseconds, converted by a multiplier
+      kept in `KUSER_SHARED_DATA`, a WDK structure): not used. So, exactly: a thread wanting a
+      CPU at two looks running, its switches unchanged, waited through the window between them
+      (a thread leaves ready only by running or ending). Only a bound: one that switched in
+      the window waited at most the window less its CPU, which counts its sleep as a wait and
+      would take every idle provider's slice for a hold: not used. Windows' rule therefore
+      ends without a count: a slice it ran nothing in (no cycles), a thread of it wanting a CPU
+      as it is looked at, is its host's hold (D215's `Held`, as on every OS); any other slice
+      is judged by its CPU over the whole slice, as before. The exact reading above, a thread
+      held through a slice while another ran, joins it once the vCPU lane's per-thread switch
+      reading is on main (shards-judge `threads_switched`, f3e073a109). Its gap, stated: a
+      provider its host starves that runs a little each slice, below an idle microVM's rate, is
+      given up on Windows as before. No slice is waited on for an unread wait, so no follow is
+      unbounded (ROOT's condition).
+    - The cost: a provider that wants a CPU its host never gives it is followed as long as
+      that lasts, as every D215 hold is; and on a host loaded enough that an idle provider's
+      ticks wait long against their runs (the kernel lumping each wait into the look after it
+      ends), its rate over the time it was let run can read above an idle microVM's, and it is
+      followed while that load lasts. Neither is measured (R09 owed).
+    - Tests: `daemon::tests::a_joiners_kill_hears_its_end_while_its_host_starves_its_providers_vm`
+      (Linux: the provider's spinner under SCHED_IDLE, pinned to one CPU beside a spinner of
+      the default policy; its kill hears the end twenty slices on) and shards-api's
+      `a_watch_reads_its_threads_wait_for_a_cpu_over_its_last_window`; the trickler of
+      `a_joiners_teardown_goes_on_by_its_providers_work_beyond_an_idle_microvm` is still given
+      up. Red: lanes/redgreen/own-38h-provider-starved.patch (its work over the whole slice, its
+      host's hold no sign, as before). Written, not built or run (the lane's rule). Owed (ROOT):
+      those tests, the parallel daemon suite on macOS (case 5's own failure), clippy on every
+      target.
 - **A teardown past the most work any took is given up** (ROOT's ruling of 2026-11-18, (b2),
   goal 1453357d; D215's rule for starts, (b), applied to teardowns). Any CPU at all was a
   teardown going on, so a microVM whose guest spins through its SIGKILL was followed for
