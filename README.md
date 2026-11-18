@@ -326,16 +326,18 @@ saved here and resumed there where it was, its image, files and volumes with it;
 `--live` it keeps running while its memory is copied, and stops only for the last pass.
 
 > [!NOTE]
-> Snapshots work on macOS, on x86_64 and arm64 Linux, and on x86_64 Windows; arm64
-> Windows saves and restores microVMs too, so far tested on an emulated host only.
+> Snapshots work on macOS, x86_64 Linux and x86_64 Windows. arm64 Linux saves and restores
+> microVMs too, so far tested in a Linux VM on a Mac; arm64 Windows does as well, so far tested
+> on an emulated host only.
 > Live moves work on macOS, x86_64 Linux and x86_64 Windows; on arm64 Linux and arm64
 > Windows they are built but not yet tested with real microVMs.
 
 ## Where things stand
 
-| | Today (2026-11-12) |
+| | In 0.8.0 |
 |---|---|
-| MicroVMs on Apple silicon Macs, x86_64 and arm64 Linux, and x86_64 Windows | Work: booted directly and made from images, repeated runs served from warm copies |
+| MicroVMs on Apple silicon Macs, x86_64 Linux and x86_64 Windows | Work: booted directly and made from images, repeated runs served from warm copies |
+| MicroVMs on arm64 Linux | Work the same way, so far tested in a Linux VM on an Apple silicon Mac, not yet on arm64 hardware; most of this release's new features have not run there yet |
 | MicroVMs on arm64 Windows | Booted, saved and restored, through the Windows Hypervisor Platform; tested on an emulated host only, its full test suite not yet passed |
 | Snapshots, and saving a running microVM whole | Every host above |
 | Moving a running microVM to another machine | Saved and resumed there, on every host; live on macOS, x86_64 Linux and x86_64 Windows, built on arm64 Linux and arm64 Windows. Tested between two Linux machines and between two homes on one machine; machines whose CPUs differ move microVMs through a CPU baseline (`shards configure cpu`), built on macOS and Linux |
