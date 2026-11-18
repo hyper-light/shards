@@ -8240,7 +8240,7 @@ impl<D: Disk> Daemon<D> {
                                     format!("its microVM's teardown could not be read at its look: {unread}")
                                 }
                                 (_, Some((work, most))) => format!(
-                                    "its microVM having run {work:?} of CPU since its SIGKILL, more than any teardown took ({most:?})"
+                                    "its microVM having run {work} since its SIGKILL, more than any teardown took ({most})"
                                 ),
                                 (_, None) => format!(
                                     "its microVM gone on with nothing of its end for {:?}",
@@ -10565,7 +10565,7 @@ fn grant(
             return Ok(());
         }
         if let (1, Some((wall, cpu))) = (sent, launched.take()) {
-            launches.teach(wall, cpu);
+            launches.teach(wall, shards_api::Work::of_cpu(cpu));
             // Its launch and its first request answered, for a run that waits for it (cold,
             // D25): said at debug.
             shards_vmm::debug!(
@@ -10797,8 +10797,8 @@ fn ready(socket: &UnixStream, pid: u32, record: &shards_api::Record) -> Result<(
             // done more than any start took (C*) is given up on, whatever its rate (D215).
             shards_api::Unfollowed::Stalled(stall) => NotReady::Refused(match stall.rate() {
                 Some(rate) => format!(
-                    "VM {pid} was not ready: it ran {:?} of CPU in the {:?} it was seen to run unheld, more than any start took ({:?}), past the slowest start seen ({:?}), {:?} after it began{}",
-                    rate.cpu,
+                    "VM {pid} was not ready: it ran {} in the {:?} it was seen to run unheld, more than any start took ({}), past the slowest start seen ({:?}), {:?} after it began{}",
+                    rate.work,
                     rate.over,
                     stall.most().unwrap_or_default(),
                     stall.slowest(),
@@ -11131,7 +11131,7 @@ mod tests {
         assert_eq!(shards_ipc::recv(&theirs).unwrap().unwrap().payload, b"one");
         let record = Record::new();
         let slowest = Duration::from_millis(100);
-        record.teach(slowest, slowest / 1000);
+        record.teach(slowest, shards_api::Work::of(1));
         let busy = AtomicBool::new(true);
         let payload = vec![7u8; shards_ipc::MAX_PAYLOAD];
         std::thread::scope(|s| {
@@ -11163,7 +11163,7 @@ mod tests {
         let socket = super::RunSocket::new(ours, idle.id());
         let record = Record::new();
         let slowest = Duration::from_millis(100);
-        record.teach(slowest, slowest / 1000);
+        record.teach(slowest, shards_api::Work::of(1));
         let (done, finished) = mpsc::channel();
         let t0 = Instant::now();
         std::thread::scope(|s| {
@@ -11319,7 +11319,7 @@ mod tests {
         // Its W* learned (taught here): one that runs nothing, given up on past it.
         let slowest = Duration::from_millis(200);
         let record = shards_api::Record::new();
-        record.teach(slowest, Duration::from_millis(1));
+        record.teach(slowest, shards_api::Work::of_cpu(Duration::from_millis(1)));
         let asleep = sleeper(60);
         std::thread::sleep(slowest);
         let (ours, _theirs) = UnixStream::pair().unwrap();
@@ -11351,8 +11351,8 @@ mod tests {
     fn a_start_that_works_past_c_star_without_ready_is_given_up() {
         let slowest = Duration::from_millis(200);
         let record = shards_api::Record::new();
-        record.teach(slowest, Duration::from_millis(1));
-        record.teach(slowest, Duration::from_millis(50));
+        record.teach(slowest, shards_api::Work::of_cpu(Duration::from_millis(1)));
+        record.teach(slowest, shards_api::Work::of_cpu(Duration::from_millis(50)));
         let busy = shards_ipc::spawn(
             Path::new("/bin/sh"),
             &[OsStr::new("-c"), OsStr::new("while :; do :; done")],
@@ -11406,8 +11406,8 @@ mod tests {
     fn a_vms_launch_is_waited_for_by_its_liveness_and_a_later_request_judged() {
         let slowest = Duration::from_millis(200);
         let (launches, grants) = (shards_api::Record::new(), shards_api::Record::new());
-        launches.teach(slowest, Duration::from_millis(1));
-        grants.teach(slowest, Duration::from_millis(1));
+        launches.teach(slowest, shards_api::Work::of_cpu(Duration::from_millis(1)));
+        grants.teach(slowest, shards_api::Work::of_cpu(Duration::from_millis(1)));
         let asleep = sleeper(60);
         // Its home, which a VM quiet past the slowest request is sampled into.
         let home = shards_testdir::TempDir::new("launch").unwrap();
@@ -12996,7 +12996,7 @@ mod tests {
             let slice = Duration::from_millis(50);
             t.daemon.ends.learn(super::ends::End::Teardown, slice);
             t.daemon.ends.learn(super::ends::End::Exit, slice);
-            let most = Duration::from_millis(1);
+            let most = shards_api::Work::of_cpu(Duration::from_millis(1));
             t.daemon.ends.learn_work(most);
             t.daemon.ends.learn_work(most);
             assert_eq!(t.daemon.ends.most_work(), Some(most));
@@ -13449,7 +13449,7 @@ mod tests {
                 "looked at before any start was seen"
             );
             let slowest = Duration::from_millis(50);
-            t.daemon.answers.ready.teach(slowest, Duration::from_millis(1));
+            t.daemon.answers.ready.teach(slowest, shards_api::Work::of(1));
             let due = t
                 .daemon
                 .log_progress()
@@ -15543,7 +15543,7 @@ mod tests {
             t.daemon
                 .answers
                 .room
-                .teach(Duration::from_millis(20), Duration::ZERO);
+                .teach(Duration::from_millis(20), shards_api::Work::ZERO);
             let mib = |n: u64| n << 20;
             for (group, max) in [("one", mib(1000)), ("two", mib(200))] {
                 let dir = groups::made(&t.daemon.home, group).unwrap();
@@ -15604,7 +15604,7 @@ mod tests {
             t.daemon
                 .answers
                 .room
-                .teach(Duration::from_millis(20), Duration::ZERO);
+                .teach(Duration::from_millis(20), shards_api::Work::ZERO);
             let mib = |n: u64| n << 20;
             let dir = groups::made(&t.daemon.home, "g").unwrap();
             std::fs::write(dir.join("memory.high"), format!("{}\n", mib(500))).unwrap();
@@ -15684,7 +15684,7 @@ mod tests {
             t.daemon
                 .answers
                 .room
-                .teach(Duration::from_millis(20), Duration::ZERO);
+                .teach(Duration::from_millis(20), shards_api::Work::ZERO);
             let mib = |n: u64| n << 20;
             let dir = groups::made(&t.daemon.home, "g").unwrap();
             std::fs::write(dir.join("memory.high"), format!("{}\n", mib(500))).unwrap();
@@ -16502,7 +16502,7 @@ mod tests {
         let (daemon, vm) = UnixStream::pair().unwrap();
         let record = Record::new();
         let slowest = Duration::from_millis(100);
-        record.teach(slowest, slowest / 1000);
+        record.teach(slowest, shards_api::Work::of(1));
         let idle = sleeper(600);
         let payload = vec![0u8; shards_ipc::MAX_PAYLOAD];
         // A pipe pair's window holds one whole message (shards_ipc's `MESSAGE_FRAME`), where
@@ -16538,7 +16538,7 @@ mod tests {
         let (daemon, vm) = UnixStream::pair().unwrap();
         let record = Record::new();
         let slowest = Duration::from_millis(100);
-        record.teach(slowest, slowest / 1000);
+        record.teach(slowest, shards_api::Work::of(1));
         let busy = AtomicBool::new(true);
         std::thread::scope(|s| {
             party::spawn_in(s, || {
@@ -16571,7 +16571,7 @@ mod tests {
         let (daemon, share) = UnixStream::pair().unwrap();
         let record = Record::new();
         let slowest = Duration::from_millis(100);
-        record.teach(slowest, slowest / 1000);
+        record.teach(slowest, shards_api::Work::of(1));
         let dir = shards_vmm::platform::open_dir(Path::new(".")).unwrap();
         let busy = AtomicBool::new(true);
         std::thread::scope(|s| {
@@ -16601,7 +16601,7 @@ mod tests {
         let (daemon, share) = UnixStream::pair().unwrap();
         let record = Record::new();
         let slowest = Duration::from_millis(100);
-        record.teach(slowest, slowest / 1000);
+        record.teach(slowest, shards_api::Work::of(1));
         let dir = shards_vmm::platform::open_dir(Path::new(".")).unwrap();
         let idle = sleeper(600);
         let (done, finished) = mpsc::channel();
@@ -18094,10 +18094,10 @@ mod tests {
             let rootfs = dir.with_extension("erofs");
             let stamp = shards_image::store::rootfs_stamp(&rootfs);
             // Its starts' W* taught: one that runs nothing past it is given up on.
-            t.daemon
-                .answers
-                .ready
-                .teach(Duration::from_millis(200), Duration::from_millis(1));
+            t.daemon.answers.ready.teach(
+                Duration::from_millis(200),
+                shards_api::Work::of_cpu(Duration::from_millis(1)),
+            );
             pool_of(&mut lock(&t.daemon.state), &own(&dir), &rootfs, stamp.as_deref()).starting = 1;
             let (test, threads) = (t.t, t.threads);
             let claimed = std::thread::scope(|s| {
@@ -18148,7 +18148,10 @@ mod tests {
             let stamp = shards_image::store::rootfs_stamp(&rootfs);
             // Its starts' W* taught: the window the run's own wait is judged over.
             let slowest = Duration::from_millis(100);
-            t.daemon.answers.ready.teach(slowest, Duration::from_millis(1));
+            t.daemon
+                .answers
+                .ready
+                .teach(slowest, shards_api::Work::of_cpu(Duration::from_millis(1)));
             // A refill starting for it from the first, so that it plans none of its own.
             pool_of(&mut lock(&t.daemon.state), &own(&dir), &rootfs, stamp.as_deref()).starting = 1;
             let (test, threads) = (t.t, t.threads);
@@ -19515,7 +19518,7 @@ mod tests {
         let mut judge = Judge::begin(&CHILDREN);
         let followed = shards_api::Followed::of_pid(u32::try_from(pid).unwrap()).unwrap();
         let mut watch = followed.and_then(|f| shards_api::Watch::of(f, &shards_api::Listing::new()).unwrap());
-        let from = watch.as_ref().map(shards_api::Watch::cpu);
+        let from = watch.as_ref().map(shards_api::Watch::work);
         let mut status = 0;
         loop {
             // SAFETY: waitpid(2) of the child just made, its status written to a local.
@@ -19548,7 +19551,7 @@ mod tests {
                 ended => {
                     // Its CPU as last looked at, before its end: what it ran by then.
                     if let (Some(watch), Some(from)) = (&watch, from) {
-                        judge.answered(watch.cpu().saturating_sub(from));
+                        judge.answered(watch.work().saturating_sub(from));
                     }
                     assert_eq!(ended, pid, "waitpid: {}", io::Error::last_os_error());
                     return libc::WIFEXITED(status).then(|| libc::WEXITSTATUS(status));
@@ -20072,7 +20075,9 @@ mod tests {
         t.run(|t| {
             // A metrics read answered before, in 50 ms, its microVM running 50 us of it.
             let slowest = Duration::from_millis(50);
-            t.daemon.answers.metrics.teach(slowest, Duration::from_micros(50));
+            // An answer's work of 50,000 (50 µs of CPU; on Windows cycles, said as such).
+            let least = shards_api::Work::of(50_000);
+            t.daemon.answers.metrics.teach(slowest, least);
             let (_, starting, vm) = running(t, "stalled");
             let out = t.home.join("metrics.json");
             let asked = metrics(t, "stalled", &out);
@@ -20096,8 +20101,9 @@ mod tests {
             assert_eq!(status, 1, "{err}");
             // Its stall's account of its party's threads (`Stall::account`), where its OS's
             // listing read them (Linux, macOS, Windows): said between its wait and its end.
-            let waited = " into the wait (the least a microVM ran and still answered: 50µs in 50ms)";
-            let (_, after) = err.split_once(waited).unwrap_or_default();
+            let waited =
+                format!(" into the wait (the least a microVM ran and still answered: {least} in 50ms)");
+            let (_, after) = err.split_once(&waited).unwrap_or_default();
             let end = ", so its metrics were not read\n";
             assert!(
                 err.starts_with("shards: read metrics: stalled: its microVM ran no CPU in ")

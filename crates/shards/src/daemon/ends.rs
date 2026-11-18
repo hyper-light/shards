@@ -41,9 +41,10 @@ use super::lock;
 /// the slowest a SIGKILLed command's end was heard after its SIGKILL, a killed VM process's
 /// after its kill, a network or share process's after its VM had gone, and a daemon's start
 /// from its home's lock to its slots' lists, in milliseconds; and, once a teardown's work was
-/// read through its end, `teardown-work NS ANSWERS`, the most CPU a microVM's own VM process
-/// ran from its command's SIGKILL to that command's end (C*), in nanoseconds, and how many
-/// teardowns taught it ([`Work`]).
+/// read through its end, `teardown-work KEY WORK ANSWERS`, the most work a microVM's own VM
+/// process did from its command's SIGKILL to that command's end (C*), counted as KEY says
+/// ([`work_key`]: CPU nanoseconds, on Windows cycles, and the CPU's model), and how many
+/// teardowns taught it ([`MostWork`]).
 pub(crate) const RECORD: &str = "ends";
 
 /// Which end was heard.
@@ -76,35 +77,62 @@ struct Slowest {
     exit: Duration,
     helper: Duration,
     start: Duration,
-    teardown_work: Work,
+    teardown_work: MostWork,
 }
 
-/// The most work a microVM's teardown took (C*), its VM process's CPU from its command's
-/// SIGKILL to that command's end, and how many teardowns taught it, as D215's judge keeps a
-/// kind's (`shards_api::Rated`): each teardown taught adds one, and a record merged in counts
-/// the more of the two, never their sum. It refuses once `shards_api::SPREAD` have taught it,
-/// one teardown's most work being that one's (D217, ROOT's ruling of 2026-11-18).
+/// The most work a microVM's teardown took (C*), its VM process's work (`shards_api::Work`)
+/// from its command's SIGKILL to that command's end, and how many teardowns taught it, as
+/// D215's judge keeps a kind's (`shards_api::Rated`): each teardown taught adds one, and a
+/// record merged in counts the more of the two, never their sum. It refuses once
+/// `shards_api::SPREAD` have taught it, one teardown's most work being that one's (D217,
+/// ROOT's ruling of 2026-11-18).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-struct Work {
-    most: Duration,
+struct MostWork {
+    most: shards_api::Work,
     answers: u64,
 }
 
-/// The first word of [`Work`]'s line in the record.
+/// The first word of [`MostWork`]'s line in the record.
 const WORK: &str = "teardown-work";
 
-impl Work {
-    /// `NS ANSWERS` as the record keeps them: none unless both are read whole.
-    fn read(text: &str) -> Option<Work> {
+impl MostWork {
+    /// `KEY WORK ANSWERS` as the record keeps them, of this host's key ([`work_key`]): none
+    /// unless all are read whole. A line of another key is work counted in another unit or on
+    /// another CPU model, which weighs nothing here; one kept before lines were keyed (`NS
+    /// ANSWERS`: CPU nanoseconds, on Windows whole clock ticks' (CI 44347282760)) is read as
+    /// none, its C* taught anew.
+    fn read(text: &str) -> Option<MostWork> {
         let mut words = text.split_whitespace();
-        let (Some(ns), Some(answers), None) = (words.next(), words.next(), words.next()) else {
+        let (Some(key), Some(work), Some(answers), None) =
+            (words.next(), words.next(), words.next(), words.next())
+        else {
             return None;
         };
-        Some(Work {
-            most: Duration::from_nanos(ns.parse().ok()?),
+        if key != work_key() {
+            return None;
+        }
+        Some(MostWork {
+            most: shards_api::Work::of(work.parse().ok()?),
             answers: answers.parse().ok()?,
         })
     }
+}
+
+/// What this host's teardown work is counted in, as its line in the home's record names it:
+/// its unit (`shards_api::Work::UNIT`: CPU nanoseconds, on Windows cycles) and its CPU's model
+/// (`shards_vmm::vm::limits::HostModel`'s key, as D261's records and the tests' kept ratings
+/// key one), `UNIT:MODEL`. Cycles are no time ("Do not attempt to convert the CPU clock cycles
+/// returned by QueryThreadCycleTime to elapsed time", Microsoft Learn), and their rate is their
+/// CPU's: a home read on another host weighs nothing of its work.
+fn work_key() -> &'static str {
+    static KEY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    KEY.get_or_init(|| {
+        format!(
+            "{}:{}",
+            shards_api::Work::UNIT,
+            shards_vmm::vm::limits::HostModel::here().key()
+        )
+    })
 }
 
 impl Slowest {
@@ -125,7 +153,7 @@ impl Slowest {
         for line in newest(path).unwrap_or_default().lines() {
             let (name, rest) = line.split_once(' ').unwrap_or((line, ""));
             if name == WORK {
-                if let Some(work) = Work::read(rest) {
+                if let Some(work) = MostWork::read(rest) {
                     slowest.teardown_work = work;
                 }
                 continue;
@@ -152,7 +180,7 @@ impl Slowest {
             exit: self.exit.max(other.exit),
             helper: self.helper.max(other.helper),
             start: self.start.max(other.start),
-            teardown_work: Work {
+            teardown_work: MostWork {
                 most: self.teardown_work.most.max(other.teardown_work.most),
                 answers: self.teardown_work.answers.max(other.teardown_work.answers),
             },
@@ -215,12 +243,12 @@ impl Ends {
         *was = (*was).max(took);
     }
 
-    /// A microVM's teardown ended, its VM process having run `work` since its command's
+    /// A microVM's teardown ended, its VM process having done `work` since its command's
     /// SIGKILL, read through its end ([`Followed::worked`]): kept in this process's memory as
     /// its C* where it is the most yet, one more teardown counted, and in the home at the next
     /// [`keep`](Self::keep). One whose work read none teaches nothing: no work holds no bound
     /// (D215, `Record::teach`, CI 44076016255's Windows ticks).
-    pub(crate) fn learn_work(&self, work: Duration) {
+    pub(crate) fn learn_work(&self, work: shards_api::Work) {
         if work.is_zero() {
             return;
         }
@@ -233,7 +261,7 @@ impl Ends {
     /// The most work a microVM's teardown has taken (C*), past which one that has not ended is
     /// given up whatever its rate: none until `shards_api::SPREAD` teardowns have taught it
     /// (D217, by D215's rule for starts, ROOT's ruling of 2026-11-18).
-    pub(crate) fn most_work(&self) -> Option<Duration> {
+    pub(crate) fn most_work(&self) -> Option<shards_api::Work> {
         let kept = lock(&self.slowest).teardown_work;
         (kept.answers >= shards_api::SPREAD).then_some(kept.most)
     }
@@ -269,8 +297,9 @@ impl Ends {
         );
         if kept.teardown_work.answers > 0 {
             text.push_str(&format!(
-                "{WORK} {} {}\n",
-                kept.teardown_work.most.as_nanos(),
+                "{WORK} {} {} {}\n",
+                work_key(),
+                kept.teardown_work.most.count(),
                 kept.teardown_work.answers
             ));
         }
@@ -298,8 +327,8 @@ pub(crate) struct Followed {
     usage: Option<Progress>,
     /// Whether its process is a joiner's provider's ([`Followed::of_provider`]).
     provider: bool,
-    /// Its CPU as it began to be followed: what its work since is counted from.
-    from: Option<Duration>,
+    /// Its work as it began to be followed: what its work since is counted from.
+    from: Option<shards_api::Work>,
     /// Why its process could not be followed as it began to be, where it could not: its work
     /// is then unread, which [`work`](Self::work) says, never taken for none.
     unread: Option<String>,
@@ -315,7 +344,7 @@ impl Followed {
             Some(Err(why)) => (None, Some(why)),
         };
         Followed {
-            from: watch.as_ref().map(shards_api::Watch::cpu),
+            from: watch.as_ref().map(shards_api::Watch::work),
             watch,
             looked: Instant::now(),
             usage: pid.map(Progress::of),
@@ -345,7 +374,10 @@ impl Followed {
     /// ([`Followed::of_provider`]), and where it has done no more; why not where its work is
     /// unread ([`work`](Self::work)): its caller says it, and takes nothing of the bound from
     /// that look.
-    pub(crate) fn past(&self, most: Option<Duration>) -> Result<Option<(Duration, Duration)>, String> {
+    pub(crate) fn past(
+        &self,
+        most: Option<shards_api::Work>,
+    ) -> Result<Option<(shards_api::Work, shards_api::Work)>, String> {
         let Some(most) = most else {
             return Ok(None);
         };
@@ -356,12 +388,12 @@ impl Followed {
     /// its last look: none for a joiner's provider ([`Followed::of_provider`]), nor where no
     /// process was there to follow; why not where its process could not be read as it began
     /// to be followed.
-    pub(crate) fn work(&self) -> Result<Option<Duration>, String> {
+    pub(crate) fn work(&self) -> Result<Option<shards_api::Work>, String> {
         if self.provider {
             return Ok(None);
         }
         match (&self.watch, self.from, &self.unread) {
-            (Some(watch), Some(from), _) => Ok(Some(watch.cpu().saturating_sub(from))),
+            (Some(watch), Some(from), _) => Ok(Some(watch.work().saturating_sub(from))),
             (_, _, Some(why)) => Err(why.clone()),
             _ => Ok(None),
         }
@@ -372,7 +404,7 @@ impl Followed {
     /// follow, and where its process has gone since (reaped before its last CPU was read: no
     /// work read through its end); why not where it could not be read. What a teardown teaches
     /// of C* ([`Ends::learn_work`]).
-    pub(crate) fn worked(&mut self) -> Result<Option<Duration>, String> {
+    pub(crate) fn worked(&mut self) -> Result<Option<shards_api::Work>, String> {
         if self.provider {
             return Ok(None);
         }
@@ -384,7 +416,7 @@ impl Followed {
         };
         match watch.look(&shards_api::Listing::new()) {
             Ok(shards_api::Found::Gone) => Ok(None),
-            Ok(_) => Ok(Some(watch.cpu().saturating_sub(from))),
+            Ok(_) => Ok(Some(watch.work().saturating_sub(from))),
             Err(e) => Err(format!("its VM process's CPU at its end: {e}")),
         }
     }
@@ -640,28 +672,47 @@ mod tests {
     }
 
     /// A teardown's work read through its end teaches its C*, kept in the home beside the
-    /// slices and read back by the next process; it bounds nothing until two teardowns have
-    /// taught it (`shards_api::SPREAD`), and one whose work read none teaches nothing (D217,
-    /// ROOT's ruling of 2026-11-18). A record whose work line does not read whole keeps none.
+    /// slices, keyed by the unit and CPU model it was counted in ([`work_key`]), and read back
+    /// by the next process; it bounds nothing until two teardowns have taught it
+    /// (`shards_api::SPREAD`), and one whose work read none teaches nothing (D217, ROOT's
+    /// ruling of 2026-11-18). A record whose work line does not read whole keeps none, nor
+    /// does one of another key, nor one kept before lines were keyed (on Windows a count of
+    /// whole clock ticks: CI 44347282760), its slices kept.
     #[test]
     fn a_teardowns_work_teaches_its_c_star_kept_in_its_home() {
+        let work = shards_api::Work::of;
         let home = shards_testdir::TempDir::new("ends-work").unwrap();
         let ends = Ends::kept_in(&home);
-        ends.learn_work(Duration::ZERO);
-        ends.learn_work(Duration::from_millis(3));
+        ends.learn_work(shards_api::Work::ZERO);
+        ends.learn_work(work(3_000_000));
         assert_eq!(ends.most_work(), None, "one teardown's work bounds nothing");
-        ends.learn_work(Duration::from_millis(2));
-        assert_eq!(ends.most_work(), Some(Duration::from_millis(3)));
+        ends.learn_work(work(2_000_000));
+        assert_eq!(ends.most_work(), Some(work(3_000_000)));
         ends.learn(End::Teardown, Duration::from_millis(40));
         ends.keep().unwrap();
         assert_eq!(
             recorded(&home),
-            "teardown 40\nexit 0\nhelper 0\nstart 0\nteardown-work 3000000 2\n"
+            format!(
+                "teardown 40\nexit 0\nhelper 0\nstart 0\nteardown-work {} 3000000 2\n",
+                work_key()
+            )
         );
         let next = Ends::kept_in(&home);
-        assert_eq!(next.most_work(), Some(Duration::from_millis(3)));
-        publish(&home, "teardown 40\nteardown-work many 2\n");
-        assert_eq!(Ends::kept_in(&home).most_work(), None);
+        assert_eq!(next.most_work(), Some(work(3_000_000)));
+        for (line, what) in [
+            ("teardown-work many 2", "not whole"),
+            ("teardown-work 3000000 2", "kept before lines were keyed"),
+            ("teardown-work cycles:Another_CPU 3000000 2", "another key's"),
+        ] {
+            publish(&home, &format!("teardown 40\n{line}\n"));
+            let kept = Ends::kept_in(&home);
+            assert_eq!(kept.most_work(), None, "{what}");
+            assert_eq!(
+                kept.slice(End::Teardown),
+                Some(Duration::from_millis(40)),
+                "{what}"
+            );
+        }
     }
 
     /// A teardown whose VM process has done more work since its SIGKILL than C* is past it:
@@ -669,7 +720,9 @@ mod tests {
     /// joiner's provider, whose work is its own command's too, never is.
     #[test]
     fn a_teardown_past_c_star_is_said_past_it_and_a_providers_never() {
-        let most = Duration::from_millis(1);
+        // C* of one count of work (a nanosecond's CPU, on Windows a cycle): 50 ms of spinning
+        // passes it on any host.
+        let most = shards_api::Work::of(1);
         let spin = || {
             let t0 = std::time::Instant::now();
             let mut x = 0u64;
@@ -844,7 +897,7 @@ mod tests {
             let mut witness = shards_api::Watch::of(followed, &shards_api::Listing::new())
                 .unwrap()
                 .unwrap();
-            let from = witness.cpu();
+            let from = witness.work();
             let mut sleeping = Followed::of(Some(pid));
             std::thread::sleep(witness.resolution());
             while !went_on(trickling.goes_on()) {
@@ -852,7 +905,7 @@ mod tests {
             }
             let went = went_on(sleeping.goes_on());
             witness.look(&shards_api::Listing::new()).unwrap();
-            if witness.cpu() == from {
+            if witness.work() == from {
                 assert!(!went, "asleep, it goes on with nothing");
                 break sleeping;
             }

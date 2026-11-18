@@ -4921,7 +4921,7 @@ mod tests {
     fn records(learned: &[(Awaited, Duration, Duration)]) -> &'static Records {
         let records: &'static Records = Box::leak(Box::new(Records::new()));
         for &(awaited, slowest, cpu) in learned {
-            records.teach(awaited, slowest, cpu);
+            records.teach(awaited, slowest, crate::Work::of_cpu(cpu));
         }
         records
     }
@@ -4956,7 +4956,7 @@ mod tests {
         let dir = shards_testdir::TempDir::new("api-stall").unwrap();
         let guest = following(warmed(&dir, "exec sleep 3"), learned);
         let least = crate::Rate {
-            cpu: slowest,
+            work: crate::Work::of_cpu(slowest),
             over: slowest,
         };
         for (what, refused) in [

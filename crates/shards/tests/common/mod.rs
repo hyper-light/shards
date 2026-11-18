@@ -3983,9 +3983,10 @@ pub fn guest_text(text: &str) -> String {
 /// W*, the slowest, from a wait's start to its client's own end, and R*, the least rate its
 /// party ran at meanwhile, a refusal's diagnosis and never its bound. None on a host until
 /// its first answer there; then kept under `target/judge-records`, by the host and the call
-/// site, so that a later run on the host begins from what it learned (ROOT, 2026-11-13: a
-/// record learned on the host is data, not a seed), and taught again by each answer: a
-/// command's by each served one alone ([`Wait::unserved`], [`SERVED`]). The
+/// site, its R* and C* by the unit and CPU model its work was counted in ([`rated_key`]), so
+/// that a later run on the host begins from what it learned (ROOT, 2026-11-13: a record
+/// learned on the host is data, not a seed), and taught again by each answer: a command's by
+/// each served one alone ([`Wait::unserved`], [`SERVED`]). The
 /// person's ruling of 2026-11-13 holds each of them: "No record seeds. The cold start, and
 /// every wait after a run-out, follows the party's liveness and progress. After that the
 /// bound is the slowest answer seen. No ×2."
@@ -4102,45 +4103,22 @@ impl WaitKind {
         &self.record
     }
 
-    /// Teaches its record what this host kept of it, W*, and R*, C* and the count of answers
-    /// that taught them where they were rated ([`RATED`]), each as it was kept
-    /// (`shards_api::Record::merge`). Nothing where
-    /// nothing whole is kept (one kept before answers were rated, W* and R* alone, leaves its
-    /// kind cold until its next answer rewrites it: its R* may be of none read, 0 ns), and,
-    /// for a command's kind, nothing that does not say it is of served answers alone
-    /// ([`SERVED`]).
-    fn learn_kept(&self) {
+    /// Teaches its record what this host kept of it ([`kept_record`]): W*, and R*, C* and the
+    /// count of answers that taught them where it keeps a rating of this host's work's unit
+    /// and CPU model ([`rated_key`]), each as it was kept (`shards_api::Record::merge`); and
+    /// says the ratings it keeps of other keys, as kept, for its keep to write back. Nothing
+    /// where nothing whole is kept, and, for a command's kind, nothing that does not say it is
+    /// of served answers alone ([`SERVED`]).
+    fn learn_kept(&self) -> Vec<String> {
         let kept = std::fs::read_to_string(&self.file).unwrap_or_default();
-        let mut words = kept.split_whitespace();
-        if self.served_only() && words.next() != Some(SERVED) {
-            return;
-        }
-        let ns = |word: Option<&str>| word.and_then(|n| n.parse().ok()).map(Duration::from_nanos);
-        let Some(slowest) = ns(words.next()) else {
-            return;
+        let Some(kept) = kept_record(&kept, self.served_only(), rated_key()) else {
+            return Vec::new();
         };
-        let rated = match words.next() {
-            None => None,
-            Some(RATED) => {
-                let (cpu, over, most) = (ns(words.next()), ns(words.next()), ns(words.next()));
-                // One kept before answers were counted is one answer's, until its next rated
-                // answer counts it two (D215, ROOT's ruling of 2026-11-17).
-                let answers = match words.next() {
-                    None => Some(1),
-                    Some(n) => n.parse::<u64>().ok().filter(|&n| n > 0),
-                };
-                match (cpu, over, most, answers, words.next()) {
-                    (Some(cpu), Some(over), Some(most), Some(answers), None) => Some(shards_api::Rated {
-                        least: shards_api::Rate { cpu, over },
-                        most,
-                        answers,
-                    }),
-                    _ => return,
-                }
-            }
-            Some(_) => return,
-        };
-        self.record.merge(shards_api::Seen::Learned { slowest, rated });
+        self.record.merge(shards_api::Seen::Learned {
+            slowest: kept.slowest,
+            rated: kept.rated,
+        });
+        kept.others
     }
 
     /// Whether it is a command's kind, taught by its served answers alone ([`Wait::unserved`]).
@@ -4213,7 +4191,7 @@ impl WaitKind {
         between: impl FnOnce(),
     ) -> std::io::Result<()> {
         static KEEPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        self.learn_kept();
+        let others = self.learn_kept();
         let shards_api::Seen::Learned { slowest, rated } = self.record.seen() else {
             return Ok(());
         };
@@ -4232,22 +4210,115 @@ impl WaitKind {
         } else {
             String::new()
         };
-        std::fs::write(
-            &temporary,
-            match rated {
-                Some(rated) => format!(
-                    "{tag}{} {RATED} {} {} {} {}\n",
-                    ns(slowest),
-                    ns(rated.least.cpu),
-                    ns(rated.least.over),
-                    ns(rated.most),
-                    rated.answers
-                ),
-                None => format!("{tag}{}\n", ns(slowest)),
-            },
-        )?;
+        let mut kept = format!("{tag}{}", ns(slowest));
+        if let Some(rated) = rated {
+            kept.push_str(&format!(
+                " {RATED} {} {} {} {} {}",
+                rated_key(),
+                rated.least.work.count(),
+                ns(rated.least.over),
+                rated.most.count(),
+                rated.answers
+            ));
+        }
+        for other in others {
+            kept.push(' ');
+            kept.push_str(&other);
+        }
+        kept.push('\n');
+        std::fs::write(&temporary, kept)?;
         std::fs::rename(&temporary, &self.file)
     }
+}
+
+/// What a kind's kept record says ([`WaitKind::keep`]), as this host reads it
+/// ([`kept_record`]).
+#[derive(Debug, PartialEq, Eq)]
+pub struct Kept {
+    /// W*.
+    pub slowest: Duration,
+    /// R*, C* and the count of the answers that taught them, where it keeps a rating of this
+    /// host's key ([`rated_key`]).
+    pub rated: Option<shards_api::Rated>,
+    /// Each rating it keeps of another key, as kept (`rated KEY …`), which this host's keep
+    /// writes back beside its own: one cache's records come back to runners of any CPU model
+    /// its image runs on, each of which keeps its own.
+    pub others: Vec<String>,
+}
+
+/// A kept record `text` as a host whose ratings are keyed `key` ([`rated_key`]) reads it:
+/// `[served ]W*`, then each rating, `rated KEY R*WORK R*WALL C*WORK ANSWERS`, W* and R*'s
+/// wall in nanoseconds and R*'s and C*'s work in KEY's unit (`shards_api::Work`). Its W* is
+/// read whatever its ratings are, and its R* and C* from its rating of `key` alone: work
+/// counted in another unit or on another CPU model weighs nothing here (cycles are no time,
+/// and their rate is their CPU's: Microsoft Learn's QueryThreadCycleTime). A rating kept
+/// before ratings were keyed (`rated` and its numbers: CPU nanoseconds, or on Windows whole
+/// clock ticks', which refused a party of thirteen ticks past a C* of eleven, CI
+/// 44347282760) is read as none, its R* and C* taught anew; the record's W* stands. None
+/// where nothing whole is kept or a rating is not whole, and, `served` asked, where it does
+/// not say it is of served answers alone ([`SERVED`]).
+pub fn kept_record(text: &str, served: bool, key: &str) -> Option<Kept> {
+    let mut words = text.split_whitespace().peekable();
+    if served && words.next() != Some(SERVED) {
+        return None;
+    }
+    let number = |word: Option<&str>| word.and_then(|n| n.parse::<u64>().ok());
+    let slowest = Duration::from_nanos(number(words.next())?);
+    let (mut rated, mut others) = (None, Vec::new());
+    while let Some(word) = words.next() {
+        if word != RATED {
+            return None;
+        }
+        // A rating kept before ratings were keyed: numbers alone, and the record's last.
+        if words.peek().is_some_and(|next| next.parse::<u64>().is_ok()) {
+            return Some(Kept {
+                slowest,
+                rated,
+                others,
+            });
+        }
+        let of = words.next()?;
+        let (work, over, most) = (
+            number(words.next())?,
+            number(words.next())?,
+            number(words.next())?,
+        );
+        let answers = number(words.next()).filter(|&n| n > 0)?;
+        if of != key {
+            others.push(format!("{RATED} {of} {work} {over} {most} {answers}"));
+        } else if rated.is_none() {
+            rated = Some(shards_api::Rated {
+                least: shards_api::Rate {
+                    work: shards_api::Work::of(work),
+                    over: Duration::from_nanos(over),
+                },
+                most: shards_api::Work::of(most),
+                answers,
+            });
+        }
+    }
+    Some(Kept {
+        slowest,
+        rated,
+        others,
+    })
+}
+
+/// What this host's kept ratings are keyed by ([`kept_record`]): its work's unit
+/// (`shards_api::Work::UNIT`: CPU nanoseconds, on Windows cycles) and its CPU's model, as
+/// D261's records key a host model (`shards_vmm::vm::limits::HostModel`: its CPU's brand and
+/// what it runs under), `UNIT:MODEL`. CI's cache of the records is keyed by its runner's image,
+/// whose runners are of more than one CPU model (an EPYC 7763 ran CI 44347282760's Windows
+/// job): each model's work is weighed against its own.
+pub fn rated_key() -> &'static str {
+    static KEY: OnceLock<String> = OnceLock::new();
+    KEY.get_or_init(|| {
+        format!(
+            "{}:{}",
+            shards_api::Work::UNIT,
+            shards_vmm::vm::limits::HostModel::here().key()
+        )
+    })
 }
 
 /// The first word of a command's kept record ([`WaitKind::keep`]): its W*, R* and C* are of
@@ -4257,10 +4328,11 @@ impl WaitKind {
 /// its kind cold until its next served answer rewrites it.
 const SERVED: &str = "served";
 
-/// The word before a kept record's R*, C* and the count of the answers that taught them
-/// ([`WaitKind::keep`]): of answers whose work was read through their end alone
-/// (`shards_api::Rated`). A record kept without it has none; one kept with no count, before
-/// answers were counted, is one answer's (D215, ROOT's ruling of 2026-11-17).
+/// The word before each of a kept record's ratings ([`WaitKind::keep`]): the key of the work
+/// it was counted in ([`rated_key`]), R*, C* and the count of the answers that taught them,
+/// of answers whose work was read through their end alone (`shards_api::Rated`). A record
+/// kept without it has none; one kept before ratings were keyed has none of any key
+/// ([`kept_record`]).
 const RATED: &str = "rated";
 
 /// Which answers teach a [`WaitKind`].
@@ -4681,8 +4753,9 @@ pub struct Looked {
     pub found: shards_api::Found,
     /// What showed it.
     pub what: String,
-    /// The CPU its processes ran since the look before.
-    pub cpu: Duration,
+    /// The work its processes did since the look before (`shards_api::Work`: their CPU time,
+    /// on Windows their cycles).
+    pub work: shards_api::Work,
     /// The coarsest resolution of the counters it read (`shards_api::Watch::resolution`).
     pub resolution: Duration,
     /// Its home's daemon ran ([`Cpu::Progress`]), said apart from `found`: the work of its
@@ -4860,7 +4933,7 @@ impl Party {
         let mut looked = Looked {
             found: Found::Still,
             what: String::new(),
-            cpu: Duration::ZERO,
+            work: shards_api::Work::ZERO,
             resolution: Duration::ZERO,
             daemon_ran: None,
             vouched: true,
@@ -4892,8 +4965,8 @@ impl Party {
                             "its host held a thread of this process beside its waiter from running".into();
                     }
                 }
-                Ran::Others { cpu, starved } => {
-                    looked.cpu = looked.cpu.saturating_add(cpu);
+                Ran::Others { work, starved } => {
+                    looked.work = looked.work.saturating_add(work);
                     // A thread beside its waiter runnable on no CPU since the look before: no
                     // window of the rate's, under either reading, as a member's (D215).
                     looked.vouched &= !starved;
@@ -4962,7 +5035,7 @@ impl Party {
                 continue;
             }
             looked.resolution = looked.resolution.max(watch.resolution());
-            let before = watch.cpu();
+            let before = watch.work();
             let was_ended = watch.ended();
             let found = watch.look(&self.listing);
             if matches!(found, Ok(Found::Gone)) {
@@ -4974,7 +5047,7 @@ impl Party {
                 continue;
             }
             looked.lost |= found.is_err();
-            looked.cpu = looked.cpu.saturating_add(watch.cpu().saturating_sub(before));
+            looked.work = looked.work.saturating_add(watch.work().saturating_sub(before));
             live |= matches!(found, Ok(Found::Progressed | Found::Held | Found::Still));
             // A party whose CPU is its liveness alone ran, some threads of it, while the one
             // its answer waits on may have sat runnable on no CPU: its host's hold
@@ -5288,7 +5361,8 @@ fn ending(pid: u32) -> String {
 ///   [`Cpu::Liveness`] is its host's hold though others ran (D209 Part 5, D261: a guest of
 ///   more vCPUs than its host has CPUs runs some while one of them waits for a CPU).
 /// - Windows: QueryProcessCycleTime and QueryThreadCycleTime, cycle counts, exact (their
-///   time undocumented: what they ran is said as no CPU time, R* a refusal's diagnosis); and
+///   time undocumented: what they ran is their work in cycles, never a time made of them,
+///   as D215's rate weighs it there); and
 ///   each other thread's switches to a CPU and whether it waits for one (ready or standby),
 ///   from the system's listing of every thread as its party's look read it
 ///   (`shards_api::Listing::threads_switched`, once a look, PM M606), by which a thread kept
@@ -5351,10 +5425,10 @@ enum Ran {
     Still,
     /// Nothing, while one of its other threads wanted a CPU: its host held it.
     Held,
-    /// Its other threads ran, this much (none said on Windows, whose cycles are no time);
-    /// `starved` where one wanting a CPU as it was read ran none since the look before
-    /// (`shards_api::starved`).
-    Others { cpu: Duration, starved: bool },
+    /// Its other threads ran, this much work (`shards_api::Work`: their CPU time, on Windows
+    /// their cycles, never a time made of them); `starved` where one wanting a CPU as it was
+    /// read ran none since the look before (`shards_api::starved`).
+    Others { work: shards_api::Work, starved: bool },
 }
 
 impl Beside {
@@ -5379,12 +5453,8 @@ impl Beside {
             None => Ran::Based,
             Some((0, _)) if held => Ran::Held,
             Some((0, _)) => Ran::Still,
-            Some((ns, starved)) if cfg!(unix) => Ran::Others {
-                cpu: Duration::from_nanos(ns),
-                starved,
-            },
-            Some((_, starved)) => Ran::Others {
-                cpu: Duration::ZERO,
+            Some((ran, starved)) => Ran::Others {
+                work: shards_api::Work::of(ran),
                 starved,
             },
         }
@@ -5416,7 +5486,7 @@ impl Beside {
                 watch
                     .look(listing)
                     .map_err(|e| format!("this process's CPU: {e}"))?;
-                watch.cpu()
+                watch.work()
             }
             None => {
                 let followed = shards_api::Followed::of_pid(std::process::id())
@@ -5425,17 +5495,18 @@ impl Beside {
                 let watch = shards_api::Watch::of(followed, listing)
                     .map_err(|e| format!("this process's CPU: {e}"))?
                     .ok_or("this process's CPU: no process has its own ID")?;
-                let cpu = watch.cpu();
+                let work = watch.work();
                 self.uncertainty = watch.resolution().saturating_add(thread_cpu(libc::clock_getres)?);
                 self.watch = Some(watch);
-                cpu
+                work
             }
         };
         let after = thread_cpu(libc::clock_gettime)?;
         let ns = |d: Duration| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX);
         Ok(Reading {
             before: ns(before),
-            process: ns(process),
+            // Its CPU nanoseconds, as Linux and macOS count work.
+            process: process.count(),
             after: ns(after),
             others: other_threads()?,
         })
@@ -5915,8 +5986,8 @@ pub struct Wait {
     /// ([`Party::look`]), its caller telling of no output since the look before: a settle's
     /// with nothing fallen ([`Falling::cold_over`]).
     stills: u32,
-    /// Its party's CPU since it began.
-    work: Duration,
+    /// Its party's work since it began (`shards_api::Work`).
+    work: shards_api::Work,
     /// Whether every look since its judge's look before saw its party run or rest unheld
     /// ([`Looked::vouched`]): only then is its work its judge's rate's (D215).
     vouched: bool,
@@ -6048,7 +6119,7 @@ impl Wait {
             holding: None,
             gone: 0,
             stills: 0,
-            work: Duration::ZERO,
+            work: shards_api::Work::ZERO,
             vouched: false,
             read: None,
             polls,
@@ -6098,7 +6169,7 @@ impl Wait {
     pub fn read_through(&mut self) {
         if self.read.is_none() {
             let looked = self.party.look();
-            self.work = self.work.saturating_add(looked.cpu);
+            self.work = self.work.saturating_add(looked.work);
             self.read = Some(!looked.lost);
         }
     }
@@ -6187,7 +6258,7 @@ impl Wait {
         if self.stage == Stage::Answered && looked.found == Found::Gone {
             looked.found = Found::Still;
         }
-        self.work = self.work.saturating_add(looked.cpu);
+        self.work = self.work.saturating_add(looked.work);
         self.vouched &= looked.vouched && matches!(looked.found, Found::Progressed | Found::Still);
         let span = shards_api::Span {
             began: now,
@@ -6286,8 +6357,8 @@ impl Wait {
                 slowest,
                 rated: Some(rated),
             } => format!(
-                "W* {slowest:?}, R* {:?} of CPU in {:?}, C* {:?} of CPU",
-                rated.least.cpu, rated.least.over, rated.most
+                "W* {slowest:?}, R* {} in {:?}, C* {}",
+                rated.least.work, rated.least.over, rated.most
             ),
         };
         let kind = if self.kind.line.is_empty() {
@@ -6360,11 +6431,11 @@ impl Wait {
     pub fn refused(&self, stall: &shards_api::Stall) -> String {
         if let (Some(rate), Some(least)) = (stall.rate(), stall.least()) {
             return format!(
-                "{} ran too slowly to be answering: {:?} of CPU in the {:?} it was seen to run unheld, below the least rate any answer of its kind came at on this host (R* {:?} in {:?}) and more than any such answer took (C* {:?}), past the slowest such answer ({:?}), {:?} into its wait\n--- its wait\n{}",
+                "{} ran too slowly to be answering: {} in the {:?} it was seen to run unheld, below the least rate any answer of its kind came at on this host (R* {} in {:?}) and more than any such answer took (C* {}), past the slowest such answer ({:?}), {:?} into its wait\n--- its wait\n{}",
                 self.asked,
-                rate.cpu,
+                rate.work,
                 rate.over,
-                least.cpu,
+                least.work,
                 least.over,
                 stall.most().unwrap_or_default(),
                 stall.slowest(),

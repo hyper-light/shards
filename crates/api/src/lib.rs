@@ -69,7 +69,7 @@ pub use native::{
 };
 pub use physical::{GpuName, GpuProbe, GpuProbeError, PhysicalGpu, PhysicalGpuError, ResolvedGpu};
 pub use progress::{Awaited, Bound, Follow, Followed, Listing, Threads, Unfollowed, Watch, starved};
-pub use shards_judge::{Found, Judge, LOOKS_TO_REFUSE, Rate, Rated, Record, SPREAD, Seen, Span, Stall};
+pub use shards_judge::{Found, Judge, LOOKS_TO_REFUSE, Rate, Rated, Record, SPREAD, Seen, Span, Stall, Work};
 #[cfg(windows)]
 pub use shards_judge::{ThreadsHeld, threads_held};
 
@@ -738,14 +738,14 @@ impl std::fmt::Display for Refusal {
             Refusal::Stalled(stall) if let (Some(rate), Some(least)) = (stall.rate(), stall.least()) => {
                 write!(
                     f,
-                    "the guest's VM process ran too slowly to be answering: {:?} into the wait, {:?} \
-                 of CPU in the {:?} it was seen to run, below the least a VM process ran here and \
-                 still answered ({:?} in {:?}) and more than any answer took ({:?}), past the \
-                 slowest answer seen ({:?}){}",
+                    "the guest's VM process ran too slowly to be answering: {:?} into the wait, {} \
+                 in the {:?} it was seen to run, below the least a VM process ran here and still \
+                 answered ({} in {:?}) and more than any answer took ({}), past the slowest answer \
+                 seen ({:?}){}",
                     stall.waited(),
-                    rate.cpu,
+                    rate.work,
                     rate.over,
-                    least.cpu,
+                    least.work,
                     least.over,
                     stall.most().unwrap_or_default(),
                     stall.slowest(),
@@ -762,8 +762,8 @@ impl std::fmt::Display for Refusal {
                 stall.least().map_or_else(
                     || "no answer of its kind had its CPU read".to_string(),
                     |least| format!(
-                        "the least a VM process ran here and still answered was {:?} in {:?}",
-                        least.cpu, least.over
+                        "the least a VM process ran here and still answered was {} in {:?}",
+                        least.work, least.over
                     )
                 )
             )

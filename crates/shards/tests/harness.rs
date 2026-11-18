@@ -2779,7 +2779,7 @@ fn quick_following(stream: &Arriving) -> common::Following<'_, Arriving> {
     let _ = std::fs::remove_file(common::WaitKind::kept_at(site, common::STREAM, ""));
     common::WaitKind::awaiting(site, common::STREAM)
         .record()
-        .teach(Duration::from_nanos(1), Duration::ZERO);
+        .teach(Duration::from_nanos(1), shards_api::Work::ZERO);
     common::Following::of(stream, None)
 }
 
@@ -2911,7 +2911,7 @@ fn a_streams_wait_follows_its_partys_work_until_its_first_byte() {
             // than its byte found it there as it began, which teaches nothing (waits-03),
             // as one did on adacachy2 with the whole binary running ("Cold").
             if round == 0 {
-                kind.record().teach(taught, Duration::ZERO);
+                kind.record().teach(taught, shards_api::Work::ZERO);
             }
             let mut got = Vec::new();
             let read = following.read_to_end(&mut got).map(|_| got);
@@ -3345,6 +3345,87 @@ fn a_cleanup_refused_as_its_test_fails_fails_it_alone() {
     assert!(said.contains("as its test unwound"), "{said}");
 }
 
+/// A kind's kept R* and C* weigh only work counted as this host counts it: in its work's unit
+/// on its CPU's model (`common::rated_key`: CPU nanoseconds, on Windows cycles, which no rate
+/// makes a time, their rate their CPU's), whatever runner of its CI image kept the record (an
+/// EPYC 7763 ran CI 44347282760's). A record's W* is read whatever its ratings; a rating of
+/// another key is kept as it was, for its own host; one kept before ratings were keyed (on
+/// Windows whole clock ticks': that run's R* of 31.25 ms in 87.2894 ms and C* of 171.875 ms,
+/// two and eleven ticks, refused a party of thirteen) is read as none (D215). Do: read records
+/// of each shape as this host, then keep two of this host's answers over a record another's
+/// rating is in. Expect: as above; and the kept record holds this host's rating and the
+/// other's.
+#[test]
+fn a_kept_rating_weighs_only_work_counted_as_this_host_counts_it() {
+    let ours = common::rated_key();
+    let other = format!("{ours}_another_model");
+    let ns = Duration::from_nanos;
+    let kept = |text: &str| common::kept_record(text, true, ours);
+    let rated = |least: u64, over: u64, most: u64, answers: u64| {
+        Some(shards_api::Rated {
+            least: shards_api::Rate {
+                work: shards_api::Work::of(least),
+                over: ns(over),
+            },
+            most: shards_api::Work::of(most),
+            answers,
+        })
+    };
+    let slowest = ns(240_614_800);
+    let none = |others: Vec<String>| common::Kept {
+        slowest,
+        rated: None,
+        others,
+    };
+    for unkeyed in [
+        "served 240614800 rated 31250000 87289400 171875000 3",
+        "served 240614800 rated 31250000 87289400 171875000",
+    ] {
+        assert_eq!(kept(unkeyed), Some(none(Vec::new())), "{unkeyed}");
+    }
+    let theirs = format!("rated {other} 1 2 3 4");
+    assert_eq!(
+        kept(&format!("served 240614800 {theirs}")),
+        Some(none(vec![theirs.clone()]))
+    );
+    assert_eq!(
+        kept(&format!(
+            "served 240614800 {theirs} rated {ours} 62500000 87289400 343750000 3"
+        )),
+        Some(common::Kept {
+            slowest,
+            rated: rated(62_500_000, 87_289_400, 343_750_000, 3),
+            others: vec![theirs.clone()],
+        })
+    );
+    for broken in [
+        format!("served 240614800 rated {ours} 62500000 87289400 343750000"),
+        format!("served 240614800 rated {ours} 62500000 87289400 343750000 0"),
+        format!("served 240614800 rated {ours} many 87289400 343750000 3"),
+        "240614800".to_string(),
+        "served".to_string(),
+    ] {
+        assert_eq!(kept(&broken), None, "{broken}");
+    }
+    assert_eq!(
+        common::kept_record("240614800", false, ours).map(|kept| kept.slowest),
+        Some(slowest),
+        "a kind of no command's"
+    );
+    let home = TempDir::new("kept-keys");
+    let file = home.join("record");
+    std::fs::write(&file, format!("100000000 {theirs}\n")).unwrap();
+    let kind = common::WaitKind::apart(file.clone());
+    let ms = Duration::from_millis;
+    kind.record().teach(ms(50), shards_api::Work::of(7));
+    kind.record().teach(ms(50), shards_api::Work::of(9));
+    kind.keep();
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        format!("100000000 rated {ours} 7 50000000 9 2 {theirs}\n")
+    );
+}
+
 /// Two keeps of one kind's record merge whatever their order (waits-11): each reads what was
 /// kept, merges its answer and renames it into place under the record's lock, so that no
 /// other keep's merge lands between one's read and its rename. Here a kind that learned 10 ms
@@ -3357,7 +3438,8 @@ fn concurrent_keeps_never_shrink_a_kept_record() {
     let file = home.join("record");
     let kind = |ms: u64| {
         let kind = common::WaitKind::apart(file.clone());
-        kind.record().teach(Duration::from_millis(ms), Duration::ZERO);
+        kind.record()
+            .teach(Duration::from_millis(ms), shards_api::Work::ZERO);
         kind
     };
     let (short, long) = (kind(10), kind(100));

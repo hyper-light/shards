@@ -414,7 +414,7 @@ mod tests {
         let record = shards_api::Record::new();
         assert_eq!(past_slowest(Duration::from_secs(60), &record.seen()), None);
         let slowest = Duration::from_millis(100);
-        record.teach(slowest, slowest / 1000);
+        record.teach(slowest, shards_api::Work::of(1));
         let before = record.seen();
         assert_eq!(past_slowest(Duration::from_millis(50), &before), None);
         assert_eq!(past_slowest(slowest, &before), None);
@@ -430,11 +430,14 @@ mod tests {
         }
     }
 
+    /// The work its kind's answer did (7 ms of CPU; on Windows cycles, said as such): R*'s.
+    const LEAST: shards_api::Work = shards_api::Work::of(7_000_000);
+
     /// A stall as the daemon's wait refuses one ([`Cut::Stalled`]): a microVM that ran no CPU
     /// over a whole W*, its kind's slowest answer of 100 ms, from the wait's start.
     fn stalled() -> Option<Cut> {
         let record = shards_api::Record::new();
-        record.teach(Duration::from_millis(100), Duration::from_millis(7));
+        record.teach(Duration::from_millis(100), LEAST);
         let mut judge = shards_api::Judge::begin(&record);
         let due = judge.due().unwrap();
         while Instant::now() < due {
@@ -456,7 +459,9 @@ mod tests {
         assert!(
             said.starts_with("its microVM ran no CPU in ")
                 && said.contains(" past the slowest answer seen (100ms), ")
-                && said.contains(" into the wait (the least a microVM ran and still answered: 7ms in 100ms)")
+                && said.contains(&format!(
+                    " into the wait (the least a microVM ran and still answered: {LEAST} in 100ms)"
+                ))
                 && said.ends_with(", and so it was ended"),
             "{said}"
         );

@@ -2205,7 +2205,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
                                             )
                                         }
                                         (_, Some((work, most))) => format!(
-                                            "its microVM having run {work:?} of CPU since its SIGKILL, more than any teardown took ({most:?})"
+                                            "its microVM having run {work} since its SIGKILL, more than any teardown took ({most})"
                                         ),
                                         (_, None) => format!(
                                             "its microVM gone on with nothing of its end for {:?}",
@@ -3402,7 +3402,7 @@ mod tests {
         use std::time::Duration;
         let record = shards_api::Record::new();
         let slowest = Duration::from_millis(100);
-        record.teach(slowest, slowest / 1000);
+        record.teach(slowest, shards_api::Work::of_cpu(slowest / 1000));
         let (told, answer) = std::sync::mpsc::channel();
         let busy = AtomicBool::new(true);
         let said = std::thread::scope(|s| {
@@ -3447,7 +3447,7 @@ mod tests {
             .unwrap();
         let record = shards_api::Record::new();
         let slowest = Duration::from_millis(100);
-        record.teach(slowest, slowest / 1000);
+        record.teach(slowest, shards_api::Work::of_cpu(slowest / 1000));
         let (told, answer) = std::sync::mpsc::channel::<Result<shards_vmm::vm::GuestTimes, String>>();
         let t0 = Instant::now();
         let (done, finished) = std::sync::mpsc::channel();

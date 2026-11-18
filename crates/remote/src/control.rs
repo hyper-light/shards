@@ -3718,7 +3718,7 @@ mod tests {
             static STOPPED: Record = Record::new();
             let slowest = std::time::Duration::from_millis(20);
             for record in [&SLOW, &STOPPED] {
-                record.teach(slowest, std::time::Duration::ZERO);
+                record.teach(slowest, shards_testwait::Work::ZERO);
             }
             let (vm, kiln) = (Identity::generate().unwrap(), Identity::generate().unwrap());
             let (serving, starts) = Serving::with_execs(&vm, kiln.fingerprint());

@@ -34,23 +34,98 @@ pub mod threads;
 #[cfg(windows)]
 pub use threads::{ThreadsHeld, threads_held, threads_said, threads_switched};
 
-/// A CPU rate: CPU time had over a wall time, kept as the pair it was measured as.
+/// A party's work, its threads' run, as its OS counts it exactly: D215's rate and C* are of it.
+/// On Linux and macOS the CPU time its threads ran, in nanoseconds (Linux's CPU clock, macOS's
+/// Mach units converted). On Windows the cycles they used (QueryProcessCycleTime,
+/// QueryThreadCycleTime: "The number of CPU clock cycles used by the threads of the process.
+/// This value includes cycles spent in both user mode and kernel mode", Microsoft Learn), which
+/// Windows accumulates as they run, where it charges their kernel and user times a whole clock
+/// tick at a time to the thread running as the tick comes (GetProcessTimes: steps of 15.625 ms,
+/// PM M294; Windows Internals 6th ed., Part 1, ch. 5, "Examining Thread Activity"): a stand-in
+/// busy 50 ms read as none (CI 44076016255), and R* and C* of two and eleven ticks refused a
+/// party of thirteen (CI 44347282760). Cycles are never made a time: "Do not attempt to
+/// convert the CPU clock cycles returned by QueryThreadCycleTime to elapsed time. This function
+/// uses timer services provided by the CPU, which can vary in implementation" (Microsoft
+/// Learn); so work is weighed only against work counted by the same unit on the same CPU
+/// model, as a kept record names them ([`Work::UNIT`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Work(u64);
+
+impl Work {
+    /// None.
+    pub const ZERO: Work = Work(0);
+
+    /// What its counts are, as a record kept beyond its process names them beside its CPU's
+    /// model: Linux's and macOS's CPU nanoseconds.
+    #[cfg(not(windows))]
+    pub const UNIT: &'static str = "cpu-ns";
+
+    /// What its counts are, as a record kept beyond its process names them beside its CPU's
+    /// model: Windows' cycles.
+    #[cfg(windows)]
+    pub const UNIT: &'static str = "cycles";
+
+    /// `count` of [`Work::UNIT`]: a count its OS gave, or one a record kept of it.
+    pub const fn of(count: u64) -> Work {
+        Work(count)
+    }
+
+    /// CPU time, as Linux and macOS count work: its nanoseconds, past u64's (584 years) its
+    /// most.
+    #[cfg(not(windows))]
+    pub fn of_cpu(cpu: Duration) -> Work {
+        Work(ns(cpu))
+    }
+
+    /// Its count, of [`Work::UNIT`].
+    pub const fn count(self) -> u64 {
+        self.0
+    }
+
+    pub const fn is_zero(self) -> bool {
+        self.0 == 0
+    }
+
+    #[must_use]
+    pub const fn saturating_add(self, other: Work) -> Work {
+        Work(self.0.saturating_add(other.0))
+    }
+
+    #[must_use]
+    pub const fn saturating_sub(self, other: Work) -> Work {
+        Work(self.0.saturating_sub(other.0))
+    }
+}
+
+/// As an account says it: on Linux and macOS its CPU time ("12.5ms of CPU"), on Windows its
+/// cycles ("31250000 cycles"), never a time made of them.
+impl std::fmt::Display for Work {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        #[cfg(not(windows))]
+        return write!(f, "{:?} of CPU", Duration::from_nanos(self.0));
+        #[cfg(windows)]
+        return write!(f, "{} cycles", self.0);
+    }
+}
+
+/// A rate of work: a party's work had over a wall time, kept as the pair it was measured as.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Rate {
-    /// CPU time, user and system, of every thread.
-    pub cpu: Duration,
+    /// Its work, every thread's ([`Work`]).
+    pub work: Work,
     /// The wall time it was had over.
     pub over: Duration,
 }
 
 impl Rate {
-    /// Whether this rate is less than `other`: `cpu / over < other.cpu / other.over`, as
-    /// `cpu × other.over < other.cpu × over` in nanoseconds, with no division and no float.
-    /// Each side is the product of two u64s, which no u128 overflows; a duration past u64's
-    /// nanoseconds (584 years) counts as its most.
+    /// Whether this rate is less than `other`: `work / over < other.work / other.over`, as
+    /// `work × other.over < other.work × over`, with no division and no float. Each side is
+    /// the product of two u64s, which no u128 overflows; a duration past u64's nanoseconds
+    /// (584 years) counts as its most.
     pub fn below(&self, other: &Rate) -> bool {
-        let ns = |d: Duration| u128::from(u64::try_from(d.as_nanos()).unwrap_or(u64::MAX));
-        ns(self.cpu).saturating_mul(ns(other.over)) < ns(other.cpu).saturating_mul(ns(self.over))
+        let wall = |d: Duration| u128::from(ns(d));
+        let work = |w: Work| u128::from(w.count());
+        work(self.work).saturating_mul(wall(other.over)) < work(other.work).saturating_mul(wall(self.over))
     }
 }
 
@@ -71,8 +146,8 @@ pub struct Stall {
     threads: Option<Box<str>>,
 }
 
-/// A [`Stall`]'s rates, in nanoseconds: R*'s CPU and wall, C*, and its own rate's CPU and
-/// wall where that was its refusal.
+/// A [`Stall`]'s rates: R*'s work ([`Work`]'s count) and wall (nanoseconds), C*'s work, and
+/// its own rate's work and wall where that was its refusal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Rates {
     least: [u64; 2],
@@ -84,9 +159,9 @@ fn ns(d: Duration) -> u64 {
     u64::try_from(d.as_nanos()).unwrap_or(u64::MAX)
 }
 
-fn rate_of([cpu, over]: [u64; 2]) -> Rate {
+fn rate_of([work, over]: [u64; 2]) -> Rate {
     Rate {
-        cpu: Duration::from_nanos(cpu),
+        work: Work(work),
         over: Duration::from_nanos(over),
     }
 }
@@ -99,8 +174,8 @@ impl Stall {
             slowest: ns(seen.slowest),
             rates: seen.rated.map(|rated| {
                 Box::new(Rates {
-                    least: [ns(rated.least.cpu), ns(rated.least.over)],
-                    most: ns(rated.most),
+                    least: [rated.least.work.count(), ns(rated.least.over)],
+                    most: rated.most.count(),
                     rate: None,
                 })
             }),
@@ -138,7 +213,7 @@ impl Stall {
     fn slow(waited: Duration, rate: Rate, seen: Learned) -> Stall {
         let mut stall = Stall::new(waited, rate.over, seen);
         if let Some(rates) = stall.rates.as_mut() {
-            rates.rate = Some([ns(rate.cpu), ns(rate.over)]);
+            rates.rate = Some([rate.work.count(), ns(rate.over)]);
         }
         stall
     }
@@ -152,8 +227,8 @@ impl Stall {
     }
 
     /// The most work an answer of its kind took (C*), where one was rated.
-    pub fn most(&self) -> Option<Duration> {
-        self.rates.as_ref().map(|rates| Duration::from_nanos(rates.most))
+    pub fn most(&self) -> Option<Work> {
+        self.rates.as_ref().map(|rates| Work(rates.most))
     }
 
     /// How far into the wait it was found.
@@ -202,7 +277,7 @@ pub enum Seen {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Rated {
     pub least: Rate,
-    pub most: Duration,
+    pub most: Work,
     /// How many answers taught R* and C*, as far as this record knows: each answer taught it
     /// adds one ([`Record::teach`]); a record merged in ([`Record::merge`]) counts as many as
     /// the more of the two say, never their sum, as a kept record merged in again would count
@@ -262,16 +337,17 @@ impl Record {
     }
 
     /// An answer came `wall` after its wait began, its party having done `work` meanwhile
-    /// (its CPU time, read through its end): the slowest rises to it where it is slower, the
-    /// least rate falls to its where its is less, the most work rises to its where it is
-    /// more. A wait no time long has no rate and teaches nothing. One whose work read none
-    /// teaches its slowest alone, as one not read through its end does: an answer its party
-    /// ran nothing its counters show for says nothing of the least rate a working party
-    /// answers at, and R* 0 holds no floor. Windows' process times move in its clock's ticks
-    /// (15.625 ms): a stand-in busy 50 ms on a busy host read as none, R* 0 ns over 70.6 ms,
-    /// after which a party ticking 1 ms in 11 was served 22.9 s in (CI 44076016255, arm64
-    /// Windows, harness.rs' `a_command_asleep_but_ticking_is_refused_and_a_busy_one_goes_on`).
-    pub fn teach(&self, wall: Duration, work: Duration) {
+    /// (read through its end): the slowest rises to it where it is slower, the least rate
+    /// falls to its where its is less, the most work rises to its where it is more. A wait no
+    /// time long has no rate and teaches nothing. One whose work read none teaches its slowest
+    /// alone, as one not read through its end does: an answer its party ran nothing its
+    /// counters show for says nothing of the least rate a working party answers at, and R* 0
+    /// holds no floor. Windows' process times move in its clock's ticks (15.625 ms): a
+    /// stand-in busy 50 ms on a busy host read as none, R* 0 ns over 70.6 ms, after which a
+    /// party ticking 1 ms in 11 was served 22.9 s in (CI 44076016255, arm64 Windows,
+    /// harness.rs' `a_command_asleep_but_ticking_is_refused_and_a_busy_one_goes_on`); its
+    /// work is its cycles since ([`Work`]), which any run moves.
+    pub fn teach(&self, wall: Duration, work: Work) {
         if wall.is_zero() {
             return;
         }
@@ -281,10 +357,7 @@ impl Record {
         let answer = Learned {
             slowest: wall,
             rated: Some(Rated {
-                least: Rate {
-                    cpu: work,
-                    over: wall,
-                },
+                least: Rate { work, over: wall },
                 most: work,
                 answers: 1,
             }),
@@ -395,11 +468,12 @@ pub struct Span {
     pub ended: Instant,
     pub resolution: Duration,
     pub own: Duration,
-    /// Its party's work (CPU) since the wait began, where its caller saw it run unheld over
-    /// every look since the look before (none held from running, stopped, starved of a CPU,
-    /// nor ending, and its progress its own processes'): the window the judge's rate is had
-    /// over. None where it did not, or cannot say: that window is no part of the rate's wall.
-    pub work: Option<Duration>,
+    /// Its party's work ([`Work`]) since the wait began, where its caller saw it run unheld
+    /// over every look since the look before (none held from running, stopped, starved of a
+    /// CPU, nor ending, and its progress its own processes'): the window the judge's rate is
+    /// had over. None where it did not, or cannot say: that window is no part of the rate's
+    /// wall.
+    pub work: Option<Work>,
 }
 
 impl Span {
@@ -589,8 +663,8 @@ impl<'a> Judge<'a> {
                 (self.since, self.held) = (span.ended, Duration::ZERO);
                 let judged = self.slower_than_any_answer(span.work, now, window, seen);
                 if judged.is_ok()
-                    && let (Some(cpu), Some(rated)) = (span.work, seen.rated)
-                    && self.past_most(cpu, window, rated)
+                    && let (Some(work), Some(rated)) = (span.work, seen.rated)
+                    && self.past_most(work, window, rated)
                 {
                     self.waited_past_most = self.waited_past_most.saturating_add(1);
                 }
@@ -628,30 +702,30 @@ impl<'a> Judge<'a> {
     /// refuses past C* whatever the rate.
     fn slower_than_any_answer(
         &self,
-        work: Option<Duration>,
+        work: Option<Work>,
         now: Instant,
         window: Duration,
         seen: Learned,
     ) -> Result<(), Stall> {
-        let (Some(cpu), Some(rated)) = (work, seen.rated) else {
+        let (Some(work), Some(rated)) = (work, seen.rated) else {
             return Ok(());
         };
         let rate = Rate {
-            cpu,
+            work,
             over: self.unheld,
         };
         let slow = self.by_work || rate.below(&rated.least);
-        if !slow || !self.past_most(cpu, window, rated) {
+        if !slow || !self.past_most(work, window, rated) {
             return Ok(());
         }
         Err(Stall::slow(now.saturating_duration_since(self.began), rate, seen))
     }
 
-    /// Whether a party that has done `cpu` since its start is past its kind's C*: seen to run
+    /// Whether a party that has done `work` since its start is past its kind's C*: seen to run
     /// unheld a whole `window` or more, its work more than any answer took, once [`SPREAD`]
     /// answers have taught it.
-    fn past_most(&self, cpu: Duration, window: Duration, rated: Rated) -> bool {
-        rated.answers >= SPREAD && self.unheld >= window && cpu > rated.most
+    fn past_most(&self, work: Work, window: Duration, rated: Rated) -> bool {
+        rated.answers >= SPREAD && self.unheld >= window && work > rated.most
     }
 
     /// How many of its due looks found its party past C* ([`past_most`](Self::past_most))
@@ -686,7 +760,7 @@ impl<'a> Judge<'a> {
 
     /// Its party answered, having done `work` since the wait began: its kind learns from
     /// the answer. Only the party's own answers teach: never an end its waiter made.
-    pub fn answered(&self, work: Duration) {
+    pub fn answered(&self, work: Work) {
         self.record.teach(self.began.elapsed(), work);
     }
 
@@ -701,12 +775,17 @@ impl<'a> Judge<'a> {
 mod tests {
     use super::*;
 
+    /// `cpu` as a count of work: the rule weighs counts alone, whatever their unit ([`Work`]).
+    fn w(cpu: Duration) -> Work {
+        Work::of(ns(cpu))
+    }
+
     /// A stall says its party's threads as its caller read them as it refused it, and none
     /// where its caller read none: the account rides with the stall, apart from its times.
     #[test]
     fn a_stall_says_its_partys_threads_as_they_were_read() {
         let record = Record::new();
-        record.teach(Duration::from_millis(1), Duration::ZERO);
+        record.teach(Duration::from_millis(1), Work::ZERO);
         let now = Instant::now();
         let stall = record
             .stalled(now.checked_sub(Duration::from_millis(5)).unwrap(), now)
@@ -726,7 +805,7 @@ mod tests {
     #[test]
     fn a_rate_is_compared_by_cross_multiplication() {
         let rate = |cpu: u64, over: u64| Rate {
-            cpu: Duration::from_nanos(cpu),
+            work: Work::of(cpu),
             over: Duration::from_nanos(over),
         };
         assert!(rate(1, 2).below(&rate(1, 1)));
@@ -735,7 +814,7 @@ mod tests {
         assert!(!rate(1, 2).below(&rate(2, 4)));
         assert!(rate(0, 1).below(&rate(1, u64::MAX)));
         let most = Rate {
-            cpu: Duration::MAX,
+            work: Work::of(u64::MAX),
             over: Duration::MAX,
         };
         assert!(!most.below(&rate(u64::MAX, u64::MAX)));
@@ -754,20 +833,20 @@ mod tests {
         let learned = |slowest, cpu, over, most, answers| Seen::Learned {
             slowest,
             rated: Some(Rated {
-                least: Rate { cpu, over },
-                most,
+                least: Rate { work: w(cpu), over },
+                most: w(most),
                 answers,
             }),
         };
-        record.teach(ms(2), ms(1));
+        record.teach(ms(2), w(ms(1)));
         assert_eq!(record.seen(), learned(ms(2), ms(1), ms(2), ms(1), 1));
-        record.teach(ms(1), ms(1));
+        record.teach(ms(1), w(ms(1)));
         assert_eq!(record.seen(), learned(ms(2), ms(1), ms(2), ms(1), 2));
-        record.teach(ms(4), ms(1));
+        record.teach(ms(4), w(ms(1)));
         assert_eq!(record.seen(), learned(ms(4), ms(1), ms(4), ms(1), 3));
-        record.teach(ms(1), ms(3));
+        record.teach(ms(1), w(ms(3)));
         assert_eq!(record.seen(), learned(ms(4), ms(1), ms(4), ms(3), 4));
-        record.teach(Duration::ZERO, Duration::ZERO);
+        record.teach(Duration::ZERO, Work::ZERO);
         assert_eq!(record.seen(), learned(ms(4), ms(1), ms(4), ms(3), 4));
     }
 
@@ -783,8 +862,8 @@ mod tests {
         let learned = |slowest, cpu, over, most, answers| Seen::Learned {
             slowest,
             rated: Some(Rated {
-                least: Rate { cpu, over },
-                most,
+                least: Rate { work: w(cpu), over },
+                most: w(most),
                 answers,
             }),
         };
@@ -818,10 +897,10 @@ mod tests {
                 rated: None
             }
         );
-        record.teach(ms(3), ms(2));
+        record.teach(ms(3), w(ms(2)));
         let rated = Some(Rated {
             least: Rate {
-                cpu: ms(2),
+                work: w(ms(2)),
                 over: ms(3),
             },
             most: ms(2),
@@ -852,7 +931,7 @@ mod tests {
     fn an_answer_of_no_work_teaches_its_slowest_alone() {
         let ms = Duration::from_millis;
         let record = Record::new();
-        record.teach(ms(70), Duration::ZERO);
+        record.teach(ms(70), Work::ZERO);
         assert_eq!(
             record.seen(),
             Seen::Learned {
@@ -860,15 +939,15 @@ mod tests {
                 rated: None
             }
         );
-        record.teach(ms(3), ms(2));
-        record.teach(ms(80), Duration::ZERO);
+        record.teach(ms(3), w(ms(2)));
+        record.teach(ms(80), Work::ZERO);
         assert_eq!(
             record.seen(),
             Seen::Learned {
                 slowest: ms(80),
                 rated: Some(Rated {
                     least: Rate {
-                        cpu: ms(2),
+                        work: w(ms(2)),
                         over: ms(3),
                     },
                     most: ms(2),
@@ -887,7 +966,7 @@ mod tests {
         let mut judge = Judge::begin(&record);
         assert_eq!(judge.due(), None);
         assert_eq!(judge.found(Found::Still), Ok(()));
-        record.teach(Duration::from_nanos(1), Duration::ZERO);
+        record.teach(Duration::from_nanos(1), Work::ZERO);
         assert_eq!(judge.due(), None);
         assert_eq!(judge.found(Found::Still), Ok(()));
     }
@@ -901,7 +980,7 @@ mod tests {
     fn a_learned_wait_is_refused_at_a_look_that_finds_no_progress() {
         let slowest = Duration::from_millis(30);
         let record = Record::new();
-        record.teach(slowest, Duration::from_millis(3));
+        record.teach(slowest, w(Duration::from_millis(3)));
         let mut judge = Judge::begin(&record);
         let began = judge.began;
         let first = judge.due().unwrap();
@@ -920,7 +999,7 @@ mod tests {
         assert_eq!(
             stall.least(),
             Some(Rate {
-                cpu: Duration::from_millis(3),
+                work: w(Duration::from_millis(3)),
                 over: slowest
             })
         );
@@ -940,7 +1019,7 @@ mod tests {
     fn a_party_its_host_holds_is_live_not_stalled() {
         let slowest = Duration::from_millis(20);
         let record = Record::new();
-        record.teach(slowest, Duration::from_millis(1));
+        record.teach(slowest, w(Duration::from_millis(1)));
         let mut judge = Judge::begin(&record);
         for _ in 0..3 {
             let due = judge.due().unwrap();
@@ -962,7 +1041,7 @@ mod tests {
         let ms = Duration::from_millis;
         let slowest = ms(10);
         let record = Record::new();
-        record.teach(slowest, ms(1));
+        record.teach(slowest, w(ms(1)));
         let mut judge = Judge::begin(&record);
         let began = judge.began;
         assert_eq!(judge.found_at(Found::Progressed, began + ms(14)), Ok(()));
@@ -987,7 +1066,7 @@ mod tests {
         let us = Duration::from_micros;
         let slowest = Duration::from_nanos(98_915_708);
         let record = Record::new();
-        record.teach(slowest, Duration::from_millis(3));
+        record.teach(slowest, w(Duration::from_millis(3)));
         let mut judge = Judge::begin(&record);
         let began = judge.began;
         assert_eq!(judge.found_at(Found::Progressed, began + us(101_908)), Ok(()));
@@ -1018,7 +1097,7 @@ mod tests {
         let ms = Duration::from_millis;
         let slowest = Duration::from_nanos(59_554_375);
         let record = Record::new();
-        record.teach(slowest, ms(3));
+        record.teach(slowest, w(ms(3)));
         let judged = |own: bool| {
             let mut judge = Judge::begin(&record);
             let base = span(&judge, Duration::ZERO, ms(33), Duration::ZERO);
@@ -1043,7 +1122,7 @@ mod tests {
     fn a_judge_on_time_refuses_a_stopped_party_at_its_first_look() {
         let slowest = Duration::from_millis(30);
         let record = Record::new();
-        record.teach(slowest, Duration::from_millis(3));
+        record.teach(slowest, w(Duration::from_millis(3)));
         let mut judge = Judge::begin(&record);
         let due = judge.due().unwrap();
         let stall = judge.found_at(Found::Still, due).unwrap_err();
@@ -1063,7 +1142,7 @@ mod tests {
             None,
             "cold"
         );
-        record.teach(ms(30), ms(3));
+        record.teach(ms(30), w(ms(3)));
         assert_eq!(record.stalled(since, since + ms(29)), None);
         let stall = record.stalled(since, since + ms(31)).unwrap();
         assert_eq!(
@@ -1073,7 +1152,7 @@ mod tests {
         assert_eq!(
             stall.least(),
             Some(Rate {
-                cpu: ms(3),
+                work: w(ms(3)),
                 over: ms(30)
             })
         );
@@ -1131,7 +1210,7 @@ mod tests {
         let ns = Duration::from_nanos;
         let slowest = ns(3_527);
         let record = Record::new();
-        record.teach(slowest, Duration::ZERO);
+        record.teach(slowest, Work::ZERO);
         let mut judge = Judge::begin(&record);
         let first = span(&judge, Duration::ZERO, us(18_416), ns(1));
         assert_eq!(
@@ -1166,7 +1245,7 @@ mod tests {
         let us = Duration::from_micros;
         let slowest = Duration::from_nanos(13_996_303);
         let record = Record::new();
-        record.teach(slowest, Duration::from_millis(1));
+        record.teach(slowest, w(Duration::from_millis(1)));
         let mut judge = Judge::begin(&record);
         let first = span(&judge, Duration::ZERO, us(29_000), Duration::ZERO);
         assert_eq!(judge.found_over(Found::Based, first), Ok(()));
@@ -1194,7 +1273,7 @@ mod tests {
         let slowest = Duration::from_micros(500);
         let tick = ms(10);
         let record = Record::new();
-        record.teach(slowest, Duration::ZERO);
+        record.teach(slowest, Work::ZERO);
         let mut judge = Judge::begin(&record);
         let first = span(&judge, Duration::ZERO, Duration::ZERO, tick);
         assert_eq!(judge.found_over(Found::Based, first), Ok(()));
@@ -1216,7 +1295,7 @@ mod tests {
         let first_look = ns(13_374);
         let tick = Duration::from_millis(10);
         let record = Record::new();
-        record.teach(slowest, Duration::ZERO);
+        record.teach(slowest, Work::ZERO);
         let mut exact = Judge::begin(&record);
         let first = span(&exact, Duration::ZERO, first_look, Duration::ZERO);
         assert_eq!(exact.found_over(Found::Based, first), Ok(()));
@@ -1244,7 +1323,7 @@ mod tests {
         let ms = Duration::from_millis;
         let slowest = ms(10);
         let record = Record::new();
-        record.teach(slowest, Duration::ZERO);
+        record.teach(slowest, Work::ZERO);
         let mut judge = Judge::begin(&record);
         assert_eq!(
             judge.found_over(Found::Based, span(&judge, ms(8), ms(9), Duration::ZERO)),
@@ -1270,7 +1349,13 @@ mod tests {
         work: Option<Duration>,
     ) -> Result<(), Stall> {
         let at = judge.began + at;
-        judge.found_over(found, Span { work, ..Span::at(at) })
+        judge.found_over(
+            found,
+            Span {
+                work: work.map(w),
+                ..Span::at(at)
+            },
+        )
     }
 
     /// Due looks on time from the first, each finding its party progressed with `work(n)` at
@@ -1296,8 +1381,8 @@ mod tests {
     fn a_wait_slower_than_any_answer_is_refused_though_it_progresses() {
         let (ms, us) = (Duration::from_millis, Duration::from_micros);
         let record = Record::new();
-        record.teach(ms(30), ms(3));
-        record.teach(ms(30), ms(3));
+        record.teach(ms(30), w(ms(3)));
+        record.teach(ms(30), w(ms(3)));
         let mut judge = Judge::begin(&record);
         assert_eq!(
             look_with(&mut judge, ms(10), Found::Still, Some(Duration::ZERO)),
@@ -1314,15 +1399,15 @@ mod tests {
         assert_eq!(
             stall.rate(),
             Some(Rate {
-                cpu: us(3200),
+                work: w(us(3200)),
                 over: ms(480)
             })
         );
-        assert_eq!(stall.most(), Some(ms(3)));
+        assert_eq!(stall.most(), Some(w(ms(3))));
         assert_eq!(
             stall.least(),
             Some(Rate {
-                cpu: ms(3),
+                work: w(ms(3)),
                 over: ms(30)
             })
         );
@@ -1334,8 +1419,8 @@ mod tests {
     fn a_busy_wait_past_w_star_goes_on() {
         let ms = Duration::from_millis;
         let record = Record::new();
-        record.teach(ms(30), ms(36));
-        record.teach(ms(30), ms(36));
+        record.teach(ms(30), w(ms(36)));
+        record.teach(ms(30), w(ms(36)));
         let mut judge = Judge::begin(&record);
         assert!(ticking_until_refused(&mut judge, ms(30), |n| Some(ms(36) * n)).is_none());
     }
@@ -1350,13 +1435,13 @@ mod tests {
     fn a_busy_wait_judged_by_its_work_is_refused_past_c_star() {
         let ms = Duration::from_millis;
         let record = Record::new();
-        record.teach(ms(30), ms(36));
-        record.teach(ms(30), ms(36));
+        record.teach(ms(30), w(ms(36)));
+        record.teach(ms(30), w(ms(36)));
         let mut judge = Judge::begin(&record).by_work();
         let (n, stall) = ticking_until_refused(&mut judge, ms(30), |n| Some(ms(36) * n)).unwrap();
         assert_eq!(n, 2, "{stall:?}");
-        assert_eq!(stall.rate().map(|rate| rate.cpu), Some(ms(72)));
-        assert_eq!(stall.most(), Some(ms(36)));
+        assert_eq!(stall.rate().map(|rate| rate.work), Some(w(ms(72))));
+        assert_eq!(stall.most(), Some(w(ms(36))));
     }
 
     /// A party past W* below R* that has not done the work an answer took (C*) goes on: its
@@ -1366,8 +1451,8 @@ mod tests {
     fn a_wait_on_a_peer_past_w_star_goes_on_within_its_kinds_work() {
         let (ms, us) = (Duration::from_millis, Duration::from_micros);
         let record = Record::new();
-        record.teach(ms(30), ms(3));
-        record.teach(ms(30), ms(3));
+        record.teach(ms(30), w(ms(3)));
+        record.teach(ms(30), w(ms(3)));
         let mut judge = Judge::begin(&record);
         assert!(ticking_until_refused(&mut judge, ms(30), |n| Some(us(75) * n)).is_none());
     }
@@ -1379,8 +1464,8 @@ mod tests {
     fn a_window_its_caller_cannot_vouch_for_is_out_of_the_rate() {
         let (ms, us) = (Duration::from_millis, Duration::from_micros);
         let record = Record::new();
-        record.teach(ms(30), ms(3));
-        record.teach(ms(30), ms(3));
+        record.teach(ms(30), w(ms(3)));
+        record.teach(ms(30), w(ms(3)));
         let mut judge = Judge::begin(&record);
         assert_eq!(
             look_with(&mut judge, ms(10), Found::Held, Some(Duration::ZERO)),
@@ -1392,7 +1477,7 @@ mod tests {
         assert_eq!(
             stall.rate(),
             Some(Rate {
-                cpu: us(3200),
+                work: w(us(3200)),
                 over: ms(420)
             }),
             "its held and unsaid windows out"
@@ -1406,7 +1491,7 @@ mod tests {
         let record = Record::new();
         let judge = Judge::begin(&record);
         std::thread::sleep(Duration::from_millis(2));
-        judge.answered(Duration::from_millis(1));
+        judge.answered(w(Duration::from_millis(1)));
         let Seen::Learned {
             slowest,
             rated: Some(Rated { least, most, answers }),
@@ -1415,9 +1500,9 @@ mod tests {
             panic!("an answer taught nothing");
         };
         assert!(slowest >= Duration::from_millis(2), "{slowest:?}");
-        assert_eq!(least.cpu, Duration::from_millis(1));
+        assert_eq!(least.work, w(Duration::from_millis(1)));
         assert_eq!(least.over, slowest);
-        assert_eq!(most, Duration::from_millis(1));
+        assert_eq!(most, w(Duration::from_millis(1)));
         assert_eq!(answers, 1);
     }
 
@@ -1443,18 +1528,18 @@ mod tests {
             look_with(&mut judge, slowest * 2, Found::Progressed, Some(ns(12_888_561)))
         };
         let record = Record::new();
-        record.teach(slowest, most);
+        record.teach(slowest, w(most));
         assert_eq!(looks(&record), Ok(()), "refused by one answer's rates");
-        record.teach(slowest, most);
+        record.teach(slowest, w(most));
         let stall = looks(&record).unwrap_err();
         assert_eq!(
             stall.rate(),
             Some(Rate {
-                cpu: ns(12_888_561),
+                work: w(ns(12_888_561)),
                 over: ns(26_602_167)
             })
         );
-        assert_eq!(stall.most(), Some(most));
+        assert_eq!(stall.most(), Some(w(most)));
     }
 
     /// b24's sleeper is still refused (D215, ROOT's ruling of 2026-11-17): a party that runs a
@@ -1465,23 +1550,23 @@ mod tests {
     fn a_sleeper_is_refused_once_two_answers_taught_its_kind() {
         let (ms, us) = (Duration::from_millis, Duration::from_micros);
         let record = Record::new();
-        record.teach(ms(30), ms(3));
+        record.teach(ms(30), w(ms(3)));
         let mut judge = Judge::begin(&record);
         assert!(
             ticking_until_refused(&mut judge, ms(30), |n| Some(us(200) * n)).is_none(),
             "refused by one answer's rates"
         );
-        record.teach(ms(25), ms(2));
+        record.teach(ms(25), w(ms(2)));
         let mut judge = Judge::begin(&record);
         let (n, stall) = ticking_until_refused(&mut judge, ms(30), |n| Some(us(200) * n)).unwrap();
         assert_eq!(n, 16, "refused at look {n}");
         assert_eq!(
             stall.least(),
             Some(Rate {
-                cpu: ms(2),
+                work: w(ms(2)),
                 over: ms(25)
             })
         );
-        assert_eq!(stall.most(), Some(ms(3)));
+        assert_eq!(stall.most(), Some(w(ms(3))));
     }
 }

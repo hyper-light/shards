@@ -32045,6 +32045,85 @@ unmeasured: owed (R14).
   owed (ROOT): it on x86_64 and arm64 Windows, the workspace on the seven targets, and the
   judge's CPU per look on jupiter before and after.
 
+**Amended (own-35k, kiln goal fb3528f9, 2026-11-18, ROOT's brief (B)): on Windows the rate's
+work is the cycles Windows counts as threads run, never its clock ticks' times, and kept R*
+and C* weigh only work counted as their host counts it.** CI 44347282760's x86_64 Windows job
+(134953502265, an AMD EPYC 7763 under Hyper-V) refused containers.rs:4026's `rm -f reader
+prov`: "203.125ms of CPU in the 826.352ms it was seen to run unheld, below the least rate any
+answer of its kind came at on this host (R* 31.25ms in 87.2894ms) and more than any such answer
+took (C* 171.875ms)". Every one of those figures is a whole multiple of 15.625 ms: thirteen
+ticks against a C* of eleven and an R* of two, which say nothing of the work done. CI
+44076016255 read a stand-in busy 50 ms as none (amendment of 2026-11-17, above).
+- *Sources.* GetProcessTimes (Microsoft Learn) gives "the amount of time that the process has
+  executed in kernel mode" (and user mode), "a 64-bit count of 100-nanosecond time units",
+  documents no resolution, and sends a caller for cycles elsewhere: "To retrieve the number of
+  CPU clock cycles used by the threads of the process, use the QueryProcessCycleTime function."
+  QueryProcessCycleTime's CycleTime: "The number of CPU clock cycles used by the threads of the
+  process. This value includes cycles spent in both user mode and kernel mode." Its unit is the
+  CPU's: QueryThreadCycleTime's remarks, "Do not attempt to convert the CPU clock cycles
+  returned by QueryThreadCycleTime to elapsed time. This function uses timer services provided
+  by the CPU, which can vary in implementation. For example, some CPUs will vary the frequency
+  of the timer when changing the frequency at which the CPU runs and others will leave it at a
+  fixed rate. The behavior of each CPU is described in the documentation provided by the CPU
+  vendor." Windows Internals, 6th ed., Part 1, ch. 5 ("Examining Thread Activity"), on why
+  times and cycles differ: "many threads run for such a short amount of time that they are
+  seldom (if ever) the currently running thread when the clock interval timer interrupt
+  occurs, so they are not charged for much of their CPU time"; the cycle count "is independent
+  of the clock interval timer's resolution because the count is maintained internally by the
+  processor at each cycle and updated by Windows at each interrupt entry. (A final accumulation
+  is done before a context switch.)"; and ("Quantum Accounting") "CPU clock cycles are charged
+  at different events (context switches, interrupts, and certain scheduling decisions)". The
+  7th edition's Part 1, ch. 4, which ROOT named, was not read in this lane (no copy here):
+  owed. Measured here before (PM M294, jupiter): a spinning thread's GetThreadTimes moved 53 to
+  60 times a second in 15.625 ms steps, its QueryThreadCycleTime about 2.6 million times.
+- *Decided.* shards-judge's `Work`: a party's work as its OS counts it exactly, CPU
+  nanoseconds on Linux and macOS and cycles on Windows (`Work::UNIT`), what R* (`Rate`), C*
+  (`Rated::most`), `Span::work`, `Record::teach` and `Judge::answered` weigh. It is never made a
+  time: an account says it in its unit ("12.5ms of CPU", "31250000 cycles"). shards-api's
+  `Watch::work` (replacing `Watch::cpu`) reads Windows' cycles, QueryProcessCycleTime summed
+  over the followed tree, the same count that already told whether a process ran; its
+  GetProcessTimes reading stays for the trace alone. `Follow`'s rate, its answers, the tests'
+  party (`Looked::work`, and a machine's threads beside its waiter, QueryProcessCycleTime and
+  QueryThreadCycleTime, which counted no work on Windows before), the daemon's teardown C*
+  (D217, `ends`), `parents`' leaf, and shards-testwait's answers (which taught none on
+  Windows) all weigh it.
+- *Keyed by the CPU's model.* A count of cycles is weighed only against counts of the same
+  unit on the same CPU model. CI's cache of the tests' records is keyed by runner image and
+  target, whose runners are of more than one CPU model, and restores the newest of any of
+  them; so the key is in the records, not the cache's name: each rating a kept record holds is
+  `rated UNIT:MODEL R*WORK R*WALL C*WORK ANSWERS` (`common::rated_key`: `Work::UNIT` and
+  shards-vmm's `HostModel` key, D261's, its CPU's brand and what it runs under), a record keeps
+  one per key, a host reads its own and writes the others back as they were
+  (`common::kept_record`), and its W* is read whatever its ratings. A rating kept before
+  ratings were keyed (`rated` and three or four numbers) is read as none on every OS: its R*
+  and C* are taught anew by two answers (`SPREAD`), its W* stands. The daemon's home keeps
+  `teardown-work UNIT:MODEL WORK ANSWERS` (`ends::work_key`); an unkeyed or other-keyed line
+  is none. No cache key or workflow changes. Alternatives rejected: a tick's uncertainty added
+  to R* and C* (a chosen allowance, R03, and a party that runs between ticks still shows none);
+  cycles turned into time by the TSC's or the performance counter's frequency (Microsoft's
+  word above); the CPU model in CI's cache key (only the newest model's records survive a
+  runner of another, and local target directories are no cache); ETW's context-switch events
+  (a trace session per wait).
+- *Its literals.* `Work::UNIT`'s two names, which only key records. Nothing else: R*, C* and
+  W* are learned where they run.
+- *Held by* progress.rs `a_looks_work_is_its_cycles_on_windows_and_its_cpu_time_elsewhere` (a
+  look's work by cycle values, a window no tick was charged in and one charged a whole tick)
+  and `a_rate_bound_refuses_only_a_ticking_sleeper`, whose kind is now taught by a measured
+  child's 100 ms burst in this host's unit rather than by a time; harness.rs
+  `a_kept_rating_weighs_only_work_counted_as_this_host_counts_it` (unkeyed, other-keyed, own,
+  broken records, and a keep that writes both keys); ends.rs
+  `a_teardowns_work_teaches_its_c_star_kept_in_its_home` (keyed line; unkeyed, other-keyed and
+  broken lines none); judge.rs's rule tests, their work counts. Red:
+  lanes/redgreen/own-35k-cycles.patch (Windows' work read from its ticks, and unkeyed ratings
+  read as this host's). Written, not built or run in this lane; owed (ROOT): those tests on the
+  seven targets (the Windows ones on x86_64 and arm64), clippy, the workspace tests, and a CI
+  run whose Windows records are relearned keyed.
+- *Open.* On arm64 Windows the counter behind the cycle count is the platform's (PMCCNTR, and
+  the performance counter since 24H2, by System Informer's account, unverified here): an OS
+  update on one host model would keep its key while changing its unit. A smaller unit leaves an
+  old C* above every new count (lenient); a larger one would bring C* nearer. Unverified, and
+  no primary source read: owed before arm64 Windows records are trusted across a feature update.
+
 ### D231. An image booted for an orchestrator: a run of its own, hosted by one `shards` process (decided; building)
 
 **Why.** An orchestrator that runs each harness in a microVM of its own (Hex, for every

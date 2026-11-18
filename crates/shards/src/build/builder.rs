@@ -1640,7 +1640,7 @@ mod tests {
     #[cfg(unix)]
     fn learned(slowest: Duration) -> Record {
         let record = Record::new();
-        record.teach(slowest, slowest / 1000);
+        record.teach(slowest, shards_api::Work::of_cpu(slowest / 1000));
         record
     }
 

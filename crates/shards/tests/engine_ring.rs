@@ -385,7 +385,7 @@ impl Settle<'_> {
     fn looked(&mut self, pins: u64) -> Result<bool, Stalled> {
         if pins == self.want {
             // Its microVM's CPU is not read here: R*, which only a refusal reports, is none.
-            self.judge.answered(Duration::ZERO);
+            self.judge.answered(shards_api::Work::ZERO);
             return Ok(true);
         }
         self.lowest = self.lowest.min(pins);

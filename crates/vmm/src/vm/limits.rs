@@ -68,8 +68,10 @@ impl HostModel {
     }
 
     /// Its records' file name: its words, each byte not a letter, digit, `.` or `-` an `_`,
-    /// within a name's bounds.
-    fn key(&self) -> String {
+    /// within a name's bounds. Also the host model D215's kept records of work are keyed by
+    /// (the tests' kept ratings, the daemon's teardown C*): work counted on one CPU model is
+    /// weighed against its own.
+    pub fn key(&self) -> String {
         let whole = match &self.under {
             Some(under) => format!("{} under {under}", self.cpu),
             None => self.cpu.clone(),

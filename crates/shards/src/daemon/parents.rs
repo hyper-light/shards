@@ -295,8 +295,8 @@ fn emptied(events: &Path, procs: &Path, record: &shards_api::Record) -> std::io:
     changed.file(&opened)?;
     let mut judge = shards_api::Judge::begin(record);
     // Each process as it was first seen: its pid, its watch, and what it had run then.
-    let mut watched: Vec<(u32, shards_api::Watch, std::time::Duration)> = Vec::new();
-    let mut ran = std::time::Duration::ZERO;
+    let mut watched: Vec<(u32, shards_api::Watch, shards_api::Work)> = Vec::new();
+    let mut ran = shards_api::Work::ZERO;
     loop {
         changed.clear();
         let text = match std::fs::read_to_string(events) {
@@ -325,7 +325,7 @@ fn emptied(events: &Path, procs: &Path, record: &shards_api::Record) -> std::io:
                 .flatten()
                 .and_then(|followed| shards_api::Watch::of(followed, &listing).ok().flatten());
             if let Some(watch) = watch {
-                let from = watch.cpu();
+                let from = watch.work();
                 watched.push((pid, watch, from));
             }
         }
@@ -340,7 +340,7 @@ fn emptied(events: &Path, procs: &Path, record: &shards_api::Record) -> std::io:
                 .unwrap_or_default();
             for (_, watch, from) in &mut watched {
                 let look = watch.look(&listing).unwrap_or(shards_api::Found::Held);
-                ran = ran.max(watch.cpu().saturating_sub(*from));
+                ran = ran.max(watch.work().saturating_sub(*from));
                 found = match (found, look) {
                     (shards_api::Found::Progressed, _) | (_, shards_api::Found::Progressed) => {
                         shards_api::Found::Progressed
@@ -594,7 +594,7 @@ mod tests {
         // Its W* learned (taught here): a process that runs nothing, given up on past it.
         let slowest = Duration::from_millis(200);
         let record = shards_api::Record::new();
-        record.teach(slowest, Duration::from_millis(1));
+        record.teach(slowest, shards_api::Work::of_cpu(Duration::from_millis(1)));
         // Stopped, waited for to its stop: an asleep one is woken by a cgroup freezer's
         // cycles, a kiln run's about six a second (PM M562), which no stopped one is
         // (kernel/cgroup/freezer.c wakes interruptible and uninterruptible sleepers alone).

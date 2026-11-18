@@ -1212,7 +1212,7 @@ mod tests {
     fn a_pending_member_word_is_not_a_failed_give_back() {
         let t = super::super::tests::Test::new("group-pending");
         let slowest = std::time::Duration::from_millis(1);
-        t.daemon.answers.room.teach(slowest, slowest);
+        t.daemon.answers.room.teach(slowest, shards_api::Work::of(1));
         let pid = std::process::id();
         lock(&t.daemon.groups.words).insert(
             pid,

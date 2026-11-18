@@ -1155,7 +1155,7 @@ mod ask_tests {
     fn an_ask_of_a_network_process_that_runs_nothing_is_refused_past_w_star() {
         let record = shards_api::Record::new();
         let slowest = Duration::from_millis(200);
-        record.teach(slowest, Duration::from_millis(1));
+        record.teach(slowest, shards_api::Work::of_cpu(Duration::from_millis(1)));
         // Stopped, waited for to its stop, its start's own CPU behind it: a cgroup freezer's
         // cycles wake a sleeper, a kiln run's about six a second (PM M562), and no stopped one.
         let asleep = stand("kill -STOP $$");

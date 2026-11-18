@@ -4,15 +4,16 @@
 //!
 //! This process learns each kind of answer ([`Awaited`]) apart, in its own memory, from the
 //! answers it sees ([`Record`]): W*, the slowest, from a wait's start to its answer; and R*,
-//! the least CPU rate at which a VM process still answered, its CPU over that wait's wall
-//! time. A wait that begins once its kind has an answer looks at its VM process once each W*
-//! past its start, and a look that finds it ran nothing at all since the look before refuses
-//! the wait, [`Refusal::Stalled`]: a host under load slows a VM process but never stops it,
-//! so one that ran nothing for as long as the slowest answer took is stopped, deadlocked or
-//! frozen. R* is the refusal's diagnosis, never its bound (ROOT, 2026-11-13: a rate below it
-//! refused a boot slowed by its host's load). A wait that begins before its kind's first
-//! answer ([`Seen::Cold`]) follows its VM process's liveness alone. The schedule and the
-//! verdict are [`Judge`]'s; what each look finds is read here.
+//! the least rate at which a VM process still answered, its work ([`Work`]: its CPU time, on
+//! Windows its cycles) over that wait's wall time. A wait that begins once its kind has an
+//! answer looks at its VM process once each W* past its start, and a look that finds it ran
+//! nothing at all since the look before refuses the wait, [`Refusal::Stalled`]: a host
+//! under load slows a VM process but never stops it, so one that ran nothing for as long as
+//! the slowest answer took is stopped, deadlocked or frozen. R* is the refusal's diagnosis,
+//! never its bound (ROOT, 2026-11-13: a rate below it refused a boot slowed by its host's
+//! load). A wait that begins before its kind's first answer ([`Seen::Cold`]) follows its VM
+//! process's liveness alone. The schedule and the verdict are [`Judge`]'s; what each look
+//! finds is read here.
 //!
 //! A VM process is read as each OS keeps it, with no VMM linked (D215's falsifier is a client
 //! that needs to):
@@ -34,18 +35,19 @@
 //!   and every descendant, found in a Toolhelp32 snapshot (CreateToolhelp32Snapshot,
 //!   Process32FirstW/NextW: `th32ParentProcessID`), a process kept only where it started no
 //!   earlier than its listed parent (PM M528's rule: a pid is reused once its process has
-//!   gone), each held by a handle of its own: GetProcessTimes' kernel and user times (100 ns
-//!   units, summed over a process's threads) for the record, and QueryProcessCycleTime's
-//!   count of the cycles their threads used for whether they ran at all, as GetProcessTimes
-//!   documents no resolution of its times. A daemon's VM process is followed so, by its pid
-//!   ([`Followed::of_pid`]).
+//!   gone), each held by a handle of its own: QueryProcessCycleTime's count of the cycles
+//!   their threads used, which Windows accumulates as they run, for whether they ran at all
+//!   and for their work, the record's R* and C* ([`Work`]); GetProcessTimes' kernel and user
+//!   times (100 ns units, summed over a process's threads), which Windows charges a whole
+//!   clock tick at a time (PM M294), for its trace alone. A daemon's VM process is followed
+//!   so, by its pid ([`Followed::of_pid`]).
 
 use std::time::{Duration, Instant};
 
 #[cfg(unix)]
 use crate::Identity;
 use crate::{End, ProcessFailure, Refusal};
-use crate::{Found, Judge, Record, Seen, Span, Stall};
+use crate::{Found, Judge, Record, Seen, Span, Stall, Work};
 
 /// What a wait that follows its guest's VM process waits for. This process learns each
 /// apart, as each takes its own time.
@@ -95,19 +97,20 @@ impl Records {
     }
 
     /// An answer of `awaited`'s kind came `wall` after its wait began, its VM process having
-    /// run `cpu` meanwhile ([`Record::teach`]): a test's record, taught by hand.
+    /// done `work` meanwhile ([`Record::teach`]): a test's record, taught by hand.
     #[cfg(test)]
-    pub(crate) fn teach(&self, awaited: Awaited, wall: Duration, cpu: Duration) {
-        self.of(awaited).teach(wall, cpu);
+    pub(crate) fn teach(&self, awaited: Awaited, wall: Duration, work: Work) {
+        self.of(awaited).teach(wall, work);
     }
 }
 
 /// One look at a VM process.
 #[derive(Debug, Clone, Copy)]
 struct Look {
-    /// The CPU time its threads have had, user and system.
+    /// The CPU time its threads have had, user and system: on Windows in its clock's ticks,
+    /// read for its trace alone.
     cpu: Duration,
-    /// The cycles its threads have used (Windows): what tells whether they ran.
+    /// The cycles its threads have used (Windows): what tells whether they ran, and its work.
     #[cfg(windows)]
     cycles: u64,
     /// It, or a process of its tree, has exited since the look before: its end is under way,
@@ -120,6 +123,20 @@ impl Look {
     #[cfg(windows)]
     fn ran_since(&self, before: &Look) -> bool {
         self.cycles > before.cycles
+    }
+
+    /// Its threads' work by this look: their cycles, which Windows counts as they run, never
+    /// its ticks' times (D215: R* and C* of whole ticks refused a party of thirteen, CI
+    /// 44347282760).
+    #[cfg(windows)]
+    fn work(&self) -> Work {
+        Work::of(self.cycles)
+    }
+
+    /// Its threads' work by this look: their CPU time, to the nanosecond.
+    #[cfg(not(windows))]
+    fn work(&self) -> Work {
+        Work::of_cpu(self.cpu)
     }
 
     /// Whether any of its threads ran between `before` and this look.
@@ -1005,9 +1022,10 @@ impl Watch {
         self.kernel.as_deref()
     }
 
-    /// The CPU time its process's threads have had by the look before.
-    pub fn cpu(&self) -> Duration {
-        self.last.cpu
+    /// Its process's threads' work by the look before ([`Work`]: their CPU time, on Windows
+    /// their cycles): what a rate and C* weigh.
+    pub fn work(&self) -> Work {
+        self.last.work()
     }
 
     /// Its threads' wait for a CPU in the window its last look closed, from the look before it,
@@ -1058,10 +1076,10 @@ impl Watch {
         self.followed.hold(&Listing::new())
     }
 
-    /// The CPU time its process's threads have had by now, the look before kept; none where
-    /// it has gone or could not be read.
-    fn cpu_now(&mut self) -> Option<Duration> {
-        self.followed.look().ok().flatten().map(|look| look.cpu)
+    /// Its process's threads' work by now, the look before kept; none where it has gone or
+    /// could not be read.
+    fn work_now(&mut self) -> Option<Work> {
+        self.followed.look().ok().flatten().map(|look| look.work())
     }
 }
 
@@ -1095,8 +1113,8 @@ pub struct Follow<'a> {
     /// Its VM process, for a refusal to name.
     pid: u32,
     started: u64,
-    /// What its VM process had run as it began.
-    from: Duration,
+    /// Its VM process's work as it began.
+    from: Work,
     /// Whether a sample since its last due look found a thread of its process waiting in its
     /// kernel: that window is its host's, and vouches for nothing.
     held: bool,
@@ -1143,7 +1161,7 @@ impl<'a> Follow<'a> {
         let mut follow = Follow {
             judge,
             bound,
-            from: watch.cpu(),
+            from: watch.work(),
             watch,
             pid,
             started,
@@ -1221,7 +1239,7 @@ impl<'a> Follow<'a> {
                 .watch
                 .starved(&listing)
                 .is_ok_and(|starved| self.watch.vouched_by(found, starved)))
-        .then(|| self.watch.cpu().saturating_sub(self.from));
+        .then(|| self.watch.work().saturating_sub(self.from));
         let span = Span {
             began,
             ended: Instant::now(),
@@ -1249,24 +1267,30 @@ impl<'a> Follow<'a> {
     /// slowest alone where it could not be read (D215: only work read through an answer
     /// teaches R* and C*).
     pub fn answered(&mut self) {
-        match self.watch.cpu_now() {
-            Some(cpu) => self.judge.answered(cpu.saturating_sub(self.from)),
+        match self.watch.work_now() {
+            Some(work) => self.judge.answered(work.saturating_sub(self.from)),
             None => self.judge.answered_unrated(),
         }
     }
 
     /// Its guest ended as `end`, its VM process having run `cpu` by its end where its watcher
-    /// read it before it was reaped: its kind learns from the end, unless this client stopped
-    /// it, which is no answer of the guest's.
+    /// read it before it was reaped (Linux and macOS: its CPU time, its work there): its kind
+    /// learns from the end, unless this client stopped it, which is no answer of the guest's.
     pub(crate) fn ended(&mut self, end: &End, cpu: Option<Duration>) {
         if matches!(end, End::Stopped) {
             return;
         }
-        // On Windows the tree's handles read its processes after they have ended.
+        // On Windows the tree's handles read its processes' cycles after they have ended; no
+        // watcher reads its CPU time, a count of whole ticks, which is no work.
         #[cfg(windows)]
-        let cpu = self.watch.cpu_now().or(cpu);
-        match cpu {
-            Some(cpu) => self.judge.answered(cpu.saturating_sub(self.from)),
+        let work = {
+            let _ = cpu;
+            self.watch.work_now()
+        };
+        #[cfg(not(windows))]
+        let work = cpu.map(Work::of_cpu);
+        match work {
+            Some(work) => self.judge.answered(work.saturating_sub(self.from)),
             None => self.judge.answered_unrated(),
         }
     }
@@ -3200,6 +3224,11 @@ mod tests {
     use super::*;
     use crate::Rate;
 
+    /// Some work an answer did, where a test weighs only that it did some: the record it
+    /// teaches is rated, its R* and C* this, and judged by its W* alone where its bound is
+    /// stillness.
+    const SOME_WORK: Work = Work::of(1);
+
     /// A declared durable write is its host's while its volume works, whatever its thread's
     /// state (D286): held where its volume worked since its last reading or holds I/O in
     /// flight; still where its volume was read first now, moved nothing, or could not be read;
@@ -3312,7 +3341,7 @@ mod tests {
     fn a_process_followed_by_its_pid_is_judged_by_its_cpu() {
         let slowest = Duration::from_millis(20);
         let record = Record::new();
-        record.teach(slowest, Duration::from_millis(1));
+        record.teach(slowest, SOME_WORK);
         let until_due = |follow: &Follow<'_>| {
             let due = follow.due().unwrap();
             while Instant::now() < due {
@@ -3373,7 +3402,7 @@ mod tests {
     fn a_process_its_owner_holds_is_held_not_stalled() {
         let slowest = Duration::from_millis(20);
         let record = Record::new();
-        record.teach(slowest, Duration::from_millis(1));
+        record.teach(slowest, SOME_WORK);
         let until_due = |follow: &Follow<'_>| {
             let due = follow.due().unwrap();
             while Instant::now() < due {
@@ -3409,21 +3438,20 @@ mod tests {
         assert!(matches!(refused, Unfollowed::Stalled(_)), "{refused:?}");
     }
 
-    /// D215's rate bound on real processes, a kind taught W* 200 ms, R* 1/2 and C* 100 ms by
-    /// two answers, as R* and C* refuse once two have taught them (each burst of work 10 ms
-    /// or more, so that a macOS CPU counter moving in ticks of
-    /// 10 ms shows it in every window, and stillness never decides): a process asleep for
-    /// good but ticking, 10 ms of work in each 100 ms, is refused for its rate under
-    /// `Bound::Rate` and goes on under `Bound::Stillness` (a user's command asleep by design);
-    /// a busy one goes on; and one doing its kind's work over more time than any answer took
-    /// (a peer it waits on, or a host that slows it: 60 ms of work over some 600 ms) goes on
-    /// to its end, its work within C*.
+    /// D215's rate bound on real processes, a kind taught by two answers, each a burst of
+    /// 100 ms of work in a W* of 200 ms, as R* and C* refuse once two have taught them: R* 1/2
+    /// and C* that burst's work, as this host counts a child's ([`Work`]: on Windows its
+    /// cycles, which no rate makes a time). Each burst of work is 10 ms or more, so that a
+    /// macOS CPU counter moving in ticks of 10 ms shows it in every window, and stillness never
+    /// decides: a process asleep for good but ticking, 10 ms of work in each 100 ms, is refused
+    /// for its rate under `Bound::Rate` and goes on under `Bound::Stillness` (a user's command
+    /// asleep by design); a busy one goes on; and one doing its kind's work over more time
+    /// than any answer took (a peer it waits on, or a host that slows it: 60 ms of work over
+    /// some 600 ms) goes on to its end, its work within C*.
     #[test]
     fn a_rate_bound_refuses_only_a_ticking_sleeper() {
         let ms = Duration::from_millis;
         let record = Record::new();
-        record.teach(ms(200), ms(100));
-        record.teach(ms(200), ms(100));
         let started = |mode: &str| {
             let mut child = std::process::Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", SPINNING, "--nocapture"])
@@ -3479,6 +3507,33 @@ mod tests {
             let _ = child.kill();
             child.wait().unwrap();
         };
+        // C*: a burst of 100 ms's work, as this host counts it, a child's: its watch begun
+        // before its go, and looked at once it says it spun.
+        let most = {
+            let mut burst = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", SPINNING, "--nocapture"])
+                .env(SPIN, "burst")
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            let mut lines = std::io::BufRead::lines(std::io::BufReader::new(burst.stdout.take().unwrap()));
+            let mut said = |word: &str| {
+                lines
+                    .by_ref()
+                    .any(|line| line.is_ok_and(|line| line.starts_with(word)))
+            };
+            assert!(said("started"), "the burst said nothing of its start");
+            let mut watch = Watch::of(followed(&burst), &Listing::new()).unwrap().unwrap();
+            let from = watch.work();
+            std::io::Write::write_all(burst.stdin.as_mut().unwrap(), b"g").unwrap();
+            assert!(said("spun"), "the burst said nothing of its spin");
+            watch.look(&Listing::new()).unwrap();
+            end(burst);
+            watch.work().saturating_sub(from)
+        };
+        record.teach(ms(200), most);
+        record.teach(ms(200), most);
         let mut ticker = started("tick");
         let refused = judged(&mut ticker, Bound::Rate, Duration::from_secs(20));
         end(ticker);
@@ -3488,7 +3543,7 @@ mod tests {
         let rate = stall
             .rate()
             .unwrap_or_else(|| panic!("refused for stillness, {at:?} in: {stall:?}"));
-        assert!(rate.cpu > ms(100), "{stall:?}");
+        assert!(rate.work > most, "{stall:?}");
         let mut ticker = started("tick");
         let kept = judged(&mut ticker, Bound::Stillness, Duration::from_secs(3));
         end(ticker);
@@ -3714,20 +3769,22 @@ mod tests {
             "its host's storage worked for it, though it ran nothing"
         );
         let us = |us: u64| Duration::from_nanos(us * 1000);
+        // Its work in its CPU's microseconds, as a count: the rule weighs counts alone.
+        let work = |us: u64| Work::of(us * 1000);
         let record = Record::new();
         // W* and R* from the slowest answer; C* from a quicker one, at a rate above R*.
-        record.teach(us(55_119), us(11_874));
-        record.teach(us(50_000), us(12_580));
+        record.teach(us(55_119), work(11_874));
+        record.teach(us(50_000), work(12_580));
         let judged = |hold: &Hold, stored: bool| {
             let mut judge = Judge::begin(&record);
             let began = Instant::now();
             // Its work by each look a W* apart: its hashing at first, then a flush's moments.
-            [us(9_000), us(12_100), us(13_228), us(13_300)]
+            [work(9_000), work(12_100), work(13_228), work(13_300)]
                 .into_iter()
                 .zip(1u32..)
-                .try_for_each(|(cpu, n)| {
+                .try_for_each(|(done, n)| {
                     let at = began + us(56_000) * n;
-                    let work = vouches(Found::Progressed, false, hold, stored, false).then_some(cpu);
+                    let work = vouches(Found::Progressed, false, hold, stored, false).then_some(done);
                     let span = Span {
                         began: at,
                         ended: at,
@@ -3937,7 +3994,7 @@ mod tests {
     #[test]
     fn a_rate_wait_samples_a_blocked_process_between_its_looks() {
         let record = Record::new();
-        record.teach(Duration::from_secs(1), Duration::from_millis(100));
+        record.teach(Duration::from_secs(1), Work::of_cpu(Duration::from_millis(100)));
         let follow = |pid: u32, bound| {
             Follow::begin(&record, Followed::of_pid(pid).unwrap().unwrap(), bound)
                 .unwrap()
@@ -4010,7 +4067,7 @@ mod tests {
         );
         let slowest = Duration::from_millis(20);
         let record = Record::new();
-        record.teach(slowest, Duration::from_millis(1));
+        record.teach(slowest, SOME_WORK);
         let mut follow = Follow::begin(&record, followed, Bound::Stillness)
             .unwrap()
             .unwrap();
@@ -4337,6 +4394,40 @@ mod tests {
             .ok()
     }
 
+    /// A look's work is what its OS counts exactly: on Windows its cycles, whatever its CPU
+    /// times, which Windows charges a whole clock tick at a time to the thread running as the
+    /// tick comes (15.625 ms steps, PM M294); elsewhere its CPU time to the nanosecond. So a
+    /// window no tick was charged in shows the cycles run in it, and one charged a whole tick
+    /// shows only the cycles run in it, never a tick's time (D215; CI 44347282760: R* and C* of
+    /// two and eleven ticks refused a party of thirteen; CI 44076016255: a stand-in busy 50 ms
+    /// read as none). Red with Windows' work read from its ticks.
+    #[test]
+    fn a_looks_work_is_its_cycles_on_windows_and_its_cpu_time_elsewhere() {
+        let tick = Duration::from_nanos(15_625_000);
+        #[cfg(windows)]
+        {
+            let look = |cpu, cycles| Look {
+                cpu,
+                cycles,
+                ending: false,
+            };
+            let before = look(tick * 2, 1_000);
+            let unticked = look(tick * 2, 51_000_000);
+            let ticked = look(tick * 3, 1_200);
+            assert_eq!(
+                unticked.work().saturating_sub(before.work()),
+                Work::of(50_999_000)
+            );
+            assert_eq!(ticked.work().saturating_sub(before.work()), Work::of(200));
+        }
+        #[cfg(not(windows))]
+        {
+            let look = |cpu| Look { cpu, ending: false };
+            let (before, now) = (look(tick * 2), look(tick * 2 + Duration::from_nanos(1_234)));
+            assert_eq!(now.work().saturating_sub(before.work()), Work::of(1_234));
+        }
+    }
+
     /// Each kind learns apart, from its first answer on: its slowest answer only rises, its
     /// least rate only falls, and a wait no time long teaches nothing (D215).
     #[test]
@@ -4344,22 +4435,25 @@ mod tests {
         let ms = Duration::from_millis;
         let records = Records::new();
         assert_eq!(records.seen(Awaited::Boot), Seen::Cold);
-        records.teach(Awaited::Boot, ms(2), ms(1));
-        let learned = |slowest, cpu, over, answers| Seen::Learned {
+        records.teach(Awaited::Boot, ms(2), SOME_WORK);
+        let learned = |slowest, over, answers| Seen::Learned {
             slowest,
             rated: Some(crate::Rated {
-                least: Rate { cpu, over },
-                most: ms(1),
+                least: Rate {
+                    work: SOME_WORK,
+                    over,
+                },
+                most: SOME_WORK,
                 answers,
             }),
         };
-        assert_eq!(records.seen(Awaited::Boot), learned(ms(2), ms(1), ms(2), 1));
-        records.teach(Awaited::Boot, ms(1), ms(1));
-        assert_eq!(records.seen(Awaited::Boot), learned(ms(2), ms(1), ms(2), 2));
-        records.teach(Awaited::Boot, ms(4), ms(1));
-        assert_eq!(records.seen(Awaited::Boot), learned(ms(4), ms(1), ms(4), 3));
-        records.teach(Awaited::Boot, Duration::ZERO, Duration::ZERO);
-        assert_eq!(records.seen(Awaited::Boot), learned(ms(4), ms(1), ms(4), 3));
+        assert_eq!(records.seen(Awaited::Boot), learned(ms(2), ms(2), 1));
+        records.teach(Awaited::Boot, ms(1), SOME_WORK);
+        assert_eq!(records.seen(Awaited::Boot), learned(ms(2), ms(2), 2));
+        records.teach(Awaited::Boot, ms(4), SOME_WORK);
+        assert_eq!(records.seen(Awaited::Boot), learned(ms(4), ms(4), 3));
+        records.teach(Awaited::Boot, Duration::ZERO, Work::ZERO);
+        assert_eq!(records.seen(Awaited::Boot), learned(ms(4), ms(4), 3));
         assert_eq!(records.seen(Awaited::Connect), Seen::Cold);
         assert_eq!(records.seen(Awaited::End), Seen::Cold);
     }
@@ -4367,7 +4461,7 @@ mod tests {
     /// Set in the children of `the_cpu_reader_sees_a_spinning_childs_cpu_grow`: `spin`
     /// spins until its stdin ends; `parent` (Windows) starts a spinner and waits on its own
     /// stdin, the spinner its grandchild, so the walk of descendants is what reads it; `idle`
-    /// waits on its stdin alone.
+    /// waits on its stdin alone; `burst` spins 100 ms once told to.
     const SPIN: &str = "SHARDS_API_PROGRESS_SPIN";
     const SPINNING: &str = "progress::tests::the_cpu_reader_sees_a_spinning_childs_cpu_grow";
 
@@ -4488,6 +4582,22 @@ mod tests {
                 let _ = std::io::Read::read(&mut std::io::stdin(), &mut [0u8; 1]);
                 drop(spinner.stdin.take());
                 let _ = spinner.wait();
+                return;
+            }
+            // C*'s burst for D215's rate bound: says it has started; given its go on its stdin,
+            // spins 100 ms and says it spun; then waits for its stdin's end.
+            Ok("burst") => {
+                use std::io::Write as _;
+                let _ = writeln!(std::io::stdout(), "started");
+                let _ = std::io::stdout().flush();
+                let _ = std::io::Read::read(&mut std::io::stdin(), &mut [0u8; 1]);
+                let until = Instant::now() + Duration::from_millis(100);
+                while Instant::now() < until {
+                    std::hint::spin_loop();
+                }
+                let _ = writeln!(std::io::stdout(), "spun");
+                let _ = std::io::stdout().flush();
+                let _ = std::io::Read::read(&mut std::io::stdin(), &mut [0u8; 1]);
                 return;
             }
             // Asleep on its stdin until it ends, running nothing meanwhile.

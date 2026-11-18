@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 use shards_judge::{Found, Judge, Seen};
 /// What its waits take and say: the record of a kind of answer a wait is judged by, and the
 /// stall it was given up on at (shards-judge's).
-pub use shards_judge::{Record, Stall};
+pub use shards_judge::{Record, Stall, Work};
 
 pub mod party;
 
@@ -260,9 +260,7 @@ struct Wait<'r> {
     party: Counted,
     judge: Judge<'r>,
     began: Instant,
-    /// What its party had run as it began (Unix: Windows keeps no rate in cycles), and at
-    /// the look before.
-    #[cfg(unix)]
+    /// What its party had run as it began, and at the look before, in [`cpu`]'s units.
     from: i128,
     others: i128,
     /// This thread's CPU as it last added its own to [`WAITERS`].
@@ -285,7 +283,6 @@ impl<'r> Wait<'r> {
             party,
             judge: Judge::begin(judging),
             began,
-            #[cfg(unix)]
             from: others,
             others,
             mine,
@@ -402,11 +399,9 @@ impl<'r> Wait<'r> {
     /// What it waited for came: its kind learns from it, the CPU its party ran meanwhile
     /// its work.
     fn answered(&self) {
-        #[cfg(unix)]
-        let work = Duration::from_nanos(u64::try_from(self.party.ran() - self.from).unwrap_or(0));
-        // Cycles, which no rate of D215's is kept in: R* is a refusal's diagnosis alone.
-        #[cfg(windows)]
-        let work = Duration::ZERO;
+        // In [`cpu`]'s units, as D215's work counts them (`Work`: CPU nanoseconds, on Windows
+        // cycles).
+        let work = Work::of(u64::try_from(self.party.ran() - self.from).unwrap_or(0));
         self.record.teach(self.began.elapsed(), work);
     }
 }
@@ -589,7 +584,7 @@ mod tests {
     #[test]
     fn a_thread_made_and_not_yet_run_holds_its_partys_wait() {
         static MADE: Record = Record::new();
-        MADE.teach(Duration::from_millis(20), Duration::ZERO);
+        MADE.teach(Duration::from_millis(20), Work::ZERO);
         let id = party::of_test();
         let (answer, answered) = mpsc::channel();
         let made = party::carried(move || {
@@ -623,7 +618,7 @@ mod tests {
         static UNTIL: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
         let slowest = Duration::from_millis(20);
         for record in [&STOPPED, &SLOW, &ASLEEP, &WOKE_TO_NOTHING] {
-            record.teach(slowest, Duration::ZERO);
+            record.teach(slowest, Work::ZERO);
         }
         let still = || 0;
         let none = || None;
@@ -696,7 +691,7 @@ mod tests {
     fn a_wait_whose_member_its_host_holds_is_held_not_refused() {
         static HELD: Record = Record::new();
         let slowest = Duration::from_millis(20);
-        HELD.teach(slowest, Duration::ZERO);
+        HELD.teach(slowest, Work::ZERO);
         let held = Counted::StandIn {
             ran: || 0,
             until: || None,
@@ -762,7 +757,7 @@ mod tests {
     fn a_waits_party_is_its_own_tests_threads_alone() {
         static STOPPED: Record = Record::new();
         let slowest = Duration::from_millis(20);
-        STOPPED.teach(slowest, Duration::ZERO);
+        STOPPED.teach(slowest, Work::ZERO);
         // Another test's party, made first: a thread of none, which makes its own, and a member
         // of it that runs until this test's wait has ended, or for 250 W*, and then sleeps,
         // its deadline 500 W* from its start, until this test's wait has ended.
@@ -867,7 +862,7 @@ mod tests {
         static RUN: AtomicU64 = AtomicU64::new(0);
         let slowest = Duration::from_millis(20);
         for record in [&SAID, &STOPPED, &SLOW] {
-            record.teach(slowest, Duration::ZERO);
+            record.teach(slowest, Work::ZERO);
         }
         let still = Counted::StandIn {
             ran: || 0,

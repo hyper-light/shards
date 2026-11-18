@@ -125,8 +125,8 @@ impl std::fmt::Display for Cut {
                 stall.least().map_or_else(
                     || "no answer of its kind had its CPU read".to_string(),
                     |least| format!(
-                        "the least a microVM ran and still answered: {:?} in {:?}",
-                        least.cpu, least.over
+                        "the least a microVM ran and still answered: {} in {:?}",
+                        least.work, least.over
                     )
                 ),
                 stall.account()
@@ -1089,7 +1089,7 @@ mod tests {
     #[cfg(unix)]
     fn learned(slowest: Duration) -> Record {
         let record = Record::new();
-        record.teach(slowest, slowest / 1000);
+        record.teach(slowest, shards_api::Work::of_cpu(slowest / 1000));
         record
     }
 
