@@ -14946,7 +14946,13 @@ memory-mapped file" (DeleteFileW) do not describe this removal.
   Access is denied`, and the Windows test failed; without the learner's clear the Windows test
   failed. On this Mac (Apple M5 Max, macOS 26.4.1 arm64) the Unix tests failed without each
   clear and passed with it (f73ea00d97, whose device code b69dd84ed8 kept), and b69dd84ed8's
-  seven targets' precheck was clean. Owed: the same runs at this form, the drop gone.
+  seven targets' precheck was clean. This form, the drop gone (16de8720b1, landed as
+  e102577b1e): the seven targets' precheck clean, its format and lints; on this Mac the Unix
+  tests failed without each clear and passed with it; and on jupiter, r58, the engine, Windows
+  and overlap tests passed, the engine test in 33 s. Without the window's clear the engine test
+  failed, `remove prov.data: Access is denied`, and the Windows test failed after DESTROY at
+  its check that the window is empty (mod.rs:2831); without the learner's clear the Windows
+  test failed.
 - *Tried and removed: a drop of the guest's caches at each joiner's end.* It was meant for
   joiners that overlap: while another joiner keeps the join share mounted, its session lives,
   and an ended joiner's closed files' inodes stay cached until evicted, each evicted with the
