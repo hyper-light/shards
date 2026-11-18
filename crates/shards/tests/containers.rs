@@ -9252,20 +9252,31 @@ fn a_run_on_the_hosts_network_is_on_the_hosts_network() {
         let (mut child, port) = serving(&home, &image, &["udp-serve", addr]);
         let client = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
         client.send_to(b"datagram", loopback(port)).unwrap();
+        // Its run's end, waited for while its client goes on, comes after its answer has
+        // reached this socket (D124): the run's ports are let go before its end is told, and
+        // only once the network process has taken what its guest sent before them (warm.rs
+        // `host_net` and `release_ports`, net's `serve`). So its answer is read once its end
+        // has come, without waiting: there, or lost. Before, it was waited for while its
+        // daemon went on, which its warm microVMs' idle ticks kept doing for 903 s after an
+        // answer was lost (CI 44245219858, x86_64 musl, iteration 2).
+        let status = exit(&mut child, &home);
+        let mut said = String::new();
+        if let Some(out) = child.stdout.as_mut() {
+            let _ = std::io::Read::read_to_string(out, &mut said);
+        }
+        client.set_nonblocking(true).unwrap();
         let mut buf = [0u8; 64];
-        let n = received(
-            &home,
-            "a UDP server's answer",
-            |t| client.set_read_timeout(t),
-            || client.recv(&mut buf),
-        )
-        .unwrap_or_else(|e| panic!("{i} {addr}: {e}"));
+        let n = client.recv(&mut buf).unwrap_or_else(|e| {
+            panic!(
+                "{i} {addr}: its server's run ended, status {status:?}, and its answer never came ({e}); what it said after its ready line: {said:?}"
+            )
+        });
         assert_eq!(
             String::from_utf8_lossy(&buf[..n]),
             format!("from {peer} datagram"),
             "{i}"
         );
-        assert_eq!(exit(&mut child, &home), Some(0));
+        assert_eq!(status, Some(0), "{i} {addr}: {said:?}");
     }
 
     // A port the host holds is the host's (EADDRINUSE, Linux's 98); one the guest closed

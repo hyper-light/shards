@@ -30587,6 +30587,18 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
             daemon busy with the run reads as a still party. Its party is to follow the machine
             home's daemon and what descends from it too, as `Patience` follows a home's. Not
             that run's cause: its awaited text had come, its "\r\n" not (ConPTY's cursor move).
+          - *An idle microVM's ticks are no progress* (2026-11-18, ROOT's ruling; CI
+            44245219858's x86_64 musl job).
+            - Why. `Patience` counts any CPU of its party's VM processes as progress, and a
+              cold wait (no record of its kind on its host) follows its party's liveness alone.
+              Such a wait is held for as long as an idle warm microVM ticks.
+              `a_run_on_the_hosts_network_is_on_the_hosts_network`'s wait for a UDP answer
+              that was lost was held 903 s, until its daemon's idle exit (SHARDS_DAEMON_IDLE).
+              That test now reads the answer once its run's end has come, which D124 orders
+              after the answer.
+            - The rule. A VM member counts only CPU beyond an idle microVM's (`IDLE_VM_CPU`,
+              PM M357: 63 ms in 10 s), as the daemon's readiness judge does (`progressed`).
+            - Not before the tag. It changes every VM wait, too wide for v0.8.0.
         - *net.rs's numbers, ruled (R03).*
           - Judged now: `next_heard` (was 60 s), `take`'s poll (was 60 s), the wake's read (was
             a 10 s read timeout), a hand's wait for its server's flight (`Hand::answers`, was a
