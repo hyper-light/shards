@@ -43089,6 +43089,25 @@ an oplock that breaks giving way. So neither FILE_SHARE_DELETE nor a POSIX renam
   Red with `park_end` never called (`redgreen/win-a1.patch`), at its first look past the
   DONE. Owed: its runs on jupiter and CI's Windows jobs, and a windows-2022 run with A1
   (44245219858, at 1799412f9b).
+- *A kept `--rm` end is a record leaving* (own-35e, kiln goal #36, 2026-11-18, ROOT's ruling).
+  44245219858 ran A1 on both x86_64 Windows jobs, and both failed build.rs
+  `agentfile_volumes_reach_whom_they_are_for` alike: "--name aw-agvol: the name is in use by
+  microVM …", every x86_64 Windows job before A1 having passed it. A run's client has its
+  status at EXIT, before its VM's teardown; the test's next `run --rm --name aw-agvol` came
+  while the first's end was kept, and a create waits for a name only while a removal queued
+  or a record leaving holds it (`await_released`), which a kept end was neither: its record
+  stayed in sight, its removal untaken until the end was told. A `--rm` run's end kept for its
+  VM process is now its record leaving (`await_leaving`), waited for, judged on that VM's
+  process alone (`Answers::vm_end`), by what waits for a leaving record: a create taking a name
+  (`await_released`), and what reads volumes (`await_removals`: `volume`'s commands and the
+  Engine API's, `system df`, `events`, a microVM's own engine's volumes). A daemon's stop waits
+  for the removals taken out alone (`await_queued_removals`): it holds its state as it waits,
+  which telling a kept end takes (`budget_left`), and an end kept as it stops is not told, as
+  before (owed: a stop's kept ends). A kept end is told before it is let go of (`tell_kept`),
+  as its VM ends or its wait is refused, so that a waiter that finds it told finds its record
+  out of sight and its removal queued. Test: daemon.rs
+  `a_kept_rm_end_holds_its_name_until_its_end_is_told` (Windows); red
+  `redgreen/win-rm-name.patch`, the kept end not counted.
 
 ### D285. Networks shared by runs: a member of one microVM reaches a member of another on a named network, each flow granted at both of its ends (designed 2026-11-16; slices 1 to 5, a network's leases held across processes, the daemon's runs on them, the network process's switch, the API, wire and run host, and the guest's side, built; slice 6, a network made and removed by shards-api and a run's names withdrawn as its link ends and, first of all, as its VM ends, built, its real-VM tests written, their runs lane xnet-v's)
 

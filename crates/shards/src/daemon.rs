@@ -3146,7 +3146,7 @@ impl<D: Disk> Daemon<D> {
         // daemon stopped as one is pending lost the event, and left its files for the
         // next to delete (musl CI 39297260869). Then what it last knew of its microVMs is
         // what the next daemon reads, and the files its runs asked for are made.
-        self.await_removals();
+        self.await_queued_removals();
         shards_vmm::stage!("daemon finishing: its removals done");
         self.await_recorded();
         shards_vmm::stage!("daemon finishing: its records written");
@@ -5316,7 +5316,9 @@ impl<D: Disk> Daemon<D> {
     /// VM process `pid` has ended (the followers' loop, `process_ended`): what its run kept
     /// waiting for that is let go of, its share processes ended first, then its volumes, and
     /// its end told where it was kept ([`park_end`](Self::park_end)); a command waiting for it
-    /// ([`await_parked`](Self::await_parked)) looks again.
+    /// ([`await_parked_of`](Self::await_parked_of)) looks again. Kept until its end is told,
+    /// so that a waiter that finds it gone finds its end's work done: a `--rm` run's record
+    /// leaving, its removal queued ([`end_container`](Self::end_container)).
     #[cfg(windows)]
     fn vm_let_go(&self, pid: u32) {
         let Some((holds, shares)) = lock(&self.parked)
@@ -5330,15 +5332,9 @@ impl<D: Disk> Daemon<D> {
             let _ = share.ended();
         }
         drop(holds);
-        let taken = lock(&self.parked).remove(&pid);
-        if let Some(Parked {
-            id,
-            ended: Some(ended),
-            ..
-        }) = taken
-        {
-            self.tell_end(&id, ended);
-        }
+        self.tell_kept(pid, |parked| {
+            parked.remove(&pid);
+        });
         // Under the lock its waiters look under, so that none misses it.
         drop(lock(&self.runs));
         self.resolved.notify_all();
@@ -5358,7 +5354,39 @@ impl<D: Disk> Daemon<D> {
             .filter(|(_, e)| e.told_after)
             .map(|(pid, _)| *pid)
             .collect();
-        for pid in parked {
+        self.await_parked_of(&parked);
+    }
+
+    /// Waits until the ends kept of `--rm` runs have been told, `holder`'s alone where it is
+    /// named, each judged as [`await_parked`](Self::await_parked) judges one: a `--rm` run's
+    /// end kept for its VM process is its record leaving (D281), taken out of sight and its
+    /// removal queued as that end is told ([`end_container`](Self::end_container)), so that
+    /// what waits for a leaving record ([`await_released`](Self::await_released),
+    /// [`await_removals`](Self::await_removals)) waits for it too, as Docker's `run --rm`
+    /// returns once its container is removed. A saved run's end removes nothing (D176).
+    #[cfg(windows)]
+    fn await_leaving(&self, holder: Option<&str>) {
+        let kept: Vec<(u32, String)> = lock(&self.parked)
+            .iter()
+            .filter(|(_, e)| e.told_after && holder.is_none_or(|h| e.id == h))
+            .filter(|(_, e)| e.ended.as_ref().is_none_or(|ended| ended.saved.is_none()))
+            .map(|(pid, e)| (*pid, e.id.clone()))
+            .collect();
+        let leaving: Vec<u32> = {
+            let registry = lock(&self.containers);
+            kept.into_iter()
+                .filter(|(_, id)| registry.made(id).is_some_and(|c| c.auto_remove))
+                .map(|(pid, _)| pid)
+                .collect()
+        };
+        self.await_parked_of(&leaving);
+    }
+
+    /// Waits until the ends kept for VM processes `parked` have been told, each judged as
+    /// [`await_parked`](Self::await_parked) says.
+    #[cfg(windows)]
+    fn await_parked_of(&self, parked: &[u32]) {
+        for &pid in parked {
             let mut judged = health::Judged::of(pid, &self.answers.vm_end);
             // When its judge asks next: at once the first time, then at the time it names (none
             // where its kind waits on its end alone), never on another run's wakeup, which
@@ -5413,18 +5441,45 @@ impl<D: Disk> Daemon<D> {
     /// processes kept until its VM ends, as its files are in use while it goes on.
     #[cfg(windows)]
     fn refuse_parked(&self, pid: u32, why: &io::Error) {
-        let refused = lock(&self.parked).get_mut(&pid).map(|e| {
-            e.told_after = false;
-            (e.id.clone(), e.ended.take())
-        });
-        let Some((id, ended)) = refused else {
+        let Some(id) = lock(&self.parked).get(&pid).map(|e| e.id.clone()) else {
             return;
         };
         log(format!(
             "container {id}: its VM {pid} went on with nothing toward its end ({why}): its end told, its volumes held while it goes on"
         ));
-        if let Some(ended) = ended {
-            self.tell_end(&id, ended);
+        self.tell_kept(pid, |parked| {
+            if let Some(e) = parked.get_mut(&pid) {
+                e.told_after = false;
+            }
+        });
+    }
+
+    /// Tells the end kept for VM process `pid` ([`held_for_vm`](Self::held_for_vm)), and one
+    /// kept as it is told, then does `told` under the lock that found none left: its waiters
+    /// look under that lock, so one that finds its end told finds its end's work done, a
+    /// `--rm` run's record taken out and its removal queued ([`end_container`](
+    /// Self::end_container)), and no end is lost to a let-go.
+    #[cfg(windows)]
+    fn tell_kept(&self, pid: u32, told: impl Fn(&mut HashMap<u32, Parked>)) {
+        loop {
+            let end = {
+                let mut parked = lock(&self.parked);
+                match parked
+                    .get_mut(&pid)
+                    .map(|e| e.ended.take().map(|ended| (e.id.clone(), ended)))
+                {
+                    Some(Some(end)) => Some(end),
+                    Some(None) => {
+                        told(&mut parked);
+                        None
+                    }
+                    None => None,
+                }
+            };
+            let Some((id, ended)) = end else {
+                return;
+            };
+            self.tell_end_now(&id, ended);
         }
     }
 
@@ -7542,6 +7597,13 @@ impl<D: Disk> Daemon<D> {
         let Some(ended) = self.held_for_vm(id, ended) else {
             return;
         };
+        self.tell_end_now(id, ended);
+    }
+
+    /// [`tell_end`](Self::tell_end), its end held for nothing: what a kept end is told by as
+    /// its VM process ends, or its wait is refused, while it is still kept
+    /// ([`vm_let_go`](Self::vm_let_go), [`refuse_parked`](Self::refuse_parked)).
+    fn tell_end_now(&self, id: &str, ended: Ended) {
         let Ended {
             pid,
             started,
@@ -16193,6 +16255,69 @@ mod tests {
             (&told).read_exact(&mut code).unwrap();
             assert_eq!(code, [0], "its end told with another status");
             assert_eq!(clear(), Ok(()), "its volume held past its VM process's end");
+            joined(starting.run).unwrap();
+        });
+    }
+
+    /// On Windows a `--rm` run's end kept for its VM process (D281) is its record leaving: a
+    /// wait for its name's release, as a run's create waits before it takes a name, waits for
+    /// that end and the removal it queues, as it waits for a removal queued (CI 44245219858,
+    /// both x86_64 Windows jobs, build.rs `agentfile_volumes_reach_whom_they_are_for`: "--name
+    /// aw-agvol: the name is in use", its client having its status before its VM ended). Do: a
+    /// `--rm` run named `reused`, holding a volume as A1's does, on a VM played by a process
+    /// the test keeps, its DONE taken; the daemon's record of VM ends taught an answer, so that
+    /// its judge refuses the kept end once that process does nothing (`refuse_parked`), with
+    /// no kill the test must time; then the wait. Expect the name free as the wait returns.
+    /// Red: lanes/redgreen/win-rm-name.patch, the kept end not counted, the wait returned at
+    /// once with the name held.
+    #[cfg(windows)]
+    #[test]
+    fn a_kept_rm_end_holds_its_name_until_its_end_is_told() {
+        let t = Test::new("rm-name");
+        t.run(|t| {
+            let store = crate::volumes::Store::new(&t.home);
+            let made = {
+                let _store = crate::volumes::lock();
+                store.create("kept", &Default::default(), &Default::default(), "")
+            };
+            assert!(made.is_ok(), "{made:?}");
+            // The least answer there is, so that its judge follows the VM at once: an answer
+            // of no time teaches nothing (`teach_unrated`), and a record with none waits on
+            // the VM's end alone.
+            t.daemon.answers.vm_end.teach_unrated(Duration::from_nanos(1));
+            let id = t.reserve_with("reused", None, true);
+            t.daemon.await_arrival(&id);
+            let starting = t.start(&id);
+            let (ready, vm) = t.warm_vm(None);
+            starting.warm.send(ready).unwrap();
+            assert_eq!(heard(&vm).0, kind::RUN);
+            say(&vm, kind::TAKEN, &[]);
+            say(&vm, kind::STARTED, &[]);
+            t.until("the run started", |d| {
+                lock(&d.containers)
+                    .get(&id)
+                    .is_some_and(|c| c.state == Life::Running)
+            });
+            let process = match lock(&t.daemon.runs).get(&id) {
+                Some(RunState::Tracked(run)) => run.vm.clone(),
+                _ => panic!("{id} is not running"),
+            };
+            t.t.daemon.follow_vm(t.threads, process.clone(), None, None);
+            let mut held = crate::volumes::Holds::default();
+            assert!(matches!(held.found(&store, "kept"), Ok(Some(_))));
+            let inbox = t.daemon.inbox_of(&id).unwrap();
+            lock(&inbox).volumes.extend(held);
+            say(&vm, kind::DONE, &[0]);
+            t.until("its DONE was never taken", |_| lock(&inbox).ended);
+            t.daemon.await_released("reused");
+            let holder = lock(&t.daemon.containers)
+                .name_taken("reused")
+                .map(|c| c.id.clone());
+            assert_eq!(
+                holder, None,
+                "the name's wait returned with its `--rm` run's record holding it, its end kept for its VM process"
+            );
+            process.kill(shards_ipc::signal::SIGKILL).unwrap();
             joined(starting.run).unwrap();
         });
     }
