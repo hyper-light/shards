@@ -16271,7 +16271,7 @@ mod tests {
             pooled: None,
         };
         let (daemon, threads, id) = (&t.t.daemon, t.threads, id.to_string());
-        let run = party::spawn_in(threads, move || {
+        party::spawn_in(threads, move || {
             let null = File::open(crate::os::NULL).unwrap();
             let mut ready = Some(ready);
             let mut asked = None;
@@ -16311,8 +16311,7 @@ mod tests {
             let held = daemon.await_holding(&id, &inbox, asked);
             daemon.follow(threads, id.clone(), inbox);
             held
-        });
-        run
+        })
     }
 
     /// A busy stand-in for a VM that runs, as a warm VM is before a run is handed to it: it
