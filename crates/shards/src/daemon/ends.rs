@@ -331,7 +331,8 @@ impl Followed {
         else {
             return Ok(None);
         };
-        shards_api::Watch::of(followed).map_err(|e| format!("process {pid}'s CPU: {e}"))
+        shards_api::Watch::of(followed, &shards_api::Listing::new())
+            .map_err(|e| format!("process {pid}'s CPU: {e}"))
     }
 
     /// Where its VM process, a microVM's own, has done more work since it began to be
@@ -381,7 +382,7 @@ impl Followed {
         let (Some(watch), Some(from)) = (self.watch.as_mut(), self.from) else {
             return Ok(None);
         };
-        match watch.look() {
+        match watch.look(&shards_api::Listing::new()) {
             Ok(shards_api::Found::Gone) => Ok(None),
             Ok(_) => Ok(Some(watch.cpu().saturating_sub(from))),
             Err(e) => Err(format!("its VM process's CPU at its end: {e}")),
@@ -460,7 +461,7 @@ impl Followed {
             Some(_) if unresolved => None,
             Some(watch) => {
                 self.looked = Instant::now();
-                match watch.look() {
+                match watch.look(&shards_api::Listing::new()) {
                     Ok(shards_api::Found::Gone) => return GoesOn::Still,
                     Ok(found) => Some(found),
                     Err(e) => return GoesOn::Unread(format!("process {}'s CPU: {e}", usage.pid())),
@@ -840,7 +841,9 @@ mod tests {
         let pid = asleep.0.id();
         let mut sleeping = loop {
             let followed = shards_api::Followed::of_pid(pid).unwrap().unwrap();
-            let mut witness = shards_api::Watch::of(followed).unwrap().unwrap();
+            let mut witness = shards_api::Watch::of(followed, &shards_api::Listing::new())
+                .unwrap()
+                .unwrap();
             let from = witness.cpu();
             let mut sleeping = Followed::of(Some(pid));
             std::thread::sleep(witness.resolution());
@@ -848,7 +851,7 @@ mod tests {
                 std::thread::yield_now();
             }
             let went = went_on(sleeping.goes_on());
-            witness.look().unwrap();
+            witness.look(&shards_api::Listing::new()).unwrap();
             if witness.cpu() == from {
                 assert!(!went, "asleep, it goes on with nothing");
                 break sleeping;
@@ -864,7 +867,7 @@ mod tests {
         assert_eq!(waited, 0);
         let resolution = shards_api::Followed::of_pid(pid)
             .unwrap()
-            .and_then(|followed| shards_api::Watch::of(followed).unwrap())
+            .and_then(|followed| shards_api::Watch::of(followed, &shards_api::Listing::new()).unwrap())
             .unwrap()
             .resolution();
         std::thread::sleep(resolution);

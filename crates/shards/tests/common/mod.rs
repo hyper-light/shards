@@ -2976,13 +2976,13 @@ fn slots_settled(_: &Path) -> bool {
 }
 
 /// Whether none of `home`'s daemon's threads is runnable, running or waiting for a CPU, as
-/// the judge reads them (`shards_api::runnable_threads`): the work its last client left it
+/// the judge reads them (`shards_api::Listing::runnable_threads`): the work its last client left it
 /// done, its CPU counted to its threads as each slept (XNU adds a thread's run to its task's
 /// as it leaves its CPU). True with no daemon, and where threads are not read (Windows).
 fn daemon_at_rest(home: &Path) -> bool {
     shards_ipc::Named::read(&home.join(shards_ipc::PID))
         .filter(shards_ipc::Named::lives)
-        .and_then(|daemon| shards_api::runnable_threads(daemon.pid))
+        .and_then(|daemon| shards_api::Listing::new().runnable_threads(daemon.pid))
         .is_none_or(|(runnable, _)| runnable == 0)
 }
 
@@ -4492,6 +4492,12 @@ pub struct Party {
     /// The destination of the delivery of a run's log its wait reads, as the run's options
     /// name it ([`Wait::delivery_to`]); none for a wait on anything else.
     delivery: Option<String>,
+    /// What its last look read of every thread at once (`shards_api::Listing`: Windows' whole
+    /// listing, 13.1 to 13.8 ms a read on jupiter, PM M606), read once for all that look's
+    /// readings, its members' holds and threads, its threads beside its waiter, and its
+    /// account of them ([`states`](Self::states)), which says them as that look saw them
+    /// (D215; CI 44347282760: a look at four members read it 16 to 20 times).
+    listing: shards_api::Listing,
 }
 
 /// Process `pid`'s status as its OS gives it: Linux its `/proc/<pid>/stat` state (field 3,
@@ -4747,6 +4753,7 @@ impl Party {
             served: None,
             kin: std::collections::BTreeMap::new(),
             delivery: None,
+            listing: shards_api::Listing::new(),
         }
     }
 
@@ -4846,6 +4853,8 @@ impl Party {
     /// every look says its end under way).
     pub fn look(&mut self) -> Looked {
         use shards_api::Found;
+        // One read of every thread for all this look reads of them, its account's after it.
+        self.listing = shards_api::Listing::new();
         let (members, helpers) = self.members();
         let daemon = self.daemon();
         let mut looked = Looked {
@@ -4865,7 +4874,7 @@ impl Party {
             looked.what = "its daemon said something".into();
         }
         if let Some(beside) = self.beside.as_mut() {
-            let ran = beside.look();
+            let ran = beside.look(&self.listing);
             looked.resolution = looked.resolution.max(beside.uncertainty);
             match ran {
                 Ran::Based => based = true,
@@ -4929,8 +4938,11 @@ impl Party {
                     .unwrap_or_else(|e| panic!("{}'s declarations unread: {e}", home.display())),
                 None => followed,
             };
-            let watch =
-                followed(pid).and_then(|followed| shards_api::Watch::of(declaring(followed)).ok().flatten());
+            let watch = followed(pid).and_then(|followed| {
+                shards_api::Watch::of(declaring(followed), &self.listing)
+                    .ok()
+                    .flatten()
+            });
             // Its daemon named again once read: the ID its file names is still the process
             // that started then, so the one read is it.
             let Some(watch) =
@@ -4952,7 +4964,7 @@ impl Party {
             looked.resolution = looked.resolution.max(watch.resolution());
             let before = watch.cpu();
             let was_ended = watch.ended();
-            let found = watch.look();
+            let found = watch.look(&self.listing);
             if matches!(found, Ok(Found::Gone)) {
                 gone.push(pid);
                 looked.vouched = false;
@@ -4971,7 +4983,7 @@ impl Party {
             // Its threads unread: no window of the rate's, and, under its liveness, no
             // evidence either way of its host's hold, so the look takes nothing (based); its
             // account says why (`Looked::unread`).
-            let starved = match watch.starved() {
+            let starved = match watch.starved(&self.listing) {
                 Ok(starved) => starved,
                 Err(why) => {
                     looked.vouched = false;
@@ -5097,11 +5109,13 @@ impl Party {
     /// What each process it follows is doing now, as its OS gives it, for a wait's account of
     /// itself, so that a refusal names its own premise (ROOT, 2026-11-14: api_image.rs:1379's
     /// refusal named no member's state, whether one was ending among them): its status
-    /// ([`process_status`]), how many of its threads are runnable (`shards_api::
-    /// runnable_threads`), where its threads wait ([`waits_in`]), and its end under way or its
-    /// stop, as its look found them. A machine of this process's follows no process: its
-    /// threads are this process's, said so, its waiter's among them (D261: CI 44268931283's
-    /// refusal of a 16-vCPU boot said "none followed", whether its vCPUs ran or waited unread).
+    /// ([`process_status`]), how many of its threads are runnable and, on Windows, what each
+    /// is doing, from its last look's read of every thread (`shards_api::Listing`, read once a
+    /// look: its account is made at each look, [`Wait::account`]), where its threads wait
+    /// ([`waits_in`]), and its end under way or its stop, as its look found them. A machine
+    /// of this process's follows no process: its threads are this process's, said so, its
+    /// waiter's among them (D261: CI 44268931283's refusal of a 16-vCPU boot said "none
+    /// followed", whether its vCPUs ran or waited unread).
     fn states(&self) -> String {
         if matches!(self.members, Members::Machine) {
             let pid = std::process::id();
@@ -5109,14 +5123,14 @@ impl Party {
                 "this process {pid}, {}",
                 process_status(pid).unwrap_or_else(|| "unread".into())
             );
-            if let Some((runnable, threads)) = shards_api::runnable_threads(pid) {
+            if let Some((runnable, threads)) = self.listing.runnable_threads(pid) {
                 said.push_str(&format!(", {runnable} of {threads} threads runnable"));
             }
             if let Some(waits) = waits_in(pid) {
                 said.push_str(&format!(", its threads waiting in {waits}"));
             }
             #[cfg(windows)]
-            if let Some(threads) = shards_api::threads_said(pid) {
+            if let Some(threads) = self.listing.threads_said(pid) {
                 said.push_str(&format!(", its threads {threads}"));
             }
             return said;
@@ -5136,7 +5150,7 @@ impl Party {
                     "{pid}{kin} {}",
                     process_status(pid).unwrap_or_else(|| "unread".into())
                 );
-                if let Some((runnable, threads)) = shards_api::runnable_threads(pid) {
+                if let Some((runnable, threads)) = self.listing.runnable_threads(pid) {
                     said.push_str(&format!(", {runnable} of {threads} threads runnable"));
                 }
                 if let Some(waits) = waits_in(pid) {
@@ -5151,7 +5165,7 @@ impl Party {
                 // refusal of a party none of whose threads was runnable waited on (ROOT,
                 // 2026-11-18, CI 44189693085's moved.rs and storm refusals).
                 #[cfg(windows)]
-                if let Some(threads) = shards_api::threads_said(pid) {
+                if let Some(threads) = self.listing.threads_said(pid) {
                     said.push_str(&format!(", its threads {threads}"));
                 }
                 if watch.ended() {
@@ -5216,14 +5230,17 @@ impl Party {
 }
 
 /// Process `pid` as a wait's account says it once it no longer lives: its status
-/// ([`process_status`]) and its threads (`shards_api::runnable_threads`), each where it could
-/// be read.
+/// ([`process_status`]) and its threads (`shards_api::Listing`, read once for both), each
+/// where it could be read.
 fn ending(pid: u32) -> String {
-    let threads = shards_api::runnable_threads(pid).map_or_else(String::new, |(runnable, threads)| {
-        format!(", {runnable} of {threads} threads runnable")
-    });
+    let listing = shards_api::Listing::new();
+    let threads = listing
+        .runnable_threads(pid)
+        .map_or_else(String::new, |(runnable, threads)| {
+            format!(", {runnable} of {threads} threads runnable")
+        });
     #[cfg(windows)]
-    let threads = match shards_api::threads_said(pid) {
+    let threads = match listing.threads_said(pid) {
         Some(said) => format!("{threads}, its threads {said}"),
         None => threads,
     };
@@ -5273,9 +5290,10 @@ fn ending(pid: u32) -> String {
 /// - Windows: QueryProcessCycleTime and QueryThreadCycleTime, cycle counts, exact (their
 ///   time undocumented: what they ran is said as no CPU time, R* a refusal's diagnosis); and
 ///   each other thread's switches to a CPU and whether it waits for one (ready or standby),
-///   from the system's listing of every thread (`shards_api::threads_switched`, PM M606), by
-///   which a thread kept from every CPU is read as on Linux and macOS (ROOT's ruling of
-///   2026-11-18: read on every OS).
+///   from the system's listing of every thread as its party's look read it
+///   (`shards_api::Listing::threads_switched`, once a look, PM M606), by which a thread kept
+///   from every CPU is read as on Linux and macOS (ROOT's ruling of 2026-11-18: read on every
+///   OS).
 /// - A reading that fails is said in its wait's account, and its look takes nothing from it
 ///   ([`Ran::Unread`]): no hold, no progress, its evidence beginning anew.
 ///
@@ -5309,8 +5327,8 @@ struct Reading {
 /// `TH_STATE_RUNNING` (the same). Windows: its switches to a CPU, doubled, and one more while
 /// it runs, as its times move in its clock's ticks and would show a thread that ran less than
 /// one as unrun, and its state ready or standby, waiting for one
-/// (`shards_api::threads_switched`, the system's listing that a VM process's are read by on
-/// Windows, PM M606).
+/// (`shards_api::Listing::threads_switched`, the system's listing that a VM process's are read
+/// by on Windows, PM M606).
 struct Others {
     threads: shards_api::Threads,
 }
@@ -5340,9 +5358,11 @@ enum Ran {
 }
 
 impl Beside {
-    fn look(&mut self) -> Ran {
+    /// What this process's threads beside its waiter ran since the look before, read from
+    /// `listing`, its party's look's read of every thread.
+    fn look(&mut self, listing: &shards_api::Listing) -> Ran {
         let thread = std::thread::current().id();
-        let now = match self.read() {
+        let now = match self.read(listing) {
             Ok(now) => now,
             Err(why) => {
                 self.last = None;
@@ -5389,18 +5409,20 @@ impl Beside {
     }
 
     #[cfg(unix)]
-    fn read(&mut self) -> Result<Reading, String> {
+    fn read(&mut self, listing: &shards_api::Listing) -> Result<Reading, String> {
         let before = thread_cpu(libc::clock_gettime)?;
         let process = match self.watch.as_mut() {
             Some(watch) => {
-                watch.look().map_err(|e| format!("this process's CPU: {e}"))?;
+                watch
+                    .look(listing)
+                    .map_err(|e| format!("this process's CPU: {e}"))?;
                 watch.cpu()
             }
             None => {
                 let followed = shards_api::Followed::of_pid(std::process::id())
                     .map_err(|e| format!("this process: {e}"))?
                     .ok_or("this process: no process has its own ID")?;
-                let watch = shards_api::Watch::of(followed)
+                let watch = shards_api::Watch::of(followed, listing)
                     .map_err(|e| format!("this process's CPU: {e}"))?
                     .ok_or("this process's CPU: no process has its own ID")?;
                 let cpu = watch.cpu();
@@ -5420,7 +5442,7 @@ impl Beside {
     }
 
     #[cfg(windows)]
-    fn read(&mut self) -> Result<Reading, String> {
+    fn read(&mut self, listing: &shards_api::Listing) -> Result<Reading, String> {
         use windows_sys::Win32::System::Threading::{
             GetCurrentProcess, GetCurrentThread, GetCurrentThreadId,
         };
@@ -5441,7 +5463,7 @@ impl Beside {
         }
         // SAFETY: GetCurrentThreadId takes nothing and always succeeds.
         let me = unsafe { GetCurrentThreadId() };
-        let threads = shards_api::threads_switched(&[std::process::id()], Some(me))?;
+        let threads = listing.threads_switched(&[std::process::id()], Some(me))?;
         Ok(Reading {
             before,
             process,

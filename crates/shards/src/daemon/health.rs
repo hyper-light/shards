@@ -1421,7 +1421,7 @@ mod tests {
         assert_eq!(stall.slowest(), slowest);
         let resolution = shards_api::Followed::of_pid(idle.0.id())
             .unwrap()
-            .and_then(|followed| shards_api::Watch::of(followed).unwrap())
+            .and_then(|followed| shards_api::Watch::of(followed, &shards_api::Listing::new()).unwrap())
             .unwrap()
             .resolution();
         assert!(

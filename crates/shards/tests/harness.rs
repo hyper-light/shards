@@ -1200,13 +1200,13 @@ fn a_streaming_guest_whose_thread_its_host_keeps_from_any_cpu_is_held() {
 /// ([`cold_lines`]). Each line comes its pause in milliseconds after the read that found the
 /// line before (the first, after its waiter's first read), so that each is found by a read of
 /// its own and each pause is a silence its waiter saw, however long its waiter's looks take.
-/// A clock of its own did not do that on Windows: a machine's look reads the system's whole
+/// A clock of its own did not do that on Windows: a machine's look read the system's whole
 /// thread listing three times there (`Party::machine`'s threads beside its waiter, and its
-/// account's runnable threads and thread states; 13.1 to 13.8 ms a read on jupiter, PM M606),
-/// and a wait's first look comes before its first read, so a guest whose lines came 20, 40 and
-/// 60 ms in was first read 74.8 ms in, every line by that read, and its pass taught nothing
-/// (ROOT's run on jupiter at 07d4396a0c). Ends at its script's end, or once its waiter reads
-/// no more.
+/// account's runnable threads and thread states; 13.1 to 13.8 ms a read on jupiter, PM M606;
+/// once a look since, `shards_api::Listing`), and a wait's first look comes before its first
+/// read, so a guest whose lines came 20, 40 and 60 ms in was first read 74.8 ms in, every line
+/// by that read, and its pass taught nothing (ROOT's run on jupiter at 07d4396a0c). Ends at
+/// its script's end, or once its waiter reads no more.
 fn console_says(
     said: &std::sync::Mutex<Vec<u8>>,
     reads: std::sync::mpsc::Receiver<()>,
@@ -1857,8 +1857,12 @@ fn a_judged_calls_own_work_is_its_progress() {
     // its own thread says it rests: its host's hold, which holds a wait on it unrefused. CI's
     // arm64 Windows runner left the sleeper unrefused in runs 44007524337, 44076016255 and
     // 44077430171, no account kept: its wait's account below names its members' runnable
-    // threads should it be again (`shards_api::runnable_threads`, read on Windows too).
-    let at_rest = || shards_api::runnable_threads(party).is_none_or(|(runnable, _)| runnable == 0);
+    // threads should it be again (`shards_api::Listing::runnable_threads`, read on Windows too).
+    let at_rest = || {
+        shards_api::Listing::new()
+            .runnable_threads(party)
+            .is_none_or(|(runnable, _)| runnable == 0)
+    };
     common::judged(
         common::Party::client(party, None),
         "its stand-in at rest",

@@ -19514,7 +19514,7 @@ mod tests {
         static CHILDREN: Record = Record::new();
         let mut judge = Judge::begin(&CHILDREN);
         let followed = shards_api::Followed::of_pid(u32::try_from(pid).unwrap()).unwrap();
-        let mut watch = followed.and_then(|f| shards_api::Watch::of(f).unwrap());
+        let mut watch = followed.and_then(|f| shards_api::Watch::of(f, &shards_api::Listing::new()).unwrap());
         let from = watch.as_ref().map(shards_api::Watch::cpu);
         let mut status = 0;
         loop {
@@ -19523,7 +19523,9 @@ mod tests {
                 0 => {
                     let now = Instant::now();
                     let found = match &mut watch {
-                        Some(watch) if judge.due().is_some_and(|due| due <= now) => watch.look().unwrap(),
+                        Some(watch) if judge.due().is_some_and(|due| due <= now) => {
+                            watch.look(&shards_api::Listing::new()).unwrap()
+                        }
                         _ => Found::Progressed,
                     };
                     if let Err(stall) = judge.found(found) {

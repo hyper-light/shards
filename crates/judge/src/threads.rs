@@ -2,8 +2,11 @@
 //! a thread in it shows: wanting a CPU, waiting on its host's paging, or suspended. Windows
 //! keeps a thread's state in that listing alone, every process's, 13.1 to 13.8 ms a read on
 //! jupiter (PM M606). shards-api's judge reads a VM process's threads through it (its
-//! `Followed`'s hold, `runnable_threads`), and the tests' party (shards-testwait) its own
-//! members, so that one listing rule holds both (ROOT, 2026-11-17).
+//! `Listing`, read once for every reading of one look: its `Followed`'s hold, threads and
+//! trace, and its party's account), and the tests' party (shards-testwait) its own members,
+//! so that one listing rule holds both (ROOT, 2026-11-17).
+
+use std::cell::Cell;
 
 use windows_sys::Wdk::System::SystemInformation::{NtQuerySystemInformation, SystemProcessInformation};
 use windows_sys::Wdk::System::SystemServices::{
@@ -66,17 +69,16 @@ pub fn threads_held(pid: u32, tids: &[u32]) -> Option<ThreadsHeld> {
     Some(held)
 }
 
-/// Each thread of process `pid` as one read of the system's whole listing shows it (D215): its
-/// ID, its state and, where it waits, its wait reason, as the listing's records keep them
-/// (`SYSTEM_THREAD_INFORMATION`'s ThreadState and WaitReason, named as WMI's `Win32_Thread` and
-/// the WDK's KWAIT_REASON name them). For a refusal's account of its party, so that it says
-/// what each of its threads was doing as it was refused (ROOT, 2026-11-18: CI 44189693085's
-/// moved.rs and snapshot.rs storm refusals said "0 of 3 threads runnable" and no more). None
-/// where the listing could not be read or lists no thread of `pid`.
-pub fn threads_said(pid: u32) -> Option<String> {
-    let records = records().ok()?;
+/// Each thread of process `pid` as one read of the system's whole listing, `words`
+/// ([`records`]), shows it (D215): its ID, its state and, where it waits, its wait reason, as
+/// the listing's records keep them (`SYSTEM_THREAD_INFORMATION`'s ThreadState and WaitReason,
+/// named as WMI's `Win32_Thread` and the WDK's KWAIT_REASON name them). For a refusal's account
+/// of its party, so that it says what each of its threads was doing as it was refused (ROOT,
+/// 2026-11-18: CI 44189693085's moved.rs and snapshot.rs storm refusals said "0 of 3 threads
+/// runnable" and no more). None where the listing lists no thread of `pid`.
+pub fn threads_said(words: &[u64], pid: u32) -> Option<String> {
     let mut said = Vec::new();
-    each_thread(&records, |of, t| {
+    each_thread(words, |of, t| {
         if of != pid {
             return;
         }
@@ -189,11 +191,26 @@ pub fn is_suspension(reason: u32) -> bool {
     i32::try_from(reason).is_ok_and(|reason| [Suspended, WrSuspended].contains(&reason))
 }
 
+thread_local! {
+    /// How many times this thread has read the system's listing ([`records`]).
+    static READS: Cell<u64> = const { Cell::new(0) };
+}
+
+/// How many times the calling thread has read the system's listing ([`records`]), each
+/// 13.1 to 13.8 ms of CPU on jupiter (PM M606): what a test counts a look's reads by (D215:
+/// one a look, whatever its party's size). Counted per thread, as a look runs on its waiter's
+/// alone, so that the tests beside it, reading on threads of their own, count none of theirs.
+pub fn reads() -> u64 {
+    READS.with(Cell::get)
+}
+
 /// The system's process records (NtQuerySystemInformation, SystemProcessInformation), in
 /// words of 8 bytes, as they hold pointers; or why they could not be read: the call's
 /// NTSTATUS, or room for them that could not be had. Asked again with room for what the call
-/// said they need, and at least twice the last, until they fit.
+/// said they need, and at least twice the last, until they fit. Each call is one read
+/// ([`reads`]).
 pub fn records() -> Result<Vec<u64>, String> {
+    READS.with(|reads| reads.set(reads.get().saturating_add(1)));
     let mut words: Vec<u64> = Vec::new();
     loop {
         let bytes = words
@@ -241,24 +258,24 @@ pub fn records() -> Result<Vec<u64>, String> {
 }
 
 /// Each thread of processes `pids` but thread `except` (a waiter's own, where one asks), as one
-/// read of the system's whole listing shows it, for D215's rule of a thread its host keeps from any CPU
-/// (shards-api's `starved`: one wanting a CPU now whose count has not moved since the read
-/// before): by its ID, a count that moves whenever it runs, and whether it wants a CPU it does
-/// not have (ready or standby: [`wants_cpu`], not running). The count is its switches to a
-/// CPU (its record's ContextSwitches, windows-sys's `Reserved3` of SYSTEM_THREAD_INFORMATION,
-/// phnt ntexapi.h), doubled, and one more while it runs: it moves as the thread is switched in,
-/// and as it stops running, so that one preempted since the read before, its switches the
-/// same, still shows its run. Its times would not do: they move in its clock's ticks (15.625
-/// ms), and show a thread that ran less than one as unrun. One rule with Linux's and macOS's
-/// readings of a process's threads (shards-api's `Watch::starved` of a VM process's, the tests'
-/// machine parties, D209 Part 5). Why not, where the listing could not be read.
+/// read of the system's whole listing, `words` ([`records`]), shows it, for D215's rule of a
+/// thread its host keeps from any CPU (shards-api's `starved`: one wanting a CPU now whose
+/// count has not moved since the read before): by its ID, a count that moves whenever it runs,
+/// and whether it wants a CPU it does not have (ready or standby: [`wants_cpu`], not running).
+/// The count is its switches to a CPU (its record's ContextSwitches, windows-sys's `Reserved3`
+/// of SYSTEM_THREAD_INFORMATION, phnt ntexapi.h), doubled, and one more while it runs: it
+/// moves as the thread is switched in, and as it stops running, so that one preempted since
+/// the read before, its switches the same, still shows its run. Its times would not do: they
+/// move in its clock's ticks (15.625 ms), and show a thread that ran less than one as unrun.
+/// One rule with Linux's and macOS's readings of a process's threads (shards-api's
+/// `Watch::starved` of a VM process's, the tests' machine parties, D209 Part 5).
 pub fn threads_switched(
+    words: &[u64],
     pids: &[u32],
     except: Option<u32>,
-) -> Result<std::collections::BTreeMap<u64, (u64, bool)>, String> {
-    let records = records()?;
+) -> std::collections::BTreeMap<u64, (u64, bool)> {
     let mut threads = std::collections::BTreeMap::new();
-    each_thread(&records, |of, t| {
+    each_thread(words, |of, t| {
         let tid = t.ClientId.UniqueThread as usize;
         if !pids.contains(&of) || except.is_some_and(|except| tid == except as usize) {
             return;
@@ -269,7 +286,7 @@ pub fn threads_switched(
             .saturating_add(u64::from(running));
         threads.insert(tid as u64, (count, wants_cpu(t.ThreadState) && !running));
     });
-    Ok(threads)
+    threads
 }
 
 /// Each thread the records in `words` hold: its process's id and its thread's record

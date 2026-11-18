@@ -32009,6 +32009,42 @@ progress.rs `a_flush_in_flight_through_a_look_holds_its_party` (only field 10 gr
 completes: `Held`; red with field 10 dropped, `Still`) and
 `a_hosts_disk_work_is_summed_from_every_diskstats_line`. Unbuilt and unrun in this lane.
 
+**Amended (own-35k, kiln goal fb3528f9, 2026-11-18, ROOT's brief (A)): a look reads Windows'
+listing of every thread once, whatever it reads of it.** Windows keeps a thread's state in the
+system's listing of every process's threads alone (NtQuerySystemInformation's
+SystemProcessInformation), 13.1 to 13.8 ms of CPU a read on jupiter (PM M606), and each of a
+look's readings read it anew: a member's hold (`Followed::hold`), its threads
+(`Watch::starved`, shards-judge's `threads_switched`), its trace where it ran nothing
+(SHARDS_JUDGE_TRACE, which CI's x86_64 Windows job sets) and, in the tests' wait, its account,
+made at every look for the dump of live waits (`Party::states`: `runnable_threads` and
+`threads_said` of each member). From the code, a tests' party of four read it 16 to 20 times a
+look, each read 13.1 to 13.8 ms on jupiter: the judge's own load on CI's 4-CPU runners, the
+hosts it judged (CI 44347282760, x86_64 Windows job 134953502265, 478,767 trace lines; own-35i
+counted 8 to 12 for the members' readings, own-38j proposed one read). Its CPU there is
+unmeasured: owed (R14).
+- *Decided.* `shards_api::Listing`, one a look: read as the first of its readings needs it
+  (`std::sync::OnceLock`), and every reading of that look reads that read: `Watch::of`,
+  `Watch::look` (the hold, and the trace, whose variable is read once as a watch begins),
+  `Watch::starved`, and `Listing::runnable_threads`, `threads_said` and `threads_switched` for
+  accounts and a machine's threads beside its waiter. shards-api's `Follow::look` makes one for
+  its look, its threads and a refusal's account; the tests' party one a look, kept for its
+  account, which says its members as that look read them; the daemon's single-process looks
+  one each (`ends`, `parents` one a pass over its leaf's processes). shards-judge's
+  `threads_said` and `threads_switched` read a given listing; `threads::records` counts the
+  reads each thread makes (`threads::reads`), what the test counts by. Linux and macOS keep each
+  process's threads in its own entries (`/proc/<pid>/task`, proc_pidinfo(2)), read for that
+  process alone: a `Listing` holds nothing there, and their readings are as they were.
+- *Its cache (R05).* A memo of one OS reading, kept for one look: no key (the whole listing);
+  dropped with its look (the tests' party keeps its last until its next look); bounded by the
+  OS's records of one instant (their size as the call says it); its readings agree, as all see
+  one instant's records, where before each saw its own, up to some 13 ms apart.
+- *Held by* progress.rs `a_look_at_several_processes_reads_the_systems_listing_once`
+  (Windows): four idle children, each traced, looked at a round at a time until a round finds
+  none ran; one read as their watches begin, one a round. Red with the hold reading its own
+  listing (lanes/redgreen/own-35k-one-read.patch). Written, not built or run in this lane;
+  owed (ROOT): it on x86_64 and arm64 Windows, the workspace on the seven targets, and the
+  judge's CPU per look on jupiter before and after.
+
 ### D231. An image booted for an orchestrator: a run of its own, hosted by one `shards` process (decided; building)
 
 **Why.** An orchestrator that runs each harness in a microVM of its own (Hex, for every

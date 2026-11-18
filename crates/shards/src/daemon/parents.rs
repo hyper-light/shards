@@ -314,6 +314,8 @@ fn emptied(events: &Path, procs: &Path, record: &shards_api::Record) -> std::io:
             .filter_map(|l| l.trim().parse().ok())
             .collect();
         watched.retain(|(pid, ..)| pids.contains(pid));
+        // One read of what the OS lists of every thread for all of this pass's readings (D215).
+        let listing = shards_api::Listing::new();
         for pid in pids {
             if watched.iter().any(|(p, ..)| *p == pid) {
                 continue;
@@ -321,7 +323,7 @@ fn emptied(events: &Path, procs: &Path, record: &shards_api::Record) -> std::io:
             let watch = shards_api::Followed::of_pid(pid)
                 .ok()
                 .flatten()
-                .and_then(|followed| shards_api::Watch::of(followed).ok().flatten());
+                .and_then(|followed| shards_api::Watch::of(followed, &listing).ok().flatten());
             if let Some(watch) = watch {
                 let from = watch.cpu();
                 watched.push((pid, watch, from));
@@ -337,7 +339,7 @@ fn emptied(events: &Path, procs: &Path, record: &shards_api::Record) -> std::io:
                 .max()
                 .unwrap_or_default();
             for (_, watch, from) in &mut watched {
-                let look = watch.look().unwrap_or(shards_api::Found::Held);
+                let look = watch.look(&listing).unwrap_or(shards_api::Found::Held);
                 ran = ran.max(watch.cpu().saturating_sub(*from));
                 found = match (found, look) {
                     (shards_api::Found::Progressed, _) | (_, shards_api::Found::Progressed) => {

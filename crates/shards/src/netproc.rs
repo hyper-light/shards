@@ -1036,7 +1036,9 @@ mod reap_tests {
     pub(super) fn until_stopped(pid: u32) {
         let watched = || {
             let followed = shards_api::Followed::of_pid(pid).unwrap().unwrap();
-            shards_api::Watch::of(followed).unwrap().unwrap()
+            shards_api::Watch::of(followed, &shards_api::Listing::new())
+                .unwrap()
+                .unwrap()
         };
         while !watched().stopped() {
             std::thread::yield_now();
