@@ -281,18 +281,22 @@ fn a_killed_spawners_profile_under_a_removed_home_is_swept_from_another() {
     );
     vm.wait_for("SHARDS-TEST READY");
     let cli = vm.id();
+    let name = format!("shards.vm.{cli}.0");
+    // The profiles are in the user's own LocalAppData: this test's own LOCALAPPDATA.
+    let folder = std::path::PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap())
+        .join("Packages")
+        .join(&name);
+    // Its profile, made: seen while its spawner lives and holds its record. Once the spawner
+    // is killed, any spawner's `AppContainer::new` sweeps it first (shards_ipc `sweep`): the
+    // next run's below, or that of a test run beside this one, as on CI 44189693085's
+    // windows-2022 job, where it was gone before it was looked for after the kill.
+    assert!(folder.is_dir(), "{} not made by its spawner", folder.display());
     let process = open(vm_process(cli));
     vm.kill();
     // SAFETY: the process's handle; its Job ends it with its spawner.
     let waited = unsafe { WaitForSingleObject(process.0, INFINITE) };
     assert_eq!(waited, WAIT_OBJECT_0, "the VM process outlived its spawner");
-    let name = format!("shards.vm.{cli}.0");
     let _leftover = Leftover(wide(&name));
-    // The profiles are in the user's own LocalAppData: this test's own LOCALAPPDATA.
-    let folder = std::path::PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap())
-        .join("Packages")
-        .join(&name);
-    assert!(folder.is_dir(), "{} left by its killed spawner", folder.display());
     drop(first);
 
     let second = TempDir::new("home-next");
