@@ -165,6 +165,7 @@ fn spec(home: &TempDir, image: &str) -> ImageSpec {
         upstream_roots: Vec::new(),
         plug_roots: Vec::new(),
         egress_ceiling: Vec::new(),
+        served: Vec::new(),
         gpu_report: None,
     }
 }
@@ -3884,6 +3885,7 @@ fn pooled_spec(home: &std::path::Path, image: &str, binary: &std::path::Path) ->
         upstream_roots: Vec::new(),
         plug_roots: Vec::new(),
         egress_ceiling: Vec::new(),
+        served: Vec::new(),
         gpu_report: None,
     }
 }

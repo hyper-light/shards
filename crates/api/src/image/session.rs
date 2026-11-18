@@ -1031,6 +1031,18 @@ pub(crate) struct Host {
     pub(crate) said: Output,
 }
 
+/// `served`'s streams sent on a run host's links socket `links` (D286): `SERVED_SHARES` messages
+/// of `shards_ipc::MAX_FDS` descriptors at most and no payload, in order, as its host takes them
+/// before its request.
+#[cfg(unix)]
+fn send_served(links: &std::os::unix::net::UnixStream, served: &[super::ServedShare]) -> io::Result<()> {
+    let fds: Vec<_> = served.iter().map(|s| s.stream.as_fd()).collect();
+    for batch in fds.chunks(shards_ipc::MAX_FDS) {
+        shards_ipc::send(links, shards_ipc::kind::SERVED_SHARES, &[], batch)?;
+    }
+    Ok(())
+}
+
 /// The read end of a run host's answers' or diagnostics' pipe, as its reader waits on it
 /// beside its watcher's word (`UntilGone`): on Unix, a pipe polled beside another; on
 /// Windows, a named pipe's overlapped end, whose read an event cancels (std's anonymous
@@ -1260,12 +1272,16 @@ impl Begun {
     /// Sends the host the run `request` (`CREATE`), its leases' `lessor` (D242) and the
     /// references its grants name set first, and its members whose stdin it asks for named,
     /// for their flows to be made with its start (`take`): none of them can be asked of or
-    /// answered sooner than the request.
+    /// answered sooner than the request. Its shares another server serves (D286) go first,
+    /// `served`'s streams in the request's order ([`Begun::hand_served`]).
     pub(super) fn create(
         &self,
         lessor: Option<RunLessor>,
         request: &wire::Request,
+        served: &[super::ServedShare],
     ) -> Result<(), ImageRefusal> {
+        let handed = self.hand_served(request, served)?;
+        let request = handed.as_ref().unwrap_or(request);
         *lock(&self.shared.lessor) = lessor;
         *lock(&self.shared.granted) = request.credentials.iter().map(|g| g.reference.clone()).collect();
         *lock(&self.shared.sign_ins) = request.sign_ins.clone();
@@ -1280,6 +1296,59 @@ impl Begun {
             }
         }
         self.send(wire::to_host::CREATE, request)
+    }
+
+    /// `served`, the streams of the run's shares another server serves (D286), handed to its
+    /// host before its request, one for each of `request`'s, in its order: on Unix on the host's
+    /// links socket (`SERVED_SHARES`, `shards_ipc::MAX_FDS` a message), whose copies its host
+    /// holds once sent, this process keeping its own until the run has started (M24: XNU flushes
+    /// a socket in flight that no process holds); on Windows each pipe duplicated into the host's
+    /// process, whose value the request then names (the request so made). A count that is not
+    /// the request's is refused by field.
+    fn hand_served(
+        &self,
+        request: &wire::Request,
+        served: &[super::ServedShare],
+    ) -> Result<Option<wire::Request>, ImageRefusal> {
+        if served.len() != request.served.len() {
+            return Err(ImageRefusal::Spec {
+                what: "the served shares",
+                why: format!(
+                    "{} streams for {} served shares",
+                    served.len(),
+                    request.served.len()
+                ),
+            });
+        }
+        if served.is_empty() {
+            return Ok(None);
+        }
+        let os = |e: io::Error| ImageRefusal::Os {
+            what: "a served share's stream",
+            kind: e.kind(),
+        };
+        #[cfg(unix)]
+        {
+            let links = self
+                .shared
+                .links
+                .as_ref()
+                .ok_or_else(|| ImageRefusal::Host("it holds no links socket".into()))?;
+            send_served(links, served).map_err(os)?;
+            Ok(None)
+        }
+        #[cfg(windows)]
+        {
+            let mut handed = request.clone();
+            for (at, share) in handed.served.iter_mut().zip(served) {
+                let value = self.host.give(share.stream.as_fd()).map_err(os)?;
+                at.handle = Some(u64::try_from(value).map_err(|_| ImageRefusal::Os {
+                    what: "a served share's stream",
+                    kind: io::ErrorKind::InvalidData,
+                })?);
+            }
+            Ok(Some(handed))
+        }
     }
 
     /// Sends the host `request`, as a run's (`create`) or a warm host's exemplar (`WARM`). A
@@ -1347,6 +1416,7 @@ impl Begun {
         mut self,
         lessor: Option<RunLessor>,
         request: &wire::Request,
+        served: &[super::ServedShare],
         patience: Duration,
         stop: &super::BootStop,
     ) -> Result<Session, (ImageRefusal, bool)> {
@@ -1370,7 +1440,7 @@ impl Begun {
         // Registration precedes CREATE's potentially blocking write. A stop kills
         // the reader independently of the writer mutex, unblocking this send.
         shared.step(format_args!("its run's request sending"));
-        let created = self.create(lessor, request);
+        let created = self.create(lessor, request, served);
         shared.step(format_args!("its run's request sent"));
         drop(self);
         // Started, refused, or gone: whichever comes first, within the caller's patience. A
@@ -1567,7 +1637,7 @@ impl super::pool::Hosts for ShardsHosts {
         if lock(&warm.shared.state).exited || warm.host.has_ended() {
             return Err(Taken::Untaken);
         }
-        match warm.started(spec.lessor.clone(), request, patience, stop) {
+        match warm.started(spec.lessor.clone(), request, &spec.served, patience, stop) {
             Ok(session) => Ok(Box::new(session)),
             Err((_, true)) => Err(Taken::Unfit),
             Err((refused, false)) => Err(Taken::Refused(refused)),
@@ -1715,7 +1785,7 @@ impl Session {
     ) -> Result<Session, ImageRefusal> {
         let begun = Begun::begin(spec.binary.as_deref(), &spec.env)?;
         begun
-            .started(spec.lessor.clone(), request, patience, stop)
+            .started(spec.lessor.clone(), request, &spec.served, patience, stop)
             .map_err(|(refused, _)| refused)
     }
 
@@ -5783,6 +5853,7 @@ mod tests {
             upstream_roots: Vec::new(),
             plug_roots: Vec::new(),
             egress_ceiling: Vec::new(),
+            served: Vec::new(),
             gpu_report: None,
             shares: Vec::new(),
             nesting: false,
@@ -6191,6 +6262,52 @@ mod tests {
         assert!(stop.is_stopped());
         let others = others.file_name().unwrap().to_string_lossy().into_owned();
         assert_eq!(layer_files(&home), [others], "its run host's layer outlived it");
+    }
+
+    /// D286: a run's served shares' streams go on its host's links socket in their order,
+    /// `shards_ipc::MAX_FDS` a message at most and no payload, as its host takes them before
+    /// its request. Do: send one more than a message carries. Expect: two `SERVED_SHARES`
+    /// messages, the first full, each descriptor the very socket sent in its place (a byte
+    /// written to its peer read from it).
+    #[cfg(unix)]
+    #[test]
+    fn served_streams_go_on_the_links_socket_in_order_a_message_at_most_its_bound() {
+        use std::io::Write as _;
+        use std::os::unix::net::UnixStream;
+        let (links, host) = UnixStream::pair().unwrap();
+        let pairs: Vec<(UnixStream, UnixStream)> = (0..=shards_ipc::MAX_FDS)
+            .map(|_| UnixStream::pair().unwrap())
+            .collect();
+        let served: Vec<super::super::ServedShare> = pairs
+            .iter()
+            .enumerate()
+            .map(|(i, (ours, _))| super::super::ServedShare {
+                stream: super::super::ServedStream::new(ours.try_clone().unwrap().into()),
+                at: format!("/s{i}"),
+                read_only: false,
+                exec: true,
+                members: None,
+            })
+            .collect();
+        send_served(&links, &served).unwrap();
+        for (i, (_, peer)) in pairs.iter().enumerate() {
+            (&*peer).write_all(&[u8::try_from(i).unwrap()]).unwrap();
+        }
+        let mut sizes = Vec::new();
+        let mut read = Vec::new();
+        while read.len() < pairs.len() {
+            let message = shards_ipc::recv(&host).unwrap().unwrap();
+            assert_eq!(message.kind, shards_ipc::kind::SERVED_SHARES);
+            assert!(message.payload.is_empty());
+            sizes.push(message.fds.len());
+            for fd in message.fds {
+                let mut byte = [0u8; 1];
+                UnixStream::from(fd).read_exact(&mut byte).unwrap();
+                read.push(usize::from(byte[0]));
+            }
+        }
+        assert_eq!(sizes, [shards_ipc::MAX_FDS, 1]);
+        assert_eq!(read, (0..pairs.len()).collect::<Vec<_>>());
     }
 
     /// Do boot through a run host that makes a writable layer's file and exits before its run

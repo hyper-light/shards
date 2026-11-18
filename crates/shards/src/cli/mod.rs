@@ -2236,7 +2236,10 @@ const WARM: &str = "warm";
 /// inheritable, and a spawn by std, which passes every inheritable handle on, would hand it
 /// to that child too. It reaches the VM by DuplicateHandle alone.
 #[cfg(windows)]
-fn served_pipe(flag: &str, value: usize) -> Result<std::os::windows::io::BorrowedHandle<'static>, String> {
+pub(crate) fn served_pipe(
+    flag: &str,
+    value: usize,
+) -> Result<std::os::windows::io::BorrowedHandle<'static>, String> {
     use windows_sys::Win32::Foundation::{HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, SetHandleInformation};
     use windows_sys::Win32::Storage::FileSystem::{FILE_TYPE_PIPE, GetFileType};
     use windows_sys::Win32::System::Console::{
