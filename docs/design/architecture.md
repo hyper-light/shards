@@ -14170,6 +14170,32 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
       a SCHED_IDLE thread pinned beside a spinning one), lanes/redgreen/own-38h-vcpu.patch.
       The cost: a wide guest's wait on a host kept full by others is held while it is so, as
       a VM process's is.
+    - *Amended 2026-11-18 (ROOT's ruling; own-38j): held on Windows too, its test's guest
+      paced by its waiter's reads.* ROOT's run on jupiter (bare-metal x86_64 WHP) at
+      07d4396a0c failed that test in 0.08 s in its pass, before any thread was kept: "its pass
+      taught its next lines' kind nothing", its three lines, said 20, 40 and 60 ms in, all
+      first read 74.8 ms in. A wait's first look comes before its first read (`Wait::on`), and
+      on Windows a machine's look reads the system's whole thread listing three times:
+      `Beside`'s (`threads_switched`), and its account's runnable threads and thread states,
+      which every look rebuilds for the process's end (13.1 to 13.8 ms a read on jupiter,
+      PM M606; the rest of the 74.8 ms unmeasured). So no line's wait was awaited and no gap
+      seen. The tests' guest (`console_says`) now says each line its pause after the read that
+      found the line before, told of each read under the lock the read takes and of its
+      reads' end: each line is found by a read of its own and each pause is a silence its
+      waiter saw, whatever its looks take, on every host. The kept thread is Windows'
+      scheduler's own rule: THREAD_PRIORITY_IDLE's base priority is 1 and a default thread's
+      8, and the highest-priority ready thread runs, preempting a lower one (Microsoft Learn,
+      "Scheduling Priorities"); the boosts are a foreground window's, a window's input's, a
+      satisfied wait's ("Priority Boosts") and a lock owner's (AutoBoost, "Priority
+      Inversion"), none a spinner's; the balance set manager raises a thread ready about 4 s
+      to priority 15 for a quantum (Windows Internals 7th ed., Part 1, ch. 4, "Boosts for CPU
+      starvation"), at most once in 4 s and so one still window at most, which refuses nothing
+      alone. Reds: lanes/redgreen/own-38j-beside-windows.patch (the pacing removed: on Windows
+      the pass teaches nothing where its waiter's first look outlasts its script, as at
+      07d4396a0c; not where it does not), lanes/redgreen/own-38j-beside-windows-reading.patch
+      (Windows' reading of the threads beside its waiter removed: refused at its second due
+      look on Windows; Linux unchanged). Owed: one listing a look on Windows, its account's
+      states read from its look's own (ROOT's ruling); ROOT's jupiter and CI runs.
   - *A read's test began its clock after its stand-in's* (CI run 43575280954, Alpine:
     `a_judged_read_goes_on_while_its_party_works` "it answered 999.714051ms in", its read
     never refused): the stand-in's second of work starts as its connect returns, which can be

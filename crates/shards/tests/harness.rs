@@ -1068,23 +1068,44 @@ fn a_streaming_guest_whose_thread_its_host_keeps_from_any_cpu_is_held() {
     kept.wait().unwrap();
 }
 
-/// Says each of `script`'s lines into `said` after its pause in milliseconds, each whole, as
-/// a console's lines come: a guest's console as [`common::guest_says`] reads one.
-fn console_says(said: &std::sync::Mutex<Vec<u8>>, script: &[(u64, &str)]) {
+/// Says each of `script`'s lines into `said`, each whole, as a console's lines come: a guest's
+/// console as [`common::guest_says`] reads one, `reads` telling of each of its reads
+/// ([`cold_lines`]). Each line comes its pause in milliseconds after the read that found the
+/// line before (the first, after its waiter's first read), so that each is found by a read of
+/// its own and each pause is a silence its waiter saw, however long its waiter's looks take.
+/// A clock of its own did not do that on Windows: a machine's look reads the system's whole
+/// thread listing three times there (`Party::machine`'s threads beside its waiter, and its
+/// account's runnable threads and thread states; 13.1 to 13.8 ms a read on jupiter, PM M606),
+/// and a wait's first look comes before its first read, so a guest whose lines came 20, 40 and
+/// 60 ms in was first read 74.8 ms in, every line by that read, and its pass taught nothing
+/// (ROOT's run on jupiter at 07d4396a0c). Ends at its script's end, or once its waiter reads
+/// no more.
+fn console_says(
+    said: &std::sync::Mutex<Vec<u8>>,
+    reads: std::sync::mpsc::Receiver<()>,
+    script: &[(u64, &str)],
+) {
     for (ms, line) in script {
+        if reads.recv().is_err() {
+            return;
+        }
         std::thread::sleep(Duration::from_millis(*ms));
-        said.lock()
-            .unwrap()
-            .extend_from_slice(format!("{line}\n").as_bytes());
+        let mut said = said.lock().unwrap();
+        said.extend_from_slice(format!("{line}\n").as_bytes());
+        // Told under the same lock as a read takes: none told by now found this line.
+        while reads.try_recv().is_ok() {}
     }
 }
 
 /// [`common::guest_says`] at its caller's call site, its two kinds made cold as
 /// [`cold_kind`]'s is, waiting for `done` from a guest of more vCPUs than any host has CPUs
-/// (its CPU its liveness alone); and those kinds, its first line's and its next lines'.
+/// (its CPU its liveness alone), each of its reads told by `told` to the guest that says
+/// `said` ([`console_says`]); and those kinds, its first line's and its next lines'. `told` goes
+/// with its reads, so that its guest hears them end as its wait does.
 #[track_caller]
 fn cold_lines(
     said: &std::sync::Mutex<Vec<u8>>,
+    told: std::sync::mpsc::Sender<()>,
     ended: &std::sync::mpsc::Receiver<()>,
 ) -> (common::Saying<()>, common::Lines, [&'static common::WaitKind; 2]) {
     let site = std::panic::Location::caller();
@@ -1092,7 +1113,11 @@ fn cold_lines(
         let _ = std::fs::remove_file(common::WaitKind::kept_at(site, words, ""));
         common::WaitKind::of(site, words, "")
     });
-    let read = || said.lock().unwrap().clone();
+    let read = move || {
+        let said = said.lock().unwrap();
+        let _ = told.send(());
+        said.clone()
+    };
     let (saying, lines) = common::guest_says(read, ended, "done", "", u32::MAX, None);
     (saying, lines, kinds)
 }
@@ -1101,16 +1126,18 @@ fn cold_lines(
 /// read from its kernel's printk ring and then its console, D261) goes on while its guest says
 /// lines it had not said, and its pass teaches its kinds what its waits took: the time to its
 /// first line, and the slowest gap between two lines after it, not the last. Do: cold, a guest
-/// that says a line 50 ms in, another 200 ms later and the one awaited 50 ms after that.
+/// that says a line 50 ms after its waiter's first read, another 200 ms after the read that
+/// found it and the one awaited 50 ms after the read that found that ([`console_says`]).
 /// Expect: said; its first line's kind taught the time to its first line, and its next lines'
 /// the slowest gap between its lines, each as its reads first found them.
 #[test]
 fn a_guests_lines_are_its_progress_and_its_pass_teaches_their_slowest_gap() {
     let (_end, ended) = std::sync::mpsc::channel::<()>();
     let said = std::sync::Mutex::new(Vec::new());
+    let (told, reads) = std::sync::mpsc::channel();
     let (saying, lines, [first, next]) = std::thread::scope(|s| {
-        s.spawn(|| console_says(&said, &[(50, "one"), (200, "two"), (50, "done")]));
-        cold_lines(&said, &ended)
+        s.spawn(|| console_says(&said, reads, &[(50, "one"), (200, "two"), (50, "done")]));
+        cold_lines(&said, told, &ended)
     });
     assert!(
         matches!(&saying, common::Saying::Said { line, ended: None } if line == "done"),
@@ -1134,25 +1161,27 @@ fn a_guests_lines_are_its_progress_and_its_pass_teaches_their_slowest_gap() {
 /// (its hold, as below); what it said comes back with the refusal, each
 /// line with its time, and its stall teaches nothing (D261: boot.rs' 255-vCPU boot on a nested
 /// WHP runner, followed by its liveness alone to its step's 122 minutes). Do: a pass whose
-/// lines come 300 ms apart; then, through the same call site, a guest that says two lines
-/// 10 ms apart and then nothing, a thread spinning beside its wait. Expect: the pass said; the
-/// second refused within [`refusal_bound`] of the pass's slowest gap, both its lines among
-/// what it said; its kinds' records as the pass left them.
+/// lines come 300 ms after the read that found the line before ([`console_says`]); then,
+/// through the same call site, a guest that says two lines, 10 ms after such reads, and then
+/// nothing, a thread spinning beside its wait. Expect: the pass said; the second refused
+/// within [`refusal_bound`] of the pass's slowest gap, both its lines among what it said; its
+/// kinds' records as the pass left them.
 #[test]
 fn a_guest_silent_past_its_slowest_gap_is_refused_and_its_stall_teaches_nothing() {
     use std::sync::atomic::{AtomicBool, Ordering};
     let (_end, ended) = std::sync::mpsc::channel::<()>();
     let guest = |script: &[(u64, &str)]| {
         let said = std::sync::Mutex::new(Vec::new());
+        let (told, reads) = std::sync::mpsc::channel();
         let spinning = AtomicBool::new(true);
         std::thread::scope(|s| {
-            s.spawn(|| console_says(&said, script));
+            s.spawn(|| console_says(&said, reads, script));
             s.spawn(|| {
                 while spinning.load(Ordering::Relaxed) {
                     std::hint::spin_loop();
                 }
             });
-            let heard = cold_lines(&said, &ended);
+            let heard = cold_lines(&said, told, &ended);
             spinning.store(false, Ordering::Relaxed);
             heard
         })
@@ -1189,12 +1218,16 @@ fn a_guest_silent_past_its_slowest_gap_is_refused_and_its_stall_teaches_nothing(
 /// a thread runnable as a look reads it and unrun since the look before
 /// (`shards_api::starved`) is its host's hold, of a machine's party as of a VM process's (D209
 /// Part 5, D261; CI 44268931283: a 16-vCPU boot on a 4-CPU runner refused 140 ms into a silent
-/// gap at W* 70 ms, its threads unread). Do (Linux, Windows): a pass whose lines come 20 ms apart;
-/// then, through the same call site, a guest that says a line and then nothing for
-/// `LOOKS_TO_REFUSE` of the pass's slowest gaps, while two threads beside its waiter spin
-/// pinned to one CPU, one of them in its OS's idle class (Linux SCHED_IDLE, Windows
-/// THREAD_PRIORITY_IDLE): runnable, and kept from that CPU by the other. Expect: the second said; with the hold removed (lanes/redgreen/own-38h-vcpu.patch),
-/// refused at its judge's second due look, two gaps in.
+/// gap at W* 70 ms, its threads unread). Do (Linux, Windows): a pass each of whose lines comes
+/// 20 ms after the read that found the line before ([`console_says`]; by its own clock, every
+/// line of it was found by one read on Windows and the pass taught nothing: ROOT's run on
+/// jupiter at 07d4396a0c); then, through the same call site, a guest that says a line and then
+/// nothing for `LOOKS_TO_REFUSE` of the pass's slowest gaps from the read that found it, while
+/// two threads beside its waiter spin pinned to one CPU, one of them in its OS's idle class
+/// ([`idle_policy`]): runnable, and kept from that CPU by the other. Expect: the second said;
+/// refused at its judge's second due look, two gaps in, with the hold removed
+/// (lanes/redgreen/own-38h-vcpu.patch), or with Windows' reading of those threads removed
+/// (lanes/redgreen/own-38j-beside-windows-reading.patch, on Windows).
 #[cfg(any(target_os = "linux", windows))]
 #[test]
 fn a_wide_guest_silent_while_its_host_holds_a_thread_beside_its_waiter_is_held() {
@@ -1203,9 +1236,10 @@ fn a_wide_guest_silent_while_its_host_holds_a_thread_beside_its_waiter_is_held()
     let cpu = first_cpu();
     let guest = |script: &[(u64, &str)], kept: bool| {
         let said = std::sync::Mutex::new(Vec::new());
+        let (told, reads) = std::sync::mpsc::channel();
         let spinning = AtomicBool::new(true);
         std::thread::scope(|s| {
-            s.spawn(|| console_says(&said, script));
+            s.spawn(|| console_says(&said, reads, script));
             for idle in [false, true].into_iter().filter(|_| kept) {
                 let spinning = &spinning;
                 s.spawn(move || {
@@ -1218,7 +1252,7 @@ fn a_wide_guest_silent_while_its_host_holds_a_thread_beside_its_waiter_is_held()
                     }
                 });
             }
-            let heard = cold_lines(&said, &ended);
+            let heard = cold_lines(&said, told, &ended);
             spinning.store(false, Ordering::Relaxed);
             heard
         })
@@ -1346,9 +1380,19 @@ fn pin_to(cpu: usize) {
 }
 
 /// Puts the calling thread at THREAD_PRIORITY_IDLE, the least of its process's class
-/// (SetThreadPriority): Windows runs the ready thread of the highest priority, so beside a
-/// thread of the default priority on its CPU it is ready, and almost never run (its
-/// starvation boost aside).
+/// (SetThreadPriority). Windows runs the ready thread of the highest priority and preempts a
+/// lower one for it, round-robin only among equals (Microsoft Learn, "Scheduling Priorities":
+/// base priority 1 in every class but realtime's, a THREAD_PRIORITY_NORMAL thread's 8 in
+/// NORMAL_PRIORITY_CLASS), so beside a spinner of the default priority pinned to its CPU it is
+/// ready and unrun. Its documented boosts are a foreground window's, a window's input's and a
+/// satisfied wait's ("Priority Boosts"), and a lock owner's to its waiter's priority
+/// (AutoBoost, "Priority Inversion"): a spinner never waits and holds no lock. What remains is
+/// the balance set manager's: once a second it raises a thread ready for about 4 s to
+/// priority 15 for a quantum, then back to its base (Windows Internals 7th ed., Part 1, ch. 4,
+/// "Boosts for CPU starvation"; Solomon, Russinovich and Polze's Windows Operating System
+/// Internals curriculum, unit 4.5, "CPU Starvation Avoidance"). So it runs once in 4 s at
+/// most: a look that sees it run makes one still window at most, which refuses nothing alone
+/// (`shards_api::LOOKS_TO_REFUSE`).
 #[cfg(windows)]
 fn idle_policy() {
     use windows_sys::Win32::System::Threading::{GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_IDLE};
@@ -1368,12 +1412,13 @@ fn a_guests_end_ends_its_wait_and_what_it_said_by_then_is_read() {
     let ends = |script: &[(u64, &str)]| {
         let (end, ended) = std::sync::mpsc::channel::<()>();
         let said = std::sync::Mutex::new(Vec::new());
+        let (told, reads) = std::sync::mpsc::channel();
         std::thread::scope(|s| {
             s.spawn(|| {
-                console_says(&said, script);
+                console_says(&said, reads, script);
                 let _ = end.send(());
             });
-            cold_lines(&said, &ended)
+            cold_lines(&said, told, &ended)
         })
     };
     let (saying, lines, _) = ends(&[(10, "one")]);
