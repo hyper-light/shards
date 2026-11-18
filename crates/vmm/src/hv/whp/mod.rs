@@ -2249,4 +2249,215 @@ mod tests {
              copied from this process {copied_here:?}"
         );
     }
+
+    /// The WHP halt-clock probe (docs/research/measurements/whp-halt-clock-v1; #36, own-35i,
+    /// ROOT's ruling of 2026-11-18): whether a vCPU's halt intercept counter times its guest's
+    /// halted span. This backend's partitions emulate the local APIC (XApic), so the hypervisor
+    /// runs HLT itself and no halt reaches the VMM as an exit (`Vcpu::run`); and no Microsoft
+    /// page defines the counters' fields (WHvGetVirtualProcessorCounters), so whether
+    /// `HaltInstructions.Time100ns` counts the span halted or the intercept's handling alone is
+    /// measured here. Do: a partition of one vCPU in real mode, run on this test's own thread
+    /// until the host cancels it (WHvCancelRunVirtualProcessor) a phase's length after it
+    /// began, `RUNS` times in each phase in turn: (a) `cli; hlt`, halted throughout; (b)
+    /// `jmp $`, running throughout; (c) (b) beside a busy loop of normal priority on every host
+    /// CPU. Each run reads, before and after: the runtime counters
+    /// (WHvProcessorCounterSetRuntime), the intercept counters' `HaltInstructions` (Count,
+    /// Time100ns), the vCPU thread's cycles (QueryThreadCycleTime) and the wall time. Writes a
+    /// CSV row a run, beside this host's thread cycles a second (a thread spinning alone for a
+    /// phase), to SHARDS_HALT_PROBE_CSV, else to stdout. Asserts only that each run ended in
+    /// its cancel: the rest is the measurement, which the measurement's README reads.
+    #[test]
+    #[ignore = "a measurement: docs/research/measurements/whp-halt-clock-v1/run.ps1 runs it"]
+    fn halt_clock_probe() {
+        use std::io::Write as _;
+        use std::sync::atomic::AtomicBool;
+        use std::time::{Duration, Instant};
+        use windows_sys::Win32::System::Memory::{
+            MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_READWRITE, VirtualAlloc, VirtualFree,
+        };
+        use windows_sys::Win32::System::Threading::GetCurrentThread;
+        use windows_sys::Win32::System::WindowsProgramming::QueryThreadCycleTime;
+
+        /// A phase's length and its runs (ROOT's ruling: 2 s, n = 5).
+        const PHASE: Duration = Duration::from_secs(2);
+        const RUNS: u32 = 5;
+        /// x86's page, the least WHP maps.
+        const PAGE: usize = 4096;
+        /// `cli; hlt; jmp $-3` (back to the `hlt`), at 0x1000; `jmp $` at 0x2000.
+        const HALT: (u64, &[u8]) = (0x1000, &[0xFA, 0xF4, 0xEB, 0xFD]);
+        const SPIN: (u64, &[u8]) = (0x2000, &[0xEB, 0xFE]);
+
+        if let Err(why) = check_host() {
+            eprintln!("SKIP: no WHP here ({why})");
+            return;
+        }
+
+        struct NoIo;
+        impl Io for NoIo {
+            fn mmio_read(&self, addr: u64, _: &mut [u8]) {
+                panic!("the probe's guest read MMIO at {addr:#x}");
+            }
+            fn mmio_write(&self, addr: u64, _: &[u8]) {
+                panic!("the probe's guest wrote MMIO at {addr:#x}");
+            }
+        }
+
+        fn cycles() -> u64 {
+            let mut cycles = 0u64;
+            // SAFETY: this thread's pseudo-handle, and a u64 of ours to fill.
+            let read = unsafe { QueryThreadCycleTime(GetCurrentThread(), &raw mut cycles) };
+            assert_ne!(read, 0, "QueryThreadCycleTime");
+            cycles
+        }
+
+        fn counters<T: Default>(vcpu: &Vcpu, set: WHV_PROCESSOR_COUNTER_SET) -> T {
+            let mut out = T::default();
+            // SAFETY: a buffer of T's size for the set's counters, of a vCPU of the partition
+            // the vCPU holds.
+            let hr = unsafe {
+                WHvGetVirtualProcessorCounters(
+                    vcpu.partition.0,
+                    vcpu.index,
+                    set,
+                    (&raw mut out).cast(),
+                    size_of::<T>() as u32,
+                    std::ptr::null_mut(),
+                )
+            };
+            assert!(hr >= 0, "WHvGetVirtualProcessorCounters({set}): {hr:#x}");
+            out
+        }
+
+        /// What one side of a run reads.
+        #[derive(Clone, Copy)]
+        struct Read {
+            wall: Instant,
+            cycles: u64,
+            runtime: WHV_PROCESSOR_RUNTIME_COUNTERS,
+            halts: WHV_PROCESSOR_INTERCEPT_COUNTER,
+        }
+        fn read(vcpu: &Vcpu) -> Read {
+            let runtime = counters::<WHV_PROCESSOR_RUNTIME_COUNTERS>(vcpu, WHvProcessorCounterSetRuntime);
+            let intercepts =
+                counters::<WHV_PROCESSOR_INTERCEPT_COUNTERS>(vcpu, WHvProcessorCounterSetIntercepts);
+            Read {
+                wall: Instant::now(),
+                cycles: cycles(),
+                runtime,
+                halts: intercepts.HaltInstructions,
+            }
+        }
+
+        // This host's thread cycles a second, a thread spinning alone for a phase.
+        let (began, from) = (Instant::now(), cycles());
+        while began.elapsed() < PHASE {
+            std::hint::spin_loop();
+        }
+        let hz =
+            u128::from(cycles() - from).saturating_mul(1_000_000_000) / began.elapsed().as_nanos().max(1);
+        let cpus = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+
+        let len = 3 * PAGE;
+        // SAFETY: fresh memory of this process, freed below once the VM is gone.
+        let at = unsafe { VirtualAlloc(std::ptr::null(), len, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE) }
+            .cast::<u8>();
+        assert!(!at.is_null());
+        for (gpa, code) in [HALT, SPIN] {
+            // SAFETY: within the memory just allocated, which nothing else holds yet.
+            unsafe { std::ptr::copy_nonoverlapping(code.as_ptr(), at.add(gpa as usize), code.len()) };
+        }
+        let vm = Vm::new(VmConfig { vcpus: 1 }).unwrap();
+        // SAFETY: the memory stays until the VM is dropped, below.
+        unsafe { vm.map_ram(at, 0, len) }.unwrap();
+
+        let phases = [
+            ("halted", HALT.0, false),
+            ("spinning", SPIN.0, false),
+            ("spinning-loaded", SPIN.0, true),
+        ];
+        let mut rows = vec![
+            "phase,run,wall_ns,total_runtime_100ns,hypervisor_runtime_100ns,halt_count,halt_time_100ns,\
+             thread_cycles,busy_threads,host_cpus,thread_cycles_per_s"
+                .to_string(),
+        ];
+        std::thread::scope(|scope| {
+            let (go, runs) = std::sync::mpsc::channel::<u64>();
+            let (said, heard) = std::sync::mpsc::channel::<(Option<Kicker>, Option<(Read, Read)>)>();
+            let vm = &vm;
+            scope.spawn(move || {
+                let mut vcpu = vm.create_vcpu(0).unwrap();
+                let real = Segment {
+                    base: 0,
+                    limit: 0xFFFF,
+                    selector: 0,
+                    kind: 0xB,
+                    code_or_data: true,
+                    present: true,
+                    db: false,
+                    long: false,
+                    granular: false,
+                };
+                said.send((Some(vcpu.kicker()), None)).unwrap();
+                for rip in runs {
+                    vcpu.set(
+                        &[WHvX64RegisterCs, WHvX64RegisterRip, WHvX64RegisterRflags],
+                        &[segment(&real), Value::u64(rip), Value::u64(0x2)],
+                        "WHvSetVirtualProcessorRegisters(probe)",
+                    )
+                    .unwrap();
+                    let before = read(&vcpu);
+                    said.send((None, None)).unwrap();
+                    assert_eq!(vcpu.run(&NoIo).unwrap(), Exit::Canceled);
+                    let after = read(&vcpu);
+                    said.send((None, Some((before, after)))).unwrap();
+                }
+            });
+            let Ok((Some(kicker), None)) = heard.recv() else {
+                panic!("the vCPU's thread gave no kicker");
+            };
+            for (phase, rip, loaded) in phases {
+                for run in 0..RUNS {
+                    let stop = AtomicBool::new(false);
+                    let busy = if loaded { cpus } else { 0 };
+                    std::thread::scope(|load| {
+                        for _ in 0..busy {
+                            load.spawn(|| {
+                                while !stop.load(Ordering::Relaxed) {
+                                    std::hint::spin_loop();
+                                }
+                            });
+                        }
+                        go.send(rip).unwrap();
+                        let Ok((None, None)) = heard.recv() else {
+                            panic!("the vCPU's thread did not enter its run");
+                        };
+                        std::thread::sleep(PHASE);
+                        kicker.kick();
+                        let Ok((None, Some((before, after)))) = heard.recv() else {
+                            panic!("the vCPU's thread said no reads");
+                        };
+                        stop.store(true, Ordering::Relaxed);
+                        rows.push(format!(
+                            "{phase},{run},{},{},{},{},{},{},{busy},{cpus},{hz}",
+                            after.wall.duration_since(before.wall).as_nanos(),
+                            after.runtime.TotalRuntime100ns - before.runtime.TotalRuntime100ns,
+                            after.runtime.HypervisorRuntime100ns - before.runtime.HypervisorRuntime100ns,
+                            after.halts.Count - before.halts.Count,
+                            after.halts.Time100ns - before.halts.Time100ns,
+                            after.cycles - before.cycles,
+                        ));
+                    });
+                }
+            }
+            drop(go);
+        });
+        drop(vm);
+        // SAFETY: the memory allocated above, the VM gone.
+        unsafe { VirtualFree(at.cast(), 0, MEM_RELEASE) };
+        let csv = rows.join("\n") + "\n";
+        match std::env::var_os("SHARDS_HALT_PROBE_CSV") {
+            Some(path) => std::fs::write(&path, csv).unwrap(),
+            None => std::io::stdout().write_all(csv.as_bytes()).unwrap(),
+        }
+    }
 }
