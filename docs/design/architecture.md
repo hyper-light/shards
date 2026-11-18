@@ -30446,7 +30446,10 @@ the file is read (linux v6.18.48 block/genhd.c `diskstats_show` calls `update_io
 growth is the disk busy for its waiter, the one reading of shards-api's `Hold::disks` that
 every judge takes (the VM processes' `Followed` and the tests' party through
 `shards_api::Watch`). macOS and Windows keep their readings (each counts operations; a
-flush in flight there is unread, owed where a refusal shows it). Tested:
+flush in flight there is unread, owed where a refusal shows it). Windows keeps Executive
+waits unread: a pipe's reader waits Executive as a flusher does (M606: 3,000 of 3,000
+reads), and every waiting client blocks on a pipe, so a host I/O hold there would blind the
+judge. Tested:
 progress.rs `a_flush_in_flight_through_a_look_holds_its_party` (only field 10 grows, nothing
 completes: `Held`; red with field 10 dropped, `Still`) and
 `a_hosts_disk_work_is_summed_from_every_diskstats_line`. Unbuilt and unrun in this lane.
