@@ -4922,16 +4922,27 @@ impl Exec {
 
     /// Sends this joiner's writable layer on its connection from a child of init's, as
     /// the host asked once it had its end: the layers its root was built of, kept until
-    /// now (`JOIN_LAYERS`). Where it has none, its root never built, or no child can be
-    /// had, its connection goes unanswered, which the host hears as no layer.
+    /// now (`JOIN_LAYERS`). Where it has none, its root never built, where they cannot be
+    /// had, or where no child can be, its host is told why in the layer's place
+    /// ([`refuse_layer`](Self::refuse_layer)); a connection gone hears nothing.
     fn send_layer(&mut self) {
-        let kept = join_layers()
-            .iter()
-            .find(|(j, _)| *j == self.id)
-            .and_then(|(_, k)| Some((k.lower.try_clone().ok()?, k.upper.try_clone().ok()?)));
-        let (Some((lower, upper)), Some(conn)) = (kept, self.link.conn()) else {
+        let kept = match join_layers().iter().find(|(j, _)| *j == self.id) {
+            Some((_, k)) => k
+                .lower
+                .try_clone()
+                .and_then(|lower| k.upper.try_clone().map(|upper| (lower, upper)))
+                .map_err(|e| format!("its root's layers: {e}")),
+            None => Err("no layers of its root were kept".to_string()),
+        };
+        let (lower, upper) = match kept {
+            Ok(kept) => kept,
+            Err(why) => {
+                self.refuse_layer(&why);
+                return;
+            }
+        };
+        let Some(conn) = self.link.conn() else {
             self.save = Save::Done;
-            self.link = Link::Gone;
             return;
         };
         // SAFETY: init is single-threaded, so its child may run anything.
@@ -4951,11 +4962,23 @@ impl Exec {
             unsafe { libc::_exit(code) }
         }
         if pid < 0 {
-            self.save = Save::Done;
-            self.link = Link::Gone;
+            let e = io::Error::last_os_error();
+            self.refuse_layer(&format!("a child to send it: {e}"));
         } else {
             self.save = Save::Sending(pid);
         }
+    }
+
+    /// Tells its host why its writable layer is not sent, in the place of its frames
+    /// ([`kind::SYSTEM_ERR`], as `layer::save_from` refuses one it could not pack): its host
+    /// keeps the layer it had and closes the connection, which ends it here. Said before any
+    /// of the layer is: a sender that ended amid it leaves its host's next bytes mid-frame,
+    /// where nothing more can be said, and init closes the connection instead.
+    fn refuse_layer(&mut self, why: &str) {
+        let len = u32::try_from(why.len()).unwrap_or(u32::MAX);
+        self.to_conn
+            .extend(&[&run::header(kind::SYSTEM_ERR, len), why.as_bytes()]);
+        self.save = Save::Done;
     }
 
     /// Its connection's events, `revents`, read through `buf`. One lost before the host

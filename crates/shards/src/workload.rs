@@ -269,12 +269,12 @@ pub struct Asked<'a> {
     /// Told how the command ended, before its layer is saved: a run's client waits for
     /// nothing it does not need.
     pub told: Option<&'a Told<'a>>,
-    /// Told the layer is saved whole.
-    pub saved: Option<&'a (dyn Fn(Option<u64>) + Sync)>,
+    /// Told the layer is saved whole, with what it uses where its guest said; or why not.
+    pub saved: Option<&'a (dyn Fn(Result<Option<u64>, String>) + Sync)>,
     /// Told the layer stays in its own file (D190), its guest's journal written in place:
     /// where the VM's layer is one and no joiner of its network outlives the
-    /// run, in place of a save.
-    pub kept: Option<&'a (dyn Fn(Option<u64>) + Sync)>,
+    /// run, in place of a save; or why not.
+    pub kept: Option<&'a (dyn Fn(Result<Option<u64>, String>) + Sync)>,
     /// Given the records of the processes the run's members start and end (D123).
     pub processes: Option<&'a Records<'a>>,
     /// Given each member's end, where the run asked to hear them (D231): its
@@ -907,25 +907,20 @@ pub fn serve(
     // its, and a microVM that goes on keeps it in use. Any joiner it ever had may have
     // outlived the command in its guest's count, which then takes `SAVE` alone
     // (`warm::joined`).
-    if let (Ok(_), Some(out)) = (&status, layer_out) {
-        if crate::vm_run::layered() && !crate::warm::joined() {
-            match keep_layer_from(&conn, &mut reader, &mut beyond) {
-                Ok(used) => {
-                    if let Some(kept) = kept {
-                        kept(used);
-                    }
-                }
-                Err(e) => shards_vmm::debug!("keeping the container's files: {e}"),
-            }
-        } else {
-            match receive_layer_from(&conn, &mut reader, out, &mut beyond) {
-                Ok(used) => {
-                    if let Some(saved) = saved {
-                        saved(used);
-                    }
-                }
-                Err(e) => shards_vmm::debug!("saving the container's files: {e}"),
-            }
+    // Told how it went, failing too, and a run that failed as having none: its daemon says
+    // why its layer did not come.
+    if let Some(out) = layer_out {
+        let in_place = crate::vm_run::layered() && !crate::warm::joined();
+        let came = match &status {
+            Err(e) => Err(format!("its run failed: {e}")),
+            Ok(_) if in_place => keep_layer_from(&conn, &mut reader, &mut beyond)
+                .map_err(|e| format!("keeping its files in their own file: {e}")),
+            Ok(_) => receive_layer_from(&conn, &mut reader, out, &mut beyond)
+                .map_err(|e| format!("saving its files: {e}")),
+        };
+        let tell = if in_place { kept } else { saved };
+        if let Some(tell) = tell {
+            tell(came);
         }
     }
     // Containers joined to its network go on past it (D119): the guest's signal
@@ -1227,7 +1222,7 @@ fn receive_layer_from(
     let mut used = None;
     loop {
         let mut h = [0u8; run::HEADER];
-        reader.read_exact(&mut h)?;
+        reader.read_exact(&mut h).map_err(amid)?;
         let (which, len) =
             run::parse_header(h).ok_or_else(|| io::Error::other("the guest sent a malformed frame"))?;
         let len = len as usize;
@@ -1236,19 +1231,19 @@ fn receive_layer_from(
             // Not all of it could be packed: the layer it had stays.
             kind::SYSTEM_ERR => {
                 let mut why = vec![0u8; len];
-                reader.read_exact(&mut why)?;
+                reader.read_exact(&mut why).map_err(amid)?;
                 return Err(io::Error::other(String::from_utf8_lossy(&why).into_owned()));
             }
             // What the layer uses, before it (kind::USAGE).
             kind::USAGE if len == 8 && used.is_none() => {
                 let mut n = [0u8; 8];
-                reader.read_exact(&mut n)?;
+                reader.read_exact(&mut n).map_err(amid)?;
                 used = Some(u64::from_be_bytes(n));
                 continue;
             }
             _ => {
                 frame.resize(len, 0);
-                reader.read_exact(&mut frame)?;
+                reader.read_exact(&mut frame).map_err(amid)?;
                 if beyond(which, &frame) {
                     continue;
                 }
@@ -1259,7 +1254,7 @@ fn receive_layer_from(
             return out.sync_all().map(|()| used);
         }
         frame.resize(len, 0);
-        reader.read_exact(&mut frame)?;
+        reader.read_exact(&mut frame).map_err(amid)?;
         out.write_all(&frame)?;
     }
 }
@@ -1279,12 +1274,12 @@ fn keep_layer_from(
     let mut used = None;
     loop {
         let mut h = [0u8; run::HEADER];
-        reader.read_exact(&mut h)?;
+        reader.read_exact(&mut h).map_err(amid)?;
         let (which, len) =
             run::parse_header(h).ok_or_else(|| io::Error::other("the guest sent a malformed frame"))?;
         let len = len as usize;
         frame.resize(len, 0);
-        reader.read_exact(&mut frame)?;
+        reader.read_exact(&mut frame).map_err(amid)?;
         match which {
             kind::LAYER if len == 0 => return Ok(used),
             kind::USAGE if len == 8 && used.is_none() => {
@@ -1298,6 +1293,16 @@ fn keep_layer_from(
                 ));
             }
         }
+    }
+}
+
+/// A failed read of the guest's answer for its layer, said as its connection's end amid
+/// that answer where it is one, rather than as the buffer `read_exact` could not fill.
+fn amid(e: io::Error) -> io::Error {
+    if e.kind() == io::ErrorKind::UnexpectedEof {
+        io::Error::new(e.kind(), "its guest's connection ended amid them")
+    } else {
+        e
     }
 }
 

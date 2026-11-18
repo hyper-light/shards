@@ -1655,21 +1655,23 @@ pub fn joined() -> bool {
     JOINED.load(std::sync::atomic::Ordering::SeqCst)
 }
 
-/// Waits, up to `within`, until every joiner this VM served has told the daemon its end:
-/// as the VM ends, the guest has ended them all, and each says so on its own connection.
-pub fn await_joiners(within: std::time::Duration) {
+/// Waits, up to `within`, until every joiner this VM served has told the daemon its end and
+/// its layer's word: as the VM ends, the guest has ended them all, and each says so on its
+/// own connection. How many had not by then, whose links close with this process.
+pub fn await_joiners(within: std::time::Duration) -> usize {
     let mut count = JOINERS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let deadline = std::time::Instant::now() + within;
     while *count > 0 {
         let left = deadline.saturating_duration_since(std::time::Instant::now());
         if left.is_zero() {
-            return;
+            break;
         }
         count = JOINER_ENDED
             .wait_timeout(count, left)
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .0;
     }
+    *count
 }
 
 /// Takes the joiner the daemon's `JOIN` brings (D119): its own connection to the daemon,
@@ -1876,22 +1878,30 @@ fn joiner(link: &UnixStream, range: Result<(u64, u64), String>, to: &'static ToG
             },
         );
         // Its writable layer, kept as it stops once its end is told, as a run's (D37):
-        // where its command started, and so its root was built.
-        if let (Ok(e), Some(mut conn), Some(out)) = (&ended, conn, layer_out)
-            && e.not_run.is_none()
-        {
-            match workload::receive_layer(&mut conn, out) {
+        // where its command started, and so its root was built. One that will not come is
+        // said in its word's place, with why (`LAYER_LOST`). Its guest's connection goes
+        // here, asked of or not.
+        let came = match (layer_out, &ended, conn) {
+            (None, ..) => None,
+            (Some(out), Ok(e), Some(mut conn)) if e.not_run.is_none() => Some(
+                workload::receive_layer(&mut conn, out).map_err(|err| format!("saving its files: {err}")),
+            ),
+            (Some(_), Ok(_), _) => Some(Err("its command never ran".to_string())),
+            (Some(_), Err(e), _) => Some(Err(format!("its run failed: {e}"))),
+        };
+        if let Some(came) = came {
+            let _ = match came {
                 Ok(used) => {
                     let payload = used.map(u64::to_be_bytes);
-                    let _ = to_daemon(
+                    to_daemon(
                         link,
                         kind::LAYER_SAVED,
                         payload.as_ref().map_or(&[][..], |p| p),
                         &[],
-                    );
+                    )
                 }
-                Err(e) => shards_vmm::debug!("saving a joiner's files: {e}"),
-            }
+                Err(why) => to_daemon(link, kind::LAYER_LOST, why.as_bytes(), &[]),
+            };
         }
         // Its connection's reads end here, whatever the daemon does with its end.
         shards_ipc::end(link);
@@ -2531,6 +2541,13 @@ pub fn layer_saved(link: &Link, used: Option<u64>) {
         &[],
     );
     // Said: its daemon, done with it, may let go of its link from here ([`Course::shows_gone`]).
+    LAYER_OWED.store(false, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Tells the daemon the microVM's writable layer it asked for will not come as asked, and
+/// why (`LAYER_LOST`): its word, in [`layer_saved`]'s or [`tell_kept`]'s place.
+pub fn layer_lost(link: &Link, why: &str) {
+    let _ = to_daemon(&link.daemon, kind::LAYER_LOST, why.as_bytes(), &[]);
     LAYER_OWED.store(false, std::sync::atomic::Ordering::SeqCst);
 }
 

@@ -3838,7 +3838,16 @@ gone with the VM. So a microVM that stays (not `--rm`) keeps it on the host:
   changes, which `commit` takes as it is. Where not all of it could be packed, init says
   why (`kind::SYSTEM_ERR`) in place of the layer's end, and the layer the microVM had
   stays: before, the end came all the same, and a cut layer was kept that only the next
-  start found unreadable.
+  start found unreadable. A layer that does not come whole is said, never settled
+  silently (own-38i; CI 44347282760, x86_64 musl: a joiner's layer settled without its
+  changes, said nowhere). The VM process tells the daemon why in `LAYER_SAVED`'s place
+  (`LAYER_LOST`: its guest's refusal, its guest's connection ending amid the layer, its
+  run failed or its command never ran), where it said it only at debug level before; the
+  daemon logs each loss with that why, or with how its VM's link ended with no word of the
+  layer, closed or failed, after its run's end or before
+  (`a_joiners_layer_that_does_not_come_whole_is_said_with_why`). A layer in its own file
+  (D190) whose keeping or save failed is said too, and its file kept once its VM has gone,
+  as it is where the VM goes without a word.
 - **After the end is told.** Saving before the run's end cost an empty layer 29 ms at p50
   and a 4 MiB one 155 ms; told first, the empty layer costs nothing measurable and the
   4 MiB one 6.5 ms at p50, from the save running beside the next run [PM M115]. Only what
@@ -24517,7 +24526,15 @@ the boundary is a container's, which is what the mode asks for.
   no layer (`a_joiners_layer_is_kept_whole_as_its_provider_ends`: a provider killed as its
   joiner's 256 MiB layer is sent; mutation-checked: killed with the rest, the layer is
   lost; without the close as well, the provider's run ends only as the daemon ends its
-  microVM, 10 s after the kill). The provider's end is said at once where any joiner
+  microVM, 10 s after the kill). Where init sends no layer at all it says why in the
+  layer's place (`kind::SYSTEM_ERR`: no layers of its root kept, their descriptors or a
+  child it could not have), where before it closed the connection unanswered; a child
+  that ended amid a frame cannot be answered, its host reading what follows as the
+  layer's, and its host says the connection ended amid it. Each loss reaches the daemon's
+  log (D37's `LAYER_LOST`), and a VM process that ends with joiners still unfinished past
+  `await_joiners`' 5 s says how many, their links and layers ending with it: a loss such
+  as CI 44347282760's (x86_64 musl: this test's joiner's layer settled without its file,
+  said nowhere) names its cut. The provider's end is said at once where any joiner
   outlives it, running or ended with its layer still to come, not after that layer: held
   till the layer was sent, its end came after `kill`'s 10 s, whose escalation killed the
   microVM, the end and the rest of the layer with it (PM M303: 5 runs of 5 on the Mac, the

@@ -2630,15 +2630,25 @@ fn serve_workload(
                                 (timing, working_set)
                             });
                         };
-                        let saved = |used| crate::warm::layer_saved(&link, used);
+                        // Its layer's word, or why it has none (D37).
+                        let saved = |came: Result<Option<u64>, String>| match came {
+                            Ok(used) => crate::warm::layer_saved(&link, used),
+                            Err(why) => crate::warm::layer_lost(&link, &why),
+                        };
                         // A layer that stays in its file (D190) is the daemon's to read
                         // once the machine is gone, nothing of it writing the file then:
                         // whether this run's may stay, and whether its guest kept it.
                         let layer_stays = std::sync::atomic::AtomicBool::new(false);
                         let layer_kept = std::sync::atomic::AtomicBool::new(false);
-                        let kept = |used| match crate::warm::hold_kept(&link, used) {
-                            Ok(()) => layer_kept.store(true, std::sync::atomic::Ordering::Relaxed),
-                            Err(e) => shards_vmm::debug!("holding the kept layer's word: {e}"),
+                        let kept = |came: Result<Option<u64>, String>| {
+                            let held = came.and_then(|used| {
+                                crate::warm::hold_kept(&link, used)
+                                    .map_err(|e| format!("holding its word that it kept them: {e}"))
+                            });
+                            match held {
+                                Ok(()) => layer_kept.store(true, std::sync::atomic::Ordering::Relaxed),
+                                Err(why) => crate::warm::layer_lost(&link, &why),
+                            }
                         };
                         let processes = |records: &[u8]| crate::warm::processes(&link, records);
                         let members = |ended: &[u8]| crate::warm::member_ended(&link, ended);
@@ -2863,8 +2873,15 @@ fn serve_workload(
             }
         });
         // Its joiners (D119), which the guest ended with its workload, tell the daemon how
-        // each ended before this process goes, as the relay has had 5 s to (below).
-        crate::warm::await_joiners(std::time::Duration::from_secs(5));
+        // each ended before this process goes, as the relay has had 5 s to (below). Those
+        // that had not, whose links close with it, their layers too, are said.
+        let within = std::time::Duration::from_secs(5);
+        let unfinished = crate::warm::await_joiners(within);
+        if unfinished > 0 {
+            shards_vmm::warn!(
+                "{unfinished} of its joiners had not told their ends and layers within {within:?}: its VM ends with their links"
+            );
+        }
         // A warm VM's client printed its timing line from the exit status.
         if !warm {
             report_timing(&handle, Some(timing));

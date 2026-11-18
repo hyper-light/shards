@@ -1331,6 +1331,45 @@ struct Inbox {
     volumes: crate::volumes::Holds,
 }
 
+/// Why a run's writable layer, owed its daemon as its VM stopped (`layer_pending`, D37),
+/// did not come whole: said as it is settled (`settle_layer`).
+#[derive(Debug)]
+enum LayerLost {
+    /// Its VM's word (`LAYER_LOST`), in its own words.
+    Said(String),
+    /// Its link to its VM ended with no word of the layer: closed, or failed with this
+    /// error; after its run's end had come, or before.
+    Unsaid {
+        failed: Option<io::Error>,
+        after_end: bool,
+    },
+}
+
+impl std::fmt::Display for LayerLost {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let when = |after: bool| if after { "after" } else { "before" };
+        match self {
+            Self::Said(why) => write!(f, "its VM: {why}"),
+            Self::Unsaid {
+                failed: None,
+                after_end,
+            } => write!(
+                f,
+                "its link to its VM closed {} its run's end, with no word of it",
+                when(*after_end)
+            ),
+            Self::Unsaid {
+                failed: Some(e),
+                after_end,
+            } => write!(
+                f,
+                "its link to its VM failed {} its run's end, with no word of it: {e}",
+                when(*after_end)
+            ),
+        }
+    }
+}
+
 /// A part of the working set run `id`'s VM recorded (`kind::WORKING_SET`), which the
 /// daemon writes with the template it goes with once the last has come: only as much as
 /// that template's guest can hold, and only if the template is still at the generation it
@@ -6693,7 +6732,13 @@ impl<D: Disk> Daemon<D> {
                 Ok(shards_ipc::Took::Message(m)) => m,
                 // What has come of the next is kept for the rest.
                 Ok(shards_ipc::Took::Partial) => break,
-                Ok(shards_ipc::Took::Ended) | Err(_) => {
+                gone @ (Ok(shards_ipc::Took::Ended) | Err(_)) => {
+                    // How its link ended, and whether its run's end had come first: what a
+                    // layer still to come is said to have been lost to.
+                    let unsaid = LayerLost::Unsaid {
+                        failed: gone.err(),
+                        after_end: inbox.ended,
+                    };
                     // The files its windows mapped are watched for it no more (D189).
                     #[cfg(target_os = "linux")]
                     cuts::forget(id);
@@ -6724,7 +6769,7 @@ impl<D: Disk> Daemon<D> {
                         if inbox.layer.is_some() && inbox.started {
                             self.settle_kept(id, inbox, None);
                         } else {
-                            self.settle_layer(id, inbox, false, None);
+                            self.settle_layer(id, inbox, Err(unsaid));
                         }
                     }
                     continue;
@@ -7138,7 +7183,20 @@ impl<D: Disk> Daemon<D> {
                     let used = <[u8; 8]>::try_from(m.payload.as_slice())
                         .ok()
                         .map(u64::from_be_bytes);
-                    self.settle_layer(id, inbox, true, used);
+                    self.settle_layer(id, inbox, Ok(used));
+                }
+                // Its VM's word that its layer will not come as asked, and why: said now. A
+                // layer in its file (D190) is kept once its VM has gone, as without a word;
+                // else it is settled not whole.
+                kind::LAYER_LOST => {
+                    let why = String::from_utf8_lossy(&m.payload).into_owned();
+                    if inbox.layer.is_some() && inbox.started {
+                        log(format!(
+                            "container {id}: its writable layer did not come as asked: its VM: {why}: its file is kept as its guest leaves it, once its VM has gone"
+                        ));
+                    } else {
+                        self.settle_layer(id, inbox, Err(LayerLost::Said(why)));
+                    }
                 }
                 kind::EXEC_ENDED => {
                     if let Some((n, _)) = m.payload.split_first_chunk::<8>() {
@@ -7247,8 +7305,6 @@ impl<D: Disk> Daemon<D> {
         Ok((Some((file, at)), way))
     }
 
-    /// Container `id`'s writable layer, as its VM left it (D37): kept if it came `whole`;
-    /// else what came of it goes, and the layer it had before stays.
     /// What microVM `id`'s writable layer uses as its last run left it, where its VM said
     /// (`SizeRw`, inspect's): recorded before its layer is settled, so that a reader that
     /// waited for it (`await_settled`) reads it.
@@ -7262,16 +7318,27 @@ impl<D: Disk> Daemon<D> {
         }
     }
 
-    fn settle_layer(&self, id: &str, inbox: &mut Inbox, whole: bool, used: Option<u64>) {
+    /// Container `id`'s writable layer, as its VM left it (D37): kept if it came whole, with
+    /// what it uses where its VM said; else what came of it goes, the layer it had before
+    /// stays, and why it did not come is said.
+    fn settle_layer(&self, id: &str, inbox: &mut Inbox, came: Result<Option<u64>, LayerLost>) {
         inbox.layer_pending = false;
         // Its VM's file goes (D190): what the VM sent is its layer now, or nothing is.
         inbox.layer = None;
         let (new, kept) = (inbox.container.join(LAYER_NEW), inbox.container.join(LAYER));
-        let settled = if whole {
+        let (settled, used) = match came {
             // The newer, in place of one kept in its file before.
-            std::fs::rename(&new, &kept).and_then(|()| remove_if_there(&inbox.container.join(layers::KEPT)))
-        } else {
-            std::fs::remove_file(&new)
+            Ok(used) => (
+                std::fs::rename(&new, &kept)
+                    .and_then(|()| remove_if_there(&inbox.container.join(layers::KEPT))),
+                used,
+            ),
+            Err(lost) => {
+                log(format!(
+                    "container {id}: its writable layer did not come whole: {lost}: the layer it had before stays"
+                ));
+                (std::fs::remove_file(&new), None)
+            }
         };
         if let Err(e) = settled
             && e.kind() != io::ErrorKind::NotFound
@@ -11954,12 +12021,19 @@ mod tests {
         /// [`start`](Self::start), detached: `client` is the client's connection, told
         /// whether the command started.
         fn start_with(&self, id: &str, client: Option<UnixStream>) -> Starting<'s> {
-            self.start_as(id, client, false)
+            self.start_as(id, client, false, false)
+        }
+
+        /// [`start`](Self::start), its writable layer owed its daemon as its VM stops
+        /// (D37), as a run that stays starts.
+        #[cfg(unix)]
+        fn start_owing(&self, id: &str) -> Starting<'s> {
+            self.start_as(id, None, false, true)
         }
 
         /// [`start_with`](Self::start_with), its command composed with the nesting grant
-        /// where `nested` (D234).
-        fn start_as(&self, id: &str, client: Option<UnixStream>, nested: bool) -> Starting<'s> {
+        /// where `nested` (D234), its writable layer owed where `owing`.
+        fn start_as(&self, id: &str, client: Option<UnixStream>, nested: bool, owing: bool) -> Starting<'s> {
             let (warm, offered) = mpsc::channel::<Ready>();
             let (ask, asks) = mpsc::channel::<()>();
             let (daemon, threads, id) = (&self.t.daemon, self.threads, id.to_string());
@@ -11985,7 +12059,7 @@ mod tests {
                         published: Vec::new(),
                         named: None,
                         restarted: false,
-                        layer_pending: false,
+                        layer_pending: owing,
                         layer_over: None,
                         layer_way: None,
                         log_kept: DEFAULT_LOGS,
@@ -13024,6 +13098,83 @@ mod tests {
             let (status, out, err) = joined(asked);
             assert_eq!((status, out.as_str(), err.as_str()), (0, "sleeper\n", ""));
             let _ = joined(starting.run);
+        });
+    }
+
+    /// A joiner's writable layer that does not come whole is said in the daemon's log with
+    /// why, what came of it going and the layer it had before staying (D37, D119; own-38i):
+    /// one whose link closes after its run's end with no word of its layer is said so, and
+    /// one whose VM says why (`LAYER_LOST`) is said with that why. CI 44347282760's joiner
+    /// (x86_64 musl, containers.rs `a_joiners_layer_is_kept_whole_as_its_provider_ends`) lost
+    /// its layer as its provider ended, said nowhere. The daemon logs to its stderr, which
+    /// this test reads from a child of its own. Red (lanes/redgreen/own-38i-layer-loss.patch,
+    /// a layer settled not whole and unsaid, as before): neither loss is in the log.
+    #[cfg(unix)]
+    #[test]
+    fn a_joiners_layer_that_does_not_come_whole_is_said_with_why() {
+        const CHILD: &str = "SHARDS_LAYER_LOSS_TEST";
+        const WHY: &str = "refused by this test";
+        if std::env::var_os(CHILD).is_none() {
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "daemon::tests::a_joiners_layer_that_does_not_come_whole_is_said_with_why",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .stdin(std::process::Stdio::null())
+                .output()
+                .unwrap();
+            let log = String::from_utf8_lossy(&out.stderr);
+            assert!(
+                out.status.success(),
+                "{}\n{log}",
+                String::from_utf8_lossy(&out.stdout)
+            );
+            for (name, why) in [
+                (
+                    "closed",
+                    "its link to its VM closed after its run's end, with no word of it".to_string(),
+                ),
+                ("told", format!("its VM: {WHY}")),
+            ] {
+                let said = format!(
+                    ": its writable layer did not come whole: {why}: the layer it had before stays\n"
+                );
+                assert!(log.contains(&said), "{name}'s loss not said as {said:?}:\n{log}");
+            }
+            return;
+        }
+        let t = Test::new("layer-lost");
+        t.run(|t| {
+            for (name, word) in [("closed", None), ("told", Some(WHY))] {
+                let id = t.create(name);
+                // The layer it had, and what came of the one its VM was to save.
+                let dir = lock(&t.daemon.containers).dir(&id);
+                std::fs::write(dir.join(LAYER), b"before").unwrap();
+                std::fs::write(dir.join(LAYER_NEW), b"cut short").unwrap();
+                let starting = t.start_owing(&id);
+                let (mut ready, vm) = t.warm_vm(None);
+                ready.joined = Some("provider".into());
+                starting.warm.send(ready).unwrap();
+                assert_eq!(heard(&vm).0, kind::RUN);
+                say(&vm, kind::TAKEN, &[]);
+                say(&vm, kind::STARTED, &[]);
+                say(&vm, kind::DONE, &[0]);
+                if let Some(why) = word {
+                    say(&vm, kind::LAYER_LOST, why.as_bytes());
+                }
+                // Its link closes with no word of its layer, or after its VM's. Its run is
+                // out of the daemon's runs at its end; its layer is settled after it.
+                drop(vm);
+                joined(starting.run).unwrap();
+                t.until("its layer settled", |d| !lock(&d.settling).contains(&id));
+                assert!(
+                    !dir.join(LAYER_NEW).exists(),
+                    "{name}: what came of its layer was kept"
+                );
+                assert_eq!(std::fs::read(dir.join(LAYER)).unwrap(), b"before", "{name}");
+            }
         });
     }
 
@@ -19965,7 +20116,7 @@ mod tests {
         t.run(|t| {
             let (_, plain, plain_vm) = running(t, "plain");
             let id = t.create("nester");
-            let starting = t.start_as(&id, None, true);
+            let starting = t.start_as(&id, None, true, false);
             let (ready, vm) = t.warm_vm(None);
             starting.warm.send(ready).unwrap();
             assert_eq!(heard(&vm).0, kind::RUN);

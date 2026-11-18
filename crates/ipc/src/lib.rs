@@ -641,6 +641,13 @@ pub mod kind {
     /// once nothing of the VM's machine writes it, the file the daemon's from then on;
     /// with the disk it used in the guest (a big-endian u64), where the guest said.
     pub const LAYER_KEPT: u8 = 67;
+    /// Warm VM → daemon, in `LAYER_SAVED`'s or `LAYER_KEPT`'s place: the writable layer
+    /// `RUN_LAYER_OUT` asked for will not come as asked, and why, in words: its guest's
+    /// refusal (`shards_abi::run::kind::SYSTEM_ERR`), its guest's connection ending amid it,
+    /// its run failed or its command never ran. What came of it goes, and the layer it had
+    /// before stays; where its layer is in its own file (D190), that file is kept once the
+    /// VM has gone, as it is where the VM goes without a word.
+    pub const LAYER_LOST: u8 = 117;
     /// Daemon → a running run's VM: the CPUs whose time its vCPUs may use of the host's
     /// together (8, big-endian), 0 for every one, as `update` changes the run's CPU limits
     /// (D191): before its guest's cgroup is written.
@@ -2336,7 +2343,8 @@ pub const RUN_PUBLISHED: u8 = 16;
 /// under the microVM's layer device.
 pub const RUN_LAYER_IN: u8 = 32;
 /// A `kind::RUN` flag: the microVM stays once it stops, and its writable layer goes to
-/// a descriptor after those, told by `kind::LAYER_SAVED` once whole.
+/// a descriptor after those, told by `kind::LAYER_SAVED` once whole, or by
+/// `kind::LAYER_LOST` with why it will not be.
 pub const RUN_LAYER_OUT: u8 = 64;
 /// A `kind::RUN` flag: the run's swap comes with it (D159), a sparse file of what its
 /// limits allow, after the layers' descriptors, for its microVM's join disk to take as a
