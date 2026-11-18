@@ -114,8 +114,17 @@ struct Look {
     #[cfg(windows)]
     cycles: u64,
     /// It, or a process of its tree, has exited since the look before: its end is under way,
-    /// so the time since is not judged.
+    /// so the time since is not judged. On macOS from its exit's start, before its kernel has
+    /// done it ([`exited`](Self::exited)).
     ending: bool,
+    /// Unix: its exit is done, a zombie its parent may reap, never without `ending`. Linux
+    /// shows no exit before that (`ending`'s own reading); macOS stashes its usage with its
+    /// exit time as its exit begins (`proc_prepareexit`), then frees its memory, closes its
+    /// descriptors and drains its terminal, and only then makes it a zombie, `SZOMB`
+    /// (xnu-12377.101.15 bsd/kern/kern_exit.c:2207-2215, 2269; osfmk/kern/task.c:3164;
+    /// kern_exit.c:2384, 2427-2476, 2771).
+    #[cfg(unix)]
+    exited: bool,
 }
 
 impl Look {
@@ -1057,22 +1066,27 @@ impl Watch {
     /// What it did since the look before ([`Found`]): progressed where its end is under way;
     /// still where it is stopped or frozen, whatever it ran to its stop; progressed where it
     /// ran; held where its host held it from running; still where it did neither of its own;
-    /// gone where its process has, or was found ended at the look before and is again.
+    /// gone where its process has, or was found exited at the look before and is again.
     ///
-    /// An end under way is progress at the look that first finds it, never again: a process
-    /// that has exited and is not yet reaped (a zombie) says its end under way at every look,
-    /// and one its parent never reaps would be followed for ever (#77 waits-09, a test's wait
-    /// on a state; D217, a killed VM process the daemon's unit test never reaped followed
-    /// each slice for 5 h 37 min on macOS). One rule for every follower (R12): the tests'
-    /// parties held it apart before. Its threads are read from `listing`, the look's.
+    /// An exit its kernel still does is its end under way at each look; an exit done is
+    /// progress at the look that first finds it, never again: a process that has exited and
+    /// is not yet reaped (a zombie) says its end under way at every look, and one its parent
+    /// never reaps would be followed for ever (#77 waits-09, a test's wait on a state; D217, a
+    /// killed VM process the daemon's unit test never reaped followed each slice for 5 h 37
+    /// min on macOS). On macOS an exit begun is not yet done ([`exited`](Self::exited)): taken
+    /// for done, ROOT's first harness runs after a build (r106, r116, r122) found stand-ins
+    /// whose exits XNU still did gone at two looks, 18 to 72 ms and more before they could be
+    /// reaped, and refused their waits. One rule for every follower (R12): the tests' parties
+    /// held it apart before.
+    /// Its threads are read from `listing`, the look's.
     pub fn look(&mut self, listing: &Listing) -> Result<Found, ProcessFailure> {
         (self.in_writes, self.withheld) = (Duration::ZERO, Duration::ZERO);
-        let was_ended = self.ended();
+        let was_exited = self.exited();
         let Some(look) = self.followed.look()? else {
             return Ok(Found::Gone);
         };
         let before = std::mem::replace(&mut self.last, look);
-        if was_ended && self.ended() {
+        if was_exited && self.exited() {
             return Ok(Found::Gone);
         }
         let hold = std::mem::replace(&mut self.hold, self.followed.hold(listing));
@@ -1168,13 +1182,24 @@ impl Watch {
         self.waited.clone()
     }
 
-    /// Whether the look before found it ended: on Unix its process exited and not yet
-    /// reaped (a zombie, whose every look says its end under way), on Windows every process
-    /// of its tree exited (their handles read them still). [`look`](Self::look) takes one
-    /// found so at two looks running for gone, rather than for an end under way for ever.
+    /// Whether the look before found its end under way or done: on Unix its process's exit
+    /// begun (macOS, before its kernel has done it) or done (a zombie, whose every look says
+    /// its end under way), its CPU read through its end; on Windows every process of its tree
+    /// exited (their handles read them still).
     pub fn ended(&self) -> bool {
         #[cfg(unix)]
         return self.last.ending;
+        #[cfg(windows)]
+        return self.followed.ended();
+    }
+
+    /// Whether the look before found its exit done: on Unix exited and not yet reaped, a
+    /// zombie (on macOS once XNU has freed it, its exit begun before then: `SZOMB`); on
+    /// Windows every process of its tree exited. [`look`](Self::look) takes one found so at
+    /// two looks running for gone, rather than for an end under way for ever.
+    pub fn exited(&self) -> bool {
+        #[cfg(unix)]
+        return self.last.exited;
         #[cfg(windows)]
         return self.followed.ended();
     }
@@ -1555,7 +1580,11 @@ mod os {
         if before != started || after != started {
             return Ok(None);
         }
-        Ok(Some(Look { cpu, ending }))
+        Ok(Some(Look {
+            cpu,
+            ending,
+            exited: ending,
+        }))
     }
 
     /// Process `pid`'s start (`/proc/<pid>/stat` field 22); none where no process has it.
@@ -2194,7 +2223,9 @@ mod os {
 
     /// Process `pid`'s look where it is the one that started at `started` (its
     /// `ri_proc_start_abstime`, as [`Identity`](crate::Identity) keeps it); none where it has
-    /// gone. A zombie answers with its exit time set.
+    /// gone. One whose exit has begun answers with its exit time set, its usage stashed then
+    /// (`proc_prepareexit`), and its exit is done once it is a zombie ([`zombie`]), read
+    /// between two reads of its start, so that a pid another process got between them shows.
     pub(super) fn look(pid: u32, started: u64) -> Result<Option<Look>, ProcessFailure> {
         let Some(info) = rusage(pid)? else {
             return Ok(None);
@@ -2202,10 +2233,66 @@ mod os {
         if info.ri_proc_start_abstime != started {
             return Ok(None);
         }
+        let ending = info.ri_proc_exit_abstime != 0;
+        let exited = if ending {
+            let Some(done) = zombie(pid)? else {
+                return Ok(None);
+            };
+            if rusage(pid)?.is_none_or(|again| again.ri_proc_start_abstime != started) {
+                return Ok(None);
+            }
+            done
+        } else {
+            false
+        };
         Ok(Some(Look {
             cpu: times(&info)?,
-            ending: info.ri_proc_exit_abstime != 0,
+            ending,
+            exited,
         }))
+    }
+
+    /// Whether process `pid` is a zombie, its exit done (`pbsi_status` `SZOMB`, sys/proc.h:
+    /// "awaiting collection by parent"), asked with a nonzero `arg`, which has XNU look among
+    /// the processes whose exit has begun too (`proc_find_zombref`): `proc_find` finds none of
+    /// them from `proc_prepareexit`'s `P_REF_DEAD` on, and the pid hash keeps them until they
+    /// are reaped (xnu-12377.101.15 bsd/kern/proc_info.c:2198-2214, kern_proc.c:1105-1127,
+    /// kern_exit.c:2981). None where no process has `pid`.
+    fn zombie(pid: u32) -> Result<Option<bool>, ProcessFailure> {
+        /// Any nonzero `arg` has `PROC_PIDT_SHORTBSDINFO` look among exiting processes too.
+        const EXITING_TOO: u64 = 1;
+        let id = libc::c_int::try_from(pid).map_err(|_| ProcessFailure::PidOutOfRange {
+            operation: ProcessOperation::ProcBsdInfo,
+        })?;
+        let size = libc::c_int::try_from(size_of::<libc::proc_bsdshortinfo>())
+            .map_err(|_| ProcessFailure::BufferBounds)?;
+        // SAFETY: a proc_bsdshortinfo, plain data, for proc_pidinfo to fill.
+        let mut info: libc::proc_bsdshortinfo = unsafe { std::mem::zeroed() };
+        // SAFETY: proc_pidinfo(3) of `id` writes at most `size` bytes into `info`, a
+        // proc_bsdshortinfo, as PROC_PIDT_SHORTBSDINFO names.
+        let got = unsafe {
+            libc::proc_pidinfo(
+                id,
+                libc::PROC_PIDT_SHORTBSDINFO,
+                EXITING_TOO,
+                (&raw mut info).cast(),
+                size,
+            )
+        };
+        if got == size {
+            return Ok(Some(info.pbsi_status == libc::SZOMB));
+        }
+        // libproc answers a failure with 0 and errno (xnu-12377.101.15
+        // libsyscall/wrappers/libproc/libproc.c:105-107), and XNU fills this flavor whole or
+        // not at all: any other count is an answer it does not give.
+        if got != 0 {
+            return Err(ProcessFailure::BufferBounds);
+        }
+        let e = std::io::Error::last_os_error();
+        if e.raw_os_error() == Some(libc::ESRCH) {
+            return Ok(None);
+        }
+        Err(crate::taken::io_failure(ProcessOperation::ProcBsdInfo, e))
     }
 
     /// The CPU time process `pid`'s threads have had; none where it has gone.
@@ -4932,6 +5019,7 @@ mod tests {
         };
         let look = followed.look().unwrap().unwrap();
         assert!(look.ending, "a zombie's look says its end is under way");
+        assert!(look.exited, "a zombie's look says its exit is done");
         // Linux tells its exit (waitid, its state `Z`) before its last switch from its CPU,
         // which charges its clock with what its exit ran after (kernel/exit.c, `do_exit`'s
         // `exit_notify` before `do_task_dead`): a later read is its own, and no less (PM M584).
@@ -4972,13 +5060,137 @@ mod tests {
             Found::Progressed,
             "its end under way, first found"
         );
-        assert!(watch.ended());
+        assert!(watch.ended() && watch.exited());
         assert_eq!(
             watch.look(&Listing::new()).unwrap(),
             Found::Gone,
-            "found ended again: gone"
+            "found exited again: gone"
         );
         child.wait().unwrap();
+    }
+
+    /// An exit its kernel still does is its end under way at every look, never gone: macOS
+    /// stashes a process's usage with its exit time as its exit begins (`proc_prepareexit`),
+    /// and makes it a zombie only once `proc_exit` is done (xnu-12377.101.15
+    /// bsd/kern/kern_exit.c:2207-2215, 2771), which drains a session leader's controlling
+    /// terminal first, without limit while a writer of it is kept (kern_exit.c:2427-2476;
+    /// tty.c:1763-1793, `ttywait`, its timeout the tty's, which only the replica's last close
+    /// sets, tty_dev.c:325-350; PM M246's `leader kept`, whose exits waited for their reader,
+    /// up to 2.005 s). Red so (its exit begun taken for its exit done, D215 at 94373c6ea3):
+    /// gone at the look after the one that found its exit begun, waitid(2) finding no end, as
+    /// ROOT's first harness runs after a build (r106, r116, r122) found stand-ins whose exits
+    /// XNU still did gone at two looks and refused their waits. Do: a child leads a session
+    /// whose controlling terminal is a pty's replica, writes a line there and exits, a writer
+    /// of the replica kept and its controller unread; look at it until a look finds its exit
+    /// begun, then twice more, the rule's two looks running; then read the line. Expect: its
+    /// end under way at each look, its exit not done and waitid(2) finding no end; once the
+    /// line is read, a zombie, its end progress once, its exit done, then gone.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn an_exit_its_kernel_still_does_is_its_end_under_way() {
+        use std::io::Read as _;
+        use std::os::fd::{FromRawFd as _, OwnedFd};
+        use std::os::unix::process::CommandExt as _;
+        let (mut controller, mut replica) = (0, 0);
+        // SAFETY: openpty(3) fills both descriptors; it is given no name, settings or size.
+        let opened = unsafe {
+            libc::openpty(
+                &raw mut controller,
+                &raw mut replica,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        };
+        assert_eq!(opened, 0);
+        for fd in [controller, replica] {
+            // SAFETY: fcntl(2) of a descriptor openpty just made, which the child gets only
+            // as its stdout.
+            assert_eq!(unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) }, 0);
+        }
+        // SAFETY: fresh descriptors nothing else owns.
+        let (mut controller, kept) = unsafe {
+            (
+                std::fs::File::from_raw_fd(controller),
+                OwnedFd::from_raw_fd(replica),
+            )
+        };
+        let mut leader = std::process::Command::new("/bin/echo");
+        leader
+            .arg("its last line")
+            .stdin(std::process::Stdio::null())
+            .stdout(kept.try_clone().unwrap())
+            .stderr(std::process::Stdio::null());
+        // SAFETY: runs in the child between fork and exec, its stdout the replica already,
+        // calling only setsid(2) and ioctl(2), which are async-signal-safe: it leads a session
+        // whose controlling terminal is the replica.
+        unsafe {
+            leader.pre_exec(|| {
+                if libc::setsid() < 0 || libc::ioctl(1, libc::TIOCSCTTY.into(), 0) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let mut leader = leader.spawn().unwrap();
+        let pid = leader.id();
+        let reapable = |wait: libc::c_int| {
+            // SAFETY: a siginfo_t, plain data, for waitid(2) to fill.
+            let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+            // SAFETY: waitid(2) of this test's own child into `info`; WNOWAIT leaves it
+            // unreaped.
+            let waited = unsafe {
+                libc::waitid(
+                    libc::P_PID,
+                    pid,
+                    &raw mut info,
+                    libc::WEXITED | libc::WNOWAIT | wait,
+                )
+            };
+            assert_eq!(waited, 0);
+            info.si_pid != 0
+        };
+        let mut watch = Watch::of(Followed::of_pid(pid).unwrap().unwrap())
+            .unwrap()
+            .unwrap();
+        while !watch.ended() {
+            assert_ne!(watch.look().unwrap(), Found::Gone, "gone before its exit began");
+        }
+        for look in ["the look after its exit was found begun", "the next"] {
+            assert_eq!(
+                watch.look().unwrap(),
+                Found::Progressed,
+                "{look}: its end under way"
+            );
+            assert!(
+                !watch.exited(),
+                "{look}: its exit done before its terminal was read"
+            );
+            assert!(
+                !reapable(libc::WNOHANG),
+                "{look}: reapable before its terminal was read"
+            );
+        }
+        // Its line read whole at one read, which takes all its output queue holds up to the
+        // read's size and then wakes its drain (bsd/kern/tty_dev.c:699-705, `ptcread`, its
+        // line discipline's start `ttwwakeup`: tty_conf.c:101-102, tty.c:2909-2913): its exit
+        // goes on to its terminal's revoke, then its zombie, which waitid(2) waits for.
+        let mut line = [0u8; 64];
+        let read = controller.read(&mut line).unwrap();
+        assert!(
+            line[..read].ends_with(b"\n"),
+            "{:?}",
+            String::from_utf8_lossy(&line[..read])
+        );
+        assert!(reapable(0));
+        assert_eq!(
+            watch.look().unwrap(),
+            Found::Progressed,
+            "a zombie: its end, first found done"
+        );
+        assert!(watch.exited());
+        assert_eq!(watch.look().unwrap(), Found::Gone, "found exited again: gone");
+        leader.wait().unwrap();
     }
 
     /// A watch reads its threads' wait for a CPU over the window its last look closed (D217, a

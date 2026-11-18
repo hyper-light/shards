@@ -4958,10 +4958,11 @@ impl Party {
     /// (`Found::Based`): it has nothing before it to show stillness by (#77). A process once
     /// found is of it until it has gone or ended, wherever it is listed since: a daemon's
     /// microVMs as they end after it, a client's children it leaves as it exits (#77
-    /// waits-10). One found ended (exited, not reaped: `shards_api::Watch::ended`) is not
-    /// live, and its end is progress once, at the look that first finds it under way, never
-    /// again: `shards_api::Watch::look` finds it gone at the next (#77 waits-09: a zombie's
-    /// every look says its end under way).
+    /// waits-10). One found exited (a zombie, not reaped: `shards_api::Watch::exited`) is not
+    /// live, and its end is progress once, at the look that first finds it done, never again:
+    /// `shards_api::Watch::look` finds it gone at the next (#77 waits-09: a zombie's every
+    /// look says its end under way). One whose exit its kernel still does (macOS, from its
+    /// exit's start to its zombie) is its end under way at each look (own-38o).
     pub fn look(&mut self) -> Looked {
         use shards_api::Found;
         // One read of every thread for all this look reads of them, its account's after it.
@@ -5058,7 +5059,7 @@ impl Party {
             // Its daemon named again once read: the ID its file names is still the process
             // that started then, so the one read is it.
             let Some(watch) =
-                watch.filter(|w| !w.ended() && (daemon != Some(pid) || self.daemon() == daemon))
+                watch.filter(|w| !w.exited() && (daemon != Some(pid) || self.daemon() == daemon))
             else {
                 continue;
             };
@@ -5125,7 +5126,12 @@ impl Party {
                 }
                 (Ok(Found::Progressed), Cpu::Progress) if looked.found != Found::Progressed => {
                     looked.found = Found::Progressed;
-                    looked.what = format!("process {pid} ran");
+                    // An exit its kernel still does runs nothing of its own (D215, own-38o).
+                    looked.what = if watch.ended() {
+                        format!("process {pid}'s end under way")
+                    } else {
+                        format!("process {pid} ran")
+                    };
                 }
                 (Ok(Found::Held), _) if looked.found == Found::Still => {
                     looked.found = Found::Held;

@@ -10727,8 +10727,13 @@ user's host as Docker's.
       the bound by which it hears every end, as the unread-teardown test teaches its own. Its
       red is the load's: lanes/redgreen/own-38k-stop-all-slice.patch fails only under the
       parallel suite.
-    - *Open, for ROOT's ruling: on macOS an end found under way may still be its kernel's
-      work.* D215's macOS look takes a set exit time for an end under way. XNU sets that time
+    - *Taken up 2026-11-18 (goal #36, own-38o; D215's amendment of that date): an exit is done
+      at its zombie.* The harness's first runs after a build reproduced the class live: stand-ins
+      found gone at two looks while XNU still ended them, their waits refused. D215's macOS look
+      now reads `SZOMB` before it gives an end up, so a teardown is followed until its zombie;
+      a killed VM's teardown itself is still unmeasured. What follows is the question as it
+      stood. *Open, for ROOT's ruling: on macOS an end found under way may still be its
+      kernel's work.* D215's macOS look takes a set exit time for an end under way. XNU sets that time
       as the exit begins (kern_exit.c:2210). It then frees the address space
       (osfmk/kern/task.c:3164, `vm_map_terminate`), closes the descriptors, a VM's run socket
       among them (kern_exit.c:2384, `fdt_invalidate`), and marks the process a zombie
@@ -30692,6 +30697,53 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
         party's member ran is lost where it went unseen ending, never where a look before had
         found it ended: that look read its last CPU, as `Wait::read_through` counts a client
         read as it ended.
+      - *Amended 2026-11-18 (goal #36, own-38o): on macOS an exit is done only at its
+        zombie.* The macOS look took a set exit time (`ri_proc_exit_abstime`) for an exit done.
+        XNU sets it as an exit begins (xnu-12377.101.15 kern_exit.c:2210, `proc_prepareexit`),
+        then hides the process from `proc_find` (`P_REF_DEAD`, 2269), frees its memory
+        (osfmk/kern/task.c:3164), closes its descriptors (kern_exit.c:2384), drains a session
+        leader's terminal (2427-2476), and only then makes it a zombie (`SZOMB`, 2771), the
+        only state its parent can reap (wait4, 3098). So the rule above found a process gone
+        at its second look while XNU still ended it, and a party with no other member running
+        was then still, and refused past W*.
+        - *Live (R09).* ROOT's three first runs of a freshly built `harness` on this Mac (macOS
+          26.4, arm64) each refused so: r106 at c7e44c7185,
+          `a_wait_on_this_processs_server_goes_on_while_it_serves`; r116,
+          `a_call_sites_commands_are_keyed_by_their_whole_line` and
+          `one_call_sites_commands_are_judged_apart`; r122 at 45fdaf49a6, the first again
+          (g121-tmp/batch2/harness.log, batch2/ab/b2-build.log, batch2b/harness1.log). In
+          each, a look found the stand-in's threads unreadable (`PROC_PIDTASKINFO` ESRCH:
+          `P_REF_DEAD`; r116's two also found its CPU grown then, their last progress), and
+          every look after found its party gone, 2 to 4 in a row, while waitid(2) and
+          `try_wait` found it unended for 18, 38, 64 and 72 ms and more, until the refusal.
+          The stillness each refusal counted began at that look, and each stand-in had run its
+          code by then: no launch held these (the stand-in is the test binary, which its test
+          process had launched already, so PM M166's first-launch assessment was not theirs).
+          Why exits took that long only on first runs after a build is unmeasured (owed,
+          ROOT: kernel tracing of `BSD_PROC_EXIT`, whose end is the zombie).
+        - *Rule.* A macOS look that finds the exit time set also reads the process's BSD
+          status among exiting processes (`PROC_PIDT_SHORTBSDINFO` with a nonzero argument,
+          `proc_find_zombref`, proc_info.c:2198-2214), between two reads of its start. Its
+          exit is done only at `SZOMB` (`Watch::exited`). Until then its end is under way and
+          is progress at each look, as `Found::Progressed` already says; the once-only rule is
+          the zombie's. Linux's look already finds an end only at its zombie, and Windows'
+          handles read every exit. `Watch::ended` keeps meaning its exit begun, which the
+          daemon's teardown uses to tell an end from a failed usage read (D217) and a party
+          uses to tell lost CPU. A tests' party follows a member first found in its exit (a
+          zombie it does not), and its account says "its end under way", never "ran". A failed
+          status read is typed (`ProcessOperation::ProcBsdInfo`), never taken for either
+          state; it is read only of a process whose exit has begun.
+        - *Not caught.* An exit XNU never finishes is followed for as long, as a launch its
+          host never admits is (PM M166): from `P_REF_DEAD` to `SZOMB` no reading shows an
+          exit's progress (`proc_find` fails, and the stashed usage is frozen).
+        - Red/green: progress.rs `an_exit_its_kernel_still_does_is_its_end_under_way`
+          (macOS): a session leader on a pty exits with its line unread and a writer of its
+          terminal kept, which holds its exit in `ttywait` (PM M246's `leader kept`) until the
+          test reads it; its end under way at each look, unreapable, then its zombie progress
+          once, then gone. Red: lanes/redgreen/own-38o-launch.patch (an exit begun taken for
+          done) is gone at the look after its exit was found begun. Written, not built or run
+          (the lane's rule); owed, ROOT: that test, the `harness` suite on a fresh build, and
+          clippy on every target.
     - *A command its context sends to another home's daemon has that daemon in its party*
       (ROOT's word, 2026-11-18, CI 44189693085's x86_64 Windows cluster B). context.rs's
       `a_context_runs_commands_on_its_machine_whole` was refused at context.rs:1625, its

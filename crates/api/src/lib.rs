@@ -412,6 +412,9 @@ pub enum ProcessOperation {
     /// macOS: sysctl(3) of `kern.clockrate`, the clock tick in whose steps a VM process's
     /// CPU times show.
     ClockRate,
+    /// macOS: proc_pidinfo(3) `PROC_PIDT_SHORTBSDINFO` of a process whose exit has begun,
+    /// which tells an exit its kernel still does from one done, a zombie.
+    ProcBsdInfo,
     /// Windows: CreateToolhelp32Snapshot, a snapshot of the system's processes.
     Snapshot,
     /// Windows: Process32FirstW or Process32NextW, a snapshot's processes.
