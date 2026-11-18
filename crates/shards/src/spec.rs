@@ -291,7 +291,13 @@ pub fn next_word<T: AsRef<std::ffi::OsStr>>(args: &mut impl Iterator<Item = T>) 
 /// The flags `restore` reads a value after besides [`RUN_VALUED`]'s, whose `Common` options
 /// it shares (vm_run.rs `parse_restore`, which takes every value it reads through
 /// [`next_vm_word`], so a flag it reads a value after that neither lists is refused there).
-pub const RESTORE_VALUED: &[&str] = &["--backing", "--layer-cloned", "--resume", "--working-set"];
+pub const RESTORE_VALUED: &[&str] = &[
+    "--backing",
+    "--layer-cloned",
+    "--record-until",
+    "--resume",
+    "--working-set",
+];
 
 /// [`next_word`] for `run`'s command line, or with `restore`, `restore`'s: its own valued
 /// flags ([`RESTORE_VALUED`]) given their values too.

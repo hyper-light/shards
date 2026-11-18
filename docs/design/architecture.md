@@ -1231,6 +1231,40 @@ is `crates/shards/src/run.rs` and `crates/shards/src/guest.rs`.
     11.7), and the comparison reads both VMMs' memory after the same guest time, the end of
     this recording's window (`RECORD_FOR`, now `shards_vmm::vm`'s, which the VM process and
     the bench share): D36.
+  - *A restore whose guest runs no command ends its recording at its spawner's word*
+    (amended 2026-11-18, ROOT's ruling, kiln goal #39).
+    - The failure: CI 44227612442's comparison (7ca9f46, Intel Xeon 6975P-C) read
+      `fleet_pte` worse, +0.0068 MiB [+0.0039, +0.0117], a page table's page more a VM.
+      It is not a change: shards read 160 to 164 KiB on 6975P-C runners at every revision
+      since b18952a.
+    - The cause is this recording. A restore whose guest runs no command recorded for
+      `RECORD_FOR` from its start, a second, where the comparison's guest beats at about
+      10 ms. About 100 of the 218 to 231 pages its sets said written were its idle guest's
+      after its beat (Firecracker's guest writes 127 to 157 by its beat, restore-anon), at
+      places that differ by recording. Every restore maps and copies them ahead, and each
+      recorded 2 MiB span its own guest does not touch costs a page table's page. pages.tsv's
+      restores show it: on the 6975P-C (7ca9f46) shards alone touched the spans at 68 and
+      70 MiB, about 10 copies each (fleet median +4 KiB); on an AMD EPYC 9V45 (0f83166)
+      shards alone 56 MiB (+3 KiB); on a Xeon 8573C (0782de3) Firecracker alone 68 MiB
+      (0 KiB). The same pages were `fleet_private`'s and `rss_anon`'s gap.
+    - The reason: a run's recording ends as its command answers; the comparison's
+      recorded a second only because its guest runs no command. Ending it at the guest's
+      first beat makes the comparison measure what a run does, not a bench tuned to win.
+    - The change: such a restore takes `--record-until FD` (Windows: NAME) beside
+      `--working-set`. A byte or the end on it ends the recording, handed at once while
+      its guest goes on; without it, `RECORD_FOR` as before. Runs, warm VMs and restores
+      with a command keep their answer-ended recordings, and the flag refuses them. The
+      comparison's recording restore says it at its guest's first beat, `to_beat`'s own
+      point, so its set is what its guest touches to its beat, which the restore before
+      it holds whole (PM M310: share 1.000 at the median).
+    - Copying ahead only a run's pre-answer writes in production (PM M616's open item)
+      stays declined for 0.8.0.
+    - Tests: vm_run.rs `a_spawners_word_ends_a_bare_restores_recording` and
+      `record_until_is_a_bare_restores_with_its_working_set`; snapshot.rs
+      `a_bare_restore_told_to_end_its_recording_hands_what_it_had_recorded_by_then` (told
+      at once, fewer pages than one recorded until its VM ends). Red:
+      lanes/redgreen/own-38d-record-until.patch. Whether it clears `fleet_pte`,
+      `fleet_private` and `rss_anon`: the next CI comparison, owed.
 - **Where it applies.** Builds that can snapshot (HVF on arm64, KVM on x86_64,
   `vm::SNAPSHOTS`, and so `vm::WORKING_SETS`); elsewhere every run boots. `--kernel`
   and `--init`, or `SHARDS_KERNEL` and `SHARDS_INIT`, name files by path, so those runs
@@ -3541,7 +3575,11 @@ one CLI.
       Firecracker's own larger anonymous memory on this host
       (docs/research/measurements/restore-anon, whose `written.py` over the run's
       `pages.tsv` names the pages; owed). `fleet_pte`, a page table's page more a VM, is
-      unread: the log says no mapping's address, only its offset in 2 MiB. Its Arrival step
+      unread: the log says no mapping's address, only its offset in 2 MiB. *Read since*
+      (2026-11-18, D25's amendment): by span of guest memory in `pages.tsv`, it is the
+      recorded idle second's pages mapped and copied ahead, at 2 MiB spans the restore's
+      own guest does not touch, which the comparison's recording now ends at its guest's
+      first beat (`--record-until`). Its Arrival step
       reported each rate as it ended and passed in 84 s, and its judge's records were
       restored from the job's own key and kept again (D209 Part 11).
     - *The order's A/B* (run 44117236848 at 9581374, Intel Xeon 6975P-C, Linux

@@ -183,6 +183,88 @@ fn a_restore_maps_ahead_the_working_set_the_restore_before_it_recorded() {
     assert!(pages > 0, "{second}");
 }
 
+/// A restore whose guest runs no command records its working set until its spawner says so
+/// (`--record-until`), as a run's recording ends when its command answers, and hands it then
+/// while its guest goes on (D25, amended 2026-11-18): told at once, it hands fewer pages
+/// than a restore that records until its VM ends, whose guest wrote more after. Each set
+/// goes to the test, which keeps none, so each restore of the generation records anew.
+#[cfg(unix)]
+#[test]
+fn a_bare_restore_told_to_end_its_recording_hands_what_it_had_recorded_by_then() {
+    use std::io::{Read as _, Write as _};
+    use std::os::fd::AsRawFd as _;
+    use std::os::unix::process::CommandExt as _;
+    if cannot_run_vms() || cannot_snapshot() {
+        return;
+    }
+    if !shards_vmm::vm::RESTORES_RECORD {
+        // Straight to stderr, as common's SKIP lines: a passing test's captured output is
+        // never shown.
+        let _ = writeln!(
+            std::io::stderr(),
+            "SKIP: this host's restores record no working set (vm::RESTORES_RECORD: KVM and WHP alone)"
+        );
+        return;
+    }
+    let s = Scratch::new("wset-until");
+    let original = boot_and_snapshot(&s, "stop");
+    assert_eq!(original.status, Some(0), "{original}");
+    let dir = s.snapshot();
+    // The set a restore hands, and its guest's console; told at once where `told`.
+    let recorded = |told: bool| -> (Vec<u8>, String) {
+        let (mut from_vm, to_test) = std::io::pipe().unwrap();
+        let (until, tell) = std::io::pipe().unwrap();
+        let (set_fd, until_fd) = (to_test.as_raw_fd(), until.as_raw_fd());
+        let mut command = std::process::Command::new(common::shards_vm());
+        command.arg("restore").args(["--working-set", "3"]);
+        if told {
+            command.args(["--record-until", "4"]);
+        }
+        command
+            .arg(&dir)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null());
+        // SAFETY: runs in the child between fork and exec, calling only fcntl(2) and dup2(2),
+        // which are async-signal-safe; each end copied above 4 first, closed on exec.
+        unsafe {
+            command.pre_exec(move || {
+                let high = |fd| libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 5);
+                let (set, until) = (high(set_fd), high(until_fd));
+                if set < 0 || until < 0 || libc::dup2(set, 3) < 0 || libc::fcntl(3, libc::F_SETFD, 0) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                // The word's pipe given to the restore told alone.
+                if told && (libc::dup2(until, 4) < 0 || libc::fcntl(4, libc::F_SETFD, 0) < 0) {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let mut child = command.spawn().unwrap();
+        drop((to_test, until));
+        // Told at once: the end of its pipe is its word.
+        drop(tell);
+        let mut set = Vec::new();
+        from_vm.read_to_end(&mut set).unwrap();
+        let mut console = String::new();
+        child.stdout.take().unwrap().read_to_string(&mut console).unwrap();
+        assert!(child.wait().unwrap().success(), "{console}");
+        (set, console)
+    };
+    let (at_once, said) = recorded(true);
+    assert!(said.contains("SHARDS-TEST PASS"), "its guest went on: {said}");
+    let (to_its_end, said) = recorded(false);
+    assert!(said.contains("SHARDS-TEST PASS"), "{said}");
+    assert!(!to_its_end.is_empty(), "nothing recorded until its VM ended");
+    assert!(
+        at_once.len() < to_its_end.len(),
+        "told at once it handed {} bytes, recorded until its VM ended {}",
+        at_once.len(),
+        to_its_end.len()
+    );
+}
+
 #[test]
 fn the_original_guest_can_continue_after_its_snapshot() {
     if cannot_run_vms() || cannot_snapshot() {
