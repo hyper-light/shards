@@ -5153,7 +5153,12 @@ mod tests {
     ) -> std::sync::mpsc::Receiver<Result<Option<Ready>, ImageRefusal>> {
         let (tx, rx) = std::sync::mpsc::channel();
         let s = Arc::clone(s);
-        std::thread::spawn(move || {
+        // Of its test's party from its making (shards-testwait's `spawn_member`): its test's
+        // judged wait on its answer holds while its host has yet to run it. Made by std alone, it
+        // was of no party, and its test's wait on this process's threads, which reads none of
+        // their states, was refused at its first look while it waited for a CPU (ROOT,
+        // 2026-11-18, #36: 1 of 10 under load).
+        shards_testwait::party::spawn_member(move || {
             let _ = tx.send(s.wait(Duration::MAX, |st| ready_past(st, true, seen)).transpose());
         });
         rx
@@ -5167,6 +5172,9 @@ mod tests {
     /// one.
     #[test]
     fn readiness_is_told_as_it_moves() {
+        // Its waits judged by its test's party (D215, shards-testwait): this thread and its
+        // waiters.
+        shards_testwait::party::of_test();
         let s = Arc::new(shared());
         let wait = |seen, timeout| s.wait(timeout, |st| ready_past(st, true, seen)).transpose();
         assert_eq!(wait(None, Duration::ZERO), Ok(None));
