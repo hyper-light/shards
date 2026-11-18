@@ -40572,6 +40572,40 @@ finds nothing.
   (the muxer's `a_client_waiting_as_a_broken_pair_is_replaced_is_let_in`, arm64 Windows: not
   let in after 10 s). No client opens a way up but through a way down of its own pair; the
   broken pair's own has gone, so no client finds the way up's name without an instance.
+  *Amended 2026-11-18 (own-38c; CI 44189693085, jupiter at 0f83166da9 and a5369bd051):* that
+  last held only once the replacement's way up was made, and it was made second
+  (`shards_ipc::vsock_pair`): a new instance wakes the clients waiting on its name (ReactOS
+  npfs create.c `NpCreateExistingNamedPipe` calls `NpCancelWaiter` as it makes one), so a
+  client woken by the replacement's way down could open its way up before it was there, find
+  the name with no instance where no connection held one, ERROR_FILE_NOT_FOUND, and be
+  refused: the same test on a loaded x86_64 Windows runner, not let in after 10 s, passing on
+  jupiter in 0.06 s. Each pair's way up is now made first. And a pair's calls outlive the
+  thread that made them: Windows cancels the calls queued to a thread as it ends ("When a
+  thread exits, the I/Os associated with the thread must be cancelled", Windows Internals,
+  Microsoft Press), which are those not on a handle with a completion port associated as they
+  were made ("IRPs are queued to a file object when the file object has a completion port
+  associated with it", Microsoft Learn, `!processirps`). A pair's connects are made before
+  its handles are associated, and the device's worker, which makes each next pair and every
+  connection's calls, ends at every pause, a snapshot's, a new one starting at its resume.
+  The pair was then `Broken` (ERROR_OPERATION_ABORTED) and replaced, though its instances
+  still listened (npfs statesup.c `NpCancelListeningQueueIrp` leaves its instance listening),
+  cutting off a client that had opened them; a read so cancelled was taken for its
+  connection's failure, its guest reset and its host's writes refused, ERROR_NO_DATA. A
+  connect or read that this code did not cancel and that ends ERROR_OPERATION_ABORTED moved
+  nothing (npfs datasup.c `NpCancelDataQueueIrp`: a read waits queued only while no byte
+  has reached it), and is made again (`platform::windows_pipes` `ISSUER_ENDED`); the way
+  down's watch too. A write so cancelled could not be (M603). Red tests:
+  `a_pair_whose_thread_has_ended_still_lets_its_client_in` (connects, by Microsoft's own
+  account of thread-bound calls) and `a_connections_read_made_by_a_thread_that_has_ended_goes_on`
+  (red where Windows queues an associated handle's read named an event to its thread, as the
+  completion port's probe suggests: its event's call was ended at once where the port's alone
+  waited for its packet, vsock-pipes-port-cancel). Owed, ROOT's: both red, then green, on WHP;
+  whether a write named an event is cancelled as its thread ends, which only a device worker
+  that outlives its pauses would cure; and the storm across its snapshot on jupiter. Found
+  beside it, not changed here: after a resume the worker asks the spawner for a pair over the
+  grants link, which the snapshot's commit holds while the spawner makes the generation
+  durable (vm_run.rs `SpawnerStages::commit`, after `go_on`), so the whole device waits that
+  long; CI 44189693085's resumed round, no byte for 900 ms past a W* of 466 ms, fits it.
 - *Dials* go through the dialer as before (S3's spawner); with none, the muxer opens the
   host port's pair itself, waiting for nothing (`shards_ipc::vsock_open` to now): a taken pair
   refuses at once, as a socket's full backlog does, rather than stall the device.

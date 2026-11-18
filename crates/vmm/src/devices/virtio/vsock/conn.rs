@@ -24,9 +24,9 @@ use std::time::Instant;
 use super::packet::{HOST_CID, Header, TYPE_STREAM, op, shutdown};
 use super::poll::Source;
 use super::{Span, readv, writev};
-use crate::debug;
 use crate::memory::GuestMemory;
 use crate::platform::{AsRawSocket, UnixStream};
+use crate::{debug, info};
 
 mod ringed;
 use ringed::Ringing;
@@ -356,7 +356,10 @@ impl Conn {
                 self.tx_buf.fit(self.exposure() as usize);
             }
             Err(e) => {
-                debug!("vsock: ended port {}'s host socket: {e}", self.local_port);
+                info!(
+                    "vsock: host port {}'s host end, after its end: {e}",
+                    self.local_port
+                );
                 return None;
             }
         }
@@ -629,7 +632,7 @@ impl Conn {
     /// The host socket can take more of the buffered guest data.
     pub fn on_writable(&mut self) {
         if let Err(e) = self.flush() {
-            debug!("vsock: host socket for port {}: {e}", self.local_port);
+            info!("vsock: host port {}'s host end: {e}", self.local_port);
             self.kill();
         }
     }
@@ -810,7 +813,7 @@ impl Conn {
                 None
             }
             Err(e) => {
-                debug!("vsock: reading host socket for port {}: {e}", self.local_port);
+                info!("vsock: reading host port {}'s host end: {e}", self.local_port);
                 self.kill();
                 self.pending = Pending::default();
                 Some(self.header(op::RST, spare))
@@ -832,11 +835,15 @@ impl Conn {
                     return;
                 }
                 if let Err(e) = self.send_host(payload, mem) {
-                    debug!("vsock: guest data for port {}: {e}", self.local_port);
+                    info!("vsock: guest data for host port {}: {e}", self.local_port);
                     self.kill();
                 }
             }
             (op::RESPONSE, Phase::LocalInit) => {
+                info!(
+                    "vsock: guest port {} took host port {}",
+                    self.peer_port, self.local_port
+                );
                 self.phase = Phase::Established;
                 self.asked = None;
                 // A fresh socket's buffer takes this line whole, and a fresh pipes' write: its
@@ -844,6 +851,10 @@ impl Conn {
                 // forwards ([`Conn::forwarded`]).
                 let line = format!("OK {}\n", self.local_port);
                 if self.stream.write(line.as_bytes()).ok() != Some(line.len()) {
+                    info!(
+                        "vsock: host port {}'s client could not take its OK",
+                        self.local_port
+                    );
                     self.kill();
                 } else {
                     self.line_in_flight = self.stream.in_flight();
@@ -866,7 +877,7 @@ impl Conn {
                     self.pending.rw = false;
                 }
                 if let Err(e) = self.flush() {
-                    debug!("vsock: host socket for port {}: {e}", self.local_port);
+                    info!("vsock: host port {}'s host end: {e}", self.local_port);
                     self.kill();
                 }
             }

@@ -22,8 +22,8 @@ use std::io;
 use std::os::windows::io::{AsRawHandle as _, OwnedHandle};
 
 use windows_sys::Win32::Foundation::{
-    ERROR_BROKEN_PIPE, ERROR_IO_INCOMPLETE, ERROR_IO_PENDING, ERROR_MORE_DATA, ERROR_PIPE_CONNECTED,
-    ERROR_PIPE_NOT_CONNECTED, GetLastError, HANDLE,
+    ERROR_BROKEN_PIPE, ERROR_IO_INCOMPLETE, ERROR_IO_PENDING, ERROR_MORE_DATA, ERROR_OPERATION_ABORTED,
+    ERROR_PIPE_CONNECTED, ERROR_PIPE_NOT_CONNECTED, GetLastError, HANDLE,
 };
 use windows_sys::Win32::Storage::FileSystem::{ReadFile, WriteFile};
 use windows_sys::Win32::System::IO::{CancelIoEx, CreateIoCompletionPort, GetOverlappedResult, OVERLAPPED};
@@ -409,6 +409,9 @@ impl Pipes {
                     to: n.min(self.into.len()),
                 }
             }
+            // Cancelled as the thread that made it ended, which Windows does to a call queued
+            // to its thread (`ISSUER_ENDED`): it read nothing, and the pipe is as it was.
+            Some(Err(ISSUER_ENDED)) => self.read_next(),
             Some(Err(code)) => self.reading = read_ended(code),
         }
         let (at, closing) = match self.writing {
@@ -701,6 +704,34 @@ fn connect(instance: &OwnedHandle, call: &Call) -> Connect {
     }
 }
 
+/// What a call's ERROR_OPERATION_ABORTED says where neither the pair nor the connection
+/// cancelled it (they cancel only as they close its handle, `close_up`, `end_reads` and their
+/// drops, after which nothing looks at it): the thread that made it ended. Windows queues a
+/// call to the thread that made it unless the call is thread-agnostic, one on a handle with
+/// a completion port associated as it was made ("IRPs are queued to a file object when the
+/// file object has a completion port associated with it", Microsoft Learn, `!processirps`),
+/// and cancels a thread's calls as it ends ("When a thread exits, the I/Os associated with the
+/// thread must be cancelled", Windows Internals, Microsoft Press): a pair's connects are made
+/// before its handles are associated, and the device's worker, which makes the calls, ends at
+/// every pause, a snapshot's (D272, amended 2026-11-18). A connect or read so ended moved
+/// nothing, and is made again: a cancelled connect leaves its instance listening (ReactOS npfs
+/// statesup.c `NpCancelListeningQueueIrp`), and a read waits queued only while no byte has
+/// reached it (npfs datasup.c `NpCancelDataQueueIrp`). A write is not: one cancelled says
+/// nothing of what its reader took (M603).
+const ISSUER_ENDED: u32 = ERROR_OPERATION_ABORTED;
+
+/// `at`, where a connect on `instance` in `call` stands; one cancelled as its thread ended
+/// ([`ISSUER_ENDED`]) made again: its instance still listens, so a client in meanwhile is
+/// told at once (ERROR_PIPE_CONNECTED).
+fn connect_on(at: Connect, instance: &OwnedHandle, call: &Call) -> Connect {
+    if at != Connect::Failed(ISSUER_ENDED) {
+        return at;
+    }
+    // Its event, set by the cancelled call, which a connect does not reset as a read does.
+    call.ended.reset();
+    connect(instance, call)
+}
+
 /// Where a ConnectNamedPipe under way stands, from what it finished as (`outcome`).
 fn connected(finished: Option<Result<usize, u32>>) -> Connect {
     match finished {
@@ -755,15 +786,25 @@ impl Listening {
     /// way down open and its way up not, the way down's watch starts.
     pub fn look(&mut self) -> Paired {
         if let (Connect::UnderWay, Some(down)) = (self.down_at, &self.down) {
-            self.down_at = connected(outcome(down, self.calls.down.ov()));
+            self.down_at = connect_on(
+                connected(outcome(down, self.calls.down.ov())),
+                down,
+                &self.calls.down,
+            );
         }
         if let (Connect::UnderWay, Some(up)) = (self.up_at, &self.up) {
-            self.up_at = connected(outcome(up, self.calls.up.ov()));
+            self.up_at = connect_on(connected(outcome(up, self.calls.up.ov())), up, &self.calls.up);
         }
-        if let (Watch::UnderWay, Some(down)) = (self.watch, &self.down)
-            && outcome(down, self.calls.watch.ov()).is_some()
-        {
-            self.watch = Watch::Ended;
+        let watched = match (self.watch, &self.down) {
+            (Watch::UnderWay, Some(down)) => outcome(down, self.calls.watch.ov()),
+            _ => None,
+        };
+        match watched {
+            None => {}
+            // Cancelled as the thread that made it ended (`ISSUER_ENDED`): it says nothing of
+            // its client, and is made again.
+            Some(Err(ISSUER_ENDED)) => self.watch_down(),
+            Some(_) => self.watch = Watch::Ended,
         }
         match (self.down_at, self.up_at, self.watch) {
             (Connect::Failed(_), _, _)

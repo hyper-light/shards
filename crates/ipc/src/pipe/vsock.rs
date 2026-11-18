@@ -110,12 +110,18 @@ pub fn vsock_instance(name: &str, first: bool) -> io::Result<OwnedHandle> {
     )
 }
 
-/// An instance of each of `names`: the way down's, then the way up's.
+/// An instance of each of `names`, the way down's and the way up's, the way up's made first:
+/// a new instance wakes the clients waiting on its name (ReactOS npfs create.c
+/// `NpCreateExistingNamedPipe`, `NpCancelWaiter`), and a client let in by the way down opens
+/// the way up next, which is there. Made second, it was not yet for a client woken by the
+/// way down, and where no connection held one its name had none, which refused the client
+/// (ERROR_FILE_NOT_FOUND) as its listener replaced a broken pair: the muxer's
+/// `a_client_waiting_as_a_broken_pair_is_replaced_is_let_in` on a loaded runner (CI
+/// 44189693085, x86_64 Windows; arm64 Windows before it).
 pub fn vsock_pair(names: &VsockNames, first: bool) -> io::Result<(OwnedHandle, OwnedHandle)> {
-    Ok((
-        vsock_instance(&names.down, first)?,
-        vsock_instance(&names.up, first)?,
-    ))
+    let up = vsock_instance(&names.up, first)?;
+    let down = vsock_instance(&names.down, first)?;
+    Ok((down, up))
 }
 
 /// A listener's first pair at `path`, under fresh names its file there says, written whole

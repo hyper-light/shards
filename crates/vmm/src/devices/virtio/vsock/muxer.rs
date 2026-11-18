@@ -43,7 +43,6 @@ use super::Span;
 use super::conn::{Conn, Ended, Host, WINDOW_LENT};
 use super::packet::{HOST_CID, Header, TYPE_STREAM, op};
 use super::poll::{Interest, Ready, Source};
-use crate::debug;
 use crate::memory::GuestMemory;
 #[cfg(unix)]
 use crate::platform::UnixListener;
@@ -52,6 +51,7 @@ use crate::platform::{AsRawSocket, HostStream, UnixStream};
 use crate::platform::{Listening, PairMaker, Paired, Pipes};
 use crate::snapshot::codec::{self, Reader, Writer};
 use crate::vm::VsockHost;
+use crate::{debug, info};
 
 /// RSTs owed, at most, for the largest rings a guest may negotiate ([`stray_rsts_bound`]).
 const MAX_STRAY_RSTS: usize = stray_rsts_bound(super::QUEUE_SIZE, super::QUEUE_SIZE);
@@ -514,7 +514,7 @@ impl Muxer {
             .min_by_key(|(_, h)| h.heard)
             .map(|(i, _)| i);
         if let Some(i) = silent {
-            debug!("vsock: every slot taken; a host connection silent longest gives its own up");
+            info!("vsock: every slot taken; a host connection silent longest gives its own up");
             self.handshakes.swap_remove(i);
             return;
         }
@@ -526,8 +526,9 @@ impl Muxer {
         if let Some((_, key)) = unanswered
             && let Some(c) = self.conns.remove(&key)
         {
-            debug!(
-                "vsock: every slot taken; a host's request its guest left unanswered longest gives its own up"
+            info!(
+                "vsock: every slot taken; host port {}'s request, which guest port {} left unanswered longest, gives its own up",
+                key.local_port, key.peer_port
             );
             self.lent = self.lent.saturating_sub(u64::from(c.lent()));
             if c.allocated_port {
@@ -595,6 +596,10 @@ impl Muxer {
             return;
         };
         if h.op == op::RST {
+            info!(
+                "vsock: guest port {} reset host port {}",
+                key.peer_port, key.local_port
+            );
             self.remove(key);
             return;
         }
@@ -669,11 +674,18 @@ impl Muxer {
                 if let Some(ring) = ring {
                     conn.ringable(ring);
                 }
+                info!(
+                    "vsock: guest port {} dialled host port {}",
+                    key.peer_port, key.local_port
+                );
                 self.conns.insert(key, conn);
                 self.enqueue(key);
             }
             Err(e) => {
-                debug!("vsock: guest connect to host port {}: {e}", key.local_port);
+                info!(
+                    "vsock: guest port {} dialled host port {}, refused: {e}",
+                    key.peer_port, key.local_port
+                );
                 self.stray_rst(key.local_port, key.peer_port);
             }
         }
@@ -712,6 +724,10 @@ impl Muxer {
             }
             if let Some(h) = h {
                 if h.op == op::RST {
+                    info!(
+                        "vsock: host port {} reset guest port {}",
+                        key.local_port, key.peer_port
+                    );
                     self.remove(key);
                 }
                 return Some(h);
@@ -883,7 +899,7 @@ impl Muxer {
             match pair.look() {
                 Paired::Waiting => return,
                 Paired::Broken => {
-                    debug!("vsock: a host client went before its pair was whole; the pair replaced");
+                    info!("vsock: a pair no client holds whole ({pair:?}) replaced");
                     pair.close_up();
                     (None, listener.pair.take())
                 }
@@ -973,6 +989,7 @@ impl Muxer {
             Ok(Some(Line::Connect(peer_port))) => {
                 let h = self.handshakes.swap_remove(i);
                 let local_port = self.allocate_local_port();
+                info!("vsock: host port {local_port} asks for guest port {peer_port}");
                 let key = Key {
                     local_port,
                     peer_port,
@@ -984,7 +1001,7 @@ impl Muxer {
                 self.enqueue(key);
             }
             Err(e) => {
-                debug!("vsock: host handshake: {e}");
+                info!("vsock: a host connection's handshake: {e}");
                 self.handshakes.swap_remove(i);
             }
         }
@@ -3123,5 +3140,102 @@ mod tests {
             m.handshakes.len() == 1
         });
         assert!(waiter.join().unwrap().is_ok());
+    }
+
+    /// A pair whose connects were made by a thread that has since ended lets its client in
+    /// (D272, amended 2026-11-18): the device's worker, which makes each next pair, ends at
+    /// every pause, a snapshot's, and Windows cancels as a thread ends the calls it queued to
+    /// it, a pair's connects among them, made before its handles are associated with the
+    /// device's port. The pair was then `Broken` and replaced, though its instances still
+    /// listened, and the client that had opened them was cut off. Red without the connect
+    /// made again (`platform::windows_pipes` `connect_on`).
+    #[cfg(windows)]
+    #[test]
+    fn a_pair_whose_thread_has_ended_still_lets_its_client_in() {
+        let dir_guard = shards_testdir::TempDir::new("vsock-ended").unwrap();
+        let dir = dir_guard.join("v");
+        let made = std::thread::spawn({
+            let dir = dir.clone();
+            move || Muxer::new(VsockHost::at(dir), 3).unwrap()
+        });
+        let mut m = made.join().unwrap();
+        let mut poller = super::super::poll::Poller::new().unwrap();
+        m.attach_port(poller.port()).unwrap();
+        let _client = PipesClient::open(&dir);
+        turn_until(&mut m, &mut poller, "the client's handshake", |m| {
+            m.handshakes.len() == 1
+        });
+    }
+
+    /// A connection whose read of its client's next bytes was made by a thread that has since
+    /// ended goes on (D272, amended 2026-11-18): the device's worker ends at every pause, a
+    /// snapshot's, and a read Windows queued to it was cancelled as it ended, having read
+    /// nothing. Taken for the read's failure, it reset the guest's stream and closed the
+    /// host's way up, whose writes were then refused, ERROR_NO_DATA: the storm's round across
+    /// its snapshot on jupiter at a5369bd051 ("sending: The pipe is being closed. (os error
+    /// 232)"). Red without the read made again (`platform::windows_pipes` `ISSUER_ENDED`),
+    /// where Windows queues such a read to its thread.
+    #[cfg(windows)]
+    #[test]
+    fn a_connections_read_made_by_a_thread_that_has_ended_goes_on() {
+        use std::os::windows::io::AsRawHandle as _;
+        let dir_guard = shards_testdir::TempDir::new("vsock-ended-read").unwrap();
+        let dir = dir_guard.join("v");
+        let mut m = Muxer::new(VsockHost::at(dir.clone()), 3).unwrap();
+        let port = super::super::poll::completion_port().unwrap();
+        m.attach_port(port.as_raw_handle()).unwrap();
+        let mem = GuestMemory::anonymous(&[(0x8000_0000, 1 << 16)]).unwrap();
+        let mut client = PipesClient::open(&dir);
+        client.write_all(b"CONNECT 1234\n").unwrap();
+        // Its handshake, its REQUEST and the guest's answer on a thread that then ends, as a
+        // worker does at a pause, the connection's read of its client's next bytes under way.
+        let local_port = std::thread::scope(|s| {
+            s.spawn(|| {
+                let mut poller = super::super::poll::Poller::new().unwrap();
+                poller.watch(port.as_raw_handle());
+                let mut asked = None;
+                turn_until(&mut m, &mut poller, "the guest's REQUEST", |m| {
+                    asked =
+                        asked.or_else(|| std::iter::from_fn(|| m.next_rx(&[])).find(|h| h.op == op::REQUEST));
+                    asked.is_some()
+                });
+                let local_port = asked.unwrap().src_port;
+                m.on_guest_packet(
+                    &Header {
+                        op: op::RESPONSE,
+                        ..request(local_port, 1234)
+                    },
+                    &[],
+                    &mem,
+                );
+                local_port
+            })
+            .join()
+            .unwrap()
+        });
+        let mut line = [0u8; 14];
+        client.down.read_exact(&mut line).unwrap();
+        assert_eq!(&line, format!("OK {local_port}\n").as_bytes());
+        let bytes = b"after its thread";
+        client.write_all(bytes).unwrap();
+        let space = [Span {
+            gpa: 0x8000_1000,
+            ptr: mem.host_ptr(0x8000_1000, 4096).unwrap(),
+            len: 4096,
+        }];
+        let mut poller = super::super::poll::Poller::new().unwrap();
+        poller.watch(port.as_raw_handle());
+        let mut got = None;
+        turn_until(&mut m, &mut poller, "the client's bytes for the guest", |m| {
+            got = got.or_else(|| {
+                std::iter::from_fn(|| m.next_rx(&space)).find(|h| h.op == op::RW || h.op == op::RST)
+            });
+            got.is_some()
+        });
+        let h = got.unwrap();
+        assert_eq!(h.op, op::RW, "the stream reset where it goes on");
+        let mut seen = vec![0u8; h.len as usize];
+        mem.access().unwrap().read(0x8000_1000, &mut seen).unwrap();
+        assert_eq!(seen, bytes);
     }
 }
