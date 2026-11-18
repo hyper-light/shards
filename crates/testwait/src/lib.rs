@@ -534,9 +534,11 @@ mod tests {
     /// refused: D215's hold, of its members (`party::hold`). No overrun of its waiter shows a
     /// member its host held while it ran the waiter (CI 44164945050, aarch64 gnu,
     /// `a_change_while_its_record_is_written_is_written_after`: refused at W* 1.11 ms while its
-    /// record's writer had yet to run). Waited on past the due looks within which a still
-    /// party is refused, and one more; red where a wait reads its waiter's overruns alone,
-    /// refused a W* or two in.
+    /// record's writer had yet to run). Its member never runs, and its waiter's attempts sleep
+    /// nothing, so that no overrun of its own holds the wait either (a 1 ms sleep a Mac's
+    /// timers coalesced held one alone, ROOT's red run): its member's hold is all that keeps
+    /// it. Waited on past the due looks within which a still party is refused, and one more;
+    /// red where a wait reads no member's hold, refused about a W* in.
     #[test]
     fn a_wait_whose_member_its_host_holds_is_held_not_refused() {
         static HELD: Record = Record::new();
@@ -549,7 +551,10 @@ mod tests {
         };
         let began = Instant::now();
         let past = slowest * (shards_judge::LOOKS_TO_REFUSE + 2);
-        assert_eq!(waited_on(&HELD, held, || began.elapsed() >= past), Ok(()));
+        let waited = answered_on(&HELD, held, |_| {
+            Ok::<_, ()>((began.elapsed() >= past).then_some(()))
+        });
+        assert_eq!(waited, Ok(Ok(())));
     }
 
     /// A party's members are read as their OS shows them (`party::hold`): one that spins is
