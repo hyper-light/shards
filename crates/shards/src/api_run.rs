@@ -20,6 +20,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use shards_api::image::wire::{self, Cause};
+use shards_ipc::fd::OwnedFd;
 use shards_ipc::kind;
 use shards_net::lease::Refusal;
 use shards_net::signin::{self, Declined};
@@ -327,7 +328,98 @@ fn host(answers: &Answers) -> Result<(), No> {
         return hosted::warm(answers, &request, input);
     }
     let ready_by = deadline(request.ready_by, SystemTime::now())?;
-    hosted::run(answers, &request, ready_by, input)
+    let served = served_streams(&request)?;
+    hosted::run(answers, &request, ready_by, input, served)
+}
+
+/// The streams of the run's shares another server serves (D286), one for each of `request`'s,
+/// in its order: on Unix those its orchestrator sent on this process's links socket before its
+/// request (`kind::SERVED_SHARES`), each a socket; refused `Request` where fewer came whole, more
+/// came, a message of another kind came first, or the request names a handle, which no Unix
+/// stream has. Each is the VM's in its share slot as it is, its server answering it.
+#[cfg(unix)]
+fn served_streams(request: &wire::Request) -> Result<Vec<OwnedFd>, No> {
+    let refused = |why: String| No(Cause::Request, why);
+    let want = request.served.len();
+    let mut streams: Vec<OwnedFd> = Vec::with_capacity(want);
+    if want == 0 {
+        return Ok(streams);
+    }
+    if let Some(s) = request.served.iter().find(|s| s.handle.is_some()) {
+        return Err(refused(format!(
+            "{}: a served share's handle, where its stream comes on the links socket",
+            s.at
+        )));
+    }
+    let links = LINKS
+        .get()
+        .ok_or_else(|| refused("its served shares' streams: it holds no links socket".into()))?;
+    while streams.len() < want {
+        let message = links.next().map_err(refused)?.ok_or_else(|| {
+            refused(format!(
+                "{} of its {want} served shares' streams came before its request",
+                streams.len()
+            ))
+        })?;
+        if message.kind != kind::SERVED_SHARES || message.fds.is_empty() {
+            return Err(refused(format!(
+                "message kind {} with {} descriptors before its request, where its served shares' streams were due",
+                message.kind,
+                message.fds.len()
+            )));
+        }
+        streams.extend(message.fds);
+    }
+    if streams.len() != want {
+        return Err(refused(format!(
+            "{} streams for its {want} served shares",
+            streams.len()
+        )));
+    }
+    for (s, stream) in request.served.iter().zip(&streams) {
+        use std::os::unix::fs::FileTypeExt as _;
+        let socket = stream
+            .try_clone()
+            .map(std::fs::File::from)
+            .and_then(|f| f.metadata())
+            .is_ok_and(|m| m.file_type().is_socket());
+        if !socket {
+            return Err(refused(format!(
+                "{}: its served share's stream is no socket",
+                s.at
+            )));
+        }
+    }
+    Ok(streams)
+}
+
+/// [`served_streams`] on Windows: each a pipe its orchestrator duplicated into this process for
+/// its share alone, whose value the request names (`shards_ipc::Child::give`), checked as a
+/// direct boot checks `--slates-fs-handle`'s (`cli::served_pipe`: none of this process's
+/// standard handles, a pipe, no value twice) and owned from here on; refused `Request` where a
+/// share names none.
+#[cfg(windows)]
+fn served_streams(request: &wire::Request) -> Result<Vec<OwnedFd>, No> {
+    use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _};
+    let refused = |why: String| No(Cause::Request, why);
+    let mut streams: Vec<OwnedFd> = Vec::with_capacity(request.served.len());
+    let mut values: Vec<u64> = Vec::with_capacity(request.served.len());
+    for s in &request.served {
+        let value = s
+            .handle
+            .ok_or_else(|| refused(format!("{}: its served share's stream names no handle", s.at)))?;
+        if values.contains(&value) {
+            return Err(refused(format!("{}: handle {value} named twice", s.at)));
+        }
+        let value_usize = usize::try_from(value)
+            .map_err(|_| refused(format!("{}: handle {value} is past this host's", s.at)))?;
+        let pipe = crate::cli::served_pipe("a served share's handle", value_usize).map_err(refused)?;
+        values.push(value);
+        // SAFETY: a pipe its orchestrator duplicated into this process for this share alone,
+        // checked a pipe of this process's above and named once: owned from here, closed once.
+        streams.push(unsafe { OwnedFd::from_raw_handle(pipe.as_raw_handle()) });
+    }
+    Ok(streams)
 }
 
 /// Why frame `kind`, come before its run's request, refuses the run: the channel is no run
@@ -625,13 +717,18 @@ struct Given {
     members: Vec<(u32, wire::MemberKind, String)>,
 }
 
-/// Each share `request` gives members as they start (D277): each member one the image declares
-/// that runs, or every such member for one given to every member; refused by name otherwise, as
-/// a staged member is.
+/// Each share `request` gives members as they start (D277), its shares another server serves
+/// among them (D286): each member one the image declares that runs, or every such member for one
+/// given to every member; refused by name otherwise, as a staged member is.
 fn share_members(request: &wire::Request, members: &[wire::MemberInfo]) -> Result<Vec<Given>, No> {
+    let places = request
+        .shares
+        .iter()
+        .map(|s| (&s.at, &s.members))
+        .chain(request.served.iter().map(|s| (&s.at, &s.members)));
     let mut given = Vec::new();
-    for share in &request.shares {
-        let Some(to) = &share.members else { continue };
+    for (at, to) in places {
+        let Some(to) = to else { continue };
         let mut found: Vec<&wire::MemberInfo> = Vec::new();
         match to {
             wire::ShareTo::Every => found.extend(members.iter().filter(|m| m.runs)),
@@ -645,7 +742,7 @@ fn share_members(request: &wire::Request, members: &[wire::MemberInfo]) -> Resul
                                 Cause::Image,
                                 format!(
                                     "{}: {:?} {}: the image declares no such member",
-                                    share.at, n.kind, n.name
+                                    at, n.kind, n.name
                                 ),
                             )
                         })?;
@@ -654,7 +751,7 @@ fn share_members(request: &wire::Request, members: &[wire::MemberInfo]) -> Resul
                             Cause::Image,
                             format!(
                                 "{}: {:?} {}: files alone, which run nothing to be given a share",
-                                share.at, n.kind, n.name
+                                at, n.kind, n.name
                             ),
                         ));
                     }
@@ -667,14 +764,14 @@ fn share_members(request: &wire::Request, members: &[wire::MemberInfo]) -> Resul
                 Cause::Image,
                 format!(
                     "{}: given to every member that runs, and none of the image's runs",
-                    share.at
+                    at
                 ),
             ));
         }
         found.sort_unstable_by_key(|m| m.index);
         found.dedup_by_key(|m| m.index);
         given.push(Given {
-            at: share.at.clone(),
+            at: at.clone(),
             members: found.iter().map(|m| (m.index, m.kind, m.name.clone())).collect(),
         });
     }
@@ -3298,23 +3395,30 @@ mod hosted {
         /// The host directories its shares give its guest, canonical: where no save of it is
         /// made (D259).
         reached: Vec<PathBuf>,
+        /// It has shares another server serves (D286), whose state that server keeps: no save of
+        /// it is made.
+        served: bool,
         /// Its GPU report's scope, where its orchestrator asked for one (D233).
         gpu_report: Option<[u8; 16]>,
         /// It has a command of its own, which a port no member takes coming in reaches.
         command: bool,
     }
 
+    /// The run `request`, its deadline `ready_by`, its shares another server serves on `served`
+    /// (D286, [`super::served_streams`]), on a host of its own.
     pub(super) fn run(
         answers: &Answers,
         request: &wire::Request,
         ready_by: Option<u64>,
         input: super::Input,
+        served: Vec<OwnedFd>,
     ) -> Result<(), No> {
         let mut checking = Checking::begin();
         let home = shards_ipc::home().map_err(no(Cause::Boot))?;
         let (shaped, layering) = shape(request, &home, &mut checking)?;
         let made = shaped.made.clone();
-        let plan = plan(request, ready_by, shaped).inspect_err(|_| end(&home, None, &made, Vec::new()))?;
+        let plan =
+            plan(request, ready_by, shaped, served).inspect_err(|_| end(&home, None, &made, Vec::new()))?;
         launch_and_serve(answers, input, &home, plan, checking, layering)
     }
 
@@ -3575,8 +3679,13 @@ mod hosted {
             let cpu_baseline = crate::daemon::home_baseline(home);
             let share_window_mib =
                 crate::daemon::share_window_mib(&|line| say(line)).map_err(no(Cause::Boot))?;
-            let shares = u32::try_from(opened.dirs.len())
-                .map_err(|_| No(Cause::Request, "more shares than a microVM counts".into()))?;
+            // Its shares another server serves (D286) have their slots after these (`plan`).
+            let shares = opened
+                .dirs
+                .len()
+                .checked_add(request.served.len())
+                .and_then(|n| u32::try_from(n).ok())
+                .ok_or_else(|| No(Cause::Request, "more shares than a microVM counts".into()))?;
             let shape = crate::run::Shape {
                 size: prepared.size,
                 cpu_baseline: &cpu_baseline,
@@ -3639,7 +3748,63 @@ mod hosted {
     /// The run `request`, its deadline `ready_by`, of its microVM `shaped`: its members'
     /// stages, its published ports bound, its nesting grant decided, its setup and spec, its
     /// security's filters its microVM's own (`Shaped::secured`).
-    fn plan(request: &wire::Request, ready_by: Option<u64>, shaped: Shaped) -> Result<Plan, No> {
+    /// The run's shares another server serves (D286) given the share slots after its own in
+    /// `opened`, one for each of `asked`, in order: each slot's descriptor its stream from
+    /// `streams`, which the run's share process hands its VM as it is (share.rs, as it hands a
+    /// client's relay on Unix, D228; on Windows its VM's end itself, [`start_shares`]), and its
+    /// setup entry mounting it at its place as a bind's is, read-only and `noexec` as asked
+    /// (D279). Refused `Request` where the streams are not one for each, or a place is no
+    /// absolute path, the root, or one a share, a volume or another served share takes, in the
+    /// words a bind's refusal has.
+    fn serve(
+        opened: &mut crate::volumes::Opened,
+        asked: &[wire::ServedAt],
+        streams: Vec<OwnedFd>,
+    ) -> Result<(), No> {
+        if streams.len() != asked.len() {
+            return Err(No(
+                Cause::Request,
+                format!("{} streams for {} served shares", streams.len(), asked.len()),
+            ));
+        }
+        for (s, stream) in asked.iter().zip(streams) {
+            if !s.at.starts_with('/') {
+                return Err(No(
+                    Cause::Request,
+                    format!("invalid mount path: '{}' mount path must be absolute", s.at),
+                ));
+            }
+            let dest = shards_cmdline::mounts::clean(&s.at);
+            if dest == "/" {
+                return Err(No(
+                    Cause::Request,
+                    format!("{}: invalid specification: destination can't be '/'", s.at),
+                ));
+            }
+            if opened.mounts.iter().any(|(d, _)| *d == dest) {
+                return Err(No(Cause::Request, format!("Duplicate mount point: {dest}")));
+            }
+            let mut flags: Vec<&str> = Vec::with_capacity(2);
+            if s.read_only {
+                flags.push("ro");
+            }
+            if !s.exec {
+                flags.push("noexec");
+            }
+            let i = opened.dirs.len();
+            let entry = format!("volume=shards{i}\0{dest}\0{}\0", flags.join(",")).into_bytes();
+            opened.mounts.push((dest, entry));
+            opened.dirs.push((stream, s.read_only, OsString::new()));
+        }
+        Ok(())
+    }
+
+    fn plan(
+        request: &wire::Request,
+        ready_by: Option<u64>,
+        shaped: Shaped,
+        served: Vec<OwnedFd>,
+    ) -> Result<Plan, No> {
         let Shaped {
             mut run,
             mut prepared,
@@ -3690,6 +3855,8 @@ mod hosted {
         // output, what it stages, its members' ends asked for, and its own command or
         // `ATTEND`.
         let (_, _, most) = crate::run::sizes(&run.resources, crate::build::host_memory());
+        // Its shares another server serves (D286), in the slots after its own shares'.
+        serve(&mut opened, &request.served, served)?;
         // The shares it gives members as they start (D277), told in their entries.
         let given = super::share_members(request, &members)?;
         let volumes = agentfile
@@ -3847,6 +4014,7 @@ mod hosted {
             roots,
             control: request.control.clone(),
             reached,
+            served: !request.served.is_empty(),
             gpu_report: request.gpu_report,
             command: request.command.is_some(),
         })
@@ -3895,9 +4063,13 @@ mod hosted {
 
     /// The run's share process (share.rs), and what of it its VM is handed: on Unix its
     /// connection, on which it hands the VM each share's stream; on Windows each share's
-    /// stream itself (D197), sent after the run's request.
+    /// stream itself (D197), sent after the run's request, a share another server serves
+    /// (D286) its own stream, and no share process where every share is such a one.
     struct Shares {
+        #[cfg(unix)]
         child: shards_ipc::Child,
+        #[cfg(windows)]
+        child: Option<shards_ipc::Child>,
         #[cfg(unix)]
         door: Stream,
         #[cfg(windows)]
@@ -3928,7 +4100,12 @@ mod hosted {
             drop(door);
             #[cfg(windows)]
             drop(ends);
+            #[cfg(unix)]
             crate::netproc::reap(&child, record);
+            #[cfg(windows)]
+            if let Some(child) = child {
+                crate::netproc::reap(&child, record);
+            }
         }
     }
 
@@ -4192,8 +4369,13 @@ mod hosted {
             .then(|| start_shares(home, plan.dirs, plan.bounds, &job, Some(&tags)))
             .transpose()
             .map_err(boot)?;
+        #[cfg(unix)]
         if let Some(shares) = &shares {
             super::step(format_args!("its share process {} started", shares.child.id()));
+        }
+        #[cfg(windows)]
+        if let Some(child) = shares.as_ref().and_then(|s| s.child.as_ref()) {
+            super::step(format_args!("its share process {} started", child.id()));
         }
         let (vm, networked) = checking.taken();
         super::step(format_args!(
@@ -4503,7 +4685,11 @@ mod hosted {
     /// and its other the VM's, which the run's request hands it. Each directory at 4 + i,
     /// the home's private directory at 4 + n and each share's end of its stream at
     /// 5 + n + i, as its Unix twin is numbered; made in the run's job, detached from the
-    /// console, out of reach of a Ctrl-C meant for this process's owner.
+    /// console, out of reach of a Ctrl-C meant for this process's owner. A share another
+    /// server serves (D286) comes as its stream's pipe, which the VM is handed as it is, in its
+    /// place, and the share process serves none of; none is started where every share is
+    /// such a one, as the daemon starts none for clients' relays (daemon.rs `started_shares`,
+    /// D228; a pipe's handle told from a directory's by GetFileType).
     #[cfg(windows)]
     fn start_shares(
         home: &Path,
@@ -4512,8 +4698,37 @@ mod hosted {
         job: &shards_ipc::GroupJob,
         tags: Option<&[String]>,
     ) -> Result<Shares, String> {
+        // Each share's VM end, in order: a served share's its stream's, the rest made below.
+        let mut ends: Vec<Option<OwnedFd>> = Vec::with_capacity(dirs.len());
+        let mut served_here = Vec::new();
+        // The tags of those served here, whose notices it tells (D235).
+        let mut served_tags: Vec<&str> = Vec::new();
+        // Each one served here's place in `dirs`, by which a bound names it (D281).
+        let mut places: Vec<usize> = Vec::new();
+        for (i, (dir, read_only, only)) in dirs.iter().enumerate() {
+            if crate::daemon::is_pipe(dir) {
+                ends.push(Some(
+                    dir.try_clone()
+                        .map_err(|e| format!("a served share's stream: {e}"))?,
+                ));
+            } else {
+                ends.push(None);
+                served_here.push((dir, *read_only, only));
+                places.push(i);
+                if let Some(tag) = tags.and_then(|t| t.get(i)) {
+                    served_tags.push(tag);
+                }
+            }
+        }
+        if served_here.is_empty() {
+            return Ok(Shares {
+                child: None,
+                ends: ends.into_iter().flatten().collect(),
+                notices: None,
+            });
+        }
         let exe = std::env::current_exe().map_err(|e| format!("this binary: {e}"))?;
-        let streams = dirs
+        let streams = served_here
             .iter()
             .map(|_| crate::os::share_pipe())
             .collect::<io::Result<Vec<_>>>()
@@ -4523,21 +4738,26 @@ mod hosted {
         let mut args: Vec<&OsStr> = vec![OsStr::new("share")];
         args.extend(durable.iter().map(OsString::as_os_str));
         // Its notices of what its host changes (D235), on a pipe past its others.
-        let told = tags.filter(|t| t.len() == dirs.len()).map(|t| t.join(","));
-        let notices = match &told {
-            Some(told) => {
-                args.extend([OsStr::new(crate::share::NOTICES), OsStr::new(told)]);
-                Some(io::pipe().map_err(|e| format!("its notices' pipe: {e}"))?)
-            }
-            None => None,
+        let told = served_tags.join(",");
+        let notices = if tags.is_some() && served_tags.len() == served_here.len() {
+            args.extend([OsStr::new(crate::share::NOTICES), OsStr::new(&told)]);
+            Some(io::pipe().map_err(|e| format!("its notices' pipe: {e}"))?)
+        } else {
+            None
         };
-        let bounded = crate::share::bound_args(bounds.iter().map(|b| (b.share, b)));
+        // Each bounded volume's share held to its bound (D281), by its place among those
+        // served here.
+        let bounded = crate::share::bound_args(
+            bounds
+                .iter()
+                .filter_map(|b| Some((places.iter().position(|p| *p == b.share)?, b))),
+        );
         args.extend(bounded.iter().map(OsString::as_os_str));
-        for (_, read_only, only) in dirs {
+        for (_, read_only, only) in &served_here {
             args.push(OsStr::new(if *read_only { "ro" } else { "rw" }));
             args.push(only.as_os_str());
         }
-        let n = dirs.len();
+        let n = served_here.len();
         let number = |at: usize| i32::try_from(at).map_err(|_| "too many shares".to_string());
         let err = io::stderr();
         let ghosts = private_dir(home)?;
@@ -4545,7 +4765,7 @@ mod hosted {
             (err.as_fd(), 2),
             (ghosts.as_fd(), number(4usize.saturating_add(n))?),
         ];
-        for (i, ((dir, _, _), (server, _))) in dirs.iter().zip(&streams).enumerate() {
+        for (i, ((dir, _, _), (server, _))) in served_here.iter().zip(&streams).enumerate() {
             fds.push((dir.as_fd(), number(4usize.saturating_add(i))?));
             fds.push((
                 server.as_fd(),
@@ -4559,9 +4779,15 @@ mod hosted {
         let child =
             shards_ipc::spawn_detached(Some(job), &exe, &args, &fds, &crate::netproc::env_pairs(&env))
                 .map_err(|e| format!("starting the share process: {e}"))?;
+        let mut made = streams.into_iter().map(|(_, vm)| vm);
+        let ends = ends
+            .into_iter()
+            .map(|end| end.or_else(|| made.next()))
+            .collect::<Option<Vec<_>>>()
+            .ok_or("a share's stream was not made")?;
         Ok(Shares {
-            child,
-            ends: streams.into_iter().map(|(_, vm)| vm).collect(),
+            child: Some(child),
+            ends,
             notices: notices.map(|(r, _)| OwnedFd::from(r)),
         })
     }
@@ -6536,6 +6762,8 @@ mod hosted {
         pause_asks: Mutex<Option<Vec<Asked<Unheld>>>>,
         /// The host directories its shares give its guest, canonical (D259).
         reached: &'a [PathBuf],
+        /// It has shares another server serves (D286): no save of it is made.
+        served: bool,
         /// What its own lanes of its agent-control endpoint are served with, where its
         /// orchestrator asked for the endpoint (D238, D252, D254).
         agent: Option<Agent>,
@@ -7658,7 +7886,10 @@ mod hosted {
                 return Err(e);
             }
         };
-        let plan = match plan(&request, ready_by, shaped) {
+        // No served share's stream (D286): its share process started before its run asked, so a
+        // run naming one is another microVM's than this one (its exemplar's check above), and
+        // one this host's exemplar names is refused by `serve` for its streams' want.
+        let plan = match plan(&request, ready_by, shaped, Vec::new()) {
             Ok(plan) => plan,
             // Its shares' directories went with `shaped`, as `plan` failed.
             Err(e) => {
@@ -7887,6 +8118,7 @@ mod hosted {
                 pauses: Mutex::new(super::Pauses::new()),
                 pause_asks: Mutex::new(Some(Vec::new())),
                 reached: &plan.reached,
+                served: plan.served,
                 agent,
                 stdio: std::sync::OnceLock::new(),
                 net: net.as_ref(),
@@ -9584,6 +9816,15 @@ mod hosted {
                 "this host's microVMs take no snapshots".into(),
             ));
         }
+        // A share another server serves (D286) keeps its state in that server, which a snapshot
+        // holds none of: its guest restored would ask it of a server that never answered it.
+        if live.served {
+            return Err((
+                wire::SaveRefusal::Unsupported,
+                "its shares another server serves keep their state in that server, which no snapshot holds"
+                    .into(),
+            ));
+        }
         let mut reached = live.reached.to_vec();
         reached.extend(lock(&live.plugged).values().flatten().map(|p| p.host.clone()));
         let target = super::destination(Path::new(to), live.home, &reached)?;
@@ -10194,6 +10435,108 @@ mod hosted {
         }
     }
 
+    #[cfg(test)]
+    #[allow(clippy::unwrap_used)]
+    mod served {
+        use super::*;
+
+        /// A descriptor of a file of `dir`'s, standing in for a share's in `Opened`: `serve` reads
+        /// none of them.
+        fn held(dir: &Path, name: &str) -> OwnedFd {
+            let at = dir.join(name);
+            std::fs::write(&at, b"").unwrap();
+            OwnedFd::from(std::fs::File::open(&at).unwrap())
+        }
+
+        /// D286. Do: give a run with one share of its own two served shares, the first read-only
+        /// at a place to be cleaned, the second whose files may not be run. Expect: each takes
+        /// the slot after the run's own (`shards1`, `shards2`), its descriptor its stream,
+        /// read-only as asked, its entry mounting it at its place, clean, as a bind's is (`ro`,
+        /// `noexec`). Do: a stream short, a place relative, the root, and the run's share's
+        /// place. Expect: each refused `Request` in a bind's words, nothing added.
+        #[test]
+        fn served_shares_take_the_slots_after_the_runs_own_and_mount_as_binds_do() {
+            let dir = shards_testdir::TempDir::new("api-served").unwrap();
+            let own = || {
+                let mut opened = crate::volumes::Opened::default();
+                opened
+                    .dirs
+                    .push((held(dir.path(), "own"), false, OsString::new()));
+                opened
+                    .mounts
+                    .push(("/w".into(), b"volume=shards0\0/w\0\0".to_vec()));
+                opened
+            };
+            let at = |at: &str, read_only, exec| wire::ServedAt {
+                at: at.into(),
+                read_only,
+                exec,
+                members: None,
+                handle: None,
+            };
+            let mut opened = own();
+            serve(
+                &mut opened,
+                &[at("/v/a/../b", true, true), at("/x", false, false)],
+                vec![held(dir.path(), "s0"), held(dir.path(), "s1")],
+            )
+            .unwrap();
+            let entries: Vec<(&str, &[u8])> = opened
+                .mounts
+                .iter()
+                .map(|(d, e)| (d.as_str(), e.as_slice()))
+                .collect();
+            assert_eq!(
+                entries,
+                [
+                    ("/w", &b"volume=shards0\0/w\0\0"[..]),
+                    ("/v/b", &b"volume=shards1\0/v/b\0ro\0"[..]),
+                    ("/x", &b"volume=shards2\0/x\0noexec\0"[..]),
+                ]
+            );
+            let modes: Vec<(bool, bool)> = opened
+                .dirs
+                .iter()
+                .map(|(_, read_only, only)| (*read_only, only.is_empty()))
+                .collect();
+            assert_eq!(modes, [(false, true), (true, true), (false, true)]);
+            for (asked, streams, why) in [
+                (
+                    vec![at("/v", false, true)],
+                    Vec::new(),
+                    "0 streams for 1 served shares",
+                ),
+                (
+                    vec![at("v", false, true)],
+                    vec![held(dir.path(), "r0")],
+                    "mount path must be absolute",
+                ),
+                (
+                    vec![at("/a/..", false, true)],
+                    vec![held(dir.path(), "r1")],
+                    "destination can't be '/'",
+                ),
+                (
+                    vec![at("/w/", false, true)],
+                    vec![held(dir.path(), "r2")],
+                    "Duplicate mount point: /w",
+                ),
+            ] {
+                let mut opened = own();
+                let refused = serve(&mut opened, &asked, streams);
+                assert!(
+                    matches!(&refused, Err(No(Cause::Request, w)) if w.contains(why)),
+                    "{why}: {refused:?}"
+                );
+                assert_eq!(
+                    (opened.dirs.len(), opened.mounts.len()),
+                    (1, 1),
+                    "{why}: something added"
+                );
+            }
+        }
+    }
+
     #[cfg(all(test, unix))]
     #[allow(clippy::unwrap_used)]
     mod tests {
@@ -10371,6 +10714,7 @@ mod hosted {
                 pauses: Mutex::new(super::super::Pauses::new()),
                 pause_asks: Mutex::new(Some(Vec::new())),
                 reached: &[],
+                served: false,
                 agent: None,
                 stdio: std::sync::OnceLock::new(),
                 net: None,
@@ -13095,6 +13439,30 @@ mod hosted {
             bridges.close();
         }
 
+        /// D286. Do: ask a save of a run that has a share another server serves. Expect: refused
+        /// `Unsupported`, where this host's microVMs take snapshots in the words naming that
+        /// share's server, and nothing made where it was asked.
+        #[test]
+        fn a_run_with_a_served_share_is_never_saved() {
+            let dir = shards_testdir::TempDir::new("api-save-served").unwrap();
+            let answers = super::super::Answers(Mutex::new(Box::new(Vec::<u8>::new())));
+            let (link, _vm) = Stream::pair().unwrap();
+            let live = Live {
+                served: true,
+                ..live(&answers, dir.path(), link, None)
+            };
+            let to = dir.path().join("saved");
+            let refused = save(&live, to.to_str().unwrap());
+            let Err((cause, why)) = refused else {
+                panic!("saved: {refused:?}");
+            };
+            assert_eq!(cause, wire::SaveRefusal::Unsupported);
+            if shards_vmm::vm::SNAPSHOTS {
+                assert!(why.contains("another server serves"), "{why}");
+            }
+            assert!(!to.exists(), "a save's directory made");
+        }
+
         /// D259's run host, its VM played by the test on the VM's end of the link and the link
         /// followed as a run's is. Do: save where the owner may, and while its VM holds its
         /// answer ask a second; save again, the VM refusing; save once more, the VM's link
@@ -13876,6 +14244,65 @@ mod tests {
         );
     }
 
+    /// D286 beside D277: a share another server serves is given its members as a share is, and
+    /// is no `-v` bind. Do: give a run a share to every member that runs and a served share to
+    /// its harness by name. Expect: no bind but the share's, and each given its harness by its
+    /// index, the share's first. Do: give a served share to the agent of files alone, and to
+    /// one the image declares none of. Expect: each refused `Image` by name.
+    #[test]
+    fn a_served_shares_members_are_given_as_a_shares_are() {
+        let codex = wire::ShareMember {
+            kind: wire::MemberKind::Harness,
+            name: "codex".into(),
+        };
+        let served = |to: wire::ShareTo| wire::ServedAt {
+            at: "/proj".into(),
+            read_only: false,
+            exec: true,
+            members: Some(to),
+            handle: None,
+        };
+        let mut r = request(Vec::new());
+        r.shares = vec![wire::ShareAt {
+            host: "/h".into(),
+            at: "/w".into(),
+            read_only: false,
+            members: Some(wire::ShareTo::Every),
+            exec: true,
+        }];
+        r.served = vec![served(wire::ShareTo::Members(vec![codex]))];
+        assert_eq!(hosted::as_run(&r, None).binds, ["/h:/w"]);
+        let given = share_members(&r, &members()).unwrap();
+        let named: Vec<(&str, Vec<u32>)> = given
+            .iter()
+            .map(|g| (g.at.as_str(), g.members.iter().map(|m| m.0).collect()))
+            .collect();
+        assert_eq!(named, [("/w", vec![1]), ("/proj", vec![1])]);
+        for (to, why) in [
+            (
+                wire::ShareMember {
+                    kind: wire::MemberKind::Agent,
+                    name: "helper".into(),
+                },
+                "files alone",
+            ),
+            (
+                wire::ShareMember {
+                    kind: wire::MemberKind::Agent,
+                    name: "nobody".into(),
+                },
+                "declares no such member",
+            ),
+        ] {
+            r.served = vec![served(wire::ShareTo::Members(vec![to]))];
+            let refused = share_members(&r, &members()).map(|g| g.len());
+            assert!(
+                matches!(&refused, Err(No(Cause::Image, w)) if w.contains("/proj") && w.contains(why)),
+                "{why}: {refused:?}"
+            );
+        }
+    }
+
     fn request(members: Vec<wire::MemberStage>) -> wire::Request {
         wire::Request {
             image: "i".into(),
@@ -13895,6 +14322,7 @@ mod tests {
             upstream_roots: Vec::new(),
             plug_roots: Vec::new(),
             egress_ceiling: Vec::new(),
+            served: Vec::new(),
             gpu_report: None,
         }
     }
