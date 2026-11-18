@@ -21,6 +21,7 @@ members = [
   "crates/http2",
   "crates/init",
   "crates/ipc",
+  "crates/judge",
   "crates/net",
   "crates/net-process",
   "crates/netring",
@@ -38,6 +39,7 @@ members = [
   "crates/template",
   "crates/testdir",
   "crates/testguest",
+  "crates/testwait",
   "crates/tui",
   "crates/user",
   "crates/verify",
@@ -47,7 +49,7 @@ members = [
 ]
 # The guest's binaries (init, the in-VM server) only build for Linux guests; host builds
 # default to the rest.
-default-members = ["crates/abi", "crates/afunix", "crates/api", "crates/apple", "crates/archive", "crates/build", "crates/cmdline", "crates/devcgroup", "crates/agentfile", "crates/ext4", "crates/flate", "crates/gateway", "crates/git", "crates/http2", "crates/image", "crates/ipc", "crates/net", "crates/net-process", "crates/netring", "crates/gitsign", "crates/tuf", "crates/sigstore", "crates/registry", "crates/remote", "crates/rego", "crates/seccomp", "crates/shards", "crates/syscall-filter", "crates/template", "crates/testdir", "crates/tui", "crates/user", "crates/verify", "crates/vm-process", "crates/vmm", "crates/zstd"]
+default-members = ["crates/abi", "crates/afunix", "crates/api", "crates/apple", "crates/archive", "crates/build", "crates/cmdline", "crates/devcgroup", "crates/agentfile", "crates/ext4", "crates/flate", "crates/gateway", "crates/git", "crates/http2", "crates/image", "crates/ipc", "crates/judge", "crates/net", "crates/net-process", "crates/netring", "crates/gitsign", "crates/tuf", "crates/sigstore", "crates/registry", "crates/remote", "crates/rego", "crates/seccomp", "crates/shards", "crates/syscall-filter", "crates/template", "crates/testdir", "crates/testwait", "crates/tui", "crates/user", "crates/verify", "crates/vm-process", "crates/vmm", "crates/zstd"]
 # Vendored crates are built as published, under their own lints (vendor/README.md).
 exclude = ["vendor"]
 

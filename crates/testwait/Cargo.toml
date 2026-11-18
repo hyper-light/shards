@@ -1,0 +1,24 @@
+[package]
+name = "shards-testwait"
+version = "0.1.0"
+description = "A test's waits judged on its own threads, as D215 judges a wait on a VM process, for shards' tests"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+shards-judge = { path = "../judge" }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+# A member's CPU clock, which another thread reads while it lives (D191's `ThreadClock`).
+shards-vmm = { path = "../vmm" }
+
+[target.'cfg(windows)'.dependencies]
+# The cycles a thread and this process used (QueryThreadCycleTime, QueryProcessCycleTime).
+windows-sys = { workspace = true, features = ["Win32_System_WindowsProgramming"] }
+
+[lints]
+workspace = true

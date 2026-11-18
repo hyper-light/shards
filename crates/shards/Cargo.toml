@@ -128,6 +128,8 @@ windows-sys = { workspace = true, features = [
 hyper-quic = { git = "https://github.com/hyper-light/hyper-raft", rev = "e0613f524b0df198cc61dc1e82b33c22d604cf7b", default-features = false }
 shards-testdir = { path = "../testdir" }
 shards-testguest = { path = "../testguest" }
+# Its unit tests' waits, judged on their own threads (D215, #77), as shards-remote's are.
+shards-testwait = { path = "../testwait" }
 # `load`'s archives of every compression (tests/containers.rs), written in-process.
 bzip2 = "0.6"
 lzma-rust2 = { version = "0.21", default-features = false, features = ["std", "xz", "encoder"] }

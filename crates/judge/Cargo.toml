@@ -1,0 +1,12 @@
+[package]
+name = "shards-judge"
+version = "0.1.0"
+description = "D215's judge of a wait on another's work: what a kind of answer has taught, and a wait's schedule and verdict"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true

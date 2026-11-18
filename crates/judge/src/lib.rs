@@ -21,6 +21,10 @@
 //! ([`SPREAD`]). What a look finds is its
 //! caller's to say ([`Found`]): shards-api's waits read their guest's VM process
 //! (`progress::Follow`), and so do the daemon's waits on a microVM's own answers (D188).
+//!
+//! A crate of its own, of std alone, which shards-api re-exports: the tests' waits on their
+//! own threads (shards-testwait) judge by the same rule, and shards-remote's tests, beneath
+//! shards-api, take them.
 
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
@@ -46,7 +50,7 @@ impl Rate {
 }
 
 /// What a wait that follows its party found as it refused it
-/// ([`Refusal::Stalled`](crate::Refusal::Stalled)). Kept in nanoseconds, each past u64's (584
+/// (shards-api's `Refusal::Stalled`). Kept in nanoseconds, each past u64's (584
 /// years) its most, and its kind's rates boxed apart, so that a refusal is no larger for
 /// them (clippy's `result_large_err` over a pair of refusals, crates/api/tests/sim.rs).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -143,7 +147,7 @@ impl Stall {
     }
 }
 
-/// What a process has seen of a kind of answer ([`Shards::seen`](crate::Shards::seen),
+/// What a process has seen of a kind of answer (shards-api's `Shards::seen`,
 /// [`Record::seen`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Seen {

@@ -36,7 +36,6 @@ pub mod control;
 pub mod demand;
 pub mod host;
 pub mod image;
-mod judge;
 mod native;
 pub mod networks;
 pub mod physical;
@@ -63,7 +62,6 @@ pub use client::{
     prepare_boot, prepare_native_boot, recorded_console_bytes, recorded_console_bytes_at, vm_process_file,
 };
 pub use host::{CheckRefusal, HostCheck, Unusable, host_check};
-pub use judge::{Found, Judge, LOOKS_TO_REFUSE, Rate, Rated, Record, Seen, Span, Stall};
 #[cfg(windows)]
 pub use native::app_container_records;
 pub use native::{
@@ -73,6 +71,7 @@ pub use physical::{GpuName, GpuProbe, GpuProbeError, PhysicalGpu, PhysicalGpuErr
 pub use progress::{Awaited, Bound, Follow, Followed, Unfollowed, Watch, runnable_threads};
 #[cfg(windows)]
 pub use progress::{ThreadsHeld, threads_held, threads_said};
+pub use shards_judge::{Found, Judge, LOOKS_TO_REFUSE, Rate, Rated, Record, Seen, Span, Stall};
 
 /// A guest to boot.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -44,8 +44,8 @@ use std::time::{Duration, Instant};
 
 #[cfg(unix)]
 use crate::Identity;
-use crate::judge::{Found, Judge, Record, Seen, Span, Stall};
 use crate::{End, ProcessFailure, Refusal};
+use crate::{Found, Judge, Record, Seen, Span, Stall};
 
 /// What a wait that follows its guest's VM process waits for. This process learns each
 /// apart, as each takes its own time.
@@ -2289,7 +2289,7 @@ mod starved_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::judge::Rate;
+    use crate::Rate;
 
     /// A process is followed by its pid alone, as the daemon follows its VM process: read
     /// with the start that tells it from a process given its pid later, so that one reaped is
