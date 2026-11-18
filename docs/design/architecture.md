@@ -42963,6 +42963,19 @@ an oplock that breaks giving way. So neither FILE_SHARE_DELETE nor a POSIX renam
   Mac and CI windows-2022/2025, with the D281 test above; and its cost (R14): a command right
   after a run waits for that VM's end on Windows, `shards run --rm IMAGE true` then
   `shards ps -a` timed on jupiter with and without this, n/p50/p90/p99/max.
+- *Tested with no race* (own-36e, kiln goal #37, 2026-11-18; written, not run in this lane).
+  CI 44205094460 (0f83166da9) and 44227612442 (7ca9f467e2), both before A1 (9b80040582),
+  failed the D281 test above and engine.rs `a_volumes_data_outlives_the_microvm_that_wrote_it`
+  on windows-2022 as 44189693085 did; the E2E's red waits on its VM's teardown outlasting
+  the removal. The daemon's own `a_runs_volumes_and_end_wait_for_its_vm_process` (Windows, no
+  VM, on CI's Windows jobs) plays the VM with a process it keeps: a run holding a volume, as
+  `plug volume` holds one, its VM followed as `watch` follows each VM it starts. Past its
+  DONE, while that process lives, the volume's clearing is refused as in use
+  (`Store::remove_unheld`) and a waiter for its end (`wake_at_end`, as `stop` and `rm -f`
+  wait) is not told; once the test ends the process, the end is told and the clearing done.
+  Red with `park_end` never called (`redgreen/win-a1.patch`), at its first look past the
+  DONE. Owed: its runs on jupiter and CI's Windows jobs, and a windows-2022 run with A1
+  (44245219858, at 1799412f9b).
 
 ### D285. Networks shared by runs: a member of one microVM reaches a member of another on a named network, each flow granted at both of its ends (designed 2026-11-16; slices 1 to 5, a network's leases held across processes, the daemon's runs on them, the network process's switch, the API, wire and run host, and the guest's side, built; slice 6, a network made and removed by shards-api and a run's names withdrawn as its link ends and, first of all, as its VM ends, built, its real-VM tests written, their runs lane xnet-v's)
 

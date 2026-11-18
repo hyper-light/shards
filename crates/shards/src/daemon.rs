@@ -16010,6 +16010,65 @@ mod tests {
         });
     }
 
+    /// On Windows a run's volumes and its told end wait for its VM process's end (D281, A1),
+    /// which comes past its DONE, once its layer is kept or sent and its guest has powered off,
+    /// its files held open and mapped until then. Do: a run holding a volume, as `plug volume`
+    /// holds one, on a VM played by a process the test keeps (`sleep`), followed as `watch`
+    /// follows each VM it starts; its DONE taken, then that process ended. Expect, while it
+    /// lives, the volume's clearing refused as in use (`Store::remove_unheld`, as shards-api's
+    /// `clear_volume` clears one) and a command waiting for the run's end (`wake_at_end`, as
+    /// `stop` and `rm -f` wait) not told; once it has ended, the end told and the clearing done.
+    /// The process ends only as the test ends it: no VM, and no race with a VM's teardown. Red:
+    /// `park_end` never called (lanes/redgreen/win-a1.patch), the volume let go of at the DONE.
+    #[cfg(windows)]
+    #[test]
+    fn a_runs_volumes_and_end_wait_for_its_vm_process() {
+        use shards_api::volumes::ClearCause;
+        let t = Test::new("vm-holds");
+        t.run(|t| {
+            let store = crate::volumes::Store::new(&t.home);
+            let made = {
+                let _store = crate::volumes::lock();
+                store.create("kept", &Default::default(), &Default::default(), "")
+            };
+            assert!(made.is_ok(), "{made:?}");
+            let (id, starting, vm) = running(t, "holder");
+            let process = match lock(&t.daemon.runs).get(&id) {
+                Some(RunState::Tracked(run)) => run.vm.clone(),
+                _ => panic!("{id} is not running"),
+            };
+            t.t.daemon.follow_vm(t.threads, process.clone(), None, None);
+            let mut held = crate::volumes::Holds::default();
+            assert!(matches!(held.found(&store, "kept"), Ok(Some(_))));
+            let inbox = t.daemon.inbox_of(&id).unwrap();
+            lock(&inbox).volumes.extend(held);
+            let (_, told) = t.daemon.wake_at_end(&id).unwrap().unwrap();
+            let clear = || {
+                let _store = crate::volumes::lock();
+                store.remove_unheld("kept")
+            };
+            say(&vm, kind::DONE, &[0]);
+            t.until("its DONE was never taken", |_| lock(&inbox).ended);
+            assert!(
+                matches!(clear(), Err((ClearCause::InUse, _))),
+                "its volume let go of as its DONE was taken, its VM process still running"
+            );
+            assert!(
+                lock(&t.daemon.waiters).contains_key(&id),
+                "its end told as its DONE was taken, its VM process still running"
+            );
+            process.kill(shards_ipc::signal::SIGKILL).unwrap();
+            t.until("its end was never told as its VM process ended", |d| {
+                !lock(&d.waiters).contains_key(&id)
+            });
+            let mut code = [0u8; 1];
+            (&told).read_exact(&mut code).unwrap();
+            assert_eq!(code, [0], "its end told with another status");
+            assert_eq!(clear(), Ok(()), "its volume held past its VM process's end");
+            joined(starting.run).unwrap();
+        });
+    }
+
     /// A run's VM says DONE before it tells its client, whose next program may then bind
     /// the run's port: found in use, the port is the run's no more once what the run sent
     /// is taken, though nothing has taken it yet, and is free once the run's network
