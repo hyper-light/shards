@@ -1627,15 +1627,18 @@ mod tests {
         }
     }
 
-    /// An owner's subscription at `offset`, made again while the endpoint still holds a
-    /// connection it has not let go of, every RTT sample of which came within `life`, told its
-    /// first record goes at `at`.
+    /// An owner's subscription at `offset`, made again while the endpoint, whose driver's view is
+    /// `endpoint`, still holds a connection it has not let go of, every RTT sample of which came
+    /// within `life`, told its first record goes at `at`.
     ///
     /// Refused while its endpoint holds that connection, which it asks for an answer: unheard
     /// past its probe timeout since (D180), its place is the next attempt's, made past that time
-    /// as `life` bounds it (`probe_timeout_within`). A refusal after that is the place never let
-    /// go. Before, its party's stillness, which its endpoint's probes of the connection gone
-    /// never let come (CI 44227612442, aarch64 gnu: held to the step's limit).
+    /// as `life` bounds it (`probe_timeout_within`), moved on by what its endpoint was absent
+    /// since before its ask, as it judges on the time it was there to hear (`Liveness::absent`).
+    /// A refusal of an attempt begun past that is the place never let go. Before, its party's
+    /// stillness, which its endpoint's probes of the connection gone never let come (CI
+    /// 44227612442, aarch64 gnu: held to the step's limit); then the probe timeout alone, which
+    /// a loaded host's absence outlasts (CI 44245219858's net.rs newcomers).
     fn subscribed(
         owner: &Identity,
         server: Fingerprint,
@@ -1643,21 +1646,34 @@ mod tests {
         offset: u64,
         at: u64,
         life: Duration,
+        endpoint: crate::net::View,
     ) -> Live {
+        let absence = crate::net::Absence::of(endpoint);
         let mut due: Option<Instant> = None;
         loop {
             if let Some(due) = due {
-                std::thread::sleep(due.saturating_duration_since(Instant::now()));
+                let until = due + absence.since();
+                std::thread::sleep(until.saturating_duration_since(Instant::now()));
             }
+            let began = Instant::now();
             let live = Live::connect(owner, server, address, offset);
             match live.hear() {
                 Heard::Said(Said::Taken { accepted, .. }) => {
                     assert_eq!(accepted, at);
                     return live;
                 }
-                Heard::Lost(_) if due.is_none() => {
+                Heard::Lost(why) => {
                     drop(live);
-                    due = Some(Instant::now() + crate::net::probe_timeout_within(life));
+                    if let Some(due) = due {
+                        let absent = absence.since();
+                        assert!(
+                            began < due + absent,
+                            "refused {:?} past its holder's time (its endpoint absent {absent:?} of it): the place never let go, {why:?}",
+                            began.saturating_duration_since(due + absent)
+                        );
+                    } else {
+                        due = Some(Instant::now() + crate::net::probe_timeout_within(life));
+                    }
                 }
                 other => panic!("no subscription: {other:?}"),
             }
@@ -1760,6 +1776,7 @@ mod tests {
             first.len() as u64,
             at,
             life,
+            control.sender.view(),
         );
         live.send(end(at, 0).to_vec());
         match live.hear() {

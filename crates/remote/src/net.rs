@@ -56,6 +56,10 @@ struct Viewed {
     window: AtomicU64,
     /// Nanoseconds, saturated; zero before any connection's window was learned.
     learned: AtomicU64,
+    /// Under test, the absence its driver has taken out of its connections' instants
+    /// ([`Liveness::absent`]), summed: nanoseconds, saturated.
+    #[cfg(test)]
+    absent: AtomicU64,
 }
 
 impl View {
@@ -79,6 +83,25 @@ impl View {
 
     fn heard_one(&self) {
         self.0.heard.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Under test, the absence its driver has taken out of its connections' instants so far
+    /// ([`Liveness::absent`]): it judges each wait on the time it was there to hear, so a wait
+    /// it judges ends that much later on another thread's clock.
+    #[cfg(test)]
+    pub(crate) fn absent(&self) -> Duration {
+        Duration::from_nanos(self.0.absent.load(Ordering::Acquire))
+    }
+
+    #[cfg(test)]
+    fn was_absent(&self, gone: Duration) {
+        let gone = u64::try_from(gone.as_nanos()).unwrap_or(u64::MAX);
+        let _ = self
+            .0
+            .absent
+            .fetch_update(Ordering::Release, Ordering::Relaxed, |was| {
+                Some(was.saturating_add(gone))
+            });
     }
 
     fn judged_by(&self, liveness: &Liveness) {
@@ -1437,6 +1460,8 @@ impl<H: Handler> Driver<H> {
                 for conn in self.conns.values_mut() {
                     conn.liveness.absent(gone);
                 }
+                #[cfg(test)]
+                self.view.was_absent(gone);
             }
             let mut turn = Turn {
                 at: now,
@@ -2525,6 +2550,31 @@ pub(crate) fn probe_timeout_within(rtt: Duration) -> Duration {
         .saturating_add(max_ack_delay)
 }
 
+/// What a driver was absent from a point on ([`View::absent`]). Its judgments' instants move on
+/// by that much (D180, [`Liveness::absent`]), so a holder's time as the protocol gives it lands
+/// that much later on a test's clock. It is read before what is judged begins (a newcomer's ask,
+/// a holder's accepting), so that none of what moved the judgment is left out. A test's due for
+/// a holder's place is the protocol's time plus [`Absence::since`] read after the attempt it
+/// judged: net.rs's newcomers and managed's successors.
+#[cfg(test)]
+pub(crate) struct Absence {
+    view: View,
+    from: Duration,
+}
+
+#[cfg(test)]
+impl Absence {
+    pub(crate) fn of(view: View) -> Absence {
+        let from = view.absent();
+        Absence { view, from }
+    }
+
+    /// What its driver has been absent since it was read.
+    pub(crate) fn since(&self) -> Duration {
+        self.view.absent().saturating_sub(self.from)
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -3326,22 +3376,35 @@ mod tests {
     }
 
     /// A newcomer's attempts (`attempt`, each its answer judged), `after` each refused one, until
-    /// one connects, when it did: each refused one begun before `due`, when its holder's place is
-    /// the newcomer's as the protocol gives it, and the first begun past `due` connected. A holder
-    /// never given up fails the test at the first attempt past its time, never at a window of the
-    /// test's own (R03; before, 20 s and 30 s).
-    fn connects_by(due: Instant, attempt: impl Fn() -> Heard, mut after: impl FnMut()) -> Instant {
+    /// one connects, when it did. Each refused one began before its holder's time: `due`, when its
+    /// holder's place is the newcomer's as the protocol gives it, moved on by what its endpoint
+    /// was absent since `absence` was read, before its judgment of the holder began. Its endpoint
+    /// judges on the time it was there to hear (D180, [`Liveness::absent`]), and the absence is read
+    /// again after each refusal. The first attempt begun past that time connected. A holder never
+    /// given up fails the test at the first attempt past its time, never at a window of the
+    /// test's own (R03; before, 20 s and 30 s). With `due` alone, CI 44245219858's Linux jobs
+    /// refused the first attempt past it in three of four, 53 µs to 1.14 ms past.
+    fn connects_by(
+        due: Instant,
+        absence: &Absence,
+        attempt: impl Fn() -> Heard,
+        mut after: impl FnMut(),
+    ) -> Instant {
         let mut attempts = 0;
         loop {
             attempts += 1;
             let began = Instant::now();
             match attempt() {
                 Heard::Connected(_) => return Instant::now(),
-                refused => assert!(
-                    began < due,
-                    "attempt {attempts}, begun {:?} past its holder's time, refused: {refused:?}",
-                    began.saturating_duration_since(due)
-                ),
+                refused => {
+                    let absent = absence.since();
+                    let due = due + absent;
+                    assert!(
+                        began < due,
+                        "attempt {attempts}, begun {:?} past its holder's time (its endpoint absent {absent:?} of it), refused: {refused:?}",
+                        began.saturating_duration_since(due)
+                    );
+                }
             }
             after();
         }
@@ -3493,13 +3556,20 @@ mod tests {
                 matches!(h, Heard::Lost(..) | Heard::Connected(_))
             })
         };
+        // Its endpoint's absence from before the ask on, which moves the ask with it.
+        let absence = Absence::of(endpoint.view());
         let first = attempt();
         assert!(
             matches!(first, Heard::Lost(..)),
             "its first attempt asks the holder: {first:?}"
         );
         // Unheard since that ask, its place is the newcomer's past its probe timeout.
-        connects_by(Instant::now() + probe_timeout_within(handshake), attempt, || {});
+        connects_by(
+            Instant::now() + probe_timeout_within(handshake),
+            &absence,
+            attempt,
+            || {},
+        );
         let Heard::Lost(gone, _) = next_heard(&at_endpoint, |h| matches!(h, Heard::Lost(..))) else {
             panic!("its holder was not let go");
         };
@@ -3575,6 +3645,8 @@ mod tests {
             })
         };
         // Its first datagram replayed after each ask, as an answer would come, keeps no place.
+        // Its endpoint's absence from before the ask on, which moves the ask with it.
+        let absence = Absence::of(endpoint.view());
         let asked = attempt();
         assert!(
             matches!(asked, Heard::Lost(..)),
@@ -3587,7 +3659,7 @@ mod tests {
             socket.send_to(&first, address).unwrap();
         };
         replay();
-        connects_by(due, attempt, replay);
+        connects_by(due, &absence, attempt, replay);
         // Let go as unanswering, its replays no answer: not as a handshake that answered and
         // made no progress for its window, which a replay heard would have it be.
         match next_heard(&at_endpoint, |_| true) {
@@ -4017,11 +4089,16 @@ mod tests {
             }
         }
 
+        /// Its endpoint's absence from now on ([`Absence`]), read before what it judges begins.
+        fn absence(&self) -> Absence {
+            Absence::of(self.endpoint.view())
+        }
+
         /// Attempts, the holder answering each as `answer` says, until one connects, each refused
-        /// one begun before `due` and the first begun past it connected ([`connects_by`]): when
-        /// it did.
-        fn connects_by(&self, due: Instant, answer: impl FnMut()) -> Instant {
-            connects_by(due, || self.attempt(), answer)
+        /// one begun before `due` as its endpoint's absence since `absence` was read moves it,
+        /// and the first begun past that connected ([`connects_by`]): when it did.
+        fn connects_by(&self, due: Instant, absence: &Absence, answer: impl FnMut()) -> Instant {
+            connects_by(due, absence, || self.attempt(), answer)
         }
 
         fn end(self) {
@@ -4045,12 +4122,15 @@ mod tests {
     fn a_handshake_that_answers_but_never_advances_gives_its_place_after_a_window_without_progress() {
         let c = Contended::new();
         let began = Instant::now();
+        // Its endpoint's absence from before it accepts the holder on, which moves its last
+        // progress with it.
+        let absence = c.absence();
         let mut holder = c.hand();
         holder.take(INITIAL, false);
         // Its endpoint accepted it, its last progress, before its Initial came.
         let accepted = Instant::now();
         let cold = crate::tls::Known::COLD_PTO.saturating_mul(COLD_PROBE_TIMEOUTS);
-        let took = c.connects_by(accepted + cold, || holder.answer());
+        let took = c.connects_by(accepted + cold, &absence, || holder.answer());
         let waited = took - began;
         let lost = next_heard(&c.at_endpoint, |_| true);
         assert!(
@@ -4089,21 +4169,28 @@ mod tests {
         c.end();
     }
 
-    /// The window is the slowest handshake completed at this endpoint, learned as they end: after
+    /// The window is the slowest handshake completed at this endpoint, learned as they end. After
     /// one whose answer was held 3 s, a handshake that answers but never advances keeps its place
-    /// for that window without progress, past its 3 s, past its 999 ms probe timeout, and gives it
-    /// way at the first attempt begun past the slow one's handshake as this test saw it, short of
-    /// the cold window of 6.993 s. Red with a handshake held by its answers alone: the newcomer
-    /// refused at every attempt.
+    /// for that window without progress, past its 3 s less what its endpoint was absent through
+    /// that round, past its 999 ms probe timeout. It gives way at the first attempt begun past the
+    /// slow one's handshake as this test saw it, moved on by its endpoint's absence since it
+    /// accepted the holder, short of the cold window of 6.993 s. Its endpoint measures a handshake
+    /// on the time it was there to hear (D180, [`Liveness::handshake_took`]): CI 44245219858's
+    /// aarch64 Windows job learned 2.986 s of a 3 s hold, its late timer wakes taken out, and let
+    /// go at 2.99 s. Red with a handshake held by its answers alone: the newcomer refused at
+    /// every attempt.
     #[test]
     fn the_learned_window_grows_with_a_slow_completed_handshake() {
         let c = Contended::new();
         // A fast one first, then a slow one, each closed after: its answer to its server's whole
         // flight held `hold`, so that its endpoint's measure of it, from its first packet to its
-        // end, is past `hold` and within the round as this test saw it.
+        // end, is past `hold` less its absence through the round, and within the round as this
+        // test saw it.
         let slow = Duration::from_secs(3);
         let mut slowest = Duration::ZERO;
+        let mut slow_absent = Duration::ZERO;
         for hold in [Duration::ZERO, slow] {
+            let absence = c.absence();
             let dialed = Instant::now();
             let mut hand = c.hand();
             let (mut initial, rest) =
@@ -4116,6 +4203,9 @@ mod tests {
                 Heard::Connected(_)
             ));
             slowest = slowest.max(dialed.elapsed());
+            if hold == slow {
+                slow_absent = absence.since();
+            }
             hand.close();
             assert!(matches!(next_heard(&c.at_endpoint, |_| true), Heard::Lost(..)));
         }
@@ -4127,6 +4217,7 @@ mod tests {
         );
 
         let began = Instant::now();
+        let absence = c.absence();
         let mut holder = c.hand();
         holder.take(INITIAL, false);
         // Its endpoint accepted it, its last progress, before its Initial came; its window the
@@ -4134,10 +4225,10 @@ mod tests {
         // RTT sample).
         let accepted = Instant::now();
         let window = slowest.max(crate::tls::Known::COLD_PTO);
-        let took = c.connects_by(accepted + window, || holder.answer()) - began;
+        let took = c.connects_by(accepted + window, &absence, || holder.answer()) - began;
         assert!(
-            took >= slow,
-            "let go before the slowest handshake's window: {took:?}, {:?}",
+            took + slow_absent >= slow,
+            "let go before the slowest handshake's window: {took:?}, its endpoint absent {slow_absent:?} of its slow round, {:?}",
             next_heard(&c.at_endpoint, |_| true)
         );
         c.end();

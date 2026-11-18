@@ -2020,10 +2020,14 @@ mod tests {
         pair.producer.submit(bytes).unwrap();
         let start = Instant::now();
         let mut refused = 0;
+        // Its endpoint's absence from before its first attempt asks the vanished owner on, which
+        // moves that ask with it (D180, `net::Liveness::absent`).
+        let absence = crate::net::Absence::of(pair.control.sender.view());
         let mut due: Option<Instant> = None;
         let heard = loop {
             if let Some(due) = due {
-                std::thread::sleep(due.saturating_duration_since(Instant::now()));
+                let until = due + absence.since();
+                std::thread::sleep(until.saturating_duration_since(Instant::now()));
             }
             let (hears, heard) = mpsc::channel();
             let config = client_config(&pair.owner_identity, pair.server, admitted()).unwrap();
@@ -2046,6 +2050,7 @@ mod tests {
             )
             .unwrap();
             let running = party::spawn_member(move || driver.run());
+            let began = Instant::now();
             asks.send(Command::Handler(Ask::Connect(pair.address))).unwrap();
             let got = received(&heard);
             asks.request_stop();
@@ -2054,12 +2059,25 @@ mod tests {
                 // Refused while its endpoint still holds the vanished owner's place, which it
                 // asks for an answer (a PING): unheard past its probe timeout since (D180), its
                 // place is the next attempt's, made past that time as its owner's life bounds it
-                // (`probe_timeout_within`). A refusal after that is the place never let go.
-                // Before, its party's stillness, which its endpoint's probes of its vanished owner
-                // never let come (CI 44227612442, aarch64 gnu: held to the step's limit).
-                Ok(Heard::Lost(_)) if refused == 0 => {
+                // (`probe_timeout_within`), moved on by what its endpoint was absent since before
+                // its ask, as it judges on the time it was there to hear (`Liveness::absent`). A
+                // refusal of an attempt begun past that is the place never let go. Before, its
+                // party's stillness, which its endpoint's probes of its vanished owner never let
+                // come (CI 44227612442, aarch64 gnu: held to the step's limit); then the probe
+                // timeout alone, which a loaded host's absence outlasts (CI 44245219858's net.rs
+                // newcomers).
+                Ok(Heard::Lost(_)) => {
+                    if let Some(due) = due {
+                        let absent = absence.since();
+                        assert!(
+                            began < due + absent,
+                            "refused {:?} past its holder's time (its endpoint absent {absent:?} of it): the vanished owner's place never let go",
+                            began.saturating_duration_since(due + absent)
+                        );
+                    } else {
+                        due = Some(Instant::now() + crate::net::probe_timeout_within(life));
+                    }
                     refused += 1;
-                    due = Some(Instant::now() + crate::net::probe_timeout_within(life));
                 }
                 other => break other,
             }

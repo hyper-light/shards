@@ -7755,6 +7755,25 @@ d5afadbc8 on macOS arm64 (`over_the_real_transport_…` and
 once: "the server refused to accept a new connection"), green with it
 ([record](../research/measurements/member-stdin-v1/README.md#a-closed-connection-held-the-endpoints-one-place-2026-11-13)).
 
+Owed, after the tag (ROOT's ruling, 2026-11-18; own-35d's reading of CI 44245219858): an
+arrival can be refused after its own judgment has already let its holder go.
+- `free_closed` frees nothing while the driver holds a datagram unsent (`out`).
+- `take_in` flushes only after a connection it fed. A refusal of another contender's Initial,
+  or a stateless answer such as a version negotiation, read earlier in the same batch, leaves
+  `out` holding a datagram.
+- An arrival read next can then have its holder reclaimed (`Driver::reclaim` closes it) and
+  still be refused. The holder's place is freed only at the next arrival.
+- It is not each attempt's own second Initial. A ClientHello with X25519MLKEM768's 1,216-byte
+  key share does run past one 1,200-byte Initial (RFC 9000 §14.1). But hyper-quic holds an
+  Initial that continues a ClientHello as no attempt of its own (its endpoint.rs
+  `classify_first_initial`, `Continues`, `HeldInitial`), and a refused attempt's continuation
+  expires there.
+- Owed with the fix: a test that this endpoint refuses such an arrival today. The two datagrams
+  must be read in one batch while the holder's time has passed. A freeze cannot do it, because
+  a frozen driver's absence moves the ask on. The test needs a handler command that keeps the
+  driver running (its CPU, no absence) while a version negotiation's ask and a newcomer's
+  Initial queue behind it.
+
 **Its values derived** (2026-11-13; R03: no value chosen). D180's transport and relays held
 values chosen by hand; each is now a protocol's bound, a cited system's, learned per peer, or
 follows from the connection itself. Its timing is the person's ruling of 2026-11-13: "No record
@@ -7970,7 +7989,9 @@ replaced by:
   the server's Initial 4 s in and finishing 4 s later, past the cold window from its start),
   and the window grows with a slow completed handshake
   (`the_learned_window_grows_with_a_slow_completed_handshake`: after one of 3 s, a handshake
-  that never advanced kept its place for no less than 2.5 s and gave it within the cold window).
+  that never advanced kept its place for no less than that round less the endpoint's absence
+  through it, which its measure of the round leaves out, and gave it within the cold window;
+  D215's "net.rs's numbers").
   Its failure is typed (`GiveWay::Unfinished`, beside `GiveWay::Unanswered`): the client gets a
   CONNECTION_CLOSE whose reason says its handshake made no progress for a whole window, as the
   unanswered reclaim's does (an application close, which RFC 9000 §10.2.3 has a server clear of
@@ -30506,8 +30527,9 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
             datagrams, plus one for each answer over two `STEP`s (was room for 128, from the
             30 s).
           - Derived (2026-11-18, #36 item 4): each newcomer loop's window is now the holder's
-            own time as the protocol gives it. Past that time, the first attempt begun must
-            connect (`connects_by`), and a refusal after it fails the test.
+            own time as the protocol gives it, moved on by its endpoint's absence (below). Past
+            that time, the first attempt begun must connect (`connects_by`), and a refusal after
+            it fails the test.
             - A cold holder that vanished at connect: from the first ask, its probe timeout
               (`probe_timeout_within`; was 20 s). The bound is RFC 9002 §6.2.1 with every RTT
               sample within its handshake as the test saw it, or the cold one, plus RFC 9000
@@ -30520,9 +30542,28 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
               was the literal 6.993 s).
             - The learned window: from its accepting, its endpoint's slowest completed
               handshake, at most the slow round as the test saw it (was 30 s, with "below
-              6.5 s"). It must not connect sooner than the slow round's held answer, 3 s (was
-              2.5 s). The case's premise, a slow round shorter than the cold window, is
-              asserted.
+              6.5 s"). It must not connect sooner than the slow round's held answer, 3 s, less
+              its endpoint's absence through that round (was 2.5 s). The case's premise, a slow
+              round shorter than the cold window, is asserted.
+            - Its endpoint's absence (2026-11-18, ROOT's ruling; CI 44245219858). An endpoint
+              judges on the time it was there to hear (D180, `Liveness::absent`). Each turn's
+              absence moves its connections' instants on, the ask and the last progress among
+              them; on Unix that is wall time less the thread's CPU and its planned wait (its
+              run-queue waits), on Windows how far past its timer its wait woke. Its measure of a
+              handshake leaves it out (`Liveness::handshake_took`). The protocol's time on the
+              test's clock is therefore early by that absence. Each due above is moved on by what
+              the endpoint was absent since before the judgment began: its driver's summed
+              absence (`View::absent`, `cfg(test)`), read before the ask or the accept and again
+              after each refusal (`net::Absence`). A refusal of an attempt begun past that fails
+              the test.
+              - With the protocol's time alone, CI 44245219858's Linux jobs refused the first
+                attempt past it in three of four, 53 µs to 1.14 ms past: the replayed handshake's
+                in each, the never-advancing one's in two.
+              - Its aarch64 Windows job learned 2.986 s of the slow round's 3 s held answer, the
+                late timer wakes left out, and let the holder go at 2.99 s.
+              - managed's and managed/input's successors wait the same way (a3de2904e0 had the
+                probe timeout alone): past the probe timeout their owner's life bounds, from the
+                refusal, moved on by their endpoint's absence since before the ask.
           - *tests/loopback.rs's numbers, ruled* (2026-11-18, #36 item 3). Its waits are judged
             by its own `Patience`: its subjects' transports (`net::View`, the datagrams their
             drivers heard and the windows they were judged by) and what the tests see them do
