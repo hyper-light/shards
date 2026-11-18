@@ -904,7 +904,7 @@ impl Window {
             }
         }
         // Counted before the lock goes: a vCPU whose fault waited for it must read a count past
-        // this change, or it takes a live range's fault for the guest's own (PM M421).
+        // this change, or it takes a live range's fault for the guest's own (PM M622).
         if changed {
             self.changes.fetch_add(1, Ordering::AcqRel);
         }

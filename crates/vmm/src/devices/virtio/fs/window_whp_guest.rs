@@ -1,5 +1,5 @@
 //! The window's three edge cases through real guests on WHP: a view shorter than its range, a
-//! section's 64 KiB granules, and several vCPUs at a range while it is replaced (PM M421).
+//! section's 64 KiB granules, and several vCPUs at a range while it is replaced (PM M622).
 //!
 //! Each test makes a partition, a real [`Window`] over WHP's stage 2, and vCPUs in long mode
 //! run by [`crate::hv::Vcpu::run`], whose memory exits ask the window as a VM's do. A vCPU's
@@ -482,7 +482,7 @@ fn handle_of(file: &std::fs::File) -> OwnedHandle {
     OwnedHandle::from(file.try_clone().unwrap())
 }
 
-/// PM M421, the first case. Do, as a real guest, for a file's end at each place a range can
+/// PM M622, the first case. Do, as a real guest, for a file's end at each place a range can
 /// hold it (one byte in; a page; a page and a byte; a granule; a granule and a byte; the page
 /// before the last; a byte short of the range; the whole range): map 4 MiB of it and load its
 /// first word, its last whole word, a word past its end in its last page, a page past
@@ -584,7 +584,7 @@ fn a_view_shorter_than_its_range_is_its_files_bytes_then_zeros_to_a_guest() {
     );
 }
 
-/// PM M421, the first case as a server's section meets it. Do: map a section that ends within
+/// PM M622, the first case as a server's section meets it. Do: map a section that ends within
 /// its range, one that ends within a mapping's second range, and a section that ends a page
 /// past a range. Expect EIO for the first two (a section has no zeros after it, and a view
 /// past its bytes is refused: PM M412), the first range freed again, each range taking a
@@ -617,7 +617,7 @@ fn a_section_that_ends_within_its_range_is_refused_and_the_range_stays_whole() {
     assert_eq!(machine.fell(), []);
 }
 
-/// PM M421, the second case. Do, as a real guest: map a range of a section from each of a
+/// PM M622, the second case. Do, as a real guest: map a range of a section from each of a
 /// range's 32 granules, the first and the last of a two-range mapping among them; and from a
 /// page inside a granule, and from a granule's half. Expect each view to begin at its offset
 /// to the guest, each way (a store through it is the section's at that offset, and its last
@@ -680,12 +680,12 @@ const SLOTS: u64 = PAGE;
 /// Where each range holds the host's stamp.
 const STAMP: u64 = 0x800;
 /// The replaces a storm makes where its host has a core for each of its threads: a paced run
-/// took 1.0 s at 4 vCPUs on jupiter, 5.2 s at 2 on windows-2025 (PM M421).
+/// took 1.0 s at 4 vCPUs on jupiter, 5.2 s at 2 on windows-2025 (PM M622).
 const STORM_REPLACES: u64 = 20_000;
 
 /// The replaces at `vcpus` vCPUs: fewer where they, the vCPU beside them and the host's thread
 /// outnumber the host's cores, where a paced replace took about 24 ms against 0.26 ms
-/// (6 runnable on windows-2025's 4, PM M421).
+/// (6 runnable on windows-2025's 4, PM M622).
 fn storm_replaces(vcpus: u32) -> u64 {
     let cores = std::thread::available_parallelism().map_or(2, |n| n.get() as u32);
     if vcpus + 2 > cores {
@@ -817,7 +817,7 @@ fn storm(vcpus: u32, replaces: u64, paced: bool) -> Option<Storm> {
     Some(found)
 }
 
-/// PM M421, the third case. Do, on a real partition, at each width, paced and not: several vCPUs
+/// PM M622, the third case. Do, on a real partition, at each width, paced and not: several vCPUs
 /// load and store through a two-range mapping while another thread replaces it ([`storm`]).
 /// Expect every fault the window took to be run again and to find memory, none to fall through
 /// as the guest's, no load begun after a replace returned to see the old section, and no store
@@ -831,7 +831,7 @@ fn several_vcpus_at_a_range_being_replaced_lose_nothing_and_see_nothing_stale() 
         let Some(found) = storm(vcpus, replaces, paced) else {
             return;
         };
-        eprintln!("PM M421: {vcpus} vCPUs, {replaces} replaces, paced {paced}: {found:?}");
+        eprintln!("PM M622: {vcpus} vCPUs, {replaces} replaces, paced {paced}: {found:?}");
         assert_eq!(found.fell, 0, "{vcpus} vCPUs: {found:?}");
         assert_eq!(
             found.loads_after_a_replace_that_saw_the_old_section, 0,
@@ -856,7 +856,7 @@ fn several_vcpus_at_a_range_being_replaced_lose_nothing_and_see_nothing_stale() 
 /// lock over and over, reading what range the file's views now reach and the count of changes.
 /// Expect no change seen with the count not yet moved past it: a vCPU's fault that gets the lock
 /// there reads the old count, and if it asked at that count before, [`Window::memory_fault`]
-/// takes a live range's fault for the guest's own (PM M421). This needs no partition.
+/// takes a live range's fault for the guest's own (PM M622). This needs no partition.
 #[test]
 fn a_range_followed_is_counted_before_the_lock_is_let_go() {
     struct Silent;
@@ -909,7 +909,7 @@ fn a_range_followed_is_counted_before_the_lock_is_let_go() {
     );
 }
 
-/// PM M421, the first and third cases together. Do, on a real partition: several vCPUs load and
+/// PM M622, the first and third cases together. Do, on a real partition: several vCPUs load and
 /// store in a file's first page, which every view holds, while the host grows the file a page at
 /// a time, following it (its view longer each time, the split moved), and cuts it short again
 /// (let go of, cut, made again). Expect every access to find memory, none taken for the guest's;
@@ -954,7 +954,7 @@ fn several_vcpus_at_a_view_followed_and_cut_lose_nothing() {
             .map(|v| machine.mail(v, LOOPS).load(Ordering::Acquire))
             .sum();
         eprintln!(
-            "PM M421: {vcpus} vCPUs, {} followings: fell {}, told {told}, loops {loops}, took {took:?}",
+            "PM M622: {vcpus} vCPUs, {} followings: fell {}, told {told}, loops {loops}, took {took:?}",
             ROUNDS * GROWTHS,
             fell.len()
         );
