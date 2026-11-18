@@ -2443,8 +2443,8 @@ pub fn run_shards_in<S: AsRef<std::ffi::OsStr>>(dir: &Path, command: &[&str], ar
 /// daemon where it talks to one. A client its judge refuses fails its test with what it
 /// said, rather than hold the suite: it is sent SIGQUIT first, on which a Go program writes
 /// where each of its goroutines waits and exits, its exit waited on as judged, then killed.
-/// A stream another process holds open past the client's end is what came of it by its
-/// judge's look.
+/// A stream another process holds open past the client's end is everything its pipe holds as
+/// its judge gives it up ([`Collected::ask`]), every byte the client wrote among it.
 #[track_caller]
 pub fn client_output(cmd: &mut Command, home: Option<&Path>) -> std::process::Output {
     let kind = WaitKind::command(
@@ -2459,10 +2459,7 @@ pub fn client_output(cmd: &mut Command, home: Option<&Path>) -> std::process::Ou
         .spawn()
         .expect("spawning a client");
     let (stdout, stderr) = (child.stdout.take().unwrap(), child.stderr.take().unwrap());
-    let (out_probe, err_probe) = (probe(&stdout), probe(&stderr));
-    let out = collect(Box::new(stdout));
-    let err = collect(Box::new(stderr));
-    let (mut out_got, mut err_got) = ((Vec::new(), false), (Vec::new(), false));
+    let (mut out, mut err) = (collect(stdout.into()), collect(stderr.into()));
     let mut wait = Wait::begin(kind, child.id(), home, &asked);
     let mut status = None;
     loop {
@@ -2476,39 +2473,50 @@ pub fn client_output(cmd: &mut Command, home: Option<&Path>) -> std::process::Ou
             }
             status = Some(st);
         }
-        let output = more(&out, &mut out_got) | more(&err, &mut err_got);
-        if let Some(status) = status.filter(|_| out_got.1 && err_got.1) {
-            break std::process::Output {
-                status,
-                stdout: out_got.0,
-                stderr: err_got.0,
-            };
+        let output = out.more() | err.more();
+        if let Some(status) = status.filter(|_| out.done() && err.done()) {
+            break client_said(status, out, err, &asked);
         }
         match (wait.look(output), status) {
             (Ok(()), _) => {}
-            // What came, or the whole of a stream no process holds any more ([`taken_whole`]).
+            // Each stream taken whole: everything its pipe holds, and the rest of one no
+            // process holds any more ([`Collected::ask`]).
             (Err(_), Some(status)) => {
-                taken_whole(&out, &out_probe, &mut out_got);
-                taken_whole(&err, &err_probe, &mut err_got);
-                break std::process::Output {
-                    status,
-                    stdout: out_got.0,
-                    stderr: err_got.0,
-                };
+                take_all(&mut [&mut out, &mut err]);
+                break client_said(status, out, err, &asked);
             }
             (Err(stall), None) => {
                 let said = wait.refused(&stall);
                 quit(&mut child, home);
-                more(&out, &mut out_got);
-                more(&err, &mut err_got);
+                take_all(&mut [&mut out, &mut err]);
                 panic!(
                     "{said}\n--- stdout\n{}\n--- stderr\n{}",
-                    String::from_utf8_lossy(&out_got.0),
-                    String::from_utf8_lossy(&err_got.0)
+                    String::from_utf8_lossy(&out.bytes),
+                    String::from_utf8_lossy(&err.bytes)
                 );
             }
         }
         std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+/// [`client_output`]'s output, its streams' bytes: a stream whose read failed fails its test,
+/// with what it said, `asked` naming the client.
+fn client_said(
+    status: std::process::ExitStatus,
+    out: Collected,
+    err: Collected,
+    asked: &str,
+) -> std::process::Output {
+    for (name, stream) in [("stdout", &out), ("stderr", &err)] {
+        if let Stands::Failed(why) = &stream.stands {
+            panic!("{asked}: reading its {name} failed: {why}");
+        }
+    }
+    std::process::Output {
+        status,
+        stdout: out.bytes,
+        stderr: err.bytes,
     }
 }
 
@@ -2536,120 +2544,408 @@ fn quit(child: &mut std::process::Child, home: Option<&Path>) {
     let _ = child.wait();
 }
 
-/// A second handle of a client's pipe's read end, by which [`taken_whole`] tells whether any
-/// process still holds its write end; none where it could not be made.
+/// A pipe's read end as [`collector`] takes it: a child's stdout or stderr, by `into`.
 #[cfg(unix)]
-pub type Probe = Option<std::os::fd::OwnedFd>;
+pub type PipeEnd = std::os::fd::OwnedFd;
 
-/// A second handle of a client's pipe's read end, by which [`taken_whole`] tells whether any
-/// process still holds its write end; none where it could not be made.
+/// A pipe's read end as [`collector`] takes it: a child's stdout or stderr, by `into`, which
+/// std opens for overlapped calls, as [`shards_ipc::Pipe`] makes them (std's
+/// `sys/process/windows/child_pipe.rs`: "the `ours` pipe is always a handle opened up in
+/// overlapped mode").
 #[cfg(windows)]
-pub type Probe = Option<std::os::windows::io::OwnedHandle>;
+pub type PipeEnd = std::os::windows::io::OwnedHandle;
 
-/// [`Probe`] of `end`, a pipe's read end.
-#[cfg(unix)]
-pub fn probe(end: &impl std::os::fd::AsFd) -> Probe {
-    end.as_fd().try_clone_to_owned().ok()
+/// How a stream [`collect`] reads stands.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Stands {
+    /// Its reader reads on.
+    Open,
+    /// Taken as its reader was asked ([`Collected::ask`]): everything its pipe held then, a
+    /// process holding its write end still.
+    Held,
+    /// Every writer gone, and all it held read.
+    Ended,
+    /// Its read failed, as said.
+    Failed(String),
 }
 
-/// [`Probe`] of `end`, a pipe's read end.
-#[cfg(windows)]
-pub fn probe(end: &impl std::os::windows::io::AsHandle) -> Probe {
-    end.as_handle().try_clone_to_owned().ok()
+/// What a stream's [`Reader`] hands over, in its pipe's order.
+#[derive(Debug)]
+enum Came {
+    /// What one read took.
+    Bytes(Vec<u8>),
+    /// Its answer to its collector's ask: everything its pipe held then, and where no process
+    /// held its write end any more, the rest to its end, as `ended` says.
+    Took { bytes: Vec<u8>, ended: bool },
+    /// Its pipe's end, its last: every writer gone, all it held read.
+    Ended,
+    /// Its read's failure, its last.
+    Failed(io::Error),
 }
 
-/// Whether no process holds the write end of the pipe `probe` reads, so that its stream's end
-/// is certain: poll(2)'s POLLHUP of its read end, which a pipe says once its last writer has
-/// closed (Linux fs/pipe.c `pipe_poll`; XNU's poll(2), from `filt_piperead`'s EV_EOF).
+/// How a stream's reader is asked to take what its pipe holds: a byte written to a pipe it
+/// polls beside its stream's.
 #[cfg(unix)]
-fn writers_gone(probe: &Probe) -> bool {
-    use std::os::fd::AsRawFd as _;
-    let Some(end) = probe else {
-        return false;
-    };
-    let mut look = libc::pollfd {
-        fd: end.as_raw_fd(),
-        events: libc::POLLIN,
-        revents: 0,
-    };
-    // SAFETY: poll(2) of one descriptor this holds, with no wait.
-    let ready = unsafe { libc::poll(&raw mut look, 1, 0) };
-    ready == 1 && look.revents & libc::POLLHUP != 0
+type Asks = std::io::PipeWriter;
+
+/// How a stream's reader is asked to take what its pipe holds: an event its reads wait on
+/// beside their own.
+#[cfg(windows)]
+type Asks = shards_ipc::Event;
+
+/// Where a stream's ask stands ([`Collected::ask`]).
+#[derive(Debug)]
+enum Asking {
+    /// Not asked, how it would be.
+    Not(Asks),
+    /// Asked, its reader's answer to come.
+    Asked,
+    /// Its reader's answer kept, or none to wait for: its stream done.
+    Done,
 }
 
-/// Whether no process holds the write end of the pipe `probe` reads: PeekNamedPipe's
-/// ERROR_BROKEN_PIPE, which Windows says only once the pipe is empty too, so that a pipe with
-/// bytes still to read says nothing and its reader is waited for no more than before.
-#[cfg(windows)]
-fn writers_gone(probe: &Probe) -> bool {
-    use std::os::windows::io::AsRawHandle as _;
-    let Some(end) = probe else {
-        return false;
-    };
-    let mut waiting = 0u32;
-    // SAFETY: a peek of no bytes at a pipe's read end this holds, its count on this stack.
-    let peeked = unsafe {
-        windows_sys::Win32::System::Pipes::PeekNamedPipe(
-            end.as_raw_handle(),
-            std::ptr::null_mut(),
-            0,
-            std::ptr::null_mut(),
-            &raw mut waiting,
-            std::ptr::null_mut(),
+/// A stream read as it comes by its [`Reader`], on a thread of its own, and handed over by
+/// channel, so that a pipe another process still holds (a VM given a client's stdio) never
+/// holds a wait, and what came before it is kept: what came, in its pipe's order, and how it
+/// stands. A wait that gives it up takes it whole ([`ask`](Self::ask), [`taken`](Self::taken)):
+/// everything its pipe holds then, however late its reader runs.
+#[derive(Debug)]
+pub struct Collected {
+    pub bytes: Vec<u8>,
+    pub stands: Stands,
+    came: std::sync::mpsc::Receiver<Came>,
+    asking: Asking,
+}
+
+/// A stream's reader ([`collector`]): its pipe's only one, so that what it hands over is in its
+/// pipe's order, and every byte its pipe took is handed over or in its pipe still as it takes
+/// an ask.
+#[derive(Debug)]
+pub struct Reader {
+    #[cfg(unix)]
+    pipe: std::fs::File,
+    #[cfg(windows)]
+    pipe: shards_ipc::Pipe,
+    /// What its collector asks it by, a byte written there: none once it has taken its ask,
+    /// or its collector has gone unasked.
+    #[cfg(unix)]
+    asked: Option<std::io::PipeReader>,
+    /// What its collector asks it by, set: none once it has taken its ask.
+    #[cfg(windows)]
+    asked: Option<shards_ipc::Event>,
+    to: std::sync::mpsc::Sender<Came>,
+}
+
+/// What a [`Reader`]'s look found: the first this many bytes of its buffer read, its pipe's
+/// end, or its collector's ask.
+enum Next {
+    Part(usize),
+    End,
+    Asked,
+}
+
+/// A [`Collected`] of `pipe`, a pipe's read end, and its [`Reader`], not yet started:
+/// [`collect`] starts it on a thread of its own; a test of a late reader starts it itself.
+pub fn collector(pipe: PipeEnd) -> io::Result<(Collected, Reader)> {
+    let (to, came) = std::sync::mpsc::channel();
+    #[cfg(unix)]
+    let (reader, asks) = {
+        let (asked, asks) = std::io::pipe()?;
+        let pipe = std::fs::File::from(pipe);
+        (
+            Reader {
+                pipe,
+                asked: Some(asked),
+                to,
+            },
+            asks,
         )
     };
-    peeked == 0 && io::Error::last_os_error().kind() == io::ErrorKind::BrokenPipe
+    #[cfg(windows)]
+    let (reader, asks) = {
+        let asks = shards_ipc::Event::new()?;
+        let pipe = shards_ipc::Pipe::from_handle(pipe);
+        (
+            Reader {
+                pipe,
+                asked: Some(asks.try_clone()?),
+                to,
+            },
+            asks,
+        )
+    };
+    let collected = Collected {
+        bytes: Vec::new(),
+        stands: Stands::Open,
+        came,
+        asking: Asking::Not(asks),
+    };
+    Ok((collected, reader))
 }
 
-/// What came of a stream [`collect`] reads, taken whole where no process holds its pipe any
-/// more ([`writers_gone`]): its end certain, its reader thread is waited for to it, however late
-/// it runs. A stream a process still holds is taken as it came, its end not waited for. Taken
-/// as it came alone, a client that ended at once on a busy host had both its streams said held
-/// open, their reader threads yet to hand over what their pipes held (CI 44164945050, x86_64
-/// musl: `shards --version`, its status 0 after 40 ms, its kind's W* its own run).
-pub fn taken_whole(rx: &std::sync::mpsc::Receiver<Vec<u8>>, probe: &Probe, got: &mut (Vec<u8>, bool)) {
-    more(rx, got);
-    if got.1 || !writers_gone(probe) {
-        return;
-    }
-    for chunk in rx.iter() {
-        got.0.extend_from_slice(&chunk);
-    }
-    got.1 = true;
+/// `pipe`, a pipe's read end, read as it comes on a thread of its own ([`collector`]).
+pub fn collect(pipe: PipeEnd) -> Collected {
+    let (collected, reader) = collector(pipe).expect("a stream's collector");
+    std::thread::spawn(move || reader.read());
+    collected
 }
 
-/// A stream read on a thread of its own and handed over by channel as it comes, so that a
-/// pipe another process still holds (a VM given a client's stdio) never holds a wait, and
-/// what came before it is kept.
-pub fn collect(mut r: Box<dyn Read + Send>) -> std::sync::mpsc::Receiver<Vec<u8>> {
-    let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
-    std::thread::spawn(move || {
-        let mut b = vec![0u8; 64 * 1024];
-        while let Ok(n @ 1..) = r.read(&mut b) {
-            if tx.send(b[..n].to_vec()).is_err() {
+/// Everything `streams`' pipes hold now ([`Collected::ask`]): their readers asked together,
+/// then each answer waited for.
+fn take_all(streams: &mut [&mut Collected]) {
+    for stream in streams.iter_mut() {
+        stream.ask();
+    }
+    for stream in streams.iter_mut() {
+        stream.taken();
+    }
+}
+
+impl Collected {
+    /// Whether more came since the call before, kept with how its stream stands.
+    pub fn more(&mut self) -> bool {
+        let mut came = false;
+        loop {
+            match self.came.try_recv() {
+                Ok(part) => came |= self.keep(part),
+                Err(std::sync::mpsc::TryRecvError::Empty) => return came,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.unsaid();
+                    return came;
+                }
+            }
+        }
+    }
+
+    /// Whether all of it that will come has: its end, its reader's answer or its failure.
+    pub fn done(&self) -> bool {
+        self.stands != Stands::Open
+    }
+
+    /// Asks its reader to take everything its pipe holds now ([`taken`](Self::taken)): once,
+    /// while it reads on, as a stream done has had its last already.
+    pub fn ask(&mut self) {
+        if self.done() {
+            return;
+        }
+        let Asking::Not(asks) = std::mem::replace(&mut self.asking, Asking::Asked) else {
+            return;
+        };
+        // A reader gone (BrokenPipe) said its last as it went: its answer, to be taken.
+        #[cfg(unix)]
+        if let Err(e) = (&asks).write_all(b"?")
+            && e.kind() != io::ErrorKind::BrokenPipe
+        {
+            self.stands = Stands::Failed(format!("its reader could not be asked: {e}"));
+            self.asking = Asking::Done;
+        }
+        #[cfg(windows)]
+        asks.set();
+    }
+
+    /// What its reader took as it was asked ([`ask`](Self::ask)), kept: every byte its pipe
+    /// held then, each written before the ask whatever process holds its write end, and the
+    /// rest to its end where none held that any more. Waited for however late its reader runs,
+    /// which waits on nothing to answer: it reads what its pipe holds, no more.
+    pub fn taken(&mut self) {
+        if !matches!(self.asking, Asking::Asked) {
+            return;
+        }
+        self.asking = Asking::Done;
+        while !self.done() {
+            match self.came.recv() {
+                Ok(part) => {
+                    self.keep(part);
+                }
+                Err(std::sync::mpsc::RecvError) => self.unsaid(),
+            }
+        }
+    }
+
+    /// Keeps what its reader handed over: whether it held bytes.
+    fn keep(&mut self, came: Came) -> bool {
+        let bytes = match came {
+            Came::Bytes(bytes) => bytes,
+            Came::Took { bytes, ended } => {
+                self.stands = if ended { Stands::Ended } else { Stands::Held };
+                bytes
+            }
+            Came::Ended => {
+                self.stands = Stands::Ended;
+                return false;
+            }
+            Came::Failed(e) => {
+                self.stands = Stands::Failed(e.to_string());
+                return false;
+            }
+        };
+        let came = !bytes.is_empty();
+        self.bytes.extend(bytes);
+        came
+    }
+
+    /// Its reader gone, saying nothing of its end, as only a panic of its own leaves it.
+    fn unsaid(&mut self) {
+        if !self.done() {
+            self.stands = Stands::Failed("its reader ended, saying nothing of how".into());
+        }
+    }
+}
+
+impl Reader {
+    /// Reads its pipe as it comes, each part handed over, until its pipe's end or its read's
+    /// failure, each said, or until nobody takes what it reads; and answers its collector's
+    /// ask by taking everything its pipe holds then ([`take`](Self::take)), reading on after
+    /// it as before.
+    pub fn read(mut self) {
+        // A part is at most a full pipe's: Linux's default capacity (pipe(7)), and std's
+        // Windows child pipes' (`child_pipe.rs`' PIPE_BUFFER_CAPACITY).
+        let mut part = vec![0u8; 64 * 1024];
+        loop {
+            let came = match self.next(&mut part) {
+                Ok(Next::Part(n)) => Came::Bytes(part[..n].to_vec()),
+                Ok(Next::Asked) => {
+                    self.asked = None;
+                    self.take().unwrap_or_else(Came::Failed)
+                }
+                Ok(Next::End) => Came::Ended,
+                Err(e) => Came::Failed(e),
+            };
+            let last = matches!(
+                came,
+                Came::Ended | Came::Failed(_) | Came::Took { ended: true, .. }
+            );
+            if self.to.send(came).is_err() || last {
                 return;
             }
         }
-    });
-    rx
+    }
+
+    /// Everything its pipe holds now, read at once, as a read of a pipe that holds bytes takes
+    /// them without waiting (Linux fs/pipe.c `pipe_read`; XNU bsd/kern/sys_pipe.c `pipe_read`;
+    /// a byte pipe's ReadFile): every byte written before it was asked, which none but it
+    /// reads, whatever process holds its write end and whatever that does. Then, where no
+    /// process holds that end any more, the rest, to its end, which none can add to.
+    fn take(&mut self) -> io::Result<Came> {
+        let mut bytes = vec![0u8; self.held()?];
+        self.pipe.read_exact(&mut bytes)?;
+        let ended = self.writers_gone()?;
+        if ended {
+            self.pipe.read_to_end(&mut bytes)?;
+        }
+        Ok(Came::Took { bytes, ended })
+    }
 }
 
-/// Whether more came of a stream [`collect`] reads since the call before, kept in `got`
-/// with whether it has ended, its every writer gone.
-fn more(rx: &std::sync::mpsc::Receiver<Vec<u8>>, got: &mut (Vec<u8>, bool)) -> bool {
-    let mut came = false;
-    loop {
-        match rx.try_recv() {
-            Ok(chunk) => {
-                got.0.extend_from_slice(&chunk);
-                came = true;
+#[cfg(unix)]
+impl Reader {
+    /// Waits for its pipe to have something to read or to end, or for its collector's ask,
+    /// which goes first; and reads the former.
+    fn next(&mut self, part: &mut [u8]) -> io::Result<Next> {
+        use std::os::fd::AsRawFd as _;
+        loop {
+            let asking = self.asked.as_ref().map_or(-1, |asked| asked.as_raw_fd());
+            let mut looks = [
+                libc::pollfd {
+                    fd: self.pipe.as_raw_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+                libc::pollfd {
+                    fd: asking,
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+            ];
+            // SAFETY: poll(2) of the two descriptors this reader holds, with no timeout; a
+            // negative one, once it is asked by none, it ignores (POSIX.1-2024, XSH poll).
+            if unsafe { libc::poll(looks.as_mut_ptr(), 2, -1) } < 0 {
+                let e = io::Error::last_os_error();
+                if e.kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(e);
             }
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                got.1 = true;
-                return came;
+            let [pipe, asked] = looks;
+            if asked.revents & libc::POLLIN != 0 {
+                return Ok(Next::Asked);
             }
-            Err(std::sync::mpsc::TryRecvError::Empty) => return came,
+            if asked.revents != 0 {
+                // Its collector gone unasked: its pipe alone from here.
+                self.asked = None;
+            }
+            if pipe.revents != 0 {
+                match self.pipe.read(part) {
+                    Ok(0) => return Ok(Next::End),
+                    Ok(n) => return Ok(Next::Part(n)),
+                    Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                    Err(e) => return Err(e),
+                }
+            }
         }
+    }
+
+    /// The bytes its pipe holds now: FIONREAD (Linux fs/pipe.c `pipe_ioctl`, XNU
+    /// bsd/kern/sys_pipe.c `pipe_ioctl`).
+    fn held(&self) -> io::Result<usize> {
+        use std::os::fd::AsRawFd as _;
+        let mut held: libc::c_int = 0;
+        // SAFETY: FIONREAD of the pipe this reader holds, into an int on this stack.
+        if unsafe { libc::ioctl(self.pipe.as_raw_fd(), libc::FIONREAD, &raw mut held) } < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        usize::try_from(held).map_err(io::Error::other)
+    }
+
+    /// Whether no process holds its pipe's write end: poll(2)'s POLLHUP of its read end, which
+    /// a pipe says once its last writer has closed (Linux fs/pipe.c `pipe_poll`; XNU's poll(2),
+    /// from bsd/kern/sys_pipe.c `filt_pipe_draincommon`'s EV_EOF).
+    fn writers_gone(&self) -> io::Result<bool> {
+        use std::os::fd::AsRawFd as _;
+        let mut look = libc::pollfd {
+            fd: self.pipe.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        loop {
+            // SAFETY: poll(2) of one descriptor this reader holds, with no wait.
+            if unsafe { libc::poll(&raw mut look, 1, 0) } >= 0 {
+                return Ok(look.revents & libc::POLLHUP != 0);
+            }
+            let e = io::Error::last_os_error();
+            if e.kind() != io::ErrorKind::Interrupted {
+                return Err(e);
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Reader {
+    /// Reads what its pipe has, or its end, unless its collector's ask has come, which goes
+    /// first: a read under way gives way to it having taken nothing (`Pipe::read_unless`).
+    fn next(&mut self, part: &mut [u8]) -> io::Result<Next> {
+        let read = match &self.asked {
+            Some(asked) if asked.is_set() => return Ok(Next::Asked),
+            Some(asked) => self.pipe.read_unless(part, asked)?,
+            None => Some(self.pipe.read_by(part, None)?),
+        };
+        Ok(match read {
+            None => Next::Asked,
+            Some(0) => Next::End,
+            Some(n) => Next::Part(n),
+        })
+    }
+
+    /// The bytes its pipe holds now: PeekNamedPipe's count.
+    fn held(&self) -> io::Result<usize> {
+        self.pipe.held()
+    }
+
+    /// Whether no process holds its pipe's write end and it holds nothing: PeekNamedPipe's
+    /// ERROR_BROKEN_PIPE, which Windows says only once the pipe is empty too.
+    fn writers_gone(&self) -> io::Result<bool> {
+        Ok(self.pipe.peek()?.is_none())
     }
 }
 
@@ -3654,7 +3950,8 @@ pub fn run_until(cmd: Command, asked: &[String], end: Duration) -> Result<Run, E
 /// stall, the processes under it then as `leftovers` says. Its output is read to its end, as
 /// long as the wait goes on: a stream another process holds past the client (a VM given the
 /// client's stdio), which the wait finds doing nothing of its own past the slowest answer
-/// of its kind, is said held open, with what came of it.
+/// of its kind, is said held open, with everything its pipe holds then ([`Collected::ask`]),
+/// every byte the client wrote before its end among it.
 #[track_caller]
 fn run_ending(
     mut cmd: Command,
@@ -3681,23 +3978,19 @@ fn run_ending(
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawning shards");
-    // Read as it comes ([`collect`]): a command that never ends shows how far it got. Each
-    // pipe probed by a second handle of its read end ([`taken_whole`]).
+    // Read as it comes ([`collect`]): a command that never ends shows how far it got. What
+    // it wrote, each stream with how it stands, taken whole as the run ends short of their
+    // end ([`take_all`]).
     let (stdout, stderr) = (child.stdout.take().unwrap(), child.stderr.take().unwrap());
-    let (out_probe, err_probe) = (probe(&stdout), probe(&stderr));
-    let out = collect(Box::new(stdout));
-    let err = collect(Box::new(stderr));
-    // What it wrote, each stream with whether it has ended, its every writer gone.
-    let (mut out_got, mut err_got) = ((Vec::new(), false), (Vec::new(), false));
-    let came = more;
+    let (mut out, mut err) = (collect(stdout.into()), collect(stderr.into()));
     // Lossily: a step's output is printed as it came, bytes that are no UTF-8 included,
     // which a strict conversion would drop the whole of.
-    let text = |got: &(Vec<u8>, bool)| {
-        let said = String::from_utf8_lossy(&got.0).into_owned();
-        if got.1 {
-            said
-        } else {
-            format!("{said}\n(still held open by another process)")
+    let text = |stream: &Collected| {
+        let said = String::from_utf8_lossy(&stream.bytes).into_owned();
+        match &stream.stands {
+            Stands::Ended => said,
+            Stands::Open | Stands::Held => format!("{said}\n(still held open by another process)"),
+            Stands::Failed(why) => format!("{said}\n(its read failed: {why})"),
         }
     };
     let party = Party::client(child.id(), home.as_deref()).declaring_in(declares);
@@ -3727,23 +4020,22 @@ fn run_ending(
             }
             status = Some(st);
         }
-        let output = came(&out, &mut out_got) | came(&err, &mut err_got);
-        if let Some(status) = status.filter(|_| out_got.1 && err_got.1) {
-            break Ok(finished(status, text(&out_got), text(&err_got), start));
+        let output = out.more() | err.more();
+        if let Some(status) = status.filter(|_| out.done() && err.done()) {
+            break Ok(finished(status, text(&out), text(&err), start));
         }
         if status.is_none()
             && let Some(end) = end.filter(|end| start.elapsed() >= *end)
         {
             let seen = stuck(child.id(), home.as_deref());
             let (started, left) = end_run(&mut child, end, leftovers);
-            came(&out, &mut out_got);
-            came(&err, &mut err_got);
+            take_all(&mut [&mut out, &mut err]);
             return Err(Ended {
                 said: format!(
                     "{} did not exit within {end:?}, its end\n--- stdout\n{}\n--- stderr\n{}{seen}",
                     asked.join(" "),
-                    text(&out_got),
-                    text(&err_got)
+                    text(&out),
+                    text(&err)
                 ),
                 started,
                 left,
@@ -3752,24 +4044,22 @@ fn run_ending(
         match (wait.look(output), status) {
             (Ok(()), _) => {}
             // Its streams' end never came, their holder doing nothing of its own past the
-            // slowest answer of its kind: what came is what it said, but the whole of a stream
-            // no process holds any more, however late its reader ([`taken_whole`]).
+            // slowest answer of its kind: each taken whole, everything its pipe holds, however
+            // late its reader, and the rest of one no process holds any more ([`take_all`]).
             (Err(_), Some(status)) => {
-                taken_whole(&out, &out_probe, &mut out_got);
-                taken_whole(&err, &err_probe, &mut err_got);
-                break Ok(finished(status, text(&out_got), text(&err_got), start));
+                take_all(&mut [&mut out, &mut err]);
+                break Ok(finished(status, text(&out), text(&err), start));
             }
             (Err(stall), None) => {
                 let said = wait.refused(&stall);
                 let seen = stuck(child.id(), home.as_deref());
                 let (started, left) = end_run(&mut child, stall.slowest(), leftovers);
-                came(&out, &mut out_got);
-                came(&err, &mut err_got);
+                take_all(&mut [&mut out, &mut err]);
                 return Err(Ended {
                     said: format!(
                         "{said}\n--- stdout\n{}\n--- stderr\n{}{seen}",
-                        text(&out_got),
-                        text(&err_got)
+                        text(&out),
+                        text(&err)
                     ),
                     started,
                     left,

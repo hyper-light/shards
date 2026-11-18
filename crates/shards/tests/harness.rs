@@ -3147,53 +3147,75 @@ fn a_failed_runs_vm_refusal_is_read_by_its_vms_pid() {
     assert_eq!(common::run_refusal(&said, &other), "");
 }
 
-/// A stream no process writes any more is taken whole however late its reader thread runs
-/// (`common::taken_whole`), and one a process still holds is taken as it came, its end not
-/// waited for. CI 44164945050, x86_64 musl: `shards --version` ended with status 0 in 40 ms
-/// and both its streams were said held open, their reader threads yet to hand over what their
-/// pipes held, as its call site's kind, cold, refused its gone party a W* (its own run) past
-/// its end. Red where what came is taken alone: nothing, its reader late. The reader is let go
-/// a tenth of a second after the take begins, far past what the take itself does.
-#[cfg(unix)]
+/// A stream that a process still holds as its run's wait gives it up is taken whole, every byte
+/// its command wrote before its end among it, however late its reader runs
+/// (`common::Collected::ask`). KVM, 32 CPUs at load ~50, rust:1.98.1 glibc, at 45fdaf49a6:
+/// [`a_commands_end_found_before_its_first_look_teaches_its_kind`]'s client wrote "holder N"
+/// and ended, and its run, 9 ms in, said its stdout held open with nothing in it, its reader
+/// thread yet to hand over what the pipe held: what came was all a take held. Red where a take
+/// holds what came alone: nothing, its reader not yet run. Do: run a stand-in that says its
+/// holder's ID and ends, the holder left holding its stdout; once it has ended, ask its
+/// stdout's reader, started only then. Expect: the holder's line taken, its stream held.
+#[test]
+fn a_stream_held_past_its_commands_end_is_taken_whole_however_late_its_reader() {
+    let mut client = stand_in_doing("leaves 30000")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let (mut out, reader) = common::collector(client.stdout.take().unwrap().into()).unwrap();
+    assert!(client.wait().unwrap().success());
+    out.ask();
+    std::thread::spawn(move || reader.read());
+    out.taken();
+    let said = String::from_utf8_lossy(&out.bytes).into_owned();
+    let holder: Option<u32> = said
+        .lines()
+        .find_map(|line| line.split_once("holder ")?.1.trim().parse().ok());
+    if let Some(holder) = holder {
+        end_holder(holder);
+    }
+    assert!(holder.is_some(), "{said}");
+    assert_eq!(out.stands, common::Stands::Held, "{said}");
+}
+
+/// A stream no process writes any more is taken whole to its end however late its reader runs
+/// (`common::Collected::ask`). CI 44164945050, x86_64 musl: `shards --version` ended with
+/// status 0 in 40 ms and both its streams were said held open, their reader threads yet to hand
+/// over what their pipes held, as its call site's kind, cold, refused its gone party a W* (its
+/// own run) past its end. Red where a take that finds no writer left says its stream held. Do:
+/// run a stand-in that says "spinning" and ends; once it has ended, ask its stdout's reader,
+/// started only then. Expect: its line taken, its stream ended.
 #[test]
 fn a_stream_whose_writers_are_gone_is_taken_whole_however_late_its_reader() {
-    /// A reader that reads nothing until it is let go.
-    struct Late {
-        pipe: std::io::PipeReader,
-        go: Option<std::sync::mpsc::Receiver<()>>,
+    let mut client = stand_in_doing("spins 0")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let (mut out, reader) = common::collector(client.stdout.take().unwrap().into()).unwrap();
+    assert!(client.wait().unwrap().success());
+    out.ask();
+    std::thread::spawn(move || reader.read());
+    out.taken();
+    let said = String::from_utf8_lossy(&out.bytes).into_owned();
+    assert!(said.contains("spinning\n"), "{said}");
+    assert_eq!(out.stands, common::Stands::Ended, "{said}");
+}
+
+/// Ends `holder`, the process a stand-in left holding its streams (`leaves MS`).
+fn end_holder(holder: u32) {
+    #[cfg(unix)]
+    // SAFETY: kill(2) of the holder this test's stand-in started.
+    unsafe {
+        libc::kill(i32::try_from(holder).unwrap(), libc::SIGKILL);
     }
-    impl std::io::Read for Late {
-        fn read(&mut self, b: &mut [u8]) -> std::io::Result<usize> {
-            if let Some(go) = self.go.take() {
-                let _ = go.recv();
-            }
-            std::io::Read::read(&mut self.pipe, b)
-        }
-    }
-    let said = b"shards version 0.8.0\n";
-    let (reader, mut writer) = std::io::pipe().unwrap();
-    let probe = common::probe(&reader);
-    let (go, late) = std::sync::mpsc::channel();
-    let rx = common::collect(Box::new(Late {
-        pipe: reader,
-        go: Some(late),
-    }));
-    writer.write_all(said).unwrap();
-    let mut got = (Vec::new(), false);
-    common::taken_whole(&rx, &probe, &mut got);
-    assert_eq!(
-        got,
-        (Vec::new(), false),
-        "a stream its writer holds was waited for"
-    );
-    drop(writer);
-    let letting = std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(100));
-        go.send(()).unwrap();
-    });
-    common::taken_whole(&rx, &probe, &mut got);
-    letting.join().unwrap();
-    assert_eq!(got, (said.to_vec(), true));
+    #[cfg(windows)]
+    let _ = std::process::Command::new("taskkill")
+        .args(["/F", "/PID", &holder.to_string()])
+        .output();
 }
 
 /// A command's streams another process holds open past its end are read for as long as
@@ -3214,15 +3236,7 @@ fn streams_held_past_a_commands_end_are_judged_from_its_end() {
         .lines()
         .find_map(|line| line.split("holder ").nth(1)?.trim().parse().ok());
     if let Some(holder) = holder {
-        #[cfg(unix)]
-        // SAFETY: kill(2) of the holder this test's stand-in started.
-        unsafe {
-            libc::kill(i32::try_from(holder).unwrap(), libc::SIGKILL);
-        }
-        #[cfg(windows)]
-        let _ = std::process::Command::new("taskkill")
-            .args(["/F", "/PID", &holder.to_string()])
-            .output();
+        end_holder(holder);
     }
     assert_eq!(run.status, Some(0), "{run}");
     assert!(holder.is_some(), "{run}");
