@@ -1720,7 +1720,9 @@ mod tests {
 
         use shards_abi::run::managed::InputEnd;
 
-        use shards_testwait::{Unreceived, answer, party, receive, received, until, waited};
+        use shards_testwait::{
+            Counted, Record, Unreceived, answer, answered_on, party, receive, received, until, waited,
+        };
 
         use super::*;
         use crate::managed::input::{Next, Said};
@@ -3697,6 +3699,79 @@ mod tests {
             assert_eq!(steering.steered(std::time::Duration::ZERO), Err(Fault::Unawaited));
             assert_eq!(steering.signal(9, std::time::Duration::MAX), Ok(Some(())));
             drop(host.join().unwrap());
+        }
+
+        /// A lane whose host is slow but runs is waited on, many of its kind's slowest answer
+        /// past, and one whose host stopped is given up on a whole W* after it stopped (D215,
+        /// #36): each the production controller's exec ask over a connection of its own, its
+        /// host a stand-in of its test's party, each case's record its own, taught a W* of
+        /// 20 ms. Red where the ask is waited for within a patience of the test's own, as
+        /// control.rs's tests' 10 s was (the slow host's answer, 25 W* in, cut), or never
+        /// given up on (the stopped host's waited on for good).
+        #[test]
+        fn a_slow_but_running_lane_is_waited_on_and_a_stopped_one_given_up() {
+            static SLOW: Record = Record::new();
+            static STOPPED: Record = Record::new();
+            let slowest = std::time::Duration::from_millis(20);
+            for record in [&SLOW, &STOPPED] {
+                record.teach(slowest, std::time::Duration::ZERO);
+            }
+            let (vm, kiln) = (Identity::generate().unwrap(), Identity::generate().unwrap());
+            let (serving, starts) = Serving::with_execs(&vm, kiln.fingerprint());
+            let (dialed, _driver) = drive_execs(&kiln, vm.fingerprint(), &serving);
+            let execs = dialed.execs.as_ref().unwrap();
+            let (go, held) = mpsc::channel::<()>();
+            let host = party::spawn_member(move || {
+                // Slow but running: it spins 25 W* before it says its exec started, and ended.
+                let exec::Start {
+                    stdout,
+                    stderr,
+                    replies,
+                    ..
+                } = receive("its host was asked no exec", &starts);
+                let (_errors, stderr) = stderr.unwrap();
+                let began = std::time::Instant::now();
+                while began.elapsed() < slowest * 25 {
+                    std::hint::spin_loop();
+                }
+                stdout.1.finish().unwrap();
+                stderr.finish().unwrap();
+                replies.tell(exec::Reply::Started);
+                replies.tell(exec::Reply::Exited(0));
+                // Stopped: asked again, it answers nothing until its test lets it go.
+                let stopped = receive("its host was asked no exec", &starts);
+                let _ = held.recv();
+                drop(stopped);
+            });
+            let spec = shards_abi::run::Spec {
+                argv: vec![b"true".to_vec()],
+                ..shards_abi::run::Spec::default()
+            };
+            let mut ask = execs.exec(0, spec.clone()).unwrap();
+            let began = std::time::Instant::now();
+            let slow = answered_on(&SLOW, Counted::here(), |patience| ask.wait(patience));
+            assert!(began.elapsed() >= slowest * 25);
+            let Exec {
+                mut stdout,
+                stderr,
+                mut control,
+                ..
+            } = match slow {
+                Ok(Ok(exec)) => exec,
+                other => panic!("the slow host's exec: {:?}", other.map(|got| got.map(|_| ()))),
+            };
+            // Its end whole before the next ask: its outputs finished and its exit told.
+            assert_eq!(stdout.next_record(), Ok(Got::Finished));
+            assert_eq!(stderr.unwrap().next_record(), Ok(Got::Finished));
+            assert_eq!(control.wait(), Ok(0));
+            let mut ask = execs.exec(0, spec).unwrap();
+            let stall = answered_on(&STOPPED, Counted::here(), |patience| ask.wait(patience))
+                .map(|got| got.map(|_| ()))
+                .unwrap_err();
+            assert!(stall.waited() >= slowest, "{stall:?}");
+            drop(ask);
+            go.send(()).unwrap();
+            host.join().unwrap();
         }
 
         /// A lane's ask let go before it took its answer leaves nothing held: its lane, which

@@ -29834,8 +29834,9 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
       - *Of no party* (counted by no party's wait): a thread made by another crate, by std, or
         by a module outside the daemon's (netproc's dial servers, context, the build proxy);
         the cuts watcher (daemon/cuts.rs), which is this process's and serves every daemon in
-        it. A test's own thread is of its party but no member: it is its waiter. A wait on a
-        thread of no party counts this process, as before.
+        it. A test's own thread was of its party but no member, its waiter (now a member, its
+        own waits counting none of its run: amended below). A wait on a thread of no party
+        counts this process, as before.
       - *Production is unchanged.* Every judged wait of the daemon's and shards-api's follows
         another process by its ID and start (a VM process, its holder, a home's daemon), so no
         other home's work is in its party. `DaemonThread` is std's builder there; two daemon
@@ -29849,6 +29850,51 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
         party's wait is refused within a few W*, while the other still spins. Red where
         `Counted::here` counts this process: the other's spin, then its deadline, hold the wait
         past the 5 s the other spun.
+      - *Amended 2026-11-17 (#36; ROOT's ask, and its approval of the test's thread as a
+        member): one judge for every crate's tests, the test's own thread a member.* The judge
+        is two crates. shards-judge is D215's `Record`, `Judge` and their rule (judge.rs, which
+        shards-api re-exports whole). shards-testwait is the tests' party, deadlines and judged
+        waits, the daemon's moved whole, a dev-dependency of shards and of shards-remote, which
+        shards-api depends on and so cannot share shards-api's. The daemon keeps no copy.
+        - *A test's own thread is a member* of the party `party::of_test` makes for it: a
+          member's wait on its test's next step (shards-remote's stand-in hosts wait on its
+          steers) counts the test thread's run and its hold, as D215 counts a held host. Before,
+          a test thread its host held off a CPU looked to that wait like a party gone still.
+        - *A wait counts none of its asker's run.* Each member's CPU while it waits judged is
+          its own (`waited`), and a wait reads every member's clock but its asking thread's
+          (`ran`). Subtracting the measured waiting CPU from the sum of every member's left the
+          asker's CPU between its measure and the party's read, read as progress at about half
+          its looks. So the test thread's own waits are judged as before, and members' waits on
+          it only gain patience.
+        - *shards-remote's tests* wait through `received`, `receive` and `answer`
+          (`answered_on`: the judged loop over any wait that says none where nothing came in the
+          time it is given: a lane's ask, a steer, a wake's ring), no patience of their own
+          (control.rs had 10 s, its controller's hearing 20 s, which CI's loaded runners
+          outran). Under test, its driver (net.rs) registers its planned timer as its party's
+          deadline while it sleeps on it, so that a party asleep on its loss or acknowledgement
+          timer is not refused before it. Its control tests' stand-in controller runs the product
+          controller's liveness (no idle timeout and no keep-alive, `managed::transport_of`,
+          D180): hyper-quic's default 30 s idle timeout, negotiated with the endpoint, put
+          keep-alives on both ends, which a judged wait reads as progress, so that a stuck
+          lane's wait would never be given up on.
+        - *The product's timeouts, audited (R03).* Every caller in this workspace of the lane
+          API's waits of a caller's patience (`PendingExec`, `PendingMcp`, `PendingMember`,
+          `PendingLog` and `PendingSocket::wait`, `MemberSteering::signal`, `resize` and
+          `steered`, `Wake::wait`) is a test: `Duration::MAX` (api_run.rs, daemon/managed.rs,
+          api_image.rs, nesting.rs, managed_output/log_lanes.rs), a test's parameter (shards-api's
+          tests/control_lanes.rs), or control.rs's 10 s, now judged. The controller hands its
+          lanes to the program that dialed it (`Link`) and asks none itself, so no product caller
+          picks a constant: each waits its caller's own bound, `Duration::MAX` until its answer
+          comes (Hex's decision 9).
+        - *Tested* (written, not run; ROOT's): shards-testwait
+          `attempts_are_waited_on_while_their_party_runs_and_given_up_once_it_stops`, and the four
+          tests of the judge moved with it; control.rs
+          `a_slow_but_running_lane_is_waited_on_and_a_stopped_one_given_up`, a real exec lane over
+          the production controller, its host a stand-in of its test's party that spins 25 W*
+          (its record's own, 20 ms) before it answers, then answers a second ask never. Green: the
+          first answer is waited for, the second given up on a whole W* after its host stopped.
+          Red (lanes/redgreen/remote-slow-lane.patch): the first waited for within 5 W* of the
+          test's own, as control.rs's tests waited, fails "answered within the test's patience".
     - *Rated answers alone teach R* and C*.* Many kept records held R* 0 ns: answers reaped
       before any look read their CPU (`run_ending`'s `try_wait` reaped a quick client between
       paced looks), a floor that refuses nothing. `Seen::Learned` is now `{ slowest, rated:

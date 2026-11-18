@@ -13,7 +13,10 @@ use std::sync::mpsc;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
-use shards_judge::{Found, Judge, Record, Seen, Stall};
+use shards_judge::{Found, Judge, Seen};
+/// What its waits take and say: the record of a kind of answer a wait is judged by, and the
+/// stall it was given up on at (shards-judge's).
+pub use shards_judge::{Record, Stall};
 
 pub mod party;
 
