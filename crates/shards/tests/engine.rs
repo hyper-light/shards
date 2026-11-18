@@ -24,7 +24,8 @@ use std::time::{Duration, SystemTime};
 
 use base64::Engine as _;
 use common::{
-    Patience, Run, TempDir, cannot_run_vms, guest_init, kernel, run_shards_env, served, served_counting, tar,
+    Patience, Run, TempDir, cannot_run_vms, guest_init, kernel, left_of, run_shards_env, served,
+    served_counting, tar,
 };
 use serde_json::{Value, json};
 #[cfg(windows)]
@@ -3797,7 +3798,13 @@ fn a_microvms_own_engine_makes_volumes_of_its_own() {
         assert!(status.starts_with("api HTTP/1.1 204"), "{name}: {status} {said}");
     }
     let (status, said) = api("p2", "DELETE", "/volumes/data", &Value::Null);
-    assert!(status.starts_with("api HTTP/1.1 204"), "{status} {said}");
+    // Said with what uses the volume's files, where its removal fails (jupiter r11 at
+    // 7254ebaeb8: windows-x86_64, "remove prov.data: Access is denied" every time).
+    assert!(
+        status.starts_with("api HTTP/1.1 204"),
+        "{status} {said}\n{}",
+        left_of(&home.join("volumes").join("prov.data"))
+    );
     // The rest go with their microVM, its joiners that mount them with it; the other
     // microVM's stay its own, and the host's its own.
     let removed = shards(&["rm", "-f", "p2"]);

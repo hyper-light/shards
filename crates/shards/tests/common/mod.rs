@@ -1340,6 +1340,119 @@ pub fn command_line(pid: u32) -> Result<Option<String>, String> {
     read
 }
 
+/// What is left of `dir`, it and each directory and file under it a line, for a removal of it
+/// that failed to say what held it: on Windows each with the processes that use it, open or
+/// mapped ([`users`]), by ID and executable, since NTFS renames no directory under which
+/// anything is open, whatever its sharing (MS-FSA 2.1.5.15.11, 2.1.4.2); elsewhere nothing,
+/// where a removal takes what is open.
+#[cfg(windows)]
+pub fn left_of(dir: &Path) -> String {
+    let names: std::collections::HashMap<u32, String> = processes()
+        .into_iter()
+        .map(|(pid, _, name)| (pid, name))
+        .collect();
+    let mut left = vec![dir.to_path_buf()];
+    let mut dirs = vec![dir.to_path_buf()];
+    while let Some(d) = dirs.pop() {
+        for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+            if e.file_type().is_ok_and(|t| t.is_dir()) {
+                dirs.push(e.path());
+            }
+            left.push(e.path());
+        }
+    }
+    left.into_iter()
+        .map(|f| match std::panic::catch_unwind(|| users(&f)) {
+            Ok(pids) => {
+                let by: Vec<String> = pids
+                    .iter()
+                    .map(|p| format!("{p} {}", names.get(p).map_or("?", String::as_str)))
+                    .collect();
+                format!("{}: used by {}", f.display(), by.join(", "))
+            }
+            Err(_) => format!("{}: its users unread", f.display()),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[cfg(not(windows))]
+pub fn left_of(_dir: &Path) -> String {
+    String::new()
+}
+
+/// Every file under `dir`, its subdirectories' among them.
+#[cfg(windows)]
+pub fn files_under(dir: &Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    let mut dirs = vec![dir.to_path_buf()];
+    while let Some(d) = dirs.pop() {
+        for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+            match e.file_type() {
+                Ok(t) if t.is_dir() => dirs.push(e.path()),
+                Ok(t) if t.is_file() => files.push(e.path()),
+                _ => {}
+            }
+        }
+    }
+    files
+}
+
+/// The processes that use `file`, open or mapped, or a directory, open. The file query works
+/// as a standard user; Restart Manager's RmGetList returned access denied even for that
+/// user's own file on the arm64 Windows test host (PM M414's file-users probe). Opened with
+/// FILE_FLAG_BACKUP_SEMANTICS, which a directory's handle takes ("You must set this flag to
+/// obtain a handle to a directory", CreateFileW).
+#[cfg(windows)]
+pub fn users(file: &Path) -> Vec<u32> {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    use std::os::windows::io::AsRawHandle as _;
+    use windows_sys::Wdk::Storage::FileSystem::{FileProcessIdsUsingFileInformation, NtQueryInformationFile};
+    use windows_sys::Win32::Foundation::{
+        STATUS_BUFFER_OVERFLOW, STATUS_BUFFER_TOO_SMALL, STATUS_INFO_LENGTH_MISMATCH,
+    };
+    use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS;
+    use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
+    let handle = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(file)
+        .unwrap();
+    // FILE_PROCESS_IDS_USING_FILE_INFORMATION: a ULONG count, padded to a pointer's
+    // alignment, then that many ULONG_PTR process IDs. Both Windows targets are 64-bit.
+    let mut buffer = vec![0usize; 65];
+    loop {
+        let mut io = IO_STATUS_BLOCK::default();
+        let bytes = u32::try_from(buffer.len().checked_mul(size_of::<usize>()).unwrap()).unwrap();
+        // SAFETY: an open synchronous file, its status block, and `bytes` writable,
+        // pointer-aligned bytes for the header and the IDs that follow it.
+        let status = unsafe {
+            NtQueryInformationFile(
+                handle.as_raw_handle(),
+                &mut io,
+                buffer.as_mut_ptr().cast(),
+                bytes,
+                FileProcessIdsUsingFileInformation,
+            )
+        };
+        if matches!(
+            status,
+            STATUS_BUFFER_OVERFLOW | STATUS_BUFFER_TOO_SMALL | STATUS_INFO_LENGTH_MISMATCH
+        ) {
+            buffer.resize(buffer.len().checked_mul(2).unwrap(), 0);
+            continue;
+        }
+        assert_eq!(status, 0, "file users of {}: {status:#x}", file.display());
+        // SAFETY: a successful query wrote the ULONG header into this initialized buffer.
+        let count = unsafe { *buffer.as_ptr().cast::<u32>() } as usize;
+        assert!(count < buffer.len());
+        return buffer[1..=count]
+            .iter()
+            .map(|&pid| u32::try_from(pid).unwrap())
+            .collect();
+    }
+}
+
 /// A handle to process `pid` that may give it handles (PROCESS_DUP_HANDLE), as a VM's
 /// spawner holds one: what `shards_ipc::Stream::gives_to` takes.
 #[cfg(windows)]
