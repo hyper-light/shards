@@ -151,8 +151,9 @@ struct Hold {
     /// ([`disks`](Self::disks)). Windows' wait reasons for a flush are unread here: a flush
     /// waits `Executive`, as a pipe's reader does (PM M606).
     uninterruptible: bool,
-    /// The I/O its host's disks had completed, every disk's summed, read where a thread of it
-    /// waited in its kernel as it was looked at (Linux `/proc/diskstats`, macOS IOKit's
+    /// The I/O its host's disks had completed, every disk's summed, and on Linux the time they
+    /// spent doing I/O, which grows while one is in flight (`os::disks_worked`), read where a
+    /// thread of it waited in its kernel as it was looked at (Linux `/proc/diskstats`, macOS IOKit's
     /// `IOBlockStorageDriver` statistics, Windows each physical disk's IOCTL_DISK_PERFORMANCE:
     /// `os::disks`), none elsewhere or where unread. Its growth since the look before says its
     /// host's disks were working meanwhile: a transaction commit another task runs, whose
@@ -946,27 +947,34 @@ mod os {
     /// delays, in clock ticks (proc(5)).
     const BLKIO_TICKS: usize = 42;
 
-    /// The I/O the host's block devices have completed ([`Hold::disks`](super::Hold)), from
+    /// The work the host's block devices have done ([`Hold::disks`](super::Hold)), from
     /// `/proc/diskstats`; none where it cannot be read.
     pub(super) fn disks() -> Option<u64> {
         std::fs::read_to_string("/proc/diskstats")
             .ok()
-            .map(|text| disks_completed(&text))
+            .map(|text| disks_worked(&text))
     }
 
     /// Of `/proc/diskstats`' `text`, each line's reads, writes, discards (since 4.18) and
-    /// flushes (since 5.5) completed, as many of them as its kernel lists, summed over every
-    /// line (Documentation/admin-guide/iostats.rst: after a line's major, minor and name, its
-    /// fields 1, 5, 12 and 16). A partition's are its disk's too, and a mapped device's its
-    /// disks': only the sum's growth is read, which any of them shows.
-    pub(super) fn disks_completed(text: &str) -> u64 {
-        const COMPLETED: [usize; 4] = [0, 4, 11, 15];
+    /// flushes (since 5.5) completed, and the milliseconds its device has spent doing I/O, as
+    /// many of them as its kernel lists, summed over every line
+    /// (Documentation/admin-guide/iostats.rst: after a line's major, minor and name, its
+    /// fields 1, 5, 12 and 16, and field 10, which "increases so long as field 9 is nonzero",
+    /// field 9 its I/Os in flight). Field 10 is brought up to date as the file is read while a
+    /// device has I/O in flight (block/genhd.c `diskstats_show` calls `update_io_ticks` where
+    /// `bdev_count_inflight` is nonzero, linux v6.18.48), so that a flush in flight through a
+    /// whole look's window, which completes nothing in it, shows its device working: a journal
+    /// commit's waiter in `jbd2_log_wait_commit` (CI 44205094460, x86_64 gnu, referrers.rs:437,
+    /// refused as still 46.7 ms in). A partition's are its disk's too, and a mapped device's
+    /// its disks': only the sum's growth is read, which any of them shows.
+    pub(super) fn disks_worked(text: &str) -> u64 {
+        const WORKED: [usize; 5] = [0, 4, 9, 11, 15];
         text.lines()
             .flat_map(|line| {
                 line.split_ascii_whitespace()
                     .skip(3)
                     .enumerate()
-                    .filter(|(i, _)| COMPLETED.contains(i))
+                    .filter(|(i, _)| WORKED.contains(i))
                     .filter_map(|(_, n)| n.parse::<u64>().ok())
             })
             .fold(0, u64::saturating_add)
@@ -2497,19 +2505,39 @@ mod tests {
         assert!(!vouches(Found::Still, false, &hold(true, None), false, false));
     }
 
-    /// `/proc/diskstats`' completed reads, writes, discards and flushes are summed over its
-    /// lines, as many of those fields as each line's kernel lists (iostats.rst: 11 fields
-    /// before 4.18, 15 since, 17 since 5.5), its other fields left out.
+    /// `/proc/diskstats`' completed reads, writes, discards and flushes, and each device's
+    /// milliseconds spent doing I/O, are summed over its lines, as many of those fields as each
+    /// line's kernel lists (iostats.rst: 11 fields before 4.18, 15 since, 17 since 5.5), its
+    /// other fields left out.
     #[cfg(target_os = "linux")]
     #[test]
-    fn a_hosts_completed_io_is_summed_from_every_diskstats_line() {
+    fn a_hosts_disk_work_is_summed_from_every_diskstats_line() {
         let text = concat!(
             "   8       0 sda 10 1 2 3 20 1 2 3 0 4 5 30 1 2 3 40 1\n",
             " 259       1 nvme0n1p1 100 7 7 7 200 7 7 7 7 7 7 300 7 7 7\n",
             "   7       0 loop0 1000 9 9 9 2000 9 9 9 9 9 9\n",
         );
-        assert_eq!(os::disks_completed(text), 3700);
-        assert_eq!(os::disks_completed(""), 0);
+        assert_eq!(os::disks_worked(text), 3720);
+        assert_eq!(os::disks_worked(""), 0);
+    }
+
+    /// A flush in flight through a whole look's window completes nothing in it, while its device
+    /// spends that time doing I/O (iostats.rst's field 10, its field 9 nonzero): a party waiting
+    /// on it in its kernel is held by its host's disk, not still (CI 44205094460, x86_64 gnu: a
+    /// client in `jbd2_log_wait_commit`, refused as still 46.7 ms in).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_flush_in_flight_through_a_look_holds_its_party() {
+        let before = "   8       0 sda 10 0 0 0 20 0 0 0 1 40 40 0 0 0 0 5 0\n";
+        let after = "   8       0 sda 10 0 0 0 20 0 0 0 1 55 55 0 0 0 0 5 0\n";
+        let (from, now) = (os::disks_worked(before), os::disks_worked(after));
+        assert!(now > from, "{from} {now}");
+        let hold = |disks| Hold {
+            uninterruptible: true,
+            disks: Some(disks),
+            ..Hold::default()
+        };
+        assert_eq!(found(false, false, &hold(from), &hold(now)), Found::Held);
     }
 
     /// A process whose thread writes a file and flushes it to its disk again and again

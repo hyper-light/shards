@@ -29731,8 +29731,9 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
           thread of its party in its kernel (Linux `D`, macOS `TH_STATE_UNINTERRUPTIBLE`) is
           `Held` only where its host's block devices completed I/O between the look before
           and this one. Linux: `/proc/diskstats`' reads, writes, discards (4.18) and flushes
-          (5.5) completed, every line summed (Documentation/admin-guide/iostats.rst, its
-          fields 1, 5, 12 and 16; `os::disks_completed`). macOS: each IOKit
+          (5.5) completed, and each device's milliseconds doing I/O (amended 2026-11-18,
+          below), every line summed (Documentation/admin-guide/iostats.rst, its fields 1, 5,
+          12 and 16, and 10; `os::disks_worked`). macOS: each IOKit
           `IOBlockStorageDriver`'s `Statistics`, `Operations (Read)` and `Operations
           (Write)`, summed (IOKit/storage/IOBlockStorageDriver.h, what iostat(8) reads;
           `shards_apple::storage`, IOKit bound when first read, as shards-apple binds every
@@ -30405,6 +30406,28 @@ jupiter (PM M606), on the start path of every `shards run`.
 **What would falsify it.** A conforming client that needs to link the VMM. A VM process that
 ran no CPU for a whole W* of its kind and would still have answered: a working guest
 refused.
+
+**Amended (own-36b, kiln goal #37, 2026-11-18, ROOT's word): a disk busy with a flush in flight
+holds its waiter, as one that completed I/O does.** CI 44205094460's x86_64 gnu job (job
+134486647672, at 0f83166da9) refused referrers.rs:437's `shards build` 46.7 ms into its wait,
+"no progress for 26.695647ms, past … 15.220466ms", its party one process, its client, "in an
+uninterruptible wait (D), 0 of 1 threads runnable, its threads waiting in
+jbd2_log_wait_commit": its fsync waiting on the ext4 journal's commit, which the host's jbd2
+thread runs, its device flushing. The rule stands as it was: a party in its kernel is held
+only where its host's disks worked meanwhile, never for being in `D` alone (a dead NFS
+mount's wait is still). What changes is what shows a disk worked. A flush in flight through a
+whole window completes nothing in it, so completions alone read that disk idle. Linux's
+`/proc/diskstats` field 10, the milliseconds a device spent doing I/O, "increases so long as
+field 9 is nonzero" (iostats.rst), field 9 its I/Os in flight, and is brought up to date as
+the file is read (linux v6.18.48 block/genhd.c `diskstats_show` calls `update_io_ticks` where
+`bdev_count_inflight` is nonzero). So `os::disks_worked` sums it with the completions: its
+growth is the disk busy for its waiter, the one reading of shards-api's `Hold::disks` that
+every judge takes (the VM processes' `Followed` and the tests' party through
+`shards_api::Watch`). macOS and Windows keep their readings (each counts operations; a
+flush in flight there is unread, owed where a refusal shows it). Tested:
+progress.rs `a_flush_in_flight_through_a_look_holds_its_party` (only field 10 grows, nothing
+completes: `Held`; red with field 10 dropped, `Still`) and
+`a_hosts_disk_work_is_summed_from_every_diskstats_line`. Unbuilt and unrun in this lane.
 
 ### D231. An image booted for an orchestrator: a run of its own, hosted by one `shards` process (decided; building)
 
