@@ -816,7 +816,7 @@ fn unless_out_of_order(file: &File, partial: &Path) -> io::Result<()> {
     let marker = marker(partial);
     if marker.exists() {
         file.set_len(0)?;
-        shards_durable::data(&file)?;
+        shards_durable::data(file)?;
         fs::remove_file(&marker)?;
     }
     Ok(())
