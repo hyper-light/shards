@@ -2170,15 +2170,13 @@ impl<D: crate::containers::Disk> Daemon<D> {
                             });
                             if let (Some(look), None) = (&went, past) {
                                 // A look past C* that went on: the bound's red alone makes one
-                                // (`TEARDOWN_WENT_PAST_MOST`).
+                                // (`TEARDOWN_WENT_ON`).
                                 #[cfg(test)]
                                 if let (Ok(Some(work)), Some(most)) =
                                     (e.followed.work(), self.ends.most_work())
                                     && work > most
                                 {
-                                    *lock(&super::TEARDOWN_WENT_PAST_MOST)
-                                        .entry(e.id.clone())
-                                        .or_default() += 1;
+                                    *lock(&super::TEARDOWN_WENT_ON).entry(e.id.clone()).or_default() += 1;
                                 }
                                 // Its guest is still at its end: another slice.
                                 super::log(format!(
@@ -2250,6 +2248,11 @@ impl<D: crate::containers::Disk> Daemon<D> {
                                 _ => (End::Exit, "its process"),
                             };
                             if let Some(look) = e.followed.goes_on() {
+                                // An end that went on past its last kill (`TEARDOWN_WENT_ON`).
+                                #[cfg(test)]
+                                {
+                                    *lock(&super::TEARDOWN_WENT_ON).entry(e.id.clone()).or_default() += 1;
+                                }
                                 // Its host, or its provider's guest, still ending it: another slice.
                                 super::log(format!(
                                     "container {}: not yet ended {:?} after its last kill, {what} going on with its end: {look}",

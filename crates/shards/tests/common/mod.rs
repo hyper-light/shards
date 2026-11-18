@@ -4736,7 +4736,8 @@ impl Party {
     /// microVMs as they end after it, a client's children it leaves as it exits (#77
     /// waits-10). One found ended (exited, not reaped: `shards_api::Watch::ended`) is not
     /// live, and its end is progress once, at the look that first finds it under way, never
-    /// again (#77 waits-09: a zombie's every look says its end under way).
+    /// again: `shards_api::Watch::look` finds it gone at the next (#77 waits-09: a zombie's
+    /// every look says its end under way).
     pub fn look(&mut self) -> Looked {
         use shards_api::Found;
         let (members, helpers) = self.members();
@@ -4822,10 +4823,12 @@ impl Party {
             let before = watch.cpu();
             let was_ended = watch.ended();
             let found = watch.look();
-            if matches!(found, Ok(Found::Gone)) || (was_ended && watch.ended()) {
+            if matches!(found, Ok(Found::Gone)) {
                 gone.push(pid);
                 looked.vouched = false;
-                looked.lost |= matches!(found, Ok(Found::Gone));
+                // What it ran is lost only where it went unseen ending: one found ended at the
+                // look before had run its last by then.
+                looked.lost |= !was_ended;
                 continue;
             }
             looked.lost |= found.is_err();

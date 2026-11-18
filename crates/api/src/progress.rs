@@ -589,12 +589,23 @@ impl Watch {
     /// What it did since the look before ([`Found`]): progressed where its end is under way;
     /// still where it is stopped or frozen, whatever it ran to its stop; progressed where it
     /// ran; held where its host held it from running; still where it did neither of its own;
-    /// gone where its process has.
+    /// gone where its process has, or was found ended at the look before and is again.
+    ///
+    /// An end under way is progress at the look that first finds it, never again: a process
+    /// that has exited and is not yet reaped (a zombie) says its end under way at every look,
+    /// and one its parent never reaps would be followed for ever (#77 waits-09, a test's wait
+    /// on a state; D217, a killed VM process the daemon's unit test never reaped followed
+    /// each slice for 5 h 37 min on macOS). One rule for every follower (R12): the tests'
+    /// parties held it apart before.
     pub fn look(&mut self) -> Result<Found, ProcessFailure> {
+        let was_ended = self.ended();
         let Some(look) = self.followed.look()? else {
             return Ok(Found::Gone);
         };
         let before = std::mem::replace(&mut self.last, look);
+        if was_ended && self.ended() {
+            return Ok(Found::Gone);
+        }
         let hold = std::mem::replace(&mut self.hold, self.followed.hold());
         self.stored = self.hold.io.grown_since(&hold.io);
         self.kernel = self.hold.kernel_since(&hold);
@@ -646,9 +657,8 @@ impl Watch {
 
     /// Whether the look before found it ended: on Unix its process exited and not yet
     /// reaped (a zombie, whose every look says its end under way), on Windows every process
-    /// of its tree exited (their handles read them still). A waiter with no reap of its own
-    /// to come (a test's wait on a state, #77 waits-09) takes one found so twice for gone,
-    /// rather than for an end under way for ever.
+    /// of its tree exited (their handles read them still). [`look`](Self::look) takes one
+    /// found so at two looks running for gone, rather than for an end under way for ever.
     pub fn ended(&self) -> bool {
         #[cfg(unix)]
         return self.last.ending;
@@ -3610,6 +3620,39 @@ mod tests {
         assert_eq!(ran_by_end(pid, Some(started.wrapping_add(1))), None);
         child.wait().unwrap();
         assert!(followed.look().unwrap().is_none(), "reaped, it has gone");
+    }
+
+    /// A process that has exited and is not yet reaped is progress at the look that first finds
+    /// its end under way, and gone at the next: one its parent never reaps is followed no
+    /// longer than that (D217: a killed VM process the daemon's unit test never reaped was
+    /// followed each slice for 5 h 37 min on macOS; #77 waits-09).
+    #[cfg(unix)]
+    #[test]
+    fn an_unreaped_end_is_progress_once_then_gone() {
+        let mut child = this_binary("spin");
+        let followed = Followed::of_pid(child.id()).unwrap().unwrap();
+        let mut watch = Watch::of(followed).unwrap().unwrap();
+        drop(child.stdin.take());
+        // SAFETY: a siginfo_t, plain data, for waitid(2) to fill.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        // SAFETY: waitid(2) of this test's own child into `info`; WNOWAIT leaves it unreaped.
+        let waited = unsafe {
+            libc::waitid(
+                libc::P_PID,
+                child.id(),
+                &raw mut info,
+                libc::WEXITED | libc::WNOWAIT,
+            )
+        };
+        assert_eq!(waited, 0);
+        assert_eq!(
+            watch.look().unwrap(),
+            Found::Progressed,
+            "its end under way, first found"
+        );
+        assert!(watch.ended());
+        assert_eq!(watch.look().unwrap(), Found::Gone, "found ended again: gone");
+        child.wait().unwrap();
     }
 
     /// A child of this test's running `script` in a shell: its pid once waitid(2) has seen it

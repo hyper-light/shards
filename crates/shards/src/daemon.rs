@@ -507,12 +507,14 @@ static LOGGED: AtomicU64 = AtomicU64::new(0);
 static WAITED_PAST_MOST: Mutex<std::collections::BTreeMap<u32, u32>> =
     Mutex::new(std::collections::BTreeMap::new());
 
-/// How many of each microVM's teardown's slice looks found its VM process past the most work
-/// any teardown took (C*) and went on, by its ID, as its kill goes on (`end_all`): a test of
-/// the bound reads none, the first such look giving it up, where its red reaches
-/// `LOOKS_TO_REFUSE` (D217).
+/// How many of each microVM's ends' slice looks went on, by its ID, where a test of D217's
+/// work bound must see none (`end_all`): its command's teardown past the most work any
+/// teardown took (C*), which its first such look gives up, and its VM process's end once
+/// killed, whose end under way a look finds once (`shards_api::Watch::look`) and its run's
+/// socket closing tells. Its test's loop ends at `LOOKS_TO_REFUSE` of them, its red's and any
+/// green's that fails alike: the follow's own looks, never the test's beside them.
 #[cfg(test)]
-static TEARDOWN_WENT_PAST_MOST: Mutex<std::collections::BTreeMap<String, u32>> =
+static TEARDOWN_WENT_ON: Mutex<std::collections::BTreeMap<String, u32>> =
     Mutex::new(std::collections::BTreeMap::new());
 
 /// The setup entry carrying a microVM's own engine's token (D181), `engine=` and its bytes in
@@ -12734,12 +12736,16 @@ mod tests {
     /// their daemon with them. This home's slices are learned short, and its teardowns' C*
     /// taught twice by teardowns of a millisecond, so that a stand-in spinning a CPU through
     /// its SIGKILL, as a guest stuck in its kernel spins, passes it within a slice or two: the
-    /// green's kill ends by its follow alone, at its first slice look past C*. Its red
-    /// (lanes/redgreen/own-38g-teardown-work.patch, the bound unread) follows that teardown
-    /// for ever, going on at each such look, which it counts (`TEARDOWN_WENT_PAST_MOST`); once
-    /// LOOKS_TO_REFUSE of them have, the test says its command's end: the red's kill hears
-    /// it, its microVM never killed. The follow's own looks, never the test's beside them
-    /// (CI 44268931283, the start judge's test). No count of the test's own.
+    /// green's microVM is killed at its first slice look past C*. The stand-in holds its run's
+    /// socket as a VM process holds its own, the test letting go of its copy once it has heard
+    /// the kill: its end closes it, and the daemon hears the run's end there, as a VM's
+    /// (`take_messages`). Its red (lanes/redgreen/own-38g-teardown-work.patch, the bound unread)
+    /// follows that teardown for ever, going on at each such look; so did a green whose killed
+    /// VM's end went unheard, its unreaped stand-in's end under way read at every look for
+    /// 5 h 37 min on macOS, until `shards_api::Watch::look` took an end found twice for gone.
+    /// The test counts end_all's own looks that went on so (`TEARDOWN_WENT_ON`), never its own
+    /// beside them (CI 44268931283, the start judge's test); once LOOKS_TO_REFUSE of them have,
+    /// it ends the stand-in, whose end the kill hears, and fails, saying them.
     #[cfg(unix)]
     #[test]
     fn a_teardown_past_c_star_without_its_end_has_its_microvm_killed() {
@@ -12756,12 +12762,12 @@ mod tests {
             let id = t.create("spinner");
             let starting = t.start(&id);
             let (mut ready, vm) = t.warm_vm(None);
-            // Its VM a stand-in spinning a CPU, whatever its SIGKILL.
+            // Its VM a stand-in spinning a CPU, whatever its SIGKILL, holding its run's socket.
             let spinner = Arc::new(
                 shards_ipc::spawn(
                     Path::new("/bin/sh"),
                     &[OsStr::new("-c"), OsStr::new("while :; do :; done")],
-                    &[],
+                    &[(vm.as_fd(), 3)],
                     false,
                 )
                 .unwrap(),
@@ -12780,20 +12786,23 @@ mod tests {
             });
             let asked = t.asking(&["kill", "spinner"]);
             assert_eq!(heard(&vm), signal(9));
-            let went_past_most = || lock(&TEARDOWN_WENT_PAST_MOST).get(&id).copied().unwrap_or(0);
-            while !asked.is_finished() && went_past_most() < shards_api::LOOKS_TO_REFUSE {
+            // Its run's socket the stand-in's alone from here: its end closes it.
+            drop(vm);
+            let went_on = || lock(&TEARDOWN_WENT_ON).get(&id).copied().unwrap_or(0);
+            while !asked.is_finished() && went_on() < shards_api::LOOKS_TO_REFUSE {
                 std::thread::sleep(slice);
             }
-            // The red's: its teardown followed on past C*, its command's end said now.
+            // Its follow went on where it must not have: the stand-in ended now, which its kill
+            // hears.
             let held = !asked.is_finished();
             if held {
-                say(&vm, kind::DONE, &[137]);
+                spinner.kill(shards_ipc::signal::SIGKILL).unwrap();
             }
             let (status, out, err) = joined(asked);
             assert!(
                 !held,
-                "a teardown past C* not given up: followed on at {} looks past it",
-                went_past_most()
+                "a teardown past C* not given up: end_all went on at {} of its looks ({status}, {out:?}, {err:?})",
+                went_on()
             );
             assert_eq!((status, out.as_str(), err.as_str()), (0, "spinner\n", ""));
             let _ = joined(starting.run);

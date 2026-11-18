@@ -10628,6 +10628,25 @@ user's host as Docker's.
     lanes/redgreen/own-38g-teardown-work.patch (the bound unread). Written, not built or run
     (the lane's rule). Owed (ROOT): those tests, clippy on every target, and the real-VM
     stop and kill tests on HVF, KVM and WHP.
+  - *Amended 2026-11-18 (ROOT's ruling; own-38h): a killed VM process's end is under way
+    once.* The test's green hung 5 h 37 min on macOS. Its bound worked: the stand-in was killed
+    at its first slice look past C*. But its end was never heard, and its follow never ended.
+    - The stand-in was the test's own child, which nothing reaped until the test ended (a
+      unit test has no spawner, and the stand-in was never `follow_vm`'s). Each Exit slice's
+      look found it exited and unreaped, its end under way, which `found` takes for progress:
+      another slice, for ever. `shards_api::Watch::look` now finds a process ended at two
+      looks running gone (D215, waits-09), so such a follow is given up a slice after its
+      end was first seen.
+    - The daemon hears a VM's end as its run's socket closes (`take_messages`), which a VM
+      process holds; the test held the stand-in's. The stand-in now holds it, and the test
+      lets go of its copy once it has heard the kill: the green's kill is answered by the
+      run's end, as a VM's is.
+    - The test's loop ends on the kill's answer or on `LOOKS_TO_REFUSE` of end_all's own
+      looks that went on where the test must see none (`TEARDOWN_WENT_ON`: past C*, or past
+      the VM's kill), then ends the stand-in itself and fails, saying them: a green that fails
+      ends as its red does. Red of the end rule:
+      `progress::tests::an_unreaped_end_is_progress_once_then_gone`,
+      lanes/redgreen/own-38h-b2-end.patch.
 - **A network or share process is followed the same way** (2026-11-13, PM M546; the
   person's ruling: a wait follows the party's liveness and progress, then the slowest
   answer seen). Once its VM has gone and its spawner holds nothing of it, it goes as its
@@ -30216,6 +30235,14 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
       still) is no live member, its end progress once, at the look that first finds it
       under way: a test's wait on a state reaps nothing, so an end under way for ever was
       progress for ever.
+      - *Amended 2026-11-18 (ROOT's ruling; own-38h): the rule is `shards_api::Watch::look`'s,
+        for every follower.* A look that finds its process ended, as the look before did, finds
+        it gone; the parties' own copy of the rule is gone (R12). The daemon's follow of a
+        killed VM process's end (D217) had read the end under way at every slice: its unit
+        test's stand-in, killed and never reaped, was followed for 5 h 37 min on macOS. What a
+        party's member ran is lost where it went unseen ending, never where a look before had
+        found it ended: that look read its last CPU, as `Wait::read_through` counts a client
+        read as it ended.
     - *A command its context sends to another home's daemon has that daemon in its party*
       (ROOT's word, 2026-11-18, CI 44189693085's x86_64 Windows cluster B). context.rs's
       `a_context_runs_commands_on_its_machine_whole` was refused at context.rs:1625, its
