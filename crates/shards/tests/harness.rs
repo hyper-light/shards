@@ -225,6 +225,9 @@ fn a_party_in_a_long_durable_write_is_held_while_its_volume_works() {
         }
         let mut go = writer.stdin.take().unwrap();
         let party = common::Party::client(writer.id(), Some(home));
+        // Its word "durable" heard, told here: the stand-in's own exit status says nothing,
+        // its libtest's last lines refused once this end of its stdout is gone.
+        let (durable, heard_durable) = std::sync::mpsc::channel();
         let judged = common::judged(
             party,
             "a durable write",
@@ -238,15 +241,14 @@ fn a_party_in_a_long_durable_write_is_held_while_its_volume_works() {
                         return;
                     }
                 }
+                let _ = durable.send(());
             },
         );
-        let status = writer.wait().unwrap();
+        writer.wait().unwrap();
         judged?;
-        if status.success() {
-            Ok(())
-        } else {
-            Err(format!("the stand-in ended undurable: {status}"))
-        }
+        heard_durable
+            .try_recv()
+            .map_err(|_| "the stand-in ended undurable".to_string())
     }
     let home = TempDir::new("durable-held");
     let round = |bytes: u64, forget: bool| round(&home, bytes, forget);
