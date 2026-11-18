@@ -30371,6 +30371,14 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
           - *Processes.* A wait whose answer is another process's run (a test's shell clients, a
             child test process) follows that process as its party, as `Patience` follows a
             daemon. Which converted waits depend on one is checked first.
+          - *A context run's waits* (2026-11-18, #36, CI 44227612442). A terminal test of a
+            context run (tests/context.rs) follows its client's shell and its own home's daemon
+            (`Terminal::wait_for`'s `Wait::begin` with the client's home), and that home has
+            none: its refusal said "no daemon yet in" the laptop's home. The run is the machine
+            home's daemon's and its microVM's, which no look of the wait counts, so a machine
+            daemon busy with the run reads as a still party. Its party is to follow the machine
+            home's daemon and what descends from it too, as `Patience` follows a home's. Not
+            that run's cause: its awaited text had come, its "\r\n" not (ConPTY's cursor move).
         - *net.rs's numbers, ruled (R03).*
           - Judged now: `next_heard` (was 60 s), `take`'s poll (was 60 s), the wake's read (was
             a 10 s read timeout), a hand's wait for its server's flight (`Hand::answers`, was a
