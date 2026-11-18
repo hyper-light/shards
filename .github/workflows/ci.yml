@@ -123,39 +123,48 @@ jobs:
 
   # The platform matrix (docs/design/architecture.md D13) on native runners. Every target is
   # linted; the ones a runner can execute are tested. VM tests print SKIP where the host has
-  # no backend yet or no hardware virtualization. Each limit is a third above the slowest
-  # measured (M245, M420, M613): the tests' step has 56 minutes, x86_64 Linux's slowest 41.7,
-  # and the job 75, with a third above its other steps' slowest, macOS' 14.1. x86_64 Windows
-  # is tested on Windows Server 2022 as well as 2025, each with its hypervisor platform (WHP
-  # partitions run on both: PM's windows-2022 and windows-2025 entries), as a daemon's users
-  # run both: its tests' step has 122 minutes, windows-2025's slowest 90.9, and its jobs 145
-  # and 144, with a third above their other steps' slowest, 17.1 and 16.3. arm64 Windows is
+  # no backend yet or no hardware virtualization. x86_64 Windows is tested on Windows Server
+  # 2022 as well as 2025, each with its hypervisor platform (WHP partitions run on both: PM's
+  # windows-2022 and windows-2025 entries), as a daemon's users run both. arm64 Windows is
   # built and tested on windows-11-arm, whose image has no hypervisor platform (PM M172), so
-  # its VM tests say SKIP. Its build of the tests outgrew the tests' step, 20.3 to 21.1
-  # minutes on 2026-11-12 and 30.8 by 2026-11-17, leaving the tests 4.3 of its 35 (M613), so
-  # it builds them in a step of its own, as the musl job does (M560): 42 minutes, a third
-  # above that 30.8. Running them keeps the 35 (M423's, when its step built them too, its
-  # slowest 26.2): they ran 12.1 at most, and no run has run them through since. Its job has
-  # 102, those two and a third above its other steps' slowest, 18.3. x86_64 Linux's build of
-  # its tests outgrew the tests' step too on Azure's AMD EPYC 7763 runners: 25.4 minutes of
-  # its 56 in CI 44138098584 (at 8247e14), where EC2's Intel Xeon 6975P-C took 19.2 in
-  # 44076016255, and the tests after it, 31.6 there, were cut 30.7 minutes in, run.rs on. So
-  # it builds them in a step of its own as well: 34 minutes, a third above 25.4. Running them
-  # keeps the 56. Its job has 116, those two and a third above its other steps' slowest, 19.1:
-  # 8.0 before its tests, and its stack guards' release build, cut 11.1 minutes in by that
-  # run's 75 (unmeasured past it).
+  # its VM tests say SKIP.
+  #
+  # Each job's Tests step has a limit of its own (`tests_minutes`, PM M619), from the Tests
+  # steps of CI's runs on main that ran to their end, neither cut nor cancelled, in the job's
+  # shape (`scripts/ci/tests-budget 43990298221 44205094460`: every run since M613's): its
+  # slowest plus its spread, the slowest less the quickest, as the next run may differ from the
+  # slowest by as much as those did from one another; a job with one takes the widest spread
+  # any job showed, as a share of its slowest, 0.541 (arm64 musl's). Those runs raise macOS to
+  # 59 (n 9, 34.75 to 46.82 minutes), x86_64 Linux to 68 (n 1, 43.62), windows-2025 to 156 (n
+  # 1, 100.82) and windows-2022 to 136 (n 2, 101.12 to 118.13). Where they derive less, a
+  # job's limit stays (arm64 Linux 56, from 32: n 9, 23.55 to 27.70; arm64 Windows 35, from
+  # 13: n 5, 10.80 to 11.75): none ran the tests the jobs run now (ROOT's ruling, 2026-11-18),
+  # and a limit falls only on 19 runs of the current set (`--current-from` its first): the next
+  # of exchangeable runs passes the slowest of n with chance 1/(n+1), 5% at 19 (PM M619).
+  #
+  # The tests' builds and the jobs' other steps keep M420's rule, a third above their slowest
+  # (M245, M420, M613). arm64 Windows' build of the tests outgrew its tests' step, 20.3 to 21.1
+  # minutes on 2026-11-12 and 30.8 by 2026-11-17 (M613), so it builds them in a step of its
+  # own, as the musl job does (M560): 42 minutes, a third above that 30.8. x86_64 Linux's build
+  # of its tests outgrew the tests' step too on Azure's AMD EPYC 7763 runners, 25.4 minutes in
+  # CI 44138098584 (at 8247e14), where EC2's Intel Xeon 6975P-C took 19.2 in 44076016255, so it
+  # builds them in a step of its own as well: 34 minutes, a third above 25.4. Each job has its
+  # steps' limits and a third above its other steps' slowest: macOS' 14.1 (19, arm64 Linux's
+  # too), windows-2025's 17.1 (23), windows-2022's 16.3 (22), arm64 Windows' 18.3 (25), and
+  # x86_64 Linux's 19.1 (26): 8.0 before its tests, and its stack guards' release build, cut
+  # 11.1 minutes in by run 44138098584's job limit (unmeasured past it).
   native:
     name: ${{ matrix.name || matrix.target }}
-    timeout-minutes: ${{ matrix.job_minutes || 75 }}
+    timeout-minutes: ${{ matrix.job_minutes }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { target: aarch64-apple-darwin, runner: macos-15, test: true }
-          - { target: x86_64-unknown-linux-gnu, runner: ubuntu-24.04, test: true, build_minutes: 34, job_minutes: 116 }
-          - { target: aarch64-unknown-linux-gnu, runner: ubuntu-24.04-arm, test: true }
-          - { target: x86_64-pc-windows-msvc, runner: windows-2025, test: true, tests_minutes: 122, job_minutes: 145 }
-          - { target: x86_64-pc-windows-msvc, runner: windows-2022, test: true, tests_minutes: 122, job_minutes: 144, name: x86_64-pc-windows-msvc (windows-2022) }
+          - { target: aarch64-apple-darwin, runner: macos-15, test: true, tests_minutes: 59, job_minutes: 78 }
+          - { target: x86_64-unknown-linux-gnu, runner: ubuntu-24.04, test: true, build_minutes: 34, tests_minutes: 68, job_minutes: 128 }
+          - { target: aarch64-unknown-linux-gnu, runner: ubuntu-24.04-arm, test: true, tests_minutes: 56, job_minutes: 75 }
+          - { target: x86_64-pc-windows-msvc, runner: windows-2025, test: true, tests_minutes: 156, job_minutes: 179 }
+          - { target: x86_64-pc-windows-msvc, runner: windows-2022, test: true, tests_minutes: 136, job_minutes: 158, name: x86_64-pc-windows-msvc (windows-2022) }
           - { target: aarch64-pc-windows-msvc, runner: windows-11-arm, test: true, build_minutes: 42, tests_minutes: 35, job_minutes: 102 }
     runs-on: ${{ matrix.runner }}
     steps:
@@ -298,7 +307,7 @@ jobs:
       # runs, whatever fails before it: a failing one hides none after it.
       - name: Tests
         if: matrix.test
-        timeout-minutes: ${{ matrix.tests_minutes || 56 }}
+        timeout-minutes: ${{ matrix.tests_minutes }}
         shell: bash
         run: |
           case "${{ matrix.target }}" in
@@ -541,6 +550,10 @@ jobs:
   # its build in Alpine taking up to 46 minutes, so it builds the tests and runs them in
   # steps of their own, each a third above its slowest, and its job those two and a third
   # above its other steps' slowest (M560); the release job's slowest, 43.8, keeps its 60.
+  # Running the tests has a limit of its own for each target, derived as the native jobs'
+  # Tests steps' are (`tests_minutes`, PM M619): x86_64's raised to 64 (n 8, 24.33 to 44.08
+  # minutes), arm64's kept at 58 (from 30: n 12, 8.87 to 19.32, of an older test set). Each
+  # test job has those, its build's 62, and a third above its other steps' slowest, 5.8 (8).
   musl:
     name: ${{ matrix.target }}${{ matrix.part == 'release' && ' release' || '' }}
     timeout-minutes: ${{ matrix.job_minutes }}
@@ -548,8 +561,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { target: x86_64-unknown-linux-musl, runner: ubuntu-24.04, part: test, build_minutes: 62, job_minutes: 128 }
-          - { target: aarch64-unknown-linux-musl, runner: ubuntu-24.04-arm, part: test, build_minutes: 62, job_minutes: 128 }
+          - { target: x86_64-unknown-linux-musl, runner: ubuntu-24.04, part: test, build_minutes: 62, tests_minutes: 64, job_minutes: 134 }
+          - { target: aarch64-unknown-linux-musl, runner: ubuntu-24.04-arm, part: test, build_minutes: 62, tests_minutes: 58, job_minutes: 128 }
           - { target: x86_64-unknown-linux-musl, runner: ubuntu-24.04, part: release, build_minutes: 60, job_minutes: 70 }
           - { target: aarch64-unknown-linux-musl, runner: ubuntu-24.04-arm, part: release, build_minutes: 60, job_minutes: 70 }
     runs-on: ${{ matrix.runner }}
@@ -591,7 +604,7 @@ jobs:
           restore-keys: judge-records-${{ steps.image.outputs.image }}-${{ runner.arch }}-${{ matrix.target }}-
       - name: Tests, in Alpine
         if: matrix.part == 'test'
-        timeout-minutes: 58
+        timeout-minutes: ${{ matrix.tests_minutes }}
         run: scripts/ci/alpine
       - name: The judge's records, kept
         if: ${{ !cancelled() && matrix.part == 'test' }}

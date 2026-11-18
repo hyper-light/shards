@@ -18,6 +18,7 @@ pub fn main() {
             "blk_stress" => blk_stress(),
             "snapshot" => snapshot(),
             "storm" => storm(),
+            "vcpus" => vcpus(),
             "resume" => resume(),
             "idle" => idle(),
             "walk" => memory_walk(),
@@ -90,11 +91,12 @@ pub fn main() {
     }
 }
 
-/// A protocol line the host reads. A storm's kernel diagnostics can interrupt a tty
-/// write even inside a word. Give printk the whole record so it serializes it with
-/// those diagnostics; LOG_USER/ERR keeps it visible with the test kernel's `quiet`.
+/// A protocol line the host reads. The kernel diagnostics of a storm, or of a machine of more
+/// vCPUs than its host has CPUs ([`vcpus`]), can interrupt a tty write even inside a word.
+/// Give printk the whole record so it serializes it with those diagnostics; LOG_USER/ERR
+/// keeps it visible with the test kernel's `quiet`.
 fn report(line: std::fmt::Arguments<'_>) -> Result<(), String> {
-    if std::env::var("shards_test").is_ok_and(|test| test == "storm") {
+    if std::env::var("shards_test").is_ok_and(|test| test == "storm" || test == "vcpus") {
         std::fs::write("/dev/kmsg", format!("<11>{line}\n"))
             .map_err(|e| format!("writing the test record to /dev/kmsg: {e}"))
     } else {
@@ -931,6 +933,24 @@ fn clock_in_step(cpus: usize, when: &str) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+/// A machine of the most vCPUs it may have, each read back by a restore (D13, D14;
+/// tests/snapshot.rs `a_restore_reads_back_every_vcpu_a_machine_may_have`): what a snapshot
+/// keeps of each vCPU crosses its bounds only at the most. Every CPU is online (`setup`), and
+/// each runs a thread of its own, its clock read in turn with every other's
+/// ([`clock_in_step`]), before the snapshot and again in a restore. None carries a storm's
+/// work ([`storm`]): a restored storm of 255 vCPUs took 1,782 s on a 4-CPU host (D14).
+fn vcpus() -> Result<(), String> {
+    // SAFETY: sysconf(3) takes no pointers.
+    let cpus = usize::try_from(unsafe { libc::sysconf(libc::_SC_NPROCESSORS_ONLN) }).unwrap_or(1);
+    clock_in_step(cpus, "before the snapshot")?;
+    let control = ControlPage::map()?;
+    control.write(shards_abi::control::SNAPSHOT, shards_abi::control::SNAPSHOT_NOW);
+    // A restored copy continues here.
+    let generation = control.read(shards_abi::control::GENERATION);
+    report(format_args!("SHARDS-TEST INFO generation={generation}"))?;
+    clock_in_step(cpus, "after the snapshot")
 }
 
 /// A machine busy in every way at once when it asks for a snapshot (audit A02): pairs of

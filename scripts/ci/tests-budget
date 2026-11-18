@@ -1,0 +1,198 @@
+#!/usr/bin/env python3
+"""Each CI test job's limit for its Tests step (ci.yml's `tests_minutes`), from the Tests
+steps that main's own CI runs ran to their end (PM M619).
+
+    scripts/ci/tests-budget [--current-from RUN] OLDEST [NEWEST]
+
+Reads main's history through GitHub's GraphQL API (`gh api graphql`, outside the REST quota
+the other lanes share), newest first, down to the CI run OLDEST (a run's id), and takes each
+test job's Tests step (`Tests`, `Tests, in Alpine`) in every run from OLDEST to NEWEST (by
+default the newest) that ran to its end: passed or failed, neither cancelled nor skipped, and
+not cut at its limit (GitHub's annotation of its job, "The action 'Tests' has timed out after
+N minutes"). GitHub annotates a job a while after it ends, and every failed job at least with
+its exit: a failed one that has none yet is left out, and named. A job's samples share one
+shape, its newest run's: whether it built its tests in a step of its own (`Build the tests`),
+which its Tests step then does not hold.
+
+A job's limit derives from its slowest step plus its spread, the slowest less the quickest:
+the next run may differ from the slowest by as much as those measured differed from one
+another, rounded up to a whole minute. A job with one sample has no spread of its own, and
+takes the widest any job measured, as a share of that job's slowest; one with none, none.
+
+Samples of an older test set may raise a job's limit, never lower it: below ci.yml's limit for
+it, the job is held there, and said to be. It falls only on samples of the test set it runs
+now, the runs from `--current-from RUN` (the first run of that set) on, once there are enough
+of them that a limit at their slowest plus their spread cuts the next run by their slowest
+alone with a chance of at most 5% (FALSE_CUT_PERCENT, the one stated input): for exchangeable
+runs the next exceeds the slowest of the n before it with chance exactly 1/(n+1) (order
+statistics), so n >= 19; the spread only makes it safer. Its limit is then theirs alone. Prints
+each job's samples, n, quickest, slowest, spread, what they derive and its limit, then what it
+held back and why.
+"""
+
+import argparse
+import datetime
+import json
+import math
+import os
+import re
+import subprocess
+import sys
+
+TESTS = ("Tests", "Tests, in Alpine")
+BUILT = ("Build the tests", "Build the tests, in Alpine")
+# A spread needs a slowest and a quickest.
+NEEDED = 2
+# The most chance, in percent, that a lowered limit cuts the next run by its samples' slowest
+# alone (ROOT's ruling, 2026-11-18): the one stated input. For exchangeable runs the next
+# exceeds the slowest of the n before it with chance 1/(n+1), so a limit falls on n >= 19.
+FALSE_CUT_PERCENT = 5
+LOWER_AFTER = math.ceil(100 / FALSE_CUT_PERCENT) - 1
+HERE = os.path.dirname(os.path.abspath(__file__))
+CI = os.path.join(HERE, "..", "..", ".github", "workflows", "ci.yml")
+RETRY = os.path.join(HERE, "..", "retry")
+# GitHub Actions' app, whose check suites are workflow runs. Each page holds what a CI run
+# has (to 2026-11-18: 4 suites a commit, 16 jobs a run, 27 steps a job; GitHub's most
+# annotations a job, 50) within GitHub's 500,000 nodes a query, and each connection asks for
+# its total too: one that holds more than its page is refused below, never read in part.
+ACTIONS = 15368
+QUERY = """query($cursor: String) { repository(owner: "hyper-light", name: "shards") {
+  ref(qualifiedName: "refs/heads/main") { target { ... on Commit {
+    history(first: 10, after: $cursor) { pageInfo { endCursor hasNextPage } nodes { oid
+      checkSuites(first: 5, filterBy: {appId: %d}) { totalCount nodes {
+        workflowRun { databaseId workflow { name } }
+        checkRuns(first: 30) { totalCount nodes { name
+          annotations(first: 50) { totalCount nodes { message } }
+          steps(first: 50) { totalCount nodes { name conclusion startedAt completedAt }
+    } } } } } } } } } } } }""" % ACTIONS
+
+
+def whole(connection, what):
+    if connection["totalCount"] > len(connection["nodes"]):
+        sys.exit(f"{what}: {connection['totalCount']}, past the query's page")
+    return connection["nodes"]
+
+
+def minutes(step):
+    when = lambda s: datetime.datetime.fromisoformat(s.replace("Z", "+00:00"))
+    return (when(step["completedAt"]) - when(step["startedAt"])).total_seconds() / 60
+
+
+def limits():
+    """ci.yml's `tests_minutes` by job name: a matrix entry's `name`, else its target (a musl
+    release entry's with ' release'), as its jobs are named."""
+    found = {}
+    with open(CI) as f:
+        for line in f:
+            m = re.match(r"\s*- \{ (.*) \}\s*$", line)
+            if not m:
+                continue
+            entry = dict(kv.split(": ", 1) for kv in m.group(1).split(", ") if ": " in kv)
+            if "tests_minutes" in entry and "target" in entry:
+                name = entry.get("name") or entry["target"] + (" release" if entry.get("part") == "release" else "")
+                found[name] = int(entry["tests_minutes"])
+    return found
+
+
+def runs(oldest, newest):
+    """Main's CI runs from `oldest` to `newest`, newest first: (run id, its jobs)."""
+    cursor = None
+    while True:
+        args = [RETRY, "5", "30", "gh", "api", "graphql", "-f", "query=" + QUERY]
+        if cursor:
+            args += ["-f", "cursor=" + cursor]
+        page = json.loads(subprocess.run(args, check=True, capture_output=True, text=True).stdout)
+        history = page["data"]["repository"]["ref"]["target"]["history"]
+        past = False
+        for commit in history["nodes"]:
+            for suite in whole(commit["checkSuites"], f"{commit['oid']}'s check suites"):
+                run = suite.get("workflowRun") or {}
+                if (run.get("workflow") or {}).get("name") != "CI":
+                    continue
+                if run["databaseId"] < oldest:
+                    past = True
+                elif newest is None or run["databaseId"] <= newest:
+                    yield run["databaseId"], whole(suite["checkRuns"], f"run {run['databaseId']}'s jobs")
+        if past or not history["pageInfo"]["hasNextPage"]:
+            return
+        cursor = history["pageInfo"]["endCursor"]
+
+
+def derive(samples, widest):
+    """The limit `samples` (run, minutes) give, and how; None for none, or one where no job
+    measured a spread."""
+    if not samples:
+        return None
+    lo, hi = min(m for _, m in samples), max(m for _, m in samples)
+    if len(samples) >= NEEDED:
+        return math.ceil(hi + hi - lo), f"n {len(samples)}, quickest {lo:.2f}, slowest {hi:.2f}, spread {hi - lo:.2f}"
+    if widest:
+        return math.ceil(hi * (1 + widest[1])), f"n 1, {hi:.2f}, no spread of its own, {widest[1]:.3f} of it"
+    return None
+
+
+def main():
+    args = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    args.add_argument("--current-from", type=int, help="the first CI run of the test set the jobs run now")
+    args.add_argument("oldest", type=int)
+    args.add_argument("newest", type=int, nargs="?")
+    a = args.parse_args()
+    # Per job: its newest shape, and its samples (run, minutes, shape).
+    shape, samples, unsettled = {}, {}, []
+    for run, jobs in runs(a.oldest, a.newest):
+        for job in jobs:
+            steps = whole(job["steps"], f"run {run}'s {job['name']} steps")
+            notes = whole(job["annotations"], f"run {run}'s {job['name']} annotations")
+            tests = [s for s in steps if s["name"] in TESTS]
+            if not tests or tests[0]["conclusion"] in (None, "SKIPPED"):
+                continue
+            step = tests[0]
+            built = any(s["name"] in BUILT and s["conclusion"] == "SUCCESS" for s in steps)
+            shape.setdefault(job["name"], built)
+            if step["conclusion"] == "FAILURE" and not notes:
+                unsettled.append(f"{run} {job['name']}")
+                continue
+            cut = any(f"The action '{step['name']}' has timed out" in n["message"] for n in notes)
+            if step["conclusion"] in ("SUCCESS", "FAILURE") and not cut:
+                samples.setdefault(job["name"], []).append((run, minutes(step), built))
+    taken = {name: [(run, m) for run, m, built in samples.get(name, []) if built == shape[name]]
+             for name in shape}
+    spreads = {name: (max(m for _, m in s) - min(m for _, m in s)) / max(m for _, m in s)
+               for name, s in taken.items() if len(s) >= NEEDED}
+    widest = max(spreads.items(), key=lambda kv: kv[1], default=None)
+    now = limits()
+    current = f"since run {a.current_from}" if a.current_from else "none named (--current-from)"
+    print(f"CI runs {a.oldest} to {a.newest or 'the newest'} on main; the current test set's: {current}")
+    if unsettled:
+        print(f"left out, failed and not yet annotated: {', '.join(unsettled)}")
+    if widest:
+        print(f"widest spread: {widest[1]:.3f} of its slowest ({widest[0]})")
+    held = []
+    for name in sorted(set(shape) | set(now)):
+        s = taken.get(name, [])
+        listed = ", ".join(f"{run} {m:.2f}" for run, m in s)
+        kept = now.get(name)
+        recent = [(run, m) for run, m in s if a.current_from and run >= a.current_from]
+        if len(recent) >= LOWER_AFTER:
+            limit, how = derive(recent, widest)
+            print(f"{name}: {how}, at the current test set: limit {limit} (ci.yml's {kept}) [{listed}]")
+            continue
+        derived = derive(s, widest)
+        if derived is None:
+            print(f"{name}: no Tests step that ran to its end gives a limit; ci.yml's {kept} [{listed}]")
+            continue
+        limit, how = derived
+        if kept is not None and limit < kept:
+            held.append(f"{name}: {limit} below ci.yml's {kept}, {len(recent)} of {LOWER_AFTER} runs at the current test set")
+            limit = kept
+        print(f"{name} ({'built apart' if shape.get(name) else 'built in its Tests step'}): {how}: "
+              f"derives {derived[0]}; limit {limit} (ci.yml's {kept}) [{listed}]")
+    if held:
+        print(f"held back, as samples of an older test set lower no limit, and {LOWER_AFTER} runs of the current one "
+              f"keep the chance the next passes their slowest, 1/(n+1), within {FALSE_CUT_PERCENT}%:")
+        for line in held:
+            print(f"  {line}")
+
+
+if __name__ == "__main__":
+    main()

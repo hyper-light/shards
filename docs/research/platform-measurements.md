@@ -26453,3 +26453,57 @@ the counts are a process's, not a thread's. n is one run of each child.
   progressed by that thread's first run and took the progress alone, so the hold judged the
   next window held. Each due look now takes both, its progress first: a still party is
   refused at its third due look (`LOOKS_TO_REFUSE`), every platform alike.
+
+### M619. CI's Tests steps: each job's limit from its own runs' spread (ci.yml `tests_minutes`; CI 43990298221 to 44205094460)
+
+- **Question.** Each job's Tests step had a limit chosen by M420's rule, a third above the
+  slowest measured (56 minutes by default, 122 on x86_64 Windows, 35 on arm64 Windows, 58 for
+  musl's). The x86_64 Linux job's ran out at 56 in run 44205094460 (job 134486647672), in the
+  255-vCPU storm's first restore (D14). What limit does each job's own record give, with a
+  margin its runs measured rather than a chosen share?
+- **Method.** `scripts/ci/tests-budget 43990298221 44205094460` (2026-11-18 03:20 UTC; kiln
+  goal a8b1ce42, lane own-36c): main's history by GraphQL, every CI run since M613's
+  (43990298220), each test job's Tests step that ran to its end, passed or failed, neither
+  cancelled nor skipped nor cut (GitHub's "has timed out" annotation of its job), in the job's
+  newest shape (whether its tests are built in a step of their own). A job's limit is its
+  slowest plus its spread (slowest less quickest), in whole minutes up: the next run may differ
+  from the slowest by as much as those measured differed. A job with one such step takes the
+  widest spread any job showed as a share of its slowest. A failed job not yet annotated is
+  left out and named (run 44205094460's windows-2025 job, read before GitHub annotated its cut
+  at 122, was counted at 122.13 until it was).
+- **Found** (minutes: n, quickest, slowest, spread; the limit they derive).
+  - macOS (aarch64-apple-darwin, built in its Tests step): 9, 34.75, 46.82, 12.07; 59.
+  - x86_64 Linux (built apart): 1, 43.62 (44189693085, EC2's Intel Xeon 6975P-C, its storm's
+    most 31); every other run since the build moved out was cut at 56 (44164945050, a harness
+    hang since cured; 44205094460, AMD's 255-vCPU restore); 0.541 of 43.62; 68.
+  - arm64 Linux (built in its Tests step): 9, 23.55, 27.70, 4.15; 32.
+  - windows-2025: 1, 100.82 (44189693085); the rest cut at 122 or cancelled; 156.
+  - windows-2022: 2, 101.12, 118.13, 17.02; 136.
+  - arm64 Windows (built apart): 5, 10.80, 11.75, 0.95; 13. Four runs were cut at 35, by the
+    loopback relay's hang in three (d1b1e1412 since) and the harness's in 44164945050
+    (`a_judged_calls_own_work_is_its_progress`, db18e86021 since).
+  - x86_64 musl (built apart): 8, 24.33, 44.08, 19.75; 64.
+  - arm64 musl (built apart): 12, 8.87, 19.32, 10.45; 30. Its spread, 0.541 of its slowest, is
+    the widest.
+- **Decided** (ROOT's ruling, 2026-11-18). Every sample predates the tests the jobs run now
+  (that night's landings added tests to shards-testwait, shards-judge and the daemon, A1's and
+  the vsock worker's), so the samples raise a limit and lower none. macOS rises to 59, x86_64
+  Linux to 68, windows-2025 to 156, windows-2022 to 136 and x86_64 musl to 64; arm64 Linux
+  keeps 56 (32 derived), arm64 Windows 35 (13) and arm64 musl 58 (30). The script holds those
+  and says so. A limit falls only on runs of the current test set (`--current-from`, its first
+  run), 19 of them, and is then theirs alone: for exchangeable runs the chance that the next
+  exceeds the slowest of the n before it is exactly 1/(n+1) (order statistics), so a limit
+  lowered to their slowest plus their spread cuts the next run by the slowest alone with a
+  chance of at most 5% once n >= 19, and the spread only makes it safer. 5% is the one stated
+  input (ROOT's ruling); two runs would leave 1 in 3. ci.yml gives each test job its
+  `tests_minutes`, with no default; each job's limit is its steps' limits and a third above
+  its other steps' slowest, as M420, M560 and M613 measured them: macOS 78, x86_64 Linux 128,
+  arm64 Linux 75, windows-2025 179, windows-2022 158, arm64 Windows 102, x86_64 musl 134,
+  arm64 musl 128. The tests' builds keep M613's and M560's limits (34, 42, 62).
+- **Uncertainty.** Two jobs' spreads are borrowed (n 1). x86_64 Linux's one sample ran on
+  EC2's Intel runners, whose most a machine may have is 31; on Azure's AMD runners, whose most
+  is 255, the most's test (D14, with no storm) is unmeasured. Two runs give a spread, not a
+  sure one: 44189693085 and the run after it spread 0.03 (arm64 musl), 0.05 (arm64 Linux) and
+  0.55 (x86_64 musl) minutes, which a bar of two would have lowered those limits on, to 11, 26
+  and 28 (the script run so as an exercise over the same runs). The script derives the limits
+  again as runs gather; limits.py (M613) still splits a job's builds and hangs from its logs.
