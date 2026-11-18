@@ -18,5 +18,9 @@ bench = false
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
 
+# OpenProcess and WaitForSingleObject, which say whether a test process has ended (`sweep`).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true }
+
 [lints]
 workspace = true

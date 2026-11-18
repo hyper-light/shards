@@ -4,9 +4,12 @@
 //! (a daemon's log, a run's stderr, a VM's sample), which says why it failed; and each
 //! panic of a process that made one is said on stderr as it happens. Each test
 //! process's are under `shards-tests/<pid>/`, so that a process killed before it removed
-//! its own leaves them where the next one finds them: the first directory a process makes
-//! removes those of every process that has ended. Only that directory is swept, and only
-//! a process's that no longer runs.
+//! its own, or one that kept one as long as it ran (a `static`'s), leaves them where the
+//! next one finds them: the first directory a process makes removes those of every process
+//! that has ended, on every host, and any under its own ID, which only an ended process that
+//! had the ID before it can have left (IDs are reused: CI 44245219858's windows-2022 job gave
+//! a process an ended one's `docker-config-0`). Only that directory is swept, and only a
+//! process's that no longer runs.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -109,6 +112,9 @@ impl TempDir {
     /// under the system's temporary directory, each character no Windows name may hold
     /// (`<>:"/\|?*` and the control characters: Naming Files, Paths, and Namespaces) a `-`
     /// on every host, so that a name made of an image's (`oom-x:1`) is one directory there.
+    /// Made, never found: one there already, an ended process's that its sweep could not
+    /// remove (a file of it still held), fails its making (AlreadyExists, its path said)
+    /// rather than be taken as it was.
     pub fn new(name: &str) -> io::Result<TempDir> {
         let name: String = name
             .chars()
@@ -123,18 +129,21 @@ impl TempDir {
         static SWEPT: Once = Once::new();
         static N: AtomicUsize = AtomicUsize::new(0);
         let parent = parent();
+        let me = std::process::id();
+        // Once, before this process makes any directory, as each other thread's first waits
+        // for it: what is under its own ID then is an ended process's (`sweep`).
         SWEPT.call_once(|| {
             #[cfg(unix)]
             raise_descriptor_limit();
-            sweep(&parent);
+            sweep(&parent, me);
             say_panics();
         });
         let n = N.fetch_add(1, Ordering::Relaxed);
-        let dir = parent
-            .join(std::process::id().to_string())
-            .join(format!("{name}-{n}"));
+        let own = parent.join(me.to_string());
+        let dir = own.join(format!("{name}-{n}"));
         let mut live = LIVE.lock().unwrap_or_else(PoisonError::into_inner);
-        std::fs::create_dir_all(&dir)
+        std::fs::create_dir_all(&own)
+            .and_then(|()| std::fs::create_dir(&dir))
             .map_err(|e| io::Error::new(e.kind(), format!("{}: {e}", dir.display())))?;
         *live += 1;
         Ok(TempDir(dir))
@@ -258,38 +267,68 @@ fn remove(dir: &Path) {
     let _ = std::fs::remove_dir_all(dir);
 }
 
-/// Removes the directories of test processes that have ended, under `parent`: each named
-/// by its process's ID, removed once no process has that ID (kill(2) with no signal:
-/// ESRCH). One whose ID another process has taken since stays until that one ends too.
-#[cfg(unix)]
-fn sweep(parent: &Path) {
+/// Removes the directories of test processes that have ended, under `parent`, each named by
+/// its process's ID: `me`'s, which process `me` makes only after this (its first
+/// [`TempDir::new`] sweeps before it makes any), so that what is there was left by an ended
+/// process that had the ID before it; and each other's once its process is [`gone`]. One
+/// whose ID another process has taken since stays until that one ends too.
+fn sweep(parent: &Path, me: u32) {
     let Ok(entries) = std::fs::read_dir(parent) else {
         return;
     };
-    let me = std::process::id();
     for entry in entries.flatten() {
-        let Some(pid) = entry
-            .file_name()
-            .to_str()
-            .and_then(|n| n.parse::<u32>().ok())
-            .filter(|&pid| pid != me)
-            .and_then(|pid| libc::pid_t::try_from(pid).ok())
-            .filter(|&pid| pid > 0)
-        else {
+        let Some(pid) = entry.file_name().to_str().and_then(|n| n.parse::<u32>().ok()) else {
             continue;
         };
-        // SAFETY: kill(2) with no signal sends nothing; it asks whether the process is.
-        let gone = unsafe { libc::kill(pid, 0) } != 0
-            && io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
-        if gone {
+        if pid == me || gone(pid) {
             remove(&entry.path());
         }
     }
 }
 
-/// Windows tests run on runners made for each run, where nothing is left from before.
-#[cfg(not(unix))]
-fn sweep(_: &Path) {}
+/// Whether no process has ID `pid`: kill(2) with no signal says ESRCH.
+#[cfg(unix)]
+fn gone(pid: u32) -> bool {
+    let Some(pid) = libc::pid_t::try_from(pid).ok().filter(|&pid| pid > 0) else {
+        return false;
+    };
+    // SAFETY: kill(2) with no signal sends nothing; it asks whether the process is.
+    let asked = unsafe { libc::kill(pid, 0) };
+    asked != 0 && io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+}
+
+/// Whether the process with ID `pid` has ended, or no process has the ID. OpenProcess
+/// ("Opens an existing local process object") opens one that has ended while any handle to
+/// it is open, its parent's among them, as its object lasts until the last is closed
+/// ("Terminating a Process"); signalled then, which a wait of no time sees
+/// (WaitForSingleObject, with the one right it needs, SYNCHRONIZE: "Process Security and
+/// Access Rights"), where its exit code would take one that ended with STILL_ACTIVE, 259,
+/// for one that runs (GetExitCodeProcess). OpenProcess fails ERROR_INVALID_PARAMETER for an
+/// ID no process has (CI 44189693085, windows-2022), as its page says it does for the
+/// System Idle Process's, 0, which never ends; and ERROR_ACCESS_DENIED for a process that
+/// user-level code may not open (the System process, CSRSS's), which runs. Any other
+/// failure is taken for a process that runs, whose directory stays.
+#[cfg(windows)]
+fn gone(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, ERROR_INVALID_PARAMETER, GetLastError, WAIT_OBJECT_0};
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject};
+    if pid == 0 {
+        return false;
+    }
+    // SAFETY: OpenProcess of an ID, for waiting alone, its handle not inherited: a handle,
+    // closed below, or null.
+    let process = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
+    if process.is_null() {
+        // SAFETY: GetLastError takes nothing; it reads this thread's last error, OpenProcess's.
+        return unsafe { GetLastError() } == ERROR_INVALID_PARAMETER;
+    }
+    // SAFETY: a wait of no time on the handle just opened, then its close.
+    unsafe {
+        let ended = WaitForSingleObject(process, 0) == WAIT_OBJECT_0;
+        CloseHandle(process);
+        ended
+    }
+}
 
 /// The program `text` at `path`, run by its owner alone or by anyone (0755), written by a
 /// process of its own on Unix. A file a test process writes itself is held open to write by
@@ -632,24 +671,85 @@ mod tests {
         });
     }
 
-    #[cfg(unix)]
+    /// Another process's directories are swept once it has ended, never while it runs, and a
+    /// name that is no process's ID stays.
     #[test]
     fn an_ended_processs_directories_are_swept() {
         let parent = TempDir::new("sweep").unwrap();
-        // A process that ended, and one that runs: this one's parent, which never ends
-        // before its child.
-        let mut child = std::process::Command::new("true").spawn().unwrap();
+        // A process that ended, its `Child` held through the sweep (on Windows its handle,
+        // which keeps its ID from another process), and one that runs: this one.
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--list")
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
         let ended = child.id();
         child.wait().unwrap();
-        let running = std::os::unix::process::parent_id();
+        let running = std::process::id();
         for pid in [ended, running] {
             std::fs::create_dir_all(parent.join(pid.to_string()).join("left-0")).unwrap();
         }
         std::fs::create_dir_all(parent.join("not-a-pid")).unwrap();
-        sweep(&parent);
+        // Swept as a process that is neither sweeps.
+        sweep(&parent, ended.max(running) + 1);
         assert!(!parent.join(ended.to_string()).exists());
         assert!(parent.join(running.to_string()).exists());
         assert!(parent.join("not-a-pid").exists());
+    }
+
+    /// What an ended process left under the ID this process has now is swept, though this
+    /// process runs: IDs are reused, and CI 44245219858's windows-2022 job gave a process an
+    /// ended one's, whose `docker-config-0` (a `static`'s, which no test drops) held
+    /// `certs.d`, which the new one failed to make again (os error 183). Red with `me`'s
+    /// directory swept only as another's, once its process is gone: it stays.
+    #[test]
+    fn directories_left_under_this_processs_id_are_swept() {
+        let parent = TempDir::new("reused").unwrap();
+        let me = std::process::id();
+        std::fs::create_dir_all(parent.join(me.to_string()).join("x-0").join("certs.d")).unwrap();
+        sweep(&parent, me);
+        assert!(!parent.join(me.to_string()).exists());
+    }
+
+    /// A process given an ID an ended test process had makes its directories empty, though
+    /// that one left its own: the process [`made_under_a_reused_id`] runs, with a temporary
+    /// directory of this test's for the system's (TMPDIR; on Windows TMP, then TEMP:
+    /// GetTempPath2W), so that it sweeps nothing of any other process's. Red with its own ID's
+    /// directory left out of its first directory's sweep: making `certs.d` fails, as in CI
+    /// 44245219858.
+    #[test]
+    fn a_reused_ids_directories_are_made_empty() {
+        let tmp = TempDir::new("tmp").unwrap();
+        let ran = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "tests::made_under_a_reused_id", "--ignored"])
+            .env("SHARDS_TESTDIR_REUSED", "1")
+            .env("TMPDIR", tmp.path())
+            .env("TMP", tmp.path())
+            .env("TEMP", tmp.path())
+            .output()
+            .unwrap();
+        let said = String::from_utf8_lossy(&ran.stdout);
+        assert!(
+            ran.status.success() && said.contains("1 passed"),
+            "{said}{}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
+    }
+
+    /// The process [`a_reused_ids_directories_are_made_empty`] runs: it leaves what an ended
+    /// process with its ID would have, its first directory with `certs.d` in it, then makes
+    /// that directory and `certs.d` in it.
+    #[test]
+    #[ignore = "a process of its own for a_reused_ids_directories_are_made_empty, which runs it"]
+    fn made_under_a_reused_id() {
+        if std::env::var_os("SHARDS_TESTDIR_REUSED").is_none() {
+            return;
+        }
+        let left = parent().join(std::process::id().to_string()).join("x-0");
+        std::fs::create_dir_all(left.join("certs.d")).unwrap();
+        let dir = TempDir::new("x").unwrap();
+        assert_eq!(dir.path(), left);
+        std::fs::create_dir(dir.join("certs.d")).unwrap();
     }
 
     /// Programs are written and copied on a host with no tools to run, as the L1 guest of
