@@ -429,7 +429,10 @@ fn a_command_run_in_a_member_has_a_terminal_that_resizes() {
         assert!(shown.contains(want), "no {want:?} in {shown}");
     }
     term.resize(40, 120);
-    term.wait_for("resized 40 120\r\n");
+    // Its text alone: past a resize a Windows pseudoconsole may end the line by moving its
+    // cursor, writing no CR LF (common/terminal_windows.rs's note on `exit N.`; CI
+    // 44227612442, windows-2022, wrote `resized 40 120\x1b[40;1H\x1b[K\x1b[25;1H`).
+    term.wait_for("resized 40 120");
     let (_, status, restored) = term.exit();
     assert_eq!((status, restored), (0, true));
     let _ = shards_in(&home, &["remove", "vm", "-f", "mx-tty"]);
