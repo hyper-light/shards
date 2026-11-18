@@ -1,0 +1,12 @@
+diff --git a/crates/durable/src/table.rs b/crates/durable/src/table.rs
+index 7d78410820..a352b0123d 100644
+--- a/crates/durable/src/table.rs
++++ b/crates/durable/src/table.rs
+@@ -471,6 +471,7 @@ fn release(slot: &Slot) {
+     slot.written(|s| {
+         s.since.store(0, Ordering::Relaxed);
+         s.thread.store(0, Ordering::Relaxed);
++        s.owner.store(0, Ordering::Relaxed);
+     });
+ }
+ 

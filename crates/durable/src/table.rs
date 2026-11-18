@@ -1,11 +1,17 @@
-//! A home's declarations of durable writes (D286): `<home>/durable-v1`, a file of slots that
+//! A home's declarations of durable writes (D286): `<home>/durable-v2`, a file of slots that
 //! every shards process of the home maps shared as it writes durably, and each follower of one
 //! maps to read (D215), as D281's count file is mapped by every server of a volume
 //! (vmm's fs/bound.rs). Lock-free: a thread claims a slot once, with one compare-and-swap of its
-//! owner from none to its own, and keeps it until it ends; a declaration stores its volume, then
-//! its start (release), and its end stores none (release); a reader loads a slot's start
-//! (acquire), its fields, and its start again, so that it pairs no fields with another
-//! declaration's. Its layout is its name's version: a build of another layout uses another file.
+//! owner from none to its own (or of its thread, of an idle slot its own process holds), and
+//! holds it until it ends; the slot then stays its process's, idle, for its next declaring
+//! thread, until its process ends and another claimer takes it back. A declaration stores its
+//! volume and its start, and its end stores none and adds the time it took to the slot's
+//! (`spent`, durable-v2): what a follower subtracts from a stillness, exactly, as its host's
+//! work (D286 amended, ROOT's ruling of 2026-11-18). The thread that holds a slot alone writes
+//! its words, each time between two steps of its sequence, odd while it writes; a reader reads
+//! the sequence, the words and the sequence again, and takes them where both readings are one
+//! even value, so that it pairs no word with another write's. Its layout is its name's version:
+//! a build of another layout uses another file.
 //!
 //! The file is a whole number of granules (the least a mapping's offset steps by: a page on
 //! Unix, the allocation granularity on Windows). Its first slot's place is its head: the
@@ -19,17 +25,19 @@ use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock, PoisonError};
+use std::time::Instant;
 
 use crate::Target;
 use crate::sys::{self, Locked, Map};
 
 /// The slot file's name in its home, its layout's version in it.
-pub const FILE: &str = "durable-v1";
+pub const FILE: &str = "durable-v2";
 
-/// One thread's declarations. Its words are atomics in memory shared by every process that
-/// maps the file. Aligned to 64 bytes, the least power of two its five words (40 bytes) fit
-/// in, so that slots tile every granule (a power of two, as pages and allocation granularities
-/// are) and a view of the whole file finds each where its granule's own view does.
+/// One thread's declarations at a time, and the time its process's writes in it took. Its
+/// words are atomics in memory shared by every process that maps the file. Aligned to 64
+/// bytes, the least power of two its seven words (56 bytes) fit in, so that slots tile every
+/// granule (a power of two, as pages and allocation granularities are) and a view of the whole
+/// file finds each where its granule's own view does.
 #[repr(C, align(64))]
 #[derive(Debug)]
 pub(crate) struct Slot {
@@ -38,12 +46,33 @@ pub(crate) struct Slot {
     owner: AtomicU64,
     /// Its claimer's start as its OS keeps it (`sys::start_of`), which names it with its ID.
     start: AtomicU64,
-    /// Its claiming thread's ID as its OS's listing of a process's threads names it.
+    /// The ID of the thread that holds it, as its OS's listing of a process's threads names
+    /// it; none (0) where none does: idle, its process's for its next declaring thread.
     thread: AtomicU64,
-    /// The volume its declared write is on (`sys::volume`).
+    /// The volume its last declared write was on (`sys::volume`).
     volume: AtomicU64,
     /// When its declared write began (`sys::now`, at least 1); none (0) where it declares none.
     since: AtomicU64,
+    /// The nanoseconds the declared writes its process made in it took, each added as it ends
+    /// (the monotonic clock `sys::now` reads, as `std::time::Instant` reads it): a follower
+    /// reads its growth over a window, its host's work for its party (D286 amended).
+    spent: AtomicU64,
+    /// Odd while its holder writes its words ([`Slot::written`]), even otherwise.
+    seq: AtomicU64,
+}
+
+impl Slot {
+    /// `write` of its words, between two steps of its sequence, for its readers ([`read`]):
+    /// only the thread that holds it (or its claimer, before it is anyone's) writes them, so
+    /// no two such writes overlap.
+    fn written<T>(&self, write: impl FnOnce(&Slot) -> T) -> T {
+        let seq = self.seq.load(Ordering::Relaxed);
+        self.seq.store(seq.wrapping_add(1), Ordering::Relaxed);
+        std::sync::atomic::fence(Ordering::Release);
+        let done = write(self);
+        self.seq.store(seq.wrapping_add(2), Ordering::Release);
+        done
+    }
 }
 
 /// A slot's bytes, which the head's place takes too.
@@ -52,6 +81,23 @@ const SLOT: usize = std::mem::size_of::<Slot>();
 /// The owner word of process `pid` started at `start`: never 0, as no process has ID 0 here.
 fn owner(pid: u32, start: u64) -> u64 {
     (u64::from(pid) << 32) | (start & u64::from(u32::MAX))
+}
+
+/// A slot a process holds, as a reader finds it ([`Reader::held`]): what its writes took.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Held {
+    /// Its place in the file, which tells it from the process's other slots for as long as
+    /// the process holds it.
+    pub slot: u64,
+    /// The ID of the thread that holds it now; none (0) where it is idle.
+    pub thread: u64,
+    /// The volume its last declared write was on.
+    pub volume: u64,
+    /// When its declared write under way began, on [`crate::now`]'s clock; none (0) where
+    /// none is.
+    pub since: u64,
+    /// The nanoseconds its process's ended declared writes in it took.
+    pub spent: u64,
 }
 
 /// A declared write, as a reader finds it.
@@ -282,6 +328,29 @@ impl Writer {
         }
     }
 
+    /// An idle slot of this process's of what it maps ([`release`]), taken for its thread
+    /// `thread`: none where it has none.
+    fn idle(&self, owner: u64, thread: u64) -> Option<&'static Slot> {
+        let maps = self.maps.lock().unwrap_or_else(PoisonError::into_inner);
+        for (k, map) in maps.iter().enumerate() {
+            // SAFETY: as in `free`.
+            for slot in unsafe { slots(map, k == 0) } {
+                if slot.owner.load(Ordering::Acquire) == owner
+                    && slot.start.load(Ordering::Acquire) == self.start
+                    && slot.thread.load(Ordering::Relaxed) == 0
+                    && slot
+                        .thread
+                        .compare_exchange(0, thread, Ordering::AcqRel, Ordering::Relaxed)
+                        .is_ok()
+                {
+                    // SAFETY: as in `free`.
+                    return Some(unsafe { &*std::ptr::from_ref(slot) });
+                }
+            }
+        }
+        None
+    }
+
     /// A free slot of what it maps, claimed for `owner`: none where every one is taken.
     fn free(&self, owner: u64) -> Option<&'static Slot> {
         let maps = self.maps.lock().unwrap_or_else(PoisonError::into_inner);
@@ -328,9 +397,14 @@ impl Writer {
                     .compare_exchange(was, owner, Ordering::AcqRel, Ordering::Relaxed)
                     .is_ok()
                 {
-                    // What its ended owner declared ends, before it is anyone's.
-                    slot.since.store(0, Ordering::Release);
-                    slot.start.store(0, Ordering::Release);
+                    // What its ended owner declared, and the time its writes took, end with it,
+                    // before it is anyone's.
+                    slot.written(|s| {
+                        s.since.store(0, Ordering::Relaxed);
+                        s.start.store(0, Ordering::Relaxed);
+                        s.thread.store(0, Ordering::Relaxed);
+                        s.spent.store(0, Ordering::Relaxed);
+                    });
                     // SAFETY: as in `free`.
                     return Ok(Some(unsafe { &*std::ptr::from_ref(slot) }));
                 }
@@ -357,17 +431,23 @@ impl Writer {
     }
 }
 
-/// A slot of `writer`'s claimed by this thread: a free one, else, under the growth lock, one
-/// another process mapped since, one whose owner ended, or one of a granule more.
+/// A slot of `writer`'s claimed by this thread: an idle one of its process's, else a free one,
+/// else, under the growth lock, one another process mapped since, one whose owner ended, or
+/// one of a granule more.
 pub(crate) fn claim(writer: &'static Writer) -> io::Result<&'static Slot> {
     let owner = owner(writer.pid, writer.start);
     let thread = sys::thread()?;
     let take = |slot: &'static Slot| {
-        slot.thread.store(thread, Ordering::Relaxed);
-        slot.start.store(writer.start, Ordering::Release);
+        slot.written(|s| {
+            s.thread.store(thread, Ordering::Relaxed);
+            s.start.store(writer.start, Ordering::Relaxed);
+        });
         slot
     };
     loop {
+        if let Some(slot) = writer.idle(owner, thread) {
+            return Ok(slot);
+        }
         if let Some(slot) = writer.free(owner) {
             return Ok(take(slot));
         }
@@ -383,11 +463,15 @@ pub(crate) fn claim(writer: &'static Writer) -> io::Result<&'static Slot> {
     }
 }
 
-/// A slot's owner gone: what it declared, then the slot, given back.
+/// A slot's thread gone: what it declared ends, and the slot stays its process's, idle, with
+/// the time its writes took, for its next declaring thread ([`Writer::idle`]). Another process
+/// takes it only once this one has ended ([`Writer::reclaim`]): so a process holds as many
+/// slots as it has threads declaring at once, and a follower reads every write it made.
 fn release(slot: &Slot) {
-    slot.since.store(0, Ordering::Release);
-    slot.start.store(0, Ordering::Release);
-    slot.owner.store(0, Ordering::Release);
+    slot.written(|s| {
+        s.since.store(0, Ordering::Relaxed);
+        s.thread.store(0, Ordering::Relaxed);
+    });
 }
 
 /// This thread's slot, and how deep in a declared write it is (an outer write's declaration
@@ -414,29 +498,36 @@ thread_local! {
     };
 }
 
-/// A write declared in `slot`, ended as this drops, whatever its call did: its start stored
-/// none, and the slot given back where it was this write's alone.
+/// A write declared in `slot` at `begun`, ended as this drops, whatever its call did: its
+/// start stored none and the time it took added to the slot's, and the slot left idle where it
+/// was this write's alone.
 struct Declaring {
     slot: &'static Slot,
     alone: bool,
+    begun: Instant,
 }
 
 impl Drop for Declaring {
     fn drop(&mut self) {
+        let took = u64::try_from(self.begun.elapsed().as_nanos()).unwrap_or(u64::MAX);
+        self.slot.written(|s| {
+            s.since.store(0, Ordering::Relaxed);
+            let spent = s.spent.load(Ordering::Relaxed);
+            s.spent.store(spent.saturating_add(took), Ordering::Relaxed);
+        });
         if self.alone {
             release(self.slot);
         } else {
-            self.slot.since.store(0, Ordering::Release);
             let _ = THREAD.try_with(|t| t.depth.set(0));
         }
     }
 }
 
 /// `write`, a durable write of `file`, declared where this process installed a slot file (or
-/// recorded its home, its slot file opened now: [`writer`]): its volume, then its start,
-/// stored in this thread's slot (claimed once) before it, its start stored none after it. A
-/// write made inside another's declaration is that one's. A thread whose slot is gone (its
-/// storage torn down as it ends) claims one for this write alone.
+/// recorded its home, its slot file opened now: [`writer`]): its volume and its start stored
+/// in this thread's slot (claimed once) before it, its start stored none and the time it took
+/// added after it. A write made inside another's declaration is that one's. A thread whose
+/// slot is gone (its storage torn down as it ends) claims one for this write alone.
 pub(crate) fn declared<T>(file: &impl Target, write: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
     let Some(writer) = writer()? else {
         return write();
@@ -446,24 +537,38 @@ pub(crate) fn declared<T>(file: &impl Target, write: impl FnOnce() -> io::Result
     if nested {
         return write();
     }
+    // Its start on the clock every process reads, and on this one's, which never fails, for
+    // the time it took: one clock's two readings (`sys::now`).
+    let (since, begun) = (sys::now()?.max(1), Instant::now());
     let held = THREAD.try_with(|t| t.slot.get());
     let declaring = match held {
-        Ok(Some(slot)) => Declaring { slot, alone: false },
+        Ok(Some(slot)) => Declaring {
+            slot,
+            alone: false,
+            begun,
+        },
         Ok(None) => {
             let slot = claim(writer)?;
             let kept = THREAD.try_with(|t| t.slot.set(Some(slot))).is_ok();
-            Declaring { slot, alone: !kept }
+            Declaring {
+                slot,
+                alone: !kept,
+                begun,
+            }
         }
         Err(_) => Declaring {
             slot: claim(writer)?,
             alone: true,
+            begun,
         },
     };
     if !declaring.alone {
         let _ = THREAD.try_with(|t| t.depth.set(1));
     }
-    declaring.slot.volume.store(volume, Ordering::Relaxed);
-    declaring.slot.since.store(sys::now()?.max(1), Ordering::Release);
+    declaring.slot.written(|s| {
+        s.volume.store(volume, Ordering::Relaxed);
+        s.since.store(since, Ordering::Relaxed);
+    });
     let wrote = write();
     drop(declaring);
     wrote
@@ -522,11 +627,11 @@ impl Reader {
         Ok(self.file.get())
     }
 
-    /// The writes process `pid`, started at `start` (as its OS keeps it, `sys::start_of`),
-    /// declares now: each its thread's, its volume and when it began. Memory alone, but where
-    /// the file grew since the last read: then it is mapped again, whole. None while its home
-    /// is not made.
-    pub fn declared(&self, pid: u32, start: u64) -> io::Result<Vec<Declared>> {
+    /// The words of each slot process `pid`, started at `start` (as its OS keeps it,
+    /// `sys::start_of`), holds now, each with its place in the file ([`read`]). Memory alone, but
+    /// where the file grew since the last read: then it is mapped again, whole. None while its
+    /// home is not made.
+    fn words(&self, pid: u32, start: u64) -> io::Result<Vec<(usize, Words)>> {
         let Some(file) = self.file()? else {
             return Ok(Vec::new());
         };
@@ -549,35 +654,79 @@ impl Reader {
             return Ok(Vec::new());
         };
         let owner = owner(pid, start);
-        let mut found = Vec::new();
         // SAFETY: `mapped` maps the whole file from its start, its first granule's head
         // skipped; held as long as the guard is.
-        for slot in unsafe { slots(mapped, true) } {
-            if let Some(declared) = read(slot, owner, start) {
-                found.push(declared);
-            }
-        }
+        let found = unsafe { slots(mapped, true) }
+            .enumerate()
+            .filter_map(|(place, slot)| read(slot, owner, start).map(|words| (place, words)))
+            .collect();
         Ok(found)
+    }
+
+    /// The writes process `pid`, started at `start` (as its OS keeps it, `sys::start_of`),
+    /// declares now: each its thread's, its volume and when it began ([`words`](Self::words)).
+    pub fn declared(&self, pid: u32, start: u64) -> io::Result<Vec<Declared>> {
+        Ok(self
+            .words(pid, start)?
+            .into_iter()
+            .filter(|(_, words)| words.since != 0)
+            .map(|(_, words)| Declared {
+                thread: words.thread,
+                volume: words.volume,
+                since: words.since,
+            })
+            .collect())
+    }
+
+    /// The slots process `pid`, started at `start`, holds now, each with what its writes took
+    /// ([`Held`]), its idle ones among them ([`words`](Self::words)): what a follower reads a
+    /// window's growth of, the time its party's durable writes held it (D286 amended).
+    pub fn held(&self, pid: u32, start: u64) -> io::Result<Vec<Held>> {
+        self.words(pid, start)?
+            .into_iter()
+            .map(|(place, words)| {
+                Ok(Held {
+                    slot: u64::try_from(place).map_err(io::Error::other)?,
+                    thread: words.thread,
+                    volume: words.volume,
+                    since: words.since,
+                    spent: words.spent,
+                })
+            })
+            .collect()
     }
 }
 
-/// What `slot` declares for the process whose owner word is `owner` and start `start`: its
-/// start read before and after its fields, so that none of them is another declaration's;
-/// none where it declares nothing, is another's, or changed as it was read twice over.
-fn read(slot: &Slot, owner: u64, start: u64) -> Option<Declared> {
+/// A slot's words as one reading found them ([`read`]).
+#[derive(Debug, Clone, Copy)]
+struct Words {
+    thread: u64,
+    volume: u64,
+    since: u64,
+    spent: u64,
+}
+
+/// `slot`'s words where the process whose owner word is `owner` and start `start` holds it,
+/// read between two readings of its sequence that are one even value ([`Slot::written`]), so
+/// that none of them is another write's; none where it is another's, or was being written
+/// through both tries.
+fn read(slot: &Slot, owner: u64, start: u64) -> Option<Words> {
     for _ in 0..2 {
-        let since = slot.since.load(Ordering::Acquire);
-        if since == 0 {
-            return None;
+        let seq = slot.seq.load(Ordering::Acquire);
+        if seq % 2 == 1 {
+            std::hint::spin_loop();
+            continue;
         }
-        let ours = slot.owner.load(Ordering::Acquire) == owner && slot.start.load(Ordering::Acquire) == start;
-        let declared = Declared {
+        let ours = slot.owner.load(Ordering::Relaxed) == owner && slot.start.load(Ordering::Relaxed) == start;
+        let words = Words {
             thread: slot.thread.load(Ordering::Relaxed),
             volume: slot.volume.load(Ordering::Relaxed),
-            since,
+            since: slot.since.load(Ordering::Relaxed),
+            spent: slot.spent.load(Ordering::Relaxed),
         };
-        if slot.since.load(Ordering::Acquire) == since {
-            return ours.then_some(declared);
+        std::sync::atomic::fence(Ordering::Acquire);
+        if slot.seq.load(Ordering::Relaxed) == seq {
+            return ours.then_some(words);
         }
     }
     None
@@ -693,13 +842,95 @@ mod tests {
         ended.owner.store(owner(pid, start), Ordering::Release);
         ended.start.store(start, Ordering::Release);
         ended.since.store(1, Ordering::Release);
+        ended.spent.store(1_000, Ordering::Release);
         let len = writer.file.metadata().unwrap().len();
         let taken = claim(writer).unwrap();
         assert!(std::ptr::eq(taken, ended));
         assert_eq!(taken.since.load(Ordering::Acquire), 0);
+        assert_eq!(
+            taken.spent.load(Ordering::Acquire),
+            0,
+            "its ended owner's time ends with it"
+        );
         assert_eq!(writer.file.metadata().unwrap().len(), len);
         let reader = Reader::open(home.path()).unwrap();
         assert!(reader.declared(pid, start).unwrap().is_empty());
+    }
+
+    /// A thread that ends leaves its slot to its process, idle, which the process's next
+    /// declaring thread takes before any free one; another process's claim finds it taken
+    /// (durable-v2: a process's slots are its until it ends, so that a follower reads every
+    /// write it made).
+    #[test]
+    fn an_ended_threads_slot_is_its_processs_next_threads() {
+        let home = TempDir::new("durable-idle").unwrap();
+        let writer = writer_of(home.path());
+        std::thread::scope(|scope| scope.spawn(|| release(claim(writer).unwrap())).join().unwrap());
+        let (pid, start) = (std::process::id(), sys::start().unwrap());
+        let reader = Reader::open(home.path()).unwrap();
+        let held = reader.held(pid, start).unwrap();
+        assert_eq!(held.len(), 1, "{held:?}");
+        assert_eq!((held[0].thread, held[0].since), (0, 0), "idle, its process's");
+        let next = std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    claim(writer).unwrap();
+                    sys::thread().unwrap()
+                })
+                .join()
+                .unwrap()
+        });
+        let held = reader.held(pid, start).unwrap();
+        assert_eq!(held.len(), 1, "its idle slot taken, no other: {held:?}");
+        assert_eq!(held[0].thread, next, "its process's next thread takes it");
+    }
+
+    /// A slot counts the time each declared write in it took, the one under way as it goes on
+    /// by its start, the ended ones in its sum, kept once its thread has ended (D286 amended:
+    /// a follower subtracts a window's growth of it from its party's stillness).
+    #[test]
+    fn a_slot_counts_the_time_its_writes_took() {
+        let home = installed();
+        let file = File::create(home.join("spent")).unwrap();
+        let reader = Reader::open(home).unwrap();
+        let (pid, start) = (std::process::id(), sys::start().unwrap());
+        let nap = std::time::Duration::from_millis(5);
+        let place = std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    let me = sys::thread().unwrap();
+                    let ours = |held: Vec<Held>| held.into_iter().find(|h| h.thread == me).unwrap();
+                    let under_way = declared(&file, || {
+                        std::thread::sleep(nap);
+                        reader.held(pid, start)
+                    })
+                    .unwrap();
+                    let under_way = ours(under_way);
+                    assert!(under_way.since > 0, "{under_way:?}");
+                    let ended = ours(reader.held(pid, start).unwrap());
+                    assert_eq!(ended.since, 0, "{ended:?}");
+                    assert!(ended.spent >= 5_000_000, "{ended:?}");
+                    declared(&file, || {
+                        std::thread::sleep(nap);
+                        Ok(())
+                    })
+                    .unwrap();
+                    let twice = ours(reader.held(pid, start).unwrap());
+                    assert_eq!(twice.slot, ended.slot);
+                    assert!(
+                        twice.spent >= ended.spent + 5_000_000,
+                        "{twice:?} after {ended:?}"
+                    );
+                    twice.slot
+                })
+                .join()
+                .unwrap()
+        });
+        // Its thread gone, its slot is its process's still, its time kept (another thread of
+        // this process may have taken it since, adding its own).
+        let kept = reader.held(pid, start).unwrap();
+        let slot = kept.iter().find(|h| h.slot == place).unwrap();
+        assert!(slot.spent >= 10_000_000, "{slot:?}");
     }
 
     /// The test binary's own process, run by [`a_write_another_process_declares_is_read`] and

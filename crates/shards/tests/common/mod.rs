@@ -4802,6 +4802,11 @@ pub struct Looked {
     /// for: no hold, no window of the rate's, and, where its CPU is its liveness, its evidence
     /// beginning anew.
     pub unread: Option<String>,
+    /// The time since the look before its host held a process of it, as that process's own
+    /// subject measured it (`shards_api::Watch::held`: its declared durable writes' time, its
+    /// threads' waits for a CPU on Linux), the most of its processes': out of its stillness and
+    /// its rate's wall (`shards_api::Span::held`; #36, ROOT's ruling of 2026-11-18).
+    pub held: Duration,
 }
 
 impl Party {
@@ -4972,6 +4977,7 @@ impl Party {
             vouched: true,
             lost: false,
             unread: None,
+            held: Duration::ZERO,
         };
         let mut based = !std::mem::replace(&mut self.looked, true);
         if self.said.as_mut().is_some_and(Said::said) {
@@ -5071,6 +5077,7 @@ impl Party {
             let before = watch.work();
             let was_ended = watch.ended();
             let found = watch.look(&self.listing);
+            looked.held = looked.held.max(watch.held());
             if matches!(found, Ok(Found::Gone)) {
                 gone.push(pid);
                 looked.vouched = false;
@@ -6317,6 +6324,7 @@ impl Wait {
             resolution: looked.resolution,
             own,
             work: None,
+            held: looked.held,
         };
         if self.daemon_ran.is_none() {
             self.daemon_ran = looked.daemon_ran;
@@ -6428,9 +6436,13 @@ impl Wait {
                 || "its host not holding it".to_string(),
                 |held| format!("held: {held}")
             ),
-            self.judge.stillness().map_or_else(String::new, |(still, held, window)| format!(
-                "; still {still:?} of its {window:?} window as its last look saw, {held:?} of its looks' lateness out"
-            )),
+            self.judge
+                .stillness()
+                .map_or_else(String::new, |(still, held, window)| format!(
+                    "; still {still:?} of its {window:?} window as its last look saw, {held:?} of its looks' \
+                 lateness out, {:?} of its host's hold its own processes measured out",
+                    self.judge.hosted()
+                )),
             if self.still.is_empty() {
                 String::new()
             } else {

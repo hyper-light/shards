@@ -1,0 +1,13 @@
+diff --git a/crates/api/src/progress.rs b/crates/api/src/progress.rs
+index 7e304cd1bc..416493459d 100644
+--- a/crates/api/src/progress.rs
++++ b/crates/api/src/progress.rs
+@@ -617,7 +617,7 @@ fn counted(
+         let key = (pid, start, held.slot);
+         let had = before.map(|before| before.get(&key).copied().unwrap_or(0));
+         if let Some(had) = had {
+-            most = most.max(total.saturating_sub(had));
++            most = most.saturating_add(total.saturating_sub(had));
+         }
+         after.insert(key, had.unwrap_or(0).max(total));
+     }

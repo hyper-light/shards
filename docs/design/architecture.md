@@ -44858,8 +44858,9 @@ stdout*: Docker's byte-exact texts. *The daemon's IPC*: its children's alone.
   that implements `F_FULLFSYNC` but fails it with `ENOTTY` or `EINVAL` would be written with
   fsync. Unchecked: APFS's source is not published, and no other file system's was read here.
 - *Declared*, where the process installed its home's slot file (`install`; a sandboxed VM
-  process given it by its spawner): `<home>/durable-v1`, a file of 64-byte slots (the least
-  power of two its five words fit, so that slots tile every granule) mapped shared by every
+  process given it by its spawner): `<home>/durable-v2` (durable-v1 until own-35i's commit 2,
+  below), a file of 64-byte slots (the least power of two its seven words fit, so that slots
+  tile every granule) mapped shared by every
   writer of the home and each follower, as D281's count file is. A slot: its owner (pid and
   the low half of its start), its start as its OS keeps it, its thread's ID as its OS's
   thread listing names it, the volume (`st_dev`; Windows the volume serial,
@@ -44922,6 +44923,54 @@ stdout*: Docker's byte-exact texts. *The daemon's IPC*: its children's alone.
     person's own daemon on a dev host). A party that names no home of its own says that home
     in its account. Tests that set `SHARDS_HOME` read it as before; a storm's or a direct
     boot's reads the slot file of the home its command uses and makes nothing.
+- *The time each write took* (durable-v2), amended 2026-11-18 (own-35i's commit 2; ROOT's
+  ruling). A declaration seen at a look alone showed a write only where one was under way as
+  the look read it: one that began and ended between two looks left its window to count as
+  the party's own rest, or, under D215's rate, its own slowness (CI 44347282760's windows-2025
+  refusal at containers.rs:4026, `rm -f` refused for its rate while its daemon's `Ends::keep`
+  flushed its directory, `WrResource`). Now:
+  - Each slot counts the nanoseconds its process's declared writes in it took (`spent`), each
+    added as it ends: the time from its start (read on the clock every process reads,
+    `sys::now`, and on this process's `Instant`, the same clock, which never fails) to its
+    end. A slot's words are written by the thread that holds it alone, each time between two
+    steps of its sequence (`seq`, odd while it writes); a reader reads the sequence, the words
+    and the sequence again, a seqlock, and takes them where both readings are one even value.
+  - A thread's slot stays its process's as the thread ends, idle (its thread word none), so
+    that a follower reads every write the process made: the process's next declaring thread
+    takes its own idle slots first, and another process takes them only once it has ended
+    (`reclaim`), its time ended with it. A process holds as many slots as it has threads
+    declaring at once, as before.
+  - A follower (shards-api's `Watch`) reads its process's slots at each look
+    (`Reader::held`) and counts, of each, its growth since the look before: its ended writes'
+    time, and the time of its write under way, from its start, where its volume worked since
+    its last reading (the rule above: a write on a volume that does nothing is no hold). A
+    slot first seen after a watch's first look counts whole; at the first, every slot is its
+    baseline. The window's hold is the most any one slot took, never the sum: two threads'
+    writes at once are one window of the host's work.
+  - Linux, beside it: the most any one of its threads waited for a CPU over the window, its
+    tasks' schedstat `run_delay` growth (Documentation/scheduler/sched-stats.rst), which the
+    kernel adds as a wait ends; a thread waiting through a whole window shows at the next,
+    and meanwhile by D215's sampled starvation (`starved`). The most, not the sum, so that a
+    storm of more vCPUs than its host has CPUs, each waiting most of a window, is never held
+    for ever by their sum. macOS is a stated gap: it keeps a task's wait alone
+    (`ri_runnable_time`, every thread's summed), no thread's. Windows is a stated gap until
+    the WHP halt-clock probe (docs/research/measurements/whp-halt-clock-v1) decides whether
+    a vCPU's halt is timed: its threads keep no wait at all (ETW alone, admin's).
+  - D215's judge takes the most of a party's processes' holds ([`Span::held`]) out of its
+    stillness, as it takes its own looks' lateness, and out of its rate's wall: gathered over
+    every look, judged at each due one, never more than that window past its lateness
+    (`Judge::hosted`, which a test's account says). shards-api's `Follow`, the tests' parties
+    and the daemon's leaf waits (parents.rs) each pass it.
+  - R03: no literal; the time is the clock's, the most is the rule's (a lower bound of the
+    union of the windows' holds, never over it), and a slot's growth is its own.
+  - Tested (unrun here: cargo fmt and scripts/check-development-policy only): shards-durable
+    `an_ended_threads_slot_is_its_processs_next_threads`, `a_slot_counts_the_time_its_writes_took`
+    and the reclaim test's reset of `spent`; shards-api `a_look_counts_the_most_any_slot_of_its_party_held_it`
+    and `a_windows_withholding_is_the_most_any_one_thread_waited`; shards-judge
+    `its_hosts_hold_its_subject_measured_is_out_of_its_stillness_and_its_rate`. Owed: their
+    runs, clippy on the seven targets, R09's live red and green (refusal 1's shape: a party
+    whose daemon's declared flushes start and end between looks, judged by rate), R14's
+    cost per look (one scan of the slots in memory, one `run_delay` read per task on Linux).
 - *Outside it*: the guest's syncs (init's), which no host judge follows, their host cost its
   VMM's declared flush; a tool writing outside any home declares nothing.
 

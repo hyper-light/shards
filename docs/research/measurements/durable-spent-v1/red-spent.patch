@@ -1,0 +1,13 @@
+diff --git a/crates/durable/src/table.rs b/crates/durable/src/table.rs
+index 7d78410820..b7dd9d6af5 100644
+--- a/crates/durable/src/table.rs
++++ b/crates/durable/src/table.rs
+@@ -513,7 +513,7 @@ impl Drop for Declaring {
+         self.slot.written(|s| {
+             s.since.store(0, Ordering::Relaxed);
+             let spent = s.spent.load(Ordering::Relaxed);
+-            s.spent.store(spent.saturating_add(took), Ordering::Relaxed);
++            s.spent.store(spent, Ordering::Relaxed);
+         });
+         if self.alone {
+             release(self.slot);

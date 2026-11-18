@@ -1,0 +1,12 @@
+diff --git a/crates/judge/src/lib.rs b/crates/judge/src/lib.rs
+index 973b0751df..8529909fd6 100644
+--- a/crates/judge/src/lib.rs
++++ b/crates/judge/src/lib.rs
+@@ -579,7 +579,6 @@ impl<'a> Judge<'a> {
+             .max(span.ended.saturating_duration_since(span.began));
+         // Its subject's measure of its host's hold, gathered over every look until a due one
+         // judges it; a based look's evidence begins anew at its end, without it.
+-        self.pending = self.pending.saturating_add(span.held);
+         if found == Found::Based {
+             (self.since, self.held, self.last) = (span.ended, Duration::ZERO, span.ended);
+             (self.hosted, self.pending) = (Duration::ZERO, Duration::ZERO);

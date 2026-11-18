@@ -338,8 +338,11 @@ fn emptied(events: &Path, procs: &Path, record: &shards_api::Record) -> std::io:
                 .map(|(_, watch, _)| watch.resolution())
                 .max()
                 .unwrap_or_default();
+            // Its host's hold of a process of it, as that process measured it (`Watch::held`).
+            let mut held = std::time::Duration::ZERO;
             for (_, watch, from) in &mut watched {
                 let look = watch.look(&listing).unwrap_or(shards_api::Found::Held);
+                held = held.max(watch.held());
                 ran = ran.max(watch.work().saturating_sub(*from));
                 found = match (found, look) {
                     (shards_api::Found::Progressed, _) | (_, shards_api::Found::Progressed) => {
@@ -356,6 +359,7 @@ fn emptied(events: &Path, procs: &Path, record: &shards_api::Record) -> std::io:
                 resolution,
                 own: std::time::Duration::ZERO,
                 work: None,
+                held,
             };
             judge.found_over(found, span).map_err(|stall| {
                 std::io::Error::other(format!(

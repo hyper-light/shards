@@ -1,0 +1,14 @@
+diff --git a/crates/api/src/progress.rs b/crates/api/src/progress.rs
+index 7e304cd1bc..972a257e7b 100644
+--- a/crates/api/src/progress.rs
++++ b/crates/api/src/progress.rs
+@@ -640,8 +640,7 @@ fn withheld(
+     Duration::from_nanos(
+         now.iter()
+             .filter_map(|(thread, &delay)| before.get(thread).map(|&was| delay.saturating_sub(was)))
+-            .max()
+-            .unwrap_or(0),
++            .sum::<u64>(),
+     )
+ }
+ 

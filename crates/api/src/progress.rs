@@ -508,6 +508,22 @@ impl Declarations {
         }
     }
 
+    /// The slots processes `members` (each its ID and its start as its OS keeps it) hold in
+    /// its home's slot file, each with what its writes took, by its process and that process's
+    /// start: what a look reads a window's growth of (D286 amended, [`counted`]). Why not where
+    /// its home's declarations could not be read.
+    fn held(&self, members: &[(u32, u64)]) -> Result<Vec<(u32, u64, shards_durable::Held)>, Unread> {
+        let reader = self.reader().map_err(Unread::Declarations)?;
+        let mut held = Vec::new();
+        for &(pid, start) in members {
+            let found = reader
+                .held(pid, start)
+                .map_err(|e| Unread::Declarations(e.raw_os_error()))?;
+            held.extend(found.into_iter().map(|slot| (pid, start, slot)));
+        }
+        Ok(held)
+    }
+
     /// What processes `members` (each its ID and its start as its OS keeps it) declare now:
     /// the writing a look's hold says, and the declaring threads, which the threads' own
     /// witnesses then leave out (D286: a declared write is judged by its volume alone).
@@ -584,6 +600,66 @@ impl Declarations {
         });
         (writing, threads)
     }
+}
+
+/// A process's slots' time counted so far by its follower (D286 amended): by its process, that
+/// process's start, and the slot's place in the file.
+type Counted = std::collections::BTreeMap<(u32, u64, u64), u64>;
+
+/// The most any one slot's declared writes held their process since the look that counted
+/// `before`, and what this look counts of each, from `slots` as it read them: each slot's ended
+/// writes' time (`spent`), and the time of its write under way (from its start to `now`, on
+/// `shards_durable::now`'s clock) where `worked`, its volume having worked since its last
+/// reading (D286's rule: a write on a volume that does nothing is no hold), less what was
+/// counted of it before. A slot first seen after the first look counts whole, as it was
+/// claimed since; at the first (`before` none), every slot is its baseline, its write under
+/// way counted to `now`. The most, not the sum: two threads' writes at once are one window of
+/// the host's work, which the most never overstates; and what a look counts of a slot never
+/// falls.
+fn counted(
+    before: Option<&Counted>,
+    slots: &[(u32, u64, shards_durable::Held)],
+    worked: bool,
+    now: u64,
+) -> (Duration, Counted) {
+    let mut most = 0u64;
+    let mut after = Counted::new();
+    for &(pid, start, held) in slots {
+        let under_way = if held.since != 0 && (worked || before.is_none()) {
+            now.saturating_sub(held.since)
+        } else {
+            0
+        };
+        let total = held.spent.saturating_add(under_way);
+        let key = (pid, start, held.slot);
+        let had = before.map(|before| before.get(&key).copied().unwrap_or(0));
+        if let Some(had) = had {
+            most = most.max(total.saturating_sub(had));
+        }
+        after.insert(key, had.unwrap_or(0).max(total));
+    }
+    (Duration::from_nanos(most), after)
+}
+
+/// The most any one thread waited for a CPU between two readings of each's run-queue wait so
+/// far (`before`, `now`: Linux's schedstat `run_delay`, by thread ID): its host keeping it
+/// from every CPU (Documentation/scheduler/sched-stats.rst). A thread in one reading alone
+/// shows nothing. The most, not the sum: its party's progress may wait on any one of its
+/// threads, and two waiting at once are one window of its host's hold, so that a storm of
+/// more vCPUs than its host has CPUs, each waiting most of a window, is never held for ever
+/// by their sum (D215, Liveness; ROOT's ruling of 2026-11-18). Read on Linux alone, which keeps
+/// each thread's wait; tested on every host.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn withheld(
+    before: &std::collections::BTreeMap<u64, u64>,
+    now: &std::collections::BTreeMap<u64, u64>,
+) -> Duration {
+    Duration::from_nanos(
+        now.iter()
+            .filter_map(|(thread, &delay)| before.get(thread).map(|&was| delay.saturating_sub(was)))
+            .max()
+            .unwrap_or(0),
+    )
 }
 
 /// Whether a look that found `found`, its threads read `starved` meanwhile, its host doing
@@ -739,6 +815,18 @@ pub struct Watch {
     /// (SHARDS_JUDGE_TRACE set as it began to be watched, `os::Followed::trace`).
     #[cfg(windows)]
     trace: bool,
+    /// Each of its slots' time as its looks counted it ([`counted`]), and the most any one of
+    /// them held it over the window its last look closed (D286 amended).
+    counted: Counted,
+    in_writes: Duration,
+    /// Linux: each of its tasks' run-queue wait as its last look read it (`os::delays`), and
+    /// the most any one of them waited for a CPU over the window that look closed
+    /// ([`withheld`]). Elsewhere none: macOS keeps a task's wait alone, every thread's summed
+    /// (`ri_runnable_time`), and Windows none (its looks' samples of a thread ready or standby
+    /// are its readings there, [`starved`]).
+    #[cfg(target_os = "linux")]
+    delays: std::collections::BTreeMap<u64, u64>,
+    withheld: Duration,
 }
 
 /// A process's threads as one read saw them, each by its OS's ID for it: its own CPU time,
@@ -896,6 +984,13 @@ impl Watch {
             return Ok(None);
         };
         let hold = followed.hold(listing);
+        // Its slots' time so far, its baseline: none of it is a window's of this watch's.
+        let counted = followed.slots().map_or_else(
+            |_| Counted::new(),
+            |slots| counted(None, &slots, true, shards_durable::now().unwrap_or(0)).1,
+        );
+        #[cfg(target_os = "linux")]
+        let delays = os::delays(followed.pid());
         Ok(Some(Watch {
             followed,
             last,
@@ -912,6 +1007,11 @@ impl Watch {
             times: [None, None],
             #[cfg(windows)]
             trace: std::env::var_os("SHARDS_JUDGE_TRACE").is_some(),
+            counted,
+            in_writes: Duration::ZERO,
+            #[cfg(target_os = "linux")]
+            delays,
+            withheld: Duration::ZERO,
         }))
     }
 
@@ -966,6 +1066,7 @@ impl Watch {
     /// each slice for 5 h 37 min on macOS). One rule for every follower (R12): the tests'
     /// parties held it apart before. Its threads are read from `listing`, the look's.
     pub fn look(&mut self, listing: &Listing) -> Result<Found, ProcessFailure> {
+        (self.in_writes, self.withheld) = (Duration::ZERO, Duration::ZERO);
         let was_ended = self.ended();
         let Some(look) = self.followed.look()? else {
             return Ok(Found::Gone);
@@ -975,6 +1076,21 @@ impl Watch {
             return Ok(Found::Gone);
         }
         let hold = std::mem::replace(&mut self.hold, self.followed.hold(listing));
+        // Its host's hold its own subject measured over the window this look closes
+        // ([`held`](Self::held)): its declared writes' time, the one under way while its volume
+        // works; and on Linux its threads' waits for a CPU.
+        let worked = self.hold.declared.is_some_and(|w| w.moved == Moved::Worked);
+        if let Ok(slots) = self.followed.slots() {
+            let now = shards_durable::now().unwrap_or(0);
+            let (grown, counted) = counted(Some(&self.counted), &slots, worked, now);
+            (self.in_writes, self.counted) = (grown, counted);
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let delays = os::delays(self.followed.pid());
+            self.withheld = withheld(&self.delays, &delays);
+            self.delays = delays;
+        }
         #[cfg(unix)]
         {
             self.waited =
@@ -1015,6 +1131,14 @@ impl Watch {
             return Ok(Found::Held);
         }
         Ok(found)
+    }
+
+    /// The time over the window its last look closed that its host held it, as it measured
+    /// it, exactly: the most any one of its slots' declared writes took (D286 amended), or,
+    /// on Linux, the most any one of its threads waited for a CPU, whichever is more. What its
+    /// follower's judge takes out of a stillness and of its rate's wall ([`Span::held`]).
+    pub fn held(&self) -> Duration {
+        self.in_writes.max(self.withheld)
     }
 
     /// What its last look read of its host's work for a thread of it waiting in its kernel,
@@ -1154,6 +1278,7 @@ impl<'a> Follow<'a> {
             resolution: watch.resolution(),
             own: Duration::ZERO,
             work: None,
+            held: Duration::ZERO,
         };
         judge
             .found_over(Found::Based, span)
@@ -1247,6 +1372,7 @@ impl<'a> Follow<'a> {
             resolution: self.watch.resolution(),
             own: Duration::ZERO,
             work,
+            held: self.watch.held(),
         };
         // Refused, its party's threads as this look read them: what each was doing.
         let judged = self
@@ -1349,6 +1475,14 @@ impl Followed {
     /// What it has run, now; none where it has gone (its pid another's, or no process's).
     fn look(&mut self) -> Result<Option<Look>, ProcessFailure> {
         os::look(self.pid, self.started)
+    }
+
+    /// The slots it holds in its home's slot file ([`Declarations::held`]); none where it reads
+    /// no home's declarations.
+    fn slots(&self) -> Result<Vec<(u32, u64, shards_durable::Held)>, Unread> {
+        self.declarations
+            .as_ref()
+            .map_or(Ok(Vec::new()), |d| d.held(&[(self.pid, self.started)]))
     }
 
     /// What its host is doing to it, now ([`Hold`]): its declared durable writes judged by
@@ -1748,6 +1882,27 @@ mod os {
             });
         }
         (!said.is_empty()).then(|| said.join(", "))
+    }
+
+    /// Each task of process `pid` by its ID, and its run-queue wait so far ([`run_delay`]):
+    /// what its follower reads the most any one of them waited for a CPU over a window from
+    /// ([`super::withheld`]). A task with none to read is left out, and a process whose tasks
+    /// cannot be listed has none: no evidence of its host's hold, which then takes nothing out
+    /// of its stillness.
+    pub(super) fn delays(pid: u32) -> std::collections::BTreeMap<u64, u64> {
+        let mut delays = std::collections::BTreeMap::new();
+        let Ok(tasks) = std::fs::read_dir(format!("/proc/{pid}/task")) else {
+            return delays;
+        };
+        for task in tasks.flatten() {
+            let Some(tid) = task.file_name().to_str().and_then(|tid| tid.parse::<u64>().ok()) else {
+                continue;
+            };
+            if let Some(delay) = run_delay(&task.path()) {
+                delays.insert(tid, delay);
+            }
+        }
+        delays
     }
 
     /// A task's run-queue wait in nanoseconds, its `schedstat`'s second field; none where it
@@ -2615,6 +2770,21 @@ mod os {
             self.created
         }
 
+        /// The slots its live processes hold in its home's slot file
+        /// ([`Declarations::held`](super::Declarations)); none where it reads no home's
+        /// declarations.
+        pub(super) fn slots(&self) -> Result<Vec<(u32, u64, shards_durable::Held)>, super::Unread> {
+            let live: Vec<(u32, u64)> = self
+                .members
+                .iter()
+                .filter(|m| !m.exited)
+                .map(|m| (m.pid, m.created))
+                .collect();
+            self.declarations
+                .as_ref()
+                .map_or(Ok(Vec::new()), |d| d.held(&live))
+        }
+
         /// What its host is doing to its processes ([`Hold`]), from `listing`, the look's read of
         /// the system's records of every process and its threads (NtQuerySystemInformation's
         /// SystemProcessInformation: each process's record followed by its threads', their
@@ -3223,6 +3393,59 @@ mod starved_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A look counts each slot's growth since the look before, the write under way only while
+    /// its volume works, and the most of its slots, never their sum; a slot first seen after
+    /// the first look counts whole, and none counts at the first; what a look counts of a
+    /// slot never falls (D286 amended, #36).
+    #[test]
+    fn a_look_counts_the_most_any_slot_of_its_party_held_it() {
+        let slot = |slot: u64, since: u64, spent: u64| {
+            (
+                7u32,
+                11u64,
+                shards_durable::Held {
+                    slot,
+                    thread: 1,
+                    volume: 3,
+                    since,
+                    spent,
+                },
+            )
+        };
+        let (first, before) = counted(None, &[slot(0, 900, 100), slot(1, 0, 50)], false, 1_000);
+        assert_eq!(first, Duration::ZERO, "its baseline");
+        // Slot 0's write, counted to 1000 at the first, ended with 600 more; slot 1 wrote 30
+        // more; slot 2, claimed since, wrote 40.
+        let (grown, after) = counted(
+            Some(&before),
+            &[slot(0, 0, 700), slot(1, 0, 80), slot(2, 0, 40)],
+            false,
+            2_000,
+        );
+        assert_eq!(grown, Duration::from_nanos(500), "slot 0's, the most");
+        let (worked, _) = counted(Some(&after), &[slot(0, 1_800, 700)], true, 2_000);
+        assert_eq!(worked, Duration::from_nanos(200), "under way, its volume working");
+        let (idle, kept) = counted(Some(&after), &[slot(0, 1_800, 700)], false, 2_000);
+        assert_eq!(idle, Duration::ZERO, "under way, its volume idle");
+        assert_eq!(kept.get(&(7, 11, 0)), Some(&700), "what it counted never falls");
+    }
+
+    /// A window's withholding is the most any one thread waited for a CPU over it, a thread
+    /// read at one end alone showing nothing (D215, Liveness; #36).
+    #[test]
+    fn a_windows_withholding_is_the_most_any_one_thread_waited() {
+        let map = |pairs: &[(u64, u64)]| {
+            pairs
+                .iter()
+                .copied()
+                .collect::<std::collections::BTreeMap<u64, u64>>()
+        };
+        let before = map(&[(1, 100), (2, 1_000), (3, 50)]);
+        let now = map(&[(1, 400), (2, 1_100), (4, 9_999)]);
+        assert_eq!(withheld(&before, &now), Duration::from_nanos(300), "thread 1's");
+        assert_eq!(withheld(&now, &now), Duration::ZERO);
+    }
     use crate::Rate;
 
     /// Some work an answer did, where a test weighs only that it did some: the record it
@@ -3792,6 +4015,7 @@ mod tests {
                         resolution: Duration::ZERO,
                         own: Duration::ZERO,
                         work,
+                        held: Duration::ZERO,
                     };
                     judge.found_over(Found::Progressed, span)
                 })

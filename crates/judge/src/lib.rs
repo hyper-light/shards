@@ -474,6 +474,13 @@ pub struct Span {
     /// had over. None where it did not, or cannot say: that window is no part of the rate's
     /// wall.
     pub work: Option<Work>,
+    /// The time since the look before that its party's host held it, as its own subject
+    /// measured it, exactly: its declared durable writes (D286 amended, the slot file's
+    /// `spent`), its threads' wait for a CPU (Linux `run_delay`). Out of its stillness, as the
+    /// judge's own lateness is, and out of its rate's wall: its host's work for it, or its
+    /// host's keeping it from a CPU, is no rest of its own nor its own slowness (#36, ROOT's
+    /// ruling of 2026-11-18). Zero where its caller measured none.
+    pub held: Duration,
 }
 
 impl Span {
@@ -485,6 +492,7 @@ impl Span {
             resolution: Duration::ZERO,
             own: Duration::ZERO,
             work: None,
+            held: Duration::ZERO,
         }
     }
 }
@@ -511,6 +519,11 @@ pub struct Judge<'a> {
     /// ruling, 2026-11-13).
     since: Instant,
     held: Duration,
+    /// The time its party's host held it since a look last found it progressed, held or based,
+    /// as its subject measured it ([`Span::held`]): out of its stillness, as `held` is; and
+    /// what the looks since its due look before measured, not yet judged by a due look.
+    hosted: Duration,
+    pending: Duration,
     /// The unheld time it has been seen to run over, its rate's wall: each window between
     /// due looks whose looks all saw its party run unheld ([`Span::work`]), less the time the
     /// judge's looks ran late in it; and whether a look since the due one before could not
@@ -544,6 +557,8 @@ impl<'a> Judge<'a> {
             last: began,
             since: began,
             held: Duration::ZERO,
+            hosted: Duration::ZERO,
+            pending: Duration::ZERO,
             unheld: Duration::ZERO,
             unsure: false,
             floor: Duration::ZERO,
@@ -574,8 +589,16 @@ impl<'a> Judge<'a> {
         let free = self
             .last
             .saturating_duration_since(self.since)
-            .saturating_sub(self.held);
+            .saturating_sub(self.held)
+            .saturating_sub(self.hosted);
         Some((free, self.held, self.window(slowest)))
+    }
+
+    /// The time its party's host held it, as its subject measured it, since a look last found
+    /// it progressed, held or based ([`Span::held`]): out of the stillness its judging stands
+    /// on ([`stillness`](Self::stillness)), for its caller's account.
+    pub fn hosted(&self) -> Duration {
+        self.hosted
     }
 
     /// From when a look made now runs late: its due, or the look before's end where that is
@@ -628,8 +651,12 @@ impl<'a> Judge<'a> {
             .floor
             .max(span.resolution)
             .max(span.ended.saturating_duration_since(span.began));
+        // Its subject's measure of its host's hold, gathered over every look until a due one
+        // judges it; a based look's evidence begins anew at its end, without it.
+        self.pending = self.pending.saturating_add(span.held);
         if found == Found::Based {
             (self.since, self.held, self.last) = (span.ended, Duration::ZERO, span.ended);
+            (self.hosted, self.pending) = (Duration::ZERO, Duration::ZERO);
         }
         // A look that ran nothing (`Still`) vouches for its window: what it saw is the party's
         // own. One held, gone or based cannot.
@@ -651,16 +678,20 @@ impl<'a> Judge<'a> {
             .saturating_duration_since(due.max(self.last))
             .saturating_sub(span.own);
         self.held = self.held.saturating_add(late);
+        // Its host's hold its subject measured since the look before: within that window, past
+        // what the judge's own lateness already took out of it.
+        let between = now.saturating_duration_since(self.last).saturating_sub(late);
+        let hosted = std::mem::take(&mut self.pending).min(between);
+        self.hosted = self.hosted.saturating_add(hosted);
         let window = self.window(slowest);
         if !std::mem::take(&mut self.unsure) {
-            let seen = now.saturating_duration_since(self.last).saturating_sub(late);
-            self.unheld = self.unheld.saturating_add(seen);
+            self.unheld = self.unheld.saturating_add(between.saturating_sub(hosted));
         }
         self.meant = Self::latest_meant(due, window, now);
         self.last = span.ended;
         match found {
             Found::Progressed => {
-                (self.since, self.held) = (span.ended, Duration::ZERO);
+                (self.since, self.held, self.hosted) = (span.ended, Duration::ZERO, Duration::ZERO);
                 let judged = self.slower_than_any_answer(span.work, now, window, seen);
                 if judged.is_ok()
                     && let (Some(work), Some(rated)) = (span.work, seen.rated)
@@ -671,7 +702,7 @@ impl<'a> Judge<'a> {
                 judged
             }
             Found::Held | Found::Based => {
-                (self.since, self.held) = (span.ended, Duration::ZERO);
+                (self.since, self.held, self.hosted) = (span.ended, Duration::ZERO, Duration::ZERO);
                 Ok(())
             }
             Found::Gone => {
@@ -681,7 +712,8 @@ impl<'a> Judge<'a> {
             Found::Still => {
                 let free = now
                     .saturating_duration_since(self.since)
-                    .saturating_sub(self.held);
+                    .saturating_sub(self.held)
+                    .saturating_sub(self.hosted);
                 if free < window {
                     return Ok(());
                 }
@@ -1168,6 +1200,7 @@ mod tests {
             resolution,
             own: Duration::ZERO,
             work: None,
+            held: Duration::ZERO,
         }
     }
 
@@ -1187,6 +1220,7 @@ mod tests {
                 resolution,
                 own: Duration::ZERO,
                 work: None,
+                held: Duration::ZERO,
             };
             if let Err(stall) = judge.found_over(Found::Still, look) {
                 return Some((at - judge.began, stall));
@@ -1568,5 +1602,50 @@ mod tests {
             })
         );
         assert_eq!(stall.most(), Some(w(ms(3))));
+    }
+
+    /// What its subject measured of its host's hold since the look before ([`Span::held`]) is
+    /// out of its stillness, as its judge's lateness is, and out of its rate's wall (#36,
+    /// ROOT's ruling of 2026-11-18; D286 amended). Do: a still party whose host held it half of
+    /// each window; and a party progressing at 30% of its wall, below R* (50%) past C* (50 ms),
+    /// held 60 ms of each 100 or none. Expect: the still one refused at its second due look,
+    /// its stillness net of the hold a whole window then, where one held none is refused at
+    /// its first; the progressing one held none refused at its second due look, and the held
+    /// one, its rate over its unheld wall 75%, going on.
+    #[test]
+    fn its_hosts_hold_its_subject_measured_is_out_of_its_stillness_and_its_rate() {
+        let ms = Duration::from_millis;
+        let record = Record::new();
+        record.teach(ms(100), ms(50));
+        record.teach(ms(100), ms(50));
+        let look = |judge: &Judge<'_>, at: u64, held: u64| Span {
+            held: ms(held),
+            ..Span::at(judge.began + ms(at))
+        };
+        let mut judge = Judge::begin(&record);
+        assert_eq!(
+            judge.found_over(Found::Still, look(&judge, 100, 50)),
+            Ok(()),
+            "still half its window"
+        );
+        let stall = judge
+            .found_over(Found::Still, look(&judge, 200, 50))
+            .expect_err("still a whole window");
+        assert_eq!(stall.over(), ms(100));
+        assert_eq!(judge.hosted(), ms(100));
+        let mut bare = Judge::begin(&record);
+        assert!(bare.found_over(Found::Still, look(&bare, 100, 0)).is_err());
+        let progress = |judge: &mut Judge<'_>, held: u64| {
+            [30u64, 60, 90].into_iter().zip(1u64..).try_for_each(|(cpu, n)| {
+                let span = Span {
+                    work: Some(ms(cpu)),
+                    held: ms(held),
+                    ..Span::at(judge.began + ms(100 * n))
+                };
+                judge.found_over(Found::Progressed, span)
+            })
+        };
+        assert!(progress(&mut Judge::begin(&record), 0).is_err(), "unheld, slow");
+        assert_eq!(progress(&mut Judge::begin(&record), 60), Ok(()), "held, not slow");
     }
 }
