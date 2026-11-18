@@ -2977,8 +2977,8 @@ fn restore_reported(
             // On Windows before the state is read too, which looks at each file it names,
             // as an AppContainer may not at one it was not handed (PM M345).
             #[cfg(windows)]
-            refuse_unasked(&shards_vmm::snapshot::backing_named(&cfg.dir)?)?;
-            let pinned = read_snapshot(&cfg.dir)?;
+            refuse_unasked(&snapshot_read(shards_vmm::snapshot::backing_named(&cfg.dir))?)?;
+            let pinned = snapshot_read(shards_vmm::snapshot::read(&cfg.dir))?;
             refuse_unasked(&shards_vmm::snapshot::backing_of(&pinned))?;
             pinned
         }
@@ -2989,10 +2989,10 @@ fn restore_reported(
         // newer generation in between names others.
         #[cfg(windows)]
         None => {
-            let named = shards_vmm::snapshot::backing_named(&cfg.dir)?;
+            let named = snapshot_read(shards_vmm::snapshot::backing_named(&cfg.dir))?;
             add(&mut paths, &named);
             confine(&paths)?;
-            let pinned = read_snapshot(&cfg.dir)?;
+            let pinned = snapshot_read(shards_vmm::snapshot::read(&cfg.dir))?;
             if shards_vmm::snapshot::backing_of(&pinned) != named {
                 return Err(format!(
                     "{}: its snapshot was saved again as it was read",
@@ -3003,7 +3003,7 @@ fn restore_reported(
         }
         #[cfg(not(windows))]
         None => {
-            let pinned = read_snapshot(&cfg.dir)?;
+            let pinned = snapshot_read(shards_vmm::snapshot::read(&cfg.dir))?;
             add(&mut paths, &shards_vmm::snapshot::backing_of(&pinned));
             confine(&paths)?;
             pinned
@@ -3035,14 +3035,19 @@ fn restore_reported(
 }
 
 /// Whether this process's restore found its snapshot's files unreadable
-/// ([`read_snapshot`]): their fault, its template's where a warm VM restores one, which such
+/// ([`snapshot_read`]): their fault, its template's where a warm VM restores one, which such
 /// a VM's status tells its daemon ([`serve_workload`], D26), not its host's.
 static SNAPSHOT_UNREAD: std::sync::OnceLock<()> = std::sync::OnceLock::new();
 
-/// The snapshot in `dir`, read and pinned (`shards_vmm::snapshot::read`), a failure kept
-/// ([`SNAPSHOT_UNREAD`]).
-fn read_snapshot(dir: &Path) -> Result<shards_vmm::snapshot::Pinned, String> {
-    shards_vmm::snapshot::read(dir).inspect_err(|_| {
+/// What a read of the snapshot's files gave, a failure kept ([`SNAPSHOT_UNREAD`]): the one way
+/// each read of a restore's snapshot goes, its state read and pinned
+/// (`shards_vmm::snapshot::read`) and, on Windows, the read before it of the files that state
+/// names (`shards_vmm::snapshot::backing_named`), which fails as surely where the state does
+/// not read. One that went around it was its template's fault unsaid: its warm VM exited 125,
+/// not `TEMPLATE_FAILED_STATUS`, and its daemon refilled from the template for ever (CI
+/// 44227612442, windows-2025, images.rs `repeat_runs_restore_a_template_of_the_image`).
+fn snapshot_read<T>(read: Result<T, String>) -> Result<T, String> {
+    read.inspect_err(|_| {
         let _ = SNAPSHOT_UNREAD.set(());
     })
 }

@@ -1424,7 +1424,13 @@ for the exit status.
       generation's state or its memory, or what its machine keeps beside its memory, its
       writable layer's head or file system (D190) or its DAX windows' heads (D189), each opened
       as the generation is read (`snapshot::Pinned`; vm_run.rs `restore_reported`,
-      `read_snapshot`);
+      `snapshot_read`); and on Windows `snapshot::backing_named`, which reads the state first
+      for the files it names, to be granted them (PM M345), and fails as surely where the
+      state does not read. Both reads go through `snapshot_read`, which keeps the failure as
+      the template's (2026-11-18, #36): before, `backing_named`'s went around it, a malformed
+      state's warm VM exited 125, and its daemon refilled from the template for ever (CI
+      44205094460 and 44227612442, windows-2025: `repeat_runs_restore_a_template_of_the_image`
+      held to its step's limit, then churned until its host refused every VM, 1450);
     - its guest reset before it took a run, as its kernel's panic does under `panic=-1`
       (`ExitReason::Reset`);
     - its guest powered off before it took a run, its init having ended
