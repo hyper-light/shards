@@ -3745,9 +3745,6 @@ mod hosted {
         Ok((shaped, layering))
     }
 
-    /// The run `request`, its deadline `ready_by`, of its microVM `shaped`: its members'
-    /// stages, its published ports bound, its nesting grant decided, its setup and spec, its
-    /// security's filters its microVM's own (`Shaped::secured`).
     /// The run's shares another server serves (D286) given the share slots after its own in
     /// `opened`, one for each of `asked`, in order: each slot's descriptor its stream from
     /// `streams`, which the run's share process hands its VM as it is (share.rs, as it hands a
@@ -3756,7 +3753,7 @@ mod hosted {
     /// (D279). Refused `Request` where the streams are not one for each, or a place is no
     /// absolute path, the root, or one a share, a volume or another served share takes, in the
     /// words a bind's refusal has.
-    fn serve(
+    fn served_slots(
         opened: &mut crate::volumes::Opened,
         asked: &[wire::ServedAt],
         streams: Vec<OwnedFd>,
@@ -3799,6 +3796,9 @@ mod hosted {
         Ok(())
     }
 
+    /// The run `request`, its deadline `ready_by`, of its microVM `shaped`: its members'
+    /// stages, its published ports bound, its nesting grant decided, its setup and spec, its
+    /// security's filters its microVM's own (`Shaped::secured`).
     fn plan(
         request: &wire::Request,
         ready_by: Option<u64>,
@@ -3856,7 +3856,7 @@ mod hosted {
         // `ATTEND`.
         let (_, _, most) = crate::run::sizes(&run.resources, crate::build::host_memory());
         // Its shares another server serves (D286), in the slots after its own shares'.
-        serve(&mut opened, &request.served, served)?;
+        served_slots(&mut opened, &request.served, served)?;
         // The shares it gives members as they start (D277), told in their entries.
         let given = super::share_members(request, &members)?;
         let volumes = agentfile
@@ -7888,7 +7888,7 @@ mod hosted {
         };
         // No served share's stream (D286): its share process started before its run asked, so a
         // run naming one is another microVM's than this one (its exemplar's check above), and
-        // one this host's exemplar names is refused by `serve` for its streams' want.
+        // one this host's exemplar names is refused by `served_slots` for its streams' want.
         let plan = match plan(&request, ready_by, shaped, Vec::new()) {
             Ok(plan) => plan,
             // Its shares' directories went with `shaped`, as `plan` failed.
@@ -10440,7 +10440,7 @@ mod hosted {
     mod served {
         use super::*;
 
-        /// A descriptor of a file of `dir`'s, standing in for a share's in `Opened`: `serve` reads
+        /// A descriptor of a file of `dir`'s, standing in for a share's in `Opened`: `served_slots` reads
         /// none of them.
         fn held(dir: &Path, name: &str) -> OwnedFd {
             let at = dir.join(name);
@@ -10475,7 +10475,7 @@ mod hosted {
                 handle: None,
             };
             let mut opened = own();
-            serve(
+            served_slots(
                 &mut opened,
                 &[at("/v/a/../b", true, true), at("/x", false, false)],
                 vec![held(dir.path(), "s0"), held(dir.path(), "s1")],
@@ -10523,7 +10523,7 @@ mod hosted {
                 ),
             ] {
                 let mut opened = own();
-                let refused = serve(&mut opened, &asked, streams);
+                let refused = served_slots(&mut opened, &asked, streams);
                 assert!(
                     matches!(&refused, Err(No(Cause::Request, w)) if w.contains(why)),
                     "{why}: {refused:?}"

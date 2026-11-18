@@ -7348,8 +7348,9 @@ mod tests {
             let request = asked(control);
             assert_eq!(Request::decode(&request.encode().unwrap()).unwrap(), request);
         }
-        // Its members' stdio asked (version 44): the request's last byte, read as a flag, and
-        // one of another value refused by type, never read as a default.
+        // Its members' stdio asked (version 44): the request's last byte but the served shares'
+        // count (version 52), read as a flag, and one of another value refused by type, never
+        // read as a default.
         let stdio = asked(Some(ControlAsk {
             controller: [9u8; 32],
             sockets: None,
@@ -7357,9 +7358,10 @@ mod tests {
         }))
         .encode()
         .unwrap();
-        assert_eq!(stdio.last(), Some(&1));
+        let at = stdio.len() - 4 - 1;
+        assert_eq!(stdio[at], 1);
         let mut bad = stdio.clone();
-        *bad.last_mut().unwrap() = 2;
+        bad[at] = 2;
         assert!(matches!(
             Request::decode(&bad),
             Err(WireError::Tag {
@@ -7367,9 +7369,10 @@ mod tests {
                 tag: 2
             })
         ));
-        // None asked: one byte past v13's encoding, its absence.
+        // None asked: one byte past v13's encoding, its absence, before the served shares' count
+        // (version 52).
         let none = asked(None).encode().unwrap();
-        assert_eq!(none.last(), Some(&0));
+        assert_eq!(none.get(none.len() - 4 - 1..), Some(&[0, 0, 0, 0, 0][..]));
     }
 
     /// Step 11 (b), D252: a started run tells where its endpoint is bound and the microVM's own
@@ -7469,8 +7472,9 @@ mod tests {
         // count (version 35) and the share's members (version 37), made one D232's grammar
         // refuses.
         let mut unnamed = bytes.clone();
-        // ... the members' ceilings' count (version 39) and the share's exec flag (version 41).
-        let at = unnamed.len() - 1 - 1 - 4 - 1 - 4 - 1 - 4 - 4 - 4 - "metal:00000001000002a1".len();
+        // ... the members' ceilings' count (version 39), the share's exec flag (version 41) and the
+        // served shares' count (version 52).
+        let at = unnamed.len() - 4 - 1 - 1 - 4 - 1 - 4 - 1 - 4 - 4 - 4 - "metal:00000001000002a1".len();
         assert_eq!(unnamed[at], b'm');
         unnamed[at] = b'x';
         assert_eq!(Request::decode(&unnamed), Err(WireError::Gpu));
@@ -7583,11 +7587,24 @@ mod tests {
         // The second sign-in's CLI, its code after its name, made one no version has; the one
         // member's MCP bridge's flag (version 25), the upstream roots' count (version 26), the
         // GPU report's flag (version 29), the plug roots' count (version 35), the share's
-        // members (version 37), the members' ceilings' count (version 39) and the share's exec
-        // flag (version 41) after it.
+        // members (version 37), the members' ceilings' count (version 39), the share's exec flag
+        // (version 41) and the served shares' count (version 52) after it.
         let mut cli = bytes.clone();
         let at = cli.len()
-            - (4 + "chatgpt.com".len() + 4 + "api.openai.com".len() + 4 + 1 + 1 + 1 + 4 + 1 + 4 + 1 + 4 + 1);
+            - (4 + "chatgpt.com".len()
+                + 4
+                + "api.openai.com".len()
+                + 4
+                + 1
+                + 1
+                + 1
+                + 4
+                + 1
+                + 4
+                + 1
+                + 4
+                + 1
+                + 4);
         assert_eq!(cli[at], Cli::Codex.code());
         cli[at] = 9;
         assert!(matches!(Request::decode(&cli), Err(WireError::Tag { .. })));
