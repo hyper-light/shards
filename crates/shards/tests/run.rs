@@ -95,7 +95,7 @@ fn shards_with(args: &[&OsStr], stdin: &[u8]) -> Output {
     });
     // While its VM process runs (D209, `common::Heard::running`): `run --kernel` is it on
     // Unix, and starts it on Windows.
-    let mut heard = common::Heard::running(child.id());
+    let mut heard = common::Heard::running(child.id(), None);
     let status = loop {
         if let Some(st) = child.try_wait().unwrap() {
             heard.answered();
@@ -512,13 +512,13 @@ fn signaled_ignoring(image: &Path, command: &[&str], signals: &[Signal], ignorin
     let vm = child.id();
     let (done, watch) = std::sync::mpsc::channel::<()>();
     let watchdog = std::thread::spawn(move || {
-        let refused = heed(&watch, common::Heard::running(vm))
+        let refused = heed(&watch, common::Heard::running(vm, None))
             .and_then(|()| {
                 watch
                     .recv()
                     .map_err(|_| "the test ended as it signalled".to_string())
             })
-            .and_then(|()| heed(&watch, common::Heard::running(vm)))
+            .and_then(|()| heed(&watch, common::Heard::running(vm, None)))
             .err();
         if refused.is_some() {
             common::kill_now(pid);

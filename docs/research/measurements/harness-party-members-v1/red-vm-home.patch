@@ -1,0 +1,22 @@
+diff --git a/crates/shards/tests/common/mod.rs b/crates/shards/tests/common/mod.rs
+index b0584f1d2e..08b10d4e15 100644
+--- a/crates/shards/tests/common/mod.rs
++++ b/crates/shards/tests/common/mod.rs
+@@ -7930,7 +7930,7 @@ impl Vm {
+     /// home.
+     #[track_caller]
+     pub fn running(&self) -> Heard<'static> {
+-        Heard::running(self.id(), self.home())
++        Heard::running(self.id(), None)
+     }
+ 
+     /// A wait on its guest's progress by its lines and `streamed`'s bytes, its CPU counted only
+@@ -7938,7 +7938,7 @@ impl Vm {
+     /// party as [`running`](Self::running)'s.
+     #[track_caller]
+     pub fn streaming<'a>(&self, streamed: Option<&'a AtomicU64>) -> Heard<'a> {
+-        Heard::streaming_sized(self.id(), self.home(), streamed, &self.size)
++        Heard::streaming_sized(self.id(), None, streamed, &self.size)
+     }
+ 
+     /// Its guest's size (its vCPUs, say), which keys its streamed waits' kinds beside their

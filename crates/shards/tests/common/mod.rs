@@ -3619,6 +3619,15 @@ pub struct Ended {
 /// A process by its ID and its executable's name.
 pub type Process = (u32, String);
 
+/// The home `cmd` names in its own environment (`SHARDS_HOME`), none where it sets none or
+/// removes it: a wait on it follows that home's daemon ([`Party::client`]), as [`run_command`]'s
+/// and a [`Vm`]'s do.
+pub fn home_of(cmd: &Command) -> Option<PathBuf> {
+    cmd.get_envs()
+        .find(|(k, _)| *k == "SHARDS_HOME")
+        .and_then(|(_, v)| v.map(PathBuf::from))
+}
+
 /// [`run_command`]'s run, ended at `end` past its start, a time of its test's own (boot.rs:
 /// this host's own time for its guest to answer), as [`Ended`] says rather than failing the
 /// test there, for a test of what an ended run leaves: the processes under it are left to
@@ -3648,10 +3657,7 @@ fn run_ending(
     );
     let start = Instant::now();
     // Its home, for what is shown of a run that never ends ([`stuck`]).
-    let home: Option<PathBuf> = cmd
-        .get_envs()
-        .find(|(k, _)| *k == "SHARDS_HOME")
-        .and_then(|(_, v)| v.map(PathBuf::from));
+    let home = home_of(&cmd);
     // The home whose daemon serves it, where its context is another home's of this test's.
     let serving = serving_home(&cmd, home.as_deref());
     let mut child = cmd
@@ -4316,17 +4322,29 @@ fn host_class() -> String {
     )
 }
 
-/// The home whose daemon serves `cmd`, a command of `home`'s, where the context it runs in is
-/// another home's of this test's process (ROOT's word, 2026-11-18, D215): the context chosen as
-/// shards chooses it (context.rs `chosen`: `--context NAME`, `-c NAME` or `--context=NAME`
-/// before its command, else `SHARDS_CONTEXT`, else `DOCKER_CONTEXT`, else its home's current
-/// one), its record's address the one that home's daemon listens on (context.rs `LISTENING`),
-/// looked for among the homes beside `home` in this process's test directory. None where it
-/// runs here, or where no home beside its own listens there.
+/// The home whose daemon serves `cmd`, a command of `home`'s, where that daemon is another
+/// home's of this test's process (ROOT's word, 2026-11-18, D215), as shards routes the command
+/// (its cli `main`):
+/// - A context's own command ([`kept_here`]) runs here whatever the context, and no other
+///   home's daemon serves it but the join of `create context NAME --invite-file FILE`, which
+///   the daemon at its invitation's address serves (context.rs `create`, `client::join`; CI
+///   44347282760, windows-2025: context.rs's
+///   `a_build_through_a_context_is_of_the_clients_context_kept_in_step` refused its `create
+///   context`, its party its client alone, "no daemon yet" in its own home, while the
+///   machine's daemon served the join).
+/// - Every other command runs whole in the context chosen as shards chooses it (context.rs
+///   `chosen`: `--context NAME`, `-c NAME` or `--context=NAME` before its command, else
+///   `SHARDS_CONTEXT`, else `DOCKER_CONTEXT`, else its home's current one), on the daemon its
+///   record's address names.
+///
+/// That daemon's home is the one beside `home` in this process's test directory that listens
+/// on the address (context.rs `LISTENING`). None where it runs here, or where no home beside
+/// its own listens there.
 pub fn serving_home(cmd: &Command, home: Option<&Path>) -> Option<PathBuf> {
     let home = home?;
-    let words: Vec<&std::ffi::OsStr> = cmd.get_args().collect();
-    let word = |i: usize| words.get(i).and_then(|w| w.to_str());
+    // Its words as shards reads them, to the first that is no UTF-8 (context.rs `kept_here`).
+    let words: Vec<&str> = cmd.get_args().map_while(|w| w.to_str()).collect();
+    let word = |i: usize| words.get(i).copied();
     let (mut given, mut at) = (None, 0usize);
     loop {
         match word(at) {
@@ -4340,6 +4358,10 @@ pub fn serving_home(cmd: &Command, home: Option<&Path>) -> Option<PathBuf> {
             }
             _ => break,
         }
+    }
+    let command = words.get(at..).unwrap_or_default();
+    if kept_here(command) {
+        return listening_on(home, &invited(cmd, command)?);
     }
     // As the command's environment has it, set or removed there, else as this process's has.
     let env = |name: &str| {
@@ -4369,16 +4391,68 @@ pub fn serving_home(cmd: &Command, home: Option<&Path>) -> Option<PathBuf> {
     let address = record
         .lines()
         .find_map(|line| line.strip_prefix("address "))?
-        .trim()
-        .to_string();
+        .trim();
+    listening_on(home, address)
+}
+
+/// Whether `command`, a command's words after its own context options, is a context's own,
+/// which shards runs here whatever the context (context.rs `kept_here`): its first or second
+/// word `context`, `contexts`, `client`, `clients`, `invitation` or `invitations`, or its first
+/// help, `login` or `logout`, or none. Not its internal commands (cli `INTERNAL`), which shards
+/// starts itself and no test runs.
+fn kept_here(command: &[&str]) -> bool {
+    let own = |w: &str| {
+        matches!(
+            w,
+            "context" | "contexts" | "client" | "clients" | "invitation" | "invitations"
+        )
+    };
+    command.is_empty()
+        || command
+            .first()
+            .is_some_and(|w| own(w) || matches!(*w, "help" | "-h" | "--help" | "login" | "logout"))
+        || command.get(1).is_some_and(|w| own(w))
+}
+
+/// The address the invitation of `create context NAME --invite-file FILE` (or `context create`)
+/// names, `command` its words after its context options: its flags read as context.rs
+/// `create` reads them (`--invite-file FILE` and `--description TEXT`, in any order, no
+/// other), its file from the command's working directory, and the invitation parsed by
+/// shards-remote's `Invitation::parse`, as shards parses it. None for any other command, nor
+/// where its file does not read as an invitation: shards then joins nothing.
+fn invited(cmd: &Command, command: &[&str]) -> Option<String> {
+    let (["create", "context", _, flags @ ..] | ["context", "create", _, flags @ ..]) = command else {
+        return None;
+    };
+    let (mut file, mut flags) = (None, flags.iter());
+    while let Some(flag) = flags.next() {
+        match *flag {
+            "--invite-file" => file = Some(Path::new(*flags.next()?)),
+            "--description" => {
+                flags.next()?;
+            }
+            _ => return None,
+        }
+    }
+    let file = file?;
+    let file = cmd
+        .get_current_dir()
+        .map_or_else(|| file.to_path_buf(), |dir| dir.join(file));
+    let text = std::fs::read_to_string(file).ok()?;
+    let invitation = shards_remote::invite::Invitation::parse(&text).ok()?;
+    Some(invitation.address.to_string())
+}
+
+/// The home beside `home` in this process's test directory whose daemon listens on `address`
+/// (context.rs `LISTENING`); none where none does.
+fn listening_on(home: &Path, address: &str) -> Option<PathBuf> {
     std::fs::read_dir(home.parent()?)
         .ok()?
         .filter_map(Result::ok)
         .map(|entry| entry.path())
         .find(|dir| {
             dir.as_path() != home
-                && std::fs::read_to_string(dir.join("listening"))
-                    .is_ok_and(|bound| bound.trim() == address.as_str())
+                && std::fs::read_to_string(dir.join("listening")).is_ok_and(|bound| bound.trim() == address)
         })
 }
 
@@ -7544,6 +7618,12 @@ pub struct Vm {
     log: Log,
     /// Its guest's size (its vCPUs), which keys its streamed waits' kinds ([`Vm::sized`]).
     size: String,
+    /// The home its command names ([`home_of`]), whose daemon its waits follow with it
+    /// ([`Vm::running`]): a client of that daemon (`exec`, `run vm`) is served by it and its
+    /// microVMs (CI 44347282760, windows-2025: plug.rs's `a_host_edit_wakes_a_watch_in_the_guest`
+    /// refused its `exec`'s wait, its party the client alone, waiting on its pipes, while its
+    /// home's daemon and microVM served it).
+    home: Option<PathBuf>,
 }
 
 /// Lines a process printed, as they came.
@@ -7557,7 +7637,7 @@ pub type Log = Arc<std::sync::Mutex<Vec<String>>>;
 #[track_caller]
 pub fn within<T: Send + 'static>(what: &str, vm: &Vm, f: impl FnOnce() -> T + Send + 'static) -> T {
     let (tx, rx) = std::sync::mpsc::channel();
-    let mut heard = Heard::running(vm.id());
+    let mut heard = vm.running();
     let worker = std::thread::spawn(move || {
         let _ = tx.send(f());
     });
@@ -7811,14 +7891,14 @@ impl Vm {
 
     /// [`Vm::spawn`], with `env` added to shards' environment.
     pub fn spawn_env<S: AsRef<std::ffi::OsStr>>(args: &[S], env: &[(&str, &str)]) -> Vm {
-        let mut child = command()
-            .envs(env.iter().copied())
+        let mut cmd = command();
+        cmd.envs(env.iter().copied())
             .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
+            .stderr(Stdio::piped());
+        let home = home_of(&cmd);
+        let mut child = cmd.spawn().unwrap();
         let (tx, lines) = std::sync::mpsc::channel();
         let log = Log::default();
         let (out, err) = (child.stdout.take().unwrap(), child.stderr.take().unwrap());
@@ -7840,7 +7920,29 @@ impl Vm {
             seen: Vec::new(),
             log,
             size: String::new(),
+            home,
         }
+    }
+
+    /// The home its command names, none where it names none ([`home_of`]).
+    pub fn home(&self) -> Option<&Path> {
+        self.home.as_deref()
+    }
+
+    /// A wait on its guest's progress, its CPU counted throughout ([`Heard::running`]): its
+    /// process, and its home's daemon and what descends from it where its command names a
+    /// home.
+    #[track_caller]
+    pub fn running(&self) -> Heard<'static> {
+        Heard::running(self.id(), self.home())
+    }
+
+    /// A wait on its guest's progress by its lines and `streamed`'s bytes, its CPU counted only
+    /// before its first line ([`Heard::streaming_sized`]), its kind keyed by its size; its
+    /// party as [`running`](Self::running)'s.
+    #[track_caller]
+    pub fn streaming<'a>(&self, streamed: Option<&'a AtomicU64>) -> Heard<'a> {
+        Heard::streaming_sized(self.id(), self.home(), streamed, &self.size)
     }
 
     /// Its guest's size (its vCPUs, say), which keys its streamed waits' kinds beside their
@@ -7881,7 +7983,7 @@ impl Vm {
     /// whose CPU time counts only as it starts.
     #[track_caller]
     pub fn wait_for_any(&mut self, texts: &[&str]) -> String {
-        let heard = Heard::running(self.child.id());
+        let heard = self.running();
         self.wait_lines(texts, heard)
     }
 
@@ -7891,7 +7993,7 @@ impl Vm {
     /// host has CPUs, which show CPU time for ever.
     #[track_caller]
     pub fn wait_for_any_streamed(&mut self, texts: &[&str], streamed: Option<&AtomicU64>) -> String {
-        let heard = Heard::streaming_sized(self.child.id(), streamed, &self.size);
+        let heard = self.streaming(streamed);
         self.wait_lines(texts, heard)
     }
 
@@ -7952,7 +8054,7 @@ impl Vm {
     /// host has CPUs, as [`wait_for_any`](Self::wait_for_any) waits on one.
     #[track_caller]
     pub fn wait_exit_following(&mut self) -> Option<i32> {
-        let heard = Heard::running(self.child.id());
+        let heard = self.running();
         self.wait_end(heard)
     }
 
@@ -7963,7 +8065,7 @@ impl Vm {
     /// waited on while it gets on with it.
     #[track_caller]
     pub fn wait_exit_streamed(&mut self, streamed: Option<&AtomicU64>) -> Option<i32> {
-        let heard = Heard::streaming_sized(self.child.id(), streamed, &self.size);
+        let heard = self.streaming(streamed);
         self.wait_end(heard)
     }
 
@@ -8061,10 +8163,11 @@ impl<'a> Heard<'a> {
     }
 
     /// The guest of the VM process `vm` is or started (`run --kernel`, `restore`), its CPU
-    /// time counted only before its first line, and `streamed`'s bytes as it carries them.
+    /// time counted only before its first line, and `streamed`'s bytes as it carries them;
+    /// with `home`'s daemon where its command names a home ([`running`](Self::running)).
     #[track_caller]
-    pub fn streaming(vm: u32, streamed: Option<&'a AtomicU64>) -> Heard<'a> {
-        Heard::streaming_sized(vm, streamed, "")
+    pub fn streaming(vm: u32, home: Option<&Path>, streamed: Option<&'a AtomicU64>) -> Heard<'a> {
+        Heard::streaming_sized(vm, home, streamed, "")
     }
 
     /// [`streaming`](Self::streaming), its guest of size `size` (its vCPUs), which keys its
@@ -8072,22 +8175,35 @@ impl<'a> Heard<'a> {
     /// apart, so that a 64-vCPU storm is not judged by a 2-vCPU one's W* (HVF at ddb88cd47:
     /// "still running" refused at a W* of 49.9 ms and of 753 ms learned of smaller storms).
     #[track_caller]
-    pub fn streaming_sized(vm: u32, streamed: Option<&'a AtomicU64>, size: &str) -> Heard<'a> {
+    pub fn streaming_sized(
+        vm: u32,
+        home: Option<&Path>,
+        streamed: Option<&'a AtomicU64>,
+        size: &str,
+    ) -> Heard<'a> {
         let kind = WaitKind::of(std::panic::Location::caller(), PROGRESS, size);
-        Heard::keyed(kind, Party::client(vm, None), Guest::Streaming, streamed)
+        Heard::keyed(kind, Party::client(vm, home), Guest::Streaming, streamed)
     }
 
-    /// The guest of the VM process `vm` is or started (`run --kernel`, `restore`), its CPU
-    /// time counted throughout: for a guest of fewer vCPUs than its host has CPUs.
+    /// The guest of the process `vm`, its CPU time counted throughout: for a guest of fewer
+    /// vCPUs than its host has CPUs. `vm` is its VM process, or started it (`run --kernel`,
+    /// `restore`), or asks its home's daemon for it (`exec`, `run vm`): `home`, the home its
+    /// command names ([`home_of`]), makes that daemon and what descends from it, its microVMs'
+    /// VM processes among them, its party's, as [`run_command`]'s party is made.
     #[track_caller]
-    pub fn running(vm: u32) -> Heard<'static> {
+    pub fn running(vm: u32, home: Option<&Path>) -> Heard<'static> {
         Heard::with(
             std::panic::Location::caller(),
-            Party::client(vm, None),
+            Party::client(vm, home),
             Guest::Running,
             None,
             "",
         )
+    }
+
+    /// Its wait's account ([`Wait::account`]), as [`Patience::account`] says its own.
+    pub fn account(&self) -> String {
+        self.wait.account()
     }
 
     /// The guest of a machine this process runs (`vm::start`), waiting for `awaited` (a line,

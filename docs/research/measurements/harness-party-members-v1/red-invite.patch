@@ -1,0 +1,13 @@
+diff --git a/crates/shards/tests/common/mod.rs b/crates/shards/tests/common/mod.rs
+index b0584f1d2e..21f13b6031 100644
+--- a/crates/shards/tests/common/mod.rs
++++ b/crates/shards/tests/common/mod.rs
+@@ -4357,7 +4357,7 @@ pub fn serving_home(cmd: &Command, home: Option<&Path>) -> Option<PathBuf> {
+     }
+     let command = words.get(at..).unwrap_or_default();
+     if kept_here(command) {
+-        return listening_on(home, &invited(cmd, command)?);
++        return None;
+     }
+     // As the command's environment has it, set or removed there, else as this process's has.
+     let env = |name: &str| {

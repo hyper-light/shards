@@ -141,6 +141,8 @@ fn stand_in() {
         serving();
     } else if asked == "own-vms" {
         own_vms();
+    } else if asked == "vm-home" {
+        vm_home();
     } else if asked == "starved" {
         starved();
     } else if let Some(bytes) = asked.strip_prefix("durable ").and_then(|b| b.parse::<u64>().ok()) {
@@ -1028,7 +1030,7 @@ fn a_guest_wait_goes_on_while_its_party_works() {
             .stdout(std::process::Stdio::null())
             .spawn()
             .unwrap();
-        let mut heard = common::Heard::running(party.id());
+        let mut heard = common::Heard::running(party.id(), None);
         assert!(
             round == 0
                 || matches!(heard.seen(), shards_api::Seen::Learned { slowest, .. } if slowest >= busy),
@@ -1063,7 +1065,7 @@ fn streaming(vm: u32) -> common::Heard<'static> {
 fn cold_heard(vm: u32) -> common::Heard<'static> {
     let site = std::panic::Location::caller();
     let _ = std::fs::remove_file(common::WaitKind::kept_at(site, common::PROGRESS, ""));
-    common::Heard::streaming(vm, None)
+    common::Heard::streaming(vm, None, None)
 }
 
 /// A guest of more vCPUs than its host has CPUs runs them for ever, its workload stopped or
@@ -3534,6 +3536,144 @@ fn a_contexts_command_is_served_by_the_home_that_listens_on_its_address() {
         .env_remove("SHARDS_CONTEXT")
         .env_remove("DOCKER_CONTEXT");
     assert_eq!(served(&current), Some(machine), "by its home's current context");
+}
+
+/// A context's own command runs here whatever the context, and no other home's daemon serves
+/// it but the join of `create context NAME --invite-file FILE`, which the daemon at its
+/// invitation's address serves, so that daemon joins its party (D215; CI 44347282760,
+/// windows-2025: context.rs's `a_build_through_a_context_is_of_the_clients_context_kept_in_step`
+/// refused its `create context`, its party its client alone, "no daemon yet" in its own home,
+/// while the machine's daemon served the join). Do: a laptop home whose current context
+/// names one listening home, an invitation naming another, and one naming an address no home
+/// listens on. Expect: the invited home for `create context` and `context create`, its flags
+/// in either order, its file named from the command's directory; none for the invitation to
+/// no home, nor for the context's other own commands, a context chosen; the chosen context's
+/// home for any other command. Red where the join's daemon is not found
+/// (`docs/research/measurements/harness-party-members-v1/red-invite.patch`), or where a
+/// context's own command is sent through the chosen context (`red-kept-here.patch` there).
+#[test]
+fn a_join_is_served_by_the_home_its_invitation_names() {
+    let laptop = TempDir::new("join-serves");
+    let current = TempDir::new("join-current");
+    let inviting = TempDir::new("join-inviting");
+    // Ports below every OS's ephemeral range, and none the test beside this one names: no
+    // daemon of a test binds them.
+    std::fs::write(current.join("listening"), "127.0.0.1:4713\n").unwrap();
+    std::fs::write(inviting.join("listening"), "127.0.0.1:4714\n").unwrap();
+    std::fs::create_dir_all(laptop.join("contexts")).unwrap();
+    std::fs::write(
+        laptop.join("contexts").join("gpu"),
+        format!(
+            "shards context 1\nname gpu\naddress 127.0.0.1:4713\ndaemon {}\ndescription \n",
+            "ab".repeat(32)
+        ),
+    )
+    .unwrap();
+    std::fs::write(laptop.join("context"), "gpu\n").unwrap();
+    let invitation = |address: &str| {
+        format!(
+            "shards invitation 1\nname laptop\naddress {address}\ndaemon {}\nsecret {}\n",
+            "ab".repeat(32),
+            "cd".repeat(32)
+        )
+    };
+    std::fs::write(inviting.join("laptop.invite"), invitation("127.0.0.1:4714")).unwrap();
+    std::fs::write(inviting.join("nowhere.invite"), invitation("127.0.0.1:4715")).unwrap();
+    let home: &std::path::Path = &laptop;
+    let served = |cmd: &std::process::Command| common::serving_home(cmd, Some(home));
+    let shards = |words: &[&str]| {
+        let mut cmd = std::process::Command::new("shards");
+        cmd.args(words)
+            .env_remove("SHARDS_CONTEXT")
+            .env_remove("DOCKER_CONTEXT");
+        cmd
+    };
+    let invite = inviting.join("laptop.invite");
+    let invite = invite.to_str().unwrap();
+    let invited = Some(inviting.to_path_buf());
+    let create = shards(&["create", "context", "lab", "--invite-file", invite]);
+    assert_eq!(served(&create), invited, "create context");
+    let docker = shards(&[
+        "context",
+        "create",
+        "lab",
+        "--description",
+        "a lab",
+        "--invite-file",
+        invite,
+    ]);
+    assert_eq!(
+        served(&docker),
+        invited,
+        "context create, its flags in another order"
+    );
+    let mut relative = shards(&["create", "context", "lab", "--invite-file", "laptop.invite"]);
+    relative.current_dir(&*inviting);
+    assert_eq!(served(&relative), invited, "its file named from its directory");
+    let nowhere = inviting.join("nowhere.invite");
+    let nowhere = shards(&[
+        "create",
+        "context",
+        "lab",
+        "--invite-file",
+        nowhere.to_str().unwrap(),
+    ]);
+    assert_eq!(
+        served(&nowhere),
+        None,
+        "an invitation to an address no home listens on"
+    );
+    for own in [
+        &["use", "context", "gpu"][..],
+        &["ls", "contexts"],
+        &["context", "show"],
+        &["invite", "client", "x"],
+    ] {
+        assert_eq!(served(&shards(own)), None, "{own:?} runs here");
+    }
+    let chosen = shards(&["ps"]);
+    assert_eq!(
+        served(&chosen),
+        Some(current.to_path_buf()),
+        "in the chosen context"
+    );
+}
+
+/// A wait on a guest's progress through a client of a home's daemon (`Vm::spawn_env` naming
+/// `SHARDS_HOME`: `exec`, `run vm`) follows that home's daemon and what descends from it, its
+/// microVMs among them, as `run_command`'s wait on a command does (D215; CI 44347282760,
+/// windows-2025: plug.rs's `a_host_edit_wakes_a_watch_in_the_guest` refused its `exec`'s wait,
+/// its party its client alone, waiting on its pipes, while its home's daemon and microVM
+/// served it). Do: in a stand-in, whose own VM processes (`common::OwnVm`, every `Vm`'s) no
+/// other test's party counts, a client naming a home and one naming none. Expect: the first's
+/// waits, running and streamed, say that home in their party; the second's name no home. Red
+/// where a `Vm`'s waits drop its home
+/// (`docs/research/measurements/harness-party-members-v1/red-vm-home.patch`).
+#[test]
+fn a_guests_wait_through_a_homes_client_follows_its_daemon() {
+    let run = common::run_command(
+        stand_in_doing("vm-home"),
+        &["stand-in".to_string(), "vm-home".to_string()],
+    );
+    assert_eq!(run.status, Some(0), "{run}");
+}
+
+/// [`a_guests_wait_through_a_homes_client_follows_its_daemon`]'s stand-in.
+fn vm_home() {
+    let home = TempDir::new("vm-home");
+    let named = format!("no daemon yet in {}", home.display());
+    let mut client = common::Vm::spawn_env(&["--help"], &[("SHARDS_HOME", home.to_str().unwrap())]);
+    assert_eq!(client.home(), Some(&*home), "its command's home");
+    let running = client.running().account();
+    assert!(running.contains(&named), "running: {running}");
+    let streamed = client.streaming(None).account();
+    assert!(streamed.contains(&named), "streamed: {streamed}");
+    let mut alone = common::Vm::spawn(&["--help"]);
+    assert_eq!(alone.home(), None, "a command that names no home");
+    let own = alone.running().account();
+    assert!(!own.contains("no daemon yet in"), "no home: {own}");
+    client.kill();
+    alone.kill();
 }
 
 /// A party follows its daemon's VM processes, and what descends from them, as members of

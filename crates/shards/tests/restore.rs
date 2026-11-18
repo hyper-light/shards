@@ -160,7 +160,7 @@ fn a_held_restore_runs_its_guest_only_once_released() {
     });
     // While its VM process runs (D209, `common::Heard::running`): it prepares its restore,
     // and says nothing as it does. One refused fails.
-    let mut heard = common::Heard::running(child.id());
+    let mut heard = common::Heard::running(child.id(), None);
     loop {
         match ready.recv_timeout(heard.next_look()) {
             Ok(()) => {
@@ -188,7 +188,7 @@ fn a_held_restore_runs_its_guest_only_once_released() {
     stdin.write_all(b"\n").unwrap();
     drop(stdin);
     // While its VM process runs; refused, ended, its status then what its asserts read.
-    let mut heard = common::Heard::running(child.id());
+    let mut heard = common::Heard::running(child.id(), None);
     let status = loop {
         if let Some(status) = child.try_wait().unwrap() {
             heard.answered();

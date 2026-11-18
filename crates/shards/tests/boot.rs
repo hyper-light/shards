@@ -1717,7 +1717,7 @@ fn a_guest_grows_and_gives_back_its_memory() {
             }
         }
     };
-    let plugged_ms: u64 = until(common::Heard::running(front), "SHARDS-TEST PLUGGED")
+    let plugged_ms: u64 = until(common::Heard::running(front, None), "SHARDS-TEST PLUGGED")
         .parse()
         .unwrap();
     #[cfg(unix)]
@@ -1731,7 +1731,7 @@ fn a_guest_grows_and_gives_back_its_memory() {
     let footprint = || shards_vmm::platform::process_usage(pid).unwrap().footprint;
     let full = footprint();
     stdin.write_all(b"\n").unwrap();
-    let unplugged_ms: u64 = until(common::Heard::running(front), "SHARDS-TEST UNPLUGGED")
+    let unplugged_ms: u64 = until(common::Heard::running(front, None), "SHARDS-TEST UNPLUGGED")
         .parse()
         .unwrap();
     // The guest's kernel counts a memory block gone from MemTotal as it takes it offline,
@@ -1744,7 +1744,7 @@ fn a_guest_grows_and_gives_back_its_memory() {
     // fallen further nor its VM process run over a whole window past the slowest fall of
     // its kind seen: a fall is its progress.
     let mut least = full;
-    let mut heard = common::Heard::running(front);
+    let mut heard = common::Heard::running(front, None);
     let given_back = loop {
         let now = footprint();
         heard.said(now < least);
@@ -1759,7 +1759,7 @@ fn a_guest_grows_and_gives_back_its_memory() {
         std::thread::sleep(Duration::from_millis(10));
     };
     stdin.write_all(b"\n").unwrap();
-    until(common::Heard::running(front), "SHARDS-TEST PASS");
+    until(common::Heard::running(front, None), "SHARDS-TEST PASS");
     eprintln!(
         "1 GiB plugged in {plugged_ms} ms, unplugged in {unplugged_ms} ms; the VM process held {} MiB, then {} MiB",
         full >> 20,
