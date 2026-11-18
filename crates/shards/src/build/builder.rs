@@ -1652,14 +1652,22 @@ mod tests {
     fn a_builders_vm_is_followed_to_its_end_while_it_goes_on() {
         let dir = shards_testdir::TempDir::new("builder-end").unwrap();
         let cold = Record::new();
-        let slow = sh("exec /bin/sleep 6", &dir);
+        // Read before its stand-in is made, whose 6 s run from no sooner than this. Read after
+        // it, the stand-in's sleep may begin first, this thread descheduled between the two
+        // (CI 44245219858, aarch64 musl: 5.998 s).
         let began = Instant::now();
+        let slow = sh("exec /bin/sleep 6", &dir);
+        let following = Instant::now();
         assert!(matches!(follow_to_end(&slow, &cold), VmEnd::Exited));
         assert!(began.elapsed() >= Duration::from_secs(6), "{:?}", began.elapsed());
+        // Its end learned: no more than the follow waited, whose clock starts inside
+        // `follow_to_end`. It has no lower bound to hold: the stand-in's sleep begins as its
+        // spawn runs it, before or after that clock starts, so the follow sees less of its 6 s
+        // by as long as this thread took to reach it, which nothing here bounds.
         let shards_api::Seen::Learned { slowest, .. } = cold.seen() else {
             panic!("its own end taught nothing");
         };
-        assert!(slowest >= Duration::from_secs(6), "{slowest:?}");
+        assert!(slowest <= following.elapsed(), "{slowest:?}");
         let slowest = Duration::from_millis(200);
         let record = learned(slowest);
         // Busy, as one writing its disks back is, until its file comes: then it ends.
