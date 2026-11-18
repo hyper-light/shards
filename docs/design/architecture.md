@@ -13824,9 +13824,16 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
     macOS, where a spinning thread's work did not show within 450 µs windows (adas-mac-
     studio.local, "made no progress for 485.125µs, past ... (434.75µs) ... this process's
     threads beside its waiter ran 2.25ms ago"). No number changed (R03). Held by
-    harness.rs' `a_judged_calls_own_work_is_its_progress` (an idle started stand-in; from
-    one call site, its record removed, a call that answers at once, one busy 200 ms on its
-    thread, one asleep there 1 s).
+    harness.rs' `a_judged_calls_own_work_is_its_progress` (a resting stand-in its party;
+    from one call site, its record removed, a call that answers as its wait finds its
+    answer missing, one busy 200 ms on its thread and until then, one idle there until
+    refused). Amended 2026-11-18 (own-38l): a call that answers before its wait first looks
+    (a look's cost and √2 of it in) teaches nothing, so the test's calls answer only once
+    told their answers were found missing (`common::Watched::Awaited`), which says too
+    whether the wait is judged: one of a kind no answer taught has no due look, so its
+    idle call is told that and ends. At 07d4396a0c on jupiter it waited two hours on its
+    resting stand-in, both idle: neither call before it taught, read from the code and the
+    run's log (another test's pace there implies looks of about 160 ms), not reproduced.
   - *A guest idle for its test's own pacing is not judged* (2026-11-14, ROOT's batches 23
     and 24 at 6e067b01b and 9146808cc, HVF, lane runsignal). run.rs'
     `signals_reach_the_command` failed at its last case, SIGTERM and then SIGINT 500 ms

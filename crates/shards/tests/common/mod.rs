@@ -7687,49 +7687,83 @@ pub fn judged<T: Send>(
     call: impl FnOnce() -> T + Send,
 ) -> Result<T, String> {
     let wait = Wait::on(WaitKind::at(std::panic::Location::caller()), party, asked);
-    judging(wait, Stage::Awaited, asked, stop, call, None).0
+    judging(wait, Stage::Awaited, asked, stop, call, Watching::Done).0
 }
 
-/// [`judged`], and its wait's account as it ended, before its answer taught its kind: what
-/// a test that expects a refusal says where none came (harness.rs
-/// `a_judged_calls_own_work_is_its_progress`, unrefused on CI's arm64 Windows runner with no
-/// account kept, run 44077430171).
-#[track_caller]
-pub fn judged_accounted<T: Send>(
-    party: Party,
-    asked: &str,
-    stop: impl FnOnce(),
-    call: impl FnOnce() -> T + Send,
-) -> (Result<T, String>, String) {
-    let wait = Wait::on(WaitKind::at(std::panic::Location::caller()), party, asked);
-    judging(wait, Stage::Awaited, asked, stop, call, None)
-}
-
-/// [`judged_accounted`], its call told once its judge's looks have outlasted their rule: on the
-/// channel its call takes, the due looks that found its party still since it last progressed,
-/// held or based, each as far into the wait as it came, once they are more than
-/// [`shards_api::LOOKS_TO_REFUSE`] and none refused it; the channel closing as its wait ends,
-/// refused or not. Its call's thread is its party's member, so it hears nothing before: each
-/// word wakes it, which its next look takes for progress ([`judging`]). What a test that bounds
-/// a wait on a still party by its judge's own looks reads, where a span of time would be cut
-/// short by a host that holds the looks late (harness.rs
+/// [`judged`], its call told of its wait on the channel it takes ([`Watched`]), the channel
+/// closing as its wait ends, refused or not; and its wait's account as it ended, before its
+/// answer taught its kind. What a test reads that bounds a wait on a still party by its
+/// judge's own looks, where a span of time would be cut short by a host that holds the looks
+/// late, and whose calls must teach their kind for the next to be judged (harness.rs
 /// `a_judged_calls_own_work_is_its_progress`).
 #[track_caller]
 pub fn judged_watching<T: Send>(
     party: Party,
     asked: &str,
-    call: impl FnOnce(std::sync::mpsc::Receiver<Vec<Duration>>) -> T + Send,
+    call: impl FnOnce(std::sync::mpsc::Receiver<Watched>) -> T + Send,
 ) -> (Result<T, String>, String) {
     let wait = Wait::on(WaitKind::at(std::panic::Location::caller()), party, asked);
-    let (still, looks) = std::sync::mpsc::channel();
+    let (to, told) = std::sync::mpsc::channel();
     judging(
         wait,
         Stage::Awaited,
         asked,
         || {},
-        move || call(looks),
-        Some(still),
+        move || call(told),
+        Watching::Begun(to),
     )
+}
+
+/// What a [`judged_watching`] call is told of its wait, each at most once and in this order.
+/// Its thread is its party's member, so each word wakes it, which its wait's next look takes
+/// for progress: it hears no more than these.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Watched {
+    /// Its wait found its answer missing, at its first look since the call began: an answer
+    /// from here teaches its kind, where one before taught nothing ([`Stage`]). `judged`:
+    /// whether its kind had an answer as the wait began. One not judged follows its party's
+    /// liveness alone, no look of it due, so nothing refuses it and no due looks outlast a
+    /// rule: a call that waited for either would wait for as long as its party lives.
+    Awaited { judged: bool },
+    /// Its due looks have found its party still more times than its judge's rule refuses
+    /// within ([`shards_api::LOOKS_TO_REFUSE`]), since it last progressed, held or based, none
+    /// refusing it: how far into the wait each came.
+    Outlasted(Vec<Duration>),
+}
+
+/// What [`judging`] has told its call ([`Watched`]).
+enum Watching {
+    /// No call that hears, or one told all it will be.
+    Done,
+    /// Nothing yet: its wait has not found its answer missing.
+    Begun(std::sync::mpsc::Sender<Watched>),
+    /// [`Watched::Awaited`].
+    Awaited(std::sync::mpsc::Sender<Watched>),
+}
+
+impl Watching {
+    /// What `wait`'s look, just made and unrefused, brings its call: [`Watched::Awaited`] once
+    /// it has found its answer missing; then [`Watched::Outlasted`] once its due looks have
+    /// found its party still more times than its judge's rule refuses within. Told of each
+    /// change in those looks, its call's thread woke to hear it, and that run was its next due
+    /// look's progress: its party never stayed still, so its wait was neither refused nor told
+    /// (CI 44164945050 at 95247a79c, harness.rs `a_judged_calls_own_work_is_its_progress`, to
+    /// the Tests step's limit on every Linux and macOS job and on arm64 Windows).
+    fn looked(self, wait: &Wait) -> Watching {
+        match self {
+            Watching::Begun(to) if wait.awaited() => {
+                let _ = to.send(Watched::Awaited {
+                    judged: wait.judged(),
+                });
+                Watching::Awaited(to)
+            }
+            Watching::Awaited(to) if wait.still.len() > shards_api::LOOKS_TO_REFUSE as usize => {
+                let _ = to.send(Watched::Outlasted(wait.still.clone()));
+                Watching::Done
+            }
+            unchanged => unchanged,
+        }
+    }
 }
 
 /// [`judged`], of a call whose caller knows its answer is there already (what a member that
@@ -7745,7 +7779,7 @@ pub fn judged_there<T: Send>(
     call: impl FnOnce() -> T + Send,
 ) -> Result<T, String> {
     let wait = Wait::on(WaitKind::at(std::panic::Location::caller()), party, asked);
-    judging(wait, Stage::Begun, asked, stop, call, None).0
+    judging(wait, Stage::Begun, asked, stop, call, Watching::Done).0
 }
 
 /// Where a judged call's own thread is ([`judging`]).
@@ -7775,7 +7809,7 @@ fn judging<T: Send>(
     asked: &str,
     stop: impl FnOnce(),
     call: impl FnOnce() -> T + Send,
-    mut watch: Option<std::sync::mpsc::Sender<Vec<Duration>>>,
+    mut watching: Watching,
 ) -> (Result<T, String>, String) {
     let calling = std::sync::Mutex::new(Calling::Spawned);
     let thread = || calling.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -7822,21 +7856,10 @@ fn judging<T: Send>(
             if let Err(stall) = looked {
                 break wait.refused(&stall);
             }
-            // Its watcher is told once, as its due looks have found its party still more times
-            // than its judge's rule refuses within, none refusing it. Told of each change, its
-            // call's own thread woke to hear it, and that run, its party's member's, was its
-            // next due look's progress: its party never stayed still, so its wait was neither
-            // refused nor told it had outlasted its rule (CI 44164945050 at 95247a79c, harness.rs
-            // `a_judged_calls_own_work_is_its_progress`, to the Tests step's limit on every
-            // Linux and macOS job and on arm64 Windows).
-            if wait.still.len() > shards_api::LOOKS_TO_REFUSE as usize
-                && let Some(still) = watch.take()
-            {
-                let _ = still.send(wait.still.clone());
-            }
+            watching = watching.looked(&wait);
         };
         // Its watcher hears its wait end, refused, before its call is stopped.
-        drop(watch.take());
+        drop(watching);
         stop();
         let _ = worker.join();
         (Err(refused), wait.account())

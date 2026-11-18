@@ -1753,11 +1753,19 @@ fn judged_end(party: &mut std::process::Child) -> Result<std::process::ExitStatu
 /// processes' CPU, taught their call site a W* that refused the next call 206 µs and 31 ms
 /// in as it worked). Do: a stand-in idle throughout, the party's one live process, its calls
 /// begun once it says it rests; from one call site, its kind's kept record removed, a call
-/// that answers at once, then one busy for 200 ms on its own thread, then one idle there
-/// until its wait is refused, the refusal ending it, or until its wait's due looks have found
-/// its party still `shards_api::LOOKS_TO_REFUSE` + 1 times since it last ran, none refusing
-/// it, past which it answers. Expect: the first two answer; the idle one is refused, and one
-/// that answers fails the test with those looks and their times. It counts looks and sets
+/// that answers as its wait finds its answer missing (`common::Watched::Awaited`), the
+/// quickest answer that teaches its kind; then one busy for 200 ms on its own thread, and
+/// until its wait finds its answer missing; then one idle there until its wait is refused,
+/// the refusal ending it, or until told that none will come: its wait not judged, or its due
+/// looks past their rule (`shards_api::LOOKS_TO_REFUSE`). Expect: the first not judged and
+/// the second judged, both answering; the idle one refused, and one told otherwise fails the
+/// test with what it was told and its wait's account. A call that answers before its wait
+/// first looks after it began, a look's cost and D215's pause (√2 of that cost) in, teaches
+/// nothing, its answer taken for one there as it began: the calls before answered as their
+/// own work ended, so where a look cost more than 200 ms / √2, about 141 ms, neither taught,
+/// and the idle call, its wait not judged, waited for as long as its stand-in lived, which
+/// waited for the call (jupiter, bare-metal WHP, at 07d4396a0c: two hours, both processes
+/// idle; read from the code and the run's log, not reproduced). It counts looks and sets
 /// itself no span of time, which a host holding the looks late would cut short: a resting
 /// process on Windows runs its default
 /// thread pool's workers when its system decides ("the system controls the lifetime of
@@ -1769,39 +1777,53 @@ fn judged_end(party: &mut std::process::Child) -> Result<std::process::ExitStatu
 /// prevents it.
 #[test]
 fn a_judged_calls_own_work_is_its_progress() {
+    /// What a call does on its own thread, answering with the word it ended on, none where
+    /// its wait ended first.
+    #[derive(Clone, Copy)]
+    enum Calls {
+        /// It answers with the first word it is told.
+        Quick,
+        /// It works for `ms`, and until told its first word.
+        Busy(u64),
+        /// It waits until its wait is refused, which closes its channel, or until told no
+        /// refusal will come.
+        Idle,
+    }
     #[track_caller]
-    fn work(party: u32, ms: u64, idle: bool, forget: bool) -> (Result<(), String>, String) {
+    fn work(party: u32, calls: Calls, forget: bool) -> (Result<Option<common::Watched>, String>, String) {
         if forget {
             let site = std::panic::Location::caller();
             let _ = std::fs::remove_file(common::WaitKind::kept_at(site, "", ""));
         }
         let party = common::Party::client(party, None);
-        if idle {
-            // Idle, it waits for its refusal, whose end of its wait closes the channel of its
-            // judge's looks; told of more than LOOKS_TO_REFUSE due looks that found its party
-            // still since it last ran, none refusing it, it answers. A count of the judge's own
-            // looks, which a host holding them late cannot cut short; it keeps no clock, the CI
-            // step's own limit its last bound.
-            return common::judged_watching(party, "a call's own work", |looks| {
-                while let Ok(still) = looks.recv() {
-                    if still.len() > shards_api::LOOKS_TO_REFUSE as usize {
-                        return;
-                    }
-                }
-            });
-        }
-        common::judged_accounted(
-            party,
-            "a call's own work",
-            || {},
-            move || {
+        common::judged_watching(party, "a call's own work", move |told| match calls {
+            Calls::Quick => told.recv().ok(),
+            Calls::Busy(ms) => {
                 let until = Instant::now() + Duration::from_millis(ms);
+                let mut first = None;
                 let mut spun = 0u64;
-                while Instant::now() < until {
+                loop {
+                    if first.is_none() {
+                        match told.try_recv() {
+                            Ok(word) => first = Some(word),
+                            Err(std::sync::mpsc::TryRecvError::Disconnected) => return None,
+                            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                        }
+                    }
+                    if first.is_some() && Instant::now() >= until {
+                        return first;
+                    }
                     spun = std::hint::black_box(spun.wrapping_add(1));
                 }
+            }
+            Calls::Idle => loop {
+                match told.recv() {
+                    Ok(common::Watched::Awaited { judged: true }) => {}
+                    Ok(word) => return Some(word),
+                    Err(_) => return None,
+                }
             },
-        )
+        })
     }
     let mut idle = stand_in_doing("rests")
         .stdin(std::process::Stdio::piped())
@@ -1843,21 +1865,31 @@ fn a_judged_calls_own_work_is_its_progress() {
         },
     )
     .unwrap();
-    let call = |ms: u64, still: bool, forget: bool| work(party, ms, still, forget);
-    let (quick, _) = call(0, false, true);
-    let (busy, _) = call(200, false, false);
-    let (idle_call, idle_account) = call(0, true, false);
+    let call = |calls: Calls, forget: bool| work(party, calls, forget);
+    let (quick, quick_account) = call(Calls::Quick, true);
+    let (busy, busy_account) = call(Calls::Busy(200), false);
+    let (idle_call, idle_account) = call(Calls::Idle, false);
     drop(idle.stdin.take());
     idle.wait().unwrap();
-    assert!(quick.is_ok(), "{quick:?}");
-    assert!(busy.is_ok(), "{busy:?}");
-    // Refused, and its account names what its member was doing. Answered, its judge's looks
-    // outlasted their rule: its account names the due looks that found its party still.
-    let Err(said) = idle_call else {
-        panic!(
-            "a call idle on its own thread not refused through {} due looks that found its party still; its wait as it answered: {idle_account}",
-            shards_api::LOOKS_TO_REFUSE + 1
-        );
+    // Its kind's record removed, the first is not judged; its answer, found missing first,
+    // teaches its kind, so that the next is judged, and the idle one.
+    assert_eq!(
+        quick,
+        Ok(Some(common::Watched::Awaited { judged: false })),
+        "{quick_account}"
+    );
+    assert_eq!(
+        busy,
+        Ok(Some(common::Watched::Awaited { judged: true })),
+        "{busy_account}"
+    );
+    // Refused, and its account names what its member was doing. Answered, it was told no
+    // refusal would come, and its account says why: its record, or its due looks.
+    let said = match idle_call {
+        Err(said) => said,
+        Ok(told) => panic!(
+            "a call idle on its own thread not refused, told {told:?}; its wait as it answered: {idle_account}"
+        ),
     };
     // Its member listed, none of its threads runnable: Linux says it sleeping (S), macOS live
     // (SRUN, which XNU keeps for every live process), both by its threads.
