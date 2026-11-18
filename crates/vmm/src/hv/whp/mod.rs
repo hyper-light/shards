@@ -46,9 +46,15 @@ impl fmt::Display for Error {
         match self {
             Error::Call { op, hr } => {
                 write!(f, "{op} failed: HRESULT {:#010x}", *hr as u32)?;
-                // A Win32 error carried as an HRESULT (FACILITY_WIN32) has its system text.
+                // A Win32 error carried as an HRESULT (FACILITY_WIN32) has its system text, and
+                // where it is its host refusing memory (WHvMapGpaRange's 0x800705aa, 1450),
+                // what the host's memory was then.
                 if (*hr as u32) & 0xFFFF_0000 == 0x8007_0000 {
-                    write!(f, " ({})", std::io::Error::from_raw_os_error(*hr & 0xFFFF))?;
+                    let code = *hr & 0xFFFF;
+                    write!(f, " ({})", std::io::Error::from_raw_os_error(code))?;
+                    if let Some(said) = shards_ipc::memory_refused_said(code) {
+                        write!(f, "; {said}")?;
+                    }
                 }
                 Ok(())
             }

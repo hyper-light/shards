@@ -55,13 +55,58 @@ pub fn host_available() -> Option<u64> {
 /// its contents to disk first" (MEMORYSTATUSEX).
 #[cfg(windows)]
 pub fn host_available() -> Option<u64> {
+    memory_status().map(|status| status.ullAvailPhys)
+}
+
+/// What this host's memory is now (GlobalMemoryStatusEx).
+#[cfg(windows)]
+fn memory_status() -> Option<windows_sys::Win32::System::SystemInformation::MEMORYSTATUSEX> {
     use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
     let mut status = MEMORYSTATUSEX {
         dwLength: size_of::<MEMORYSTATUSEX>() as u32,
         ..Default::default()
     };
     // SAFETY: a structure of its own length for the call to fill.
-    (unsafe { GlobalMemoryStatusEx(&raw mut status) } != 0).then_some(status.ullAvailPhys)
+    (unsafe { GlobalMemoryStatusEx(&raw mut status) } != 0).then_some(status)
+}
+
+/// The memory a new VM's guest may have of this host, in bytes, its RAM committed as its VM
+/// process starts: what the host has available ([`host_available`]), and on Windows no more
+/// than it can still commit ([`committable`]), which a commit past fails whatever is free
+/// (ERROR_COMMITMENT_LIMIT, 1455). A cold builder sized by free physical memory alone was
+/// refused its RAM so ("the paging file is too small", CI 44227612442, windows-2025; D133).
+pub fn host_committable() -> Option<u64> {
+    #[cfg(windows)]
+    return memory_status().map(|status| committable(&status));
+    #[cfg(not(windows))]
+    host_available()
+}
+
+/// What `status` says a new commit may take: its physical memory available (`ullAvailPhys`),
+/// at most what may still be committed (`ullAvailPageFile`, "the maximum amount of memory the
+/// current process can commit", MEMORYSTATUSEX): the system's commit limit, its physical
+/// memory and its paging files, less the commit charge of everything that runs, which a
+/// commit is charged against whether or not it is ever touched (VirtualAlloc's MEM_COMMIT).
+#[cfg(windows)]
+fn committable(status: &windows_sys::Win32::System::SystemInformation::MEMORYSTATUSEX) -> u64 {
+    status.ullAvailPhys.min(status.ullAvailPageFile)
+}
+
+/// What this host's memory is now, said where a VM's memory was refused it: its physical
+/// memory available and what it can still commit, in MiB, as a refusal's account; none
+/// unread or for any other error. Windows says a refusal so as ERROR_NO_SYSTEM_RESOURCES
+/// (1450, as WHvMapGpaRange's HRESULT 0x800705aa) or ERROR_COMMITMENT_LIMIT (1455).
+#[cfg(windows)]
+pub fn memory_refused_said(code: i32) -> Option<String> {
+    if !matches!(code, 1450 | 1455) {
+        return None;
+    }
+    let status = memory_status()?;
+    Some(format!(
+        "the host had {} MiB of physical memory available and could commit {} MiB more",
+        status.ullAvailPhys >> 20,
+        status.ullAvailPageFile >> 20
+    ))
 }
 
 /// The most a read whose length the reader cannot know before it ends may hold, where what
@@ -94,11 +139,27 @@ pub fn host_memory() -> Option<u64> {
 /// The host's physical memory, in bytes (GlobalMemoryStatusEx).
 #[cfg(windows)]
 pub fn host_memory() -> Option<u64> {
-    use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
-    let mut status = MEMORYSTATUSEX {
-        dwLength: size_of::<MEMORYSTATUSEX>() as u32,
-        ..Default::default()
-    };
-    // SAFETY: a structure of its own length for the call to fill.
-    (unsafe { GlobalMemoryStatusEx(&raw mut status) } != 0).then_some(status.ullTotalPhys)
+    memory_status().map(|status| status.ullTotalPhys)
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use windows_sys::Win32::System::SystemInformation::MEMORYSTATUSEX;
+
+    /// A new commit takes no more than its host can still commit, whatever is free of its
+    /// physical memory, and no more than is free where it could commit more: the cold builder
+    /// of CI 44227612442 (windows-2025) was sized by free memory alone and refused its RAM.
+    #[test]
+    fn a_new_commit_takes_no_more_than_its_host_can_commit() {
+        const GIB: u64 = 1 << 30;
+        let status = |phys: u64, commit: u64| MEMORYSTATUSEX {
+            dwLength: size_of::<MEMORYSTATUSEX>() as u32,
+            ullAvailPhys: phys,
+            ullAvailPageFile: commit,
+            ..Default::default()
+        };
+        assert_eq!(super::committable(&status(9 * GIB, 3 * GIB)), 3 * GIB);
+        assert_eq!(super::committable(&status(3 * GIB, 9 * GIB)), 3 * GIB);
+        assert_eq!(super::committable(&status(4 * GIB, 4 * GIB)), 4 * GIB);
+    }
 }

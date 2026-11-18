@@ -600,7 +600,7 @@ fn guest_memory(
             crate::memory::GuestMemory::with_hotplug(ranges, at, len, mem::BLOCK)
         }
     };
-    memory.map_err(|e| format!("guest RAM: {e}"))
+    memory.map_err(|e| format!("guest RAM: {}", crate::platform::memory_said(&e)))
 }
 
 /// Guest RAM of `ranges` from snapshot `snap`'s memory `file`, as much of it from the file
@@ -616,7 +616,7 @@ fn restored_memory(
 ) -> Result<crate::memory::GuestMemory, String> {
     let config = &snap.config;
     let memory = crate::memory::GuestMemory::from_file(ranges, file, snap.data.as_deref())
-        .map_err(|e| format!("snapshot memory: {e}"))?;
+        .map_err(|e| format!("snapshot memory: {}", crate::platform::memory_said(&e)))?;
     match hotplug(config)? {
         None => Ok(memory),
         Some((_, region)) => {

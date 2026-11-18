@@ -14,7 +14,19 @@ pub use checked::copy_checked;
 pub use copy::COPIED;
 pub use copy::{copy_in, copy_out};
 pub use progress::{IDLE_VM_CPU, Look, Progress, progressed};
-pub use shards_ipc::{holdable, holdable_known, host_available, host_memory};
+pub use shards_ipc::{holdable, holdable_known, host_available, host_committable, host_memory};
+
+/// What `e` says and, where it is its host refusing memory (Windows: ERROR_NO_SYSTEM_RESOURCES,
+/// 1450; ERROR_COMMITMENT_LIMIT, 1455), what the host's memory was as it refused
+/// (`shards_ipc::memory_refused_said`): a VM refused its RAM said with what its host had,
+/// for the refusal's diagnosis (CI 44227612442, windows-2025: 1450 and 1455 said nothing of it).
+pub fn memory_said(e: &io::Error) -> String {
+    #[cfg(windows)]
+    if let Some(said) = e.raw_os_error().and_then(shards_ipc::memory_refused_said) {
+        return format!("{e}; {said}");
+    }
+    e.to_string()
+}
 
 #[cfg(unix)]
 mod unix;

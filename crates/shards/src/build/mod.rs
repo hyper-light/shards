@@ -923,7 +923,7 @@ fn builder_memory_mib(needs: &Path, identity: &str) -> Result<(u64, u64), Builde
         .and_then(|v| v.parse().ok());
     let most = match asked {
         Some(m) => whole_blocks(m),
-        None => builder_most(host_memory(), host_available(), &needed, learned)
+        None => builder_most(host_memory(), host_committable(), &needed, learned)
             .map_err(BuilderMemoryRefused::Unread)?,
     };
     builder_sizes(most, asked.is_some(), learned)
@@ -1188,7 +1188,7 @@ fn record_need(path: &Path, need: u64, short: bool, boot: (&str, u64)) -> Result
     written
 }
 
-pub(crate) use shards_vmm::platform::{holdable, host_available, host_memory};
+pub(crate) use shards_vmm::platform::{holdable, host_committable, host_memory};
 
 /// `mib` down to whole blocks of what a builder's memory is plugged in (virtio-mem's,
 /// D133), which a VM refuses anything but: half of a host's memory need not be (Windows
@@ -6959,13 +6959,20 @@ mod memory_tests {
         assert_ne!(id, super::builder_identity(&k, &i, 4));
     }
 
-    /// What this host says it has available is some of its memory.
+    /// What this host says it has available, and what a new VM may have of it (on Windows no
+    /// more than it can still commit, `committable`'s own test), are some of its memory: each
+    /// read at its own instant, so neither is held to the other.
     #[test]
     fn this_hosts_available_memory_is_some_of_its_memory() {
-        let (Some(host), Some(available)) = (super::host_memory(), super::host_available()) else {
+        let (Some(host), Some(available), Some(committable)) = (
+            super::host_memory(),
+            shards_vmm::platform::host_available(),
+            super::host_committable(),
+        ) else {
             panic!("this host's memory reads");
         };
         assert!(available > 0 && available <= host, "{available} of {host}");
+        assert!(committable > 0 && committable <= host, "{committable} of {host}");
     }
 
     /// A builder's memory is whole blocks of what it is plugged in.

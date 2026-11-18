@@ -22003,6 +22003,27 @@ killer's ends, the global one's in a builder that holds its build at no `memory.
 recorded `short yes`, and its next builder may have all its host's memory, as D148's runs
 (`a_new_homes_build_that_runs_out_is_recorded_short`).
 
+**On Windows a cold builder has what its host can still commit (2026-11-18, #36, CI
+44227612442).** A VM process on Windows commits its guest's RAM whole as it starts
+(platform/windows.rs `reserve_ram`: `MEM_COMMIT`), and a commit is charged against the
+system's commit limit, its physical memory and its paging files, whether or not it is ever
+touched; past that limit it fails, however much physical memory is free (Microsoft's
+VirtualAlloc: `MEM_COMMIT` "Allocates memory charges (from the overall size of memory and the
+paging files on disk)"; MEMORYSTATUSEX: `ullAvailPageFile` "The maximum amount of memory the
+current process can commit, in bytes"). The cold start's "what the host has available" was
+`ullAvailPhys` alone: on windows-2025 a context's machine built with no SHARDS_BUILD_MEMORY,
+its cold builder sized by free physical memory, was refused its RAM ("guest RAM: The paging
+file is too small for this operation to complete. (os error 1455)", context.rs
+`a_builds_ssh_agents_through_a_context_are_the_clients`). A cold builder's ceiling is now what
+a new commit may take (`shards_ipc::host_committable`): on Windows `min(ullAvailPhys,
+ullAvailPageFile)`, elsewhere what is available as before. And a VM process refused memory
+(ERROR_NO_SYSTEM_RESOURCES, 1450, as WHvMapGpaRange's HRESULT 0x800705aa; ERROR_COMMITMENT_LIMIT,
+1455) says what its host had then, physical memory available and commit left
+(`shards_vmm::platform::memory_said`, `shards_ipc::memory_refused_said`): the same run's
+WHvMapGpaRange refusal (build.rs `builds_take_steps_from_caches_written_elsewhere`) said
+nothing of it. Test: shards-ipc `a_new_commit_takes_no_more_than_its_host_can_commit`
+(Windows); red lanes/redgreen/commit-ceiling.patch.
+
 **A step's limits are the kernel's own for all of its memory (2026-11-14, memory-15's third
 defect).** `Plug::raise_limits` scaled each limit from `MemTotal` at boot to `MemTotal` at
 boot plus `HOTPLUG_SIZE`, which also scaled what the kernel sized from memory it never
