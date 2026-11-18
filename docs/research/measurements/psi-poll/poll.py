@@ -10,7 +10,12 @@
 # stall time (kernel/sched/psi.c `collect_percpu_times`).
 import os, signal, sys, time
 
-COARSE = time.CLOCK_MONOTONIC_COARSE
+if sys.platform != "linux":
+    raise SystemExit(f"poll.py reads Linux's /proc/pressure and schedstat: not on {sys.platform}")
+
+# Linux's CLOCK_MONOTONIC_COARSE, 6 (include/uapi/linux/time.h), which Python's time module
+# does not name; its clock_gettime and clock_getres take any clock ID.
+COARSE = 6
 
 
 def some_total():
@@ -60,7 +65,14 @@ def main():
     allowed = sorted(os.sched_getaffinity(0))
     cpu = int(sys.argv[2]) if len(sys.argv) > 2 else allowed[0]
     others = [c for c in allowed if c != cpu]
-    reader = int(sys.argv[3]) if len(sys.argv) > 3 else (others[0] if others else cpu)
+    if len(sys.argv) > 3:
+        reader = int(sys.argv[3])
+    elif others:
+        reader = others[0]
+    else:
+        raise SystemExit(f"one CPU allowed ({cpu}): the reader needs one of its own beside the spinners'")
+    if reader == cpu:
+        raise SystemExit(f"the reader's CPU {reader} is the spinners': it needs one of its own")
     tick_ns = round(time.clock_getres(COARSE) * 1e9)
     print(f"{os.uname().release} {os.uname().machine}, {len(allowed)} CPUs allowed, tick "
           f"{tick_ns} ns, spinners on CPU {cpu}, reader on CPU {reader}, {ticks} ticks an arm")
