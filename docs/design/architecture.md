@@ -10213,6 +10213,21 @@ daemon, which has no event to wait for. `UNWATCHED` is gone (runs-11, below).
   re-offered as it ends (`cargo test -p shards --profile test-release --test daemon`); the
   client path's added cost (an flock pair, a FIFO's open and write) by
   `docs/research/measurements/build-ab/ab.py` against e0e21e89b.
+  - *What a reclaim drains, the maker hears before it waits (2026-11-18, #36, CI 44245219858
+    darwin).* The reclaim applied the slot events it drained under the take lock and gave
+    back only `Room`, `Look` and `Close`, so the maker, which offers after each event it
+    hears, waited in `recv` with its list short of the slots those events said were taken.
+    ROOT's runs with the maker traced (b3df6c4470; kiln r72 on a loaded Mac, 2 of 300 failed
+    `clients_past_the_cap_wait_their_turn`, "no slot was offered"): slot 11's `Asked` told
+    before a reclaim and 12's and 13's as it ran (run 257), 8's to 11's (run 290), no wake
+    for any; the maker next woke for a `Room` 1.10 s and 724 ms on, its plain list empty,
+    the test's wait refused before. std's channel lost no message (each is received once, in
+    the order sent); the look owed after it was lost. Now every event the reclaim drains is
+    given back once applied, for the maker to hear before it waits, and a slot's names go as
+    it leaves `offered`, so an event heard again removes nothing twice. Windows' `quiet` is
+    never held: its reclaim drains nothing. Red: lanes/redgreen/own-35e-slotwake.patch
+    (`what_a_reclaim_drains_the_maker_hears_before_it_waits`, the drained slot events kept).
+    Owed to ROOT: that test on macOS and Linux, the r72 loop on the fix, the 7-target lint.
 
 - *`TAKEOVER` (20 s, picked)*, after which a daemon waiting for its home's lock stepped aside
   as if another served, is gone: it waits while the lock's holder lives (`take_lock`). A lock

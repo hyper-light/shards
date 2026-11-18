@@ -272,8 +272,8 @@ impl<D: Disk> Daemon<D> {
         // more lost past its end than it had lasted), as nothing else may wake it while every
         // client waits on a list it left short.
         let mut failing: Option<(Instant, Instant)> = None;
-        // What was heard while the lists were looked over ([`reclaim`]), heard before the
-        // next.
+        // Every event a reclaim drained ([`reclaim`]), heard before the next wait: a look
+        // follows each event, wherever it was heard.
         let mut pending: VecDeque<Event> = VecDeque::new();
         // Whether to look at the lists: at first, and as the listener asks ([`Event::Look`]).
         let mut look = true;
@@ -352,9 +352,12 @@ impl<D: Disk> Daemon<D> {
                 },
             };
             match heard {
+                // Its names go as it leaves `offered`, once: a reclaim gives back the events
+                // whose slots it let go of.
                 Ok(Event::Asked(n) | Event::Ended(n)) => {
-                    offered.remove(&n);
-                    requests.remove(n);
+                    if offered.remove(&n).is_some() {
+                        requests.remove(n);
+                    }
                 }
                 Ok(Event::Named(n)) => {
                     if let Some(o) = offered.get_mut(&n) {
@@ -898,9 +901,12 @@ fn unnamed_taken(requests: &Requests, offered: &HashMap<u64, Offered>) -> bool {
 /// taken has a taker named in it, its name there to read ([`Probe`]) or read by its wait,
 /// which said so first ([`Event::Named`], drained here), unless its taker ended between
 /// its record's read and its name's write. Each such slot's names go and its wait ends
-/// through its own pipe; its maker offers another in its place. What else was heard meanwhile
-/// is given back, for the maker to hear next. Where a client is taking one, nothing is done:
-/// its name, or its slot's request, is an event that brings the maker back.
+/// through its own pipe; its maker offers another in its place. Every event drained is given
+/// back, what it says of a slot applied here first, for the maker to hear before it waits:
+/// one may leave a list short, which only the maker's look after it fills again. Kept here,
+/// a slot's `Asked` left the maker asleep with its list empty, each client after waiting on
+/// it until some other event came (#36). Where a client is taking one, nothing is done: its
+/// name, or its slot's request, is an event that brings the maker back.
 fn reclaim(
     requests: &Requests,
     offered: &mut HashMap<u64, Offered>,
@@ -926,11 +932,13 @@ fn reclaim(
                 }
             }
             Event::Asked(n) | Event::Ended(n) => {
-                offered.remove(&n);
-                requests.remove(n);
+                if offered.remove(&n).is_some() {
+                    requests.remove(n);
+                }
             }
-            other => later.push(other),
+            Event::Room | Event::Look | Event::Close => {}
         }
+        later.push(event);
     }
     for streams in [false, true] {
         // Read back, and offered again: no client reads a record while the lock is held.
@@ -1076,6 +1084,51 @@ mod tests {
         assert!(
             matches!(dead.wait(|| {}), Ok(Waited::Stopped)),
             "its wait not ended"
+        );
+    }
+
+    /// What a reclaim drains, the maker hears before it waits again: here a slot's `Asked`,
+    /// told by its thread as its client began its request, before the reclaim drained the
+    /// maker's events (slot 11's in kiln r72's run 257; 12's and 13's came as it ran). The
+    /// reclaim lets the slot go, its list one short, and gives the `Asked` back, so that the
+    /// maker looks, offering another, before it waits. Before, it kept what it applied, and
+    /// the maker slept with its list empty until some other event came: 1.10 s and 724 ms in
+    /// runs 257 and 290, its next client's wait refused, "no slot was offered" (#36; CI
+    /// 44245219858 darwin).
+    #[test]
+    fn what_a_reclaim_drains_the_maker_hears_before_it_waits() {
+        let home = shards_testdir::TempDir::new("slots-drained").unwrap();
+        let mut requests = Requests::open(&home).unwrap();
+        let mut offered = HashMap::new();
+        let mut made = Vec::new();
+        for _ in 0..slots::OFFERED {
+            let slot = requests.make(false).unwrap();
+            let n = slot.number();
+            requests.offer(n, false).unwrap();
+            let o = Offered {
+                streams: false,
+                stopper: slot.stopper().unwrap(),
+                probe: slot.probe().unwrap(),
+                named: false,
+            };
+            offered.insert(n, o);
+            made.push(slot);
+        }
+        // A client takes the first offered (a list is a FIFO), naming itself in it.
+        let taken = slots::take(&home, 0).unwrap();
+        assert!(matches!(taken, slots::Taken::Slot(_)), "no slot was taken");
+        let asked = made[0].number();
+        let (tell, heard) = mpsc::channel();
+        tell.send(Event::Asked(asked)).unwrap();
+        let later = reclaim(&requests, &mut offered, &heard);
+        assert!(!offered.contains_key(&asked), "the slot asked still offered");
+        assert!(
+            untaken(&requests, &offered, false) < slots::OFFERED,
+            "its list not short of the slot taken"
+        );
+        assert!(
+            matches!(later.as_slice(), [Event::Asked(n)] if *n == asked),
+            "the Asked the reclaim drained was not given back: the maker would wait with its list short ({later:?})"
         );
     }
 }
