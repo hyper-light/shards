@@ -13502,7 +13502,14 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
     daemon with no VM process (`shards-vm`, `shards-vm-gpu`) between them is its helper
     (`Party::members`), and its run is said as `daemon_ran`, under the same rule; a VM
     process's run stays its party's progress. Windows' party follows trees through
-    shards-api and names no helper: unchanged there.
+    shards-api and names no helper: unchanged there. Changed there since (2026-11-18, #36,
+    ROOT's ruling): followed whole, a daemon's tree held its VM processes, whose run was then
+    the daemon's, which a window its test polled in does not count, so a polling test never
+    saw its microVMs' work (CI 44227612442, windows-2025: build.rs
+    `an_images_healthcheck_probes_its_microvm` refused while three health probes ran). Every
+    host now lists the tree itself (`party_tree`, Windows' listing Toolhelp32's with its live
+    parents) and follows each member alone (shards-api `Followed::of_pid_alone` on Windows);
+    harness.rs `a_partys_vm_processes_are_members_of_their_own` holds it on a stand-in listing.
   - *A machine's party reads each thread beside its waiter, and a runnable one that ran
     nothing is its host's hold* (2026-11-14, judgecli). `a_machines_host_work_is_its_progress`
     was refused on HVF in 2 of 3 whole-binary runs under 14 busy loops started before it

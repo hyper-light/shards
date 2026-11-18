@@ -2938,3 +2938,45 @@ fn a_contexts_command_is_served_by_the_home_that_listens_on_its_address() {
         .env_remove("DOCKER_CONTEXT");
     assert_eq!(served(&current), Some(machine), "by its home's current context");
 }
+
+/// A party follows its daemon's VM processes, and what descends from them, as members of
+/// their own, whose run is its progress, and the daemon's other descendants (its spawner, its
+/// network processes) as its helpers, whose run is the daemon's, on every host alike (D215;
+/// ROOT's ruling, 2026-11-18). On Windows a daemon was followed with its whole tree: its VM
+/// processes' run counted as the daemon's, which a window in which the test polled its daemon
+/// does not count, so a polling test never saw its microVMs' work (CI 44227612442,
+/// windows-2025: build.rs `an_images_healthcheck_probes_its_microvm` refused while three
+/// health probes ran). A stand-in listing of the system's processes, no process of its own.
+#[test]
+fn a_partys_vm_processes_are_members_of_their_own() {
+    let vm = if cfg!(windows) {
+        "shards-vm.exe"
+    } else {
+        "shards-vm"
+    };
+    let listed: Vec<(u32, u32, String)> = [
+        (100, 1, "shards"),
+        (101, 100, "shards"),
+        (102, 100, vm),
+        (103, 100, "shards-net"),
+        (104, 102, "child"),
+        (200, 1, "shards"),
+        (201, 200, vm),
+        (300, 1, "other"),
+        (301, 300, vm),
+    ]
+    .into_iter()
+    .map(|(pid, ppid, name)| (pid, ppid, name.to_string()))
+    .collect();
+    let tree = common::party_tree(&listed, vec![200, 100], &[100]);
+    let mut members: Vec<u32> = tree.iter().map(|(pid, _)| *pid).collect();
+    members.sort_unstable();
+    assert_eq!(members, [100, 101, 102, 103, 104, 200, 201], "{tree:?}");
+    let mut helpers: Vec<u32> = tree
+        .iter()
+        .filter(|(_, helps)| *helps)
+        .map(|(pid, _)| *pid)
+        .collect();
+    helpers.sort_unstable();
+    assert_eq!(helpers, [101, 103], "{tree:?}");
+}

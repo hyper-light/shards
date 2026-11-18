@@ -1697,6 +1697,8 @@ mod os {
         created: u64,
         /// The root first.
         members: Vec<Member>,
+        /// Its root alone, none of what descends from it ([`of_pid_alone`](Followed::of_pid_alone)).
+        alone: bool,
     }
 
     #[derive(Debug)]
@@ -1726,6 +1728,7 @@ mod os {
                 pid,
                 created,
                 members,
+                alone: false,
             })
         }
 
@@ -1745,6 +1748,18 @@ mod os {
                 pid,
                 created,
                 members,
+                alone: false,
+            }))
+        }
+
+        /// Process `pid` alone, as on Unix: none of what descends from it, for a follower
+        /// that follows each process of a tree as its own (the E2E harness's party, whose
+        /// daemon's run is told from its VM processes', D215). None where no process has
+        /// `pid`; one this user may not open is refused.
+        pub fn of_pid_alone(pid: u32) -> Result<Option<Followed>, ProcessFailure> {
+            Ok(Followed::of_pid(pid)?.map(|followed| Followed {
+                alone: true,
+                ..followed
             }))
         }
 
@@ -1868,7 +1883,9 @@ mod os {
 
         /// What its processes have run, now: their handles read them, gone or not.
         pub(super) fn look(&mut self) -> Result<Option<Look>, ProcessFailure> {
-            self.grow()?;
+            if !self.alone {
+                self.grow()?;
+            }
             let (mut cpu, mut cycles, mut ending) = (0u64, 0u64, false);
             for member in &mut self.members {
                 cpu = cpu.saturating_add(times(&member.handle)?.cpu);

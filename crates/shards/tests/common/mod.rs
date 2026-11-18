@@ -4419,13 +4419,51 @@ fn process_status(_: u32) -> Option<String> {
     None
 }
 
-/// The name a VM process runs as (`shards-vm`, `shards-vm-gpu`): a daemon's descendant of
-/// another name is its helper (its spawner, its network process), whose run for a waiter's
-/// own clients is the daemon's ([`Looked::daemon_ran`]; ROOT's batch, KVM: the polled test's
-/// party progressed by a process of the daemon's serving its polls, 13 of 30 whole binaries
-/// never refused).
-#[cfg(unix)]
+/// The name a VM process runs as (`shards-vm`, `shards-vm-gpu`, on Windows with `.exe`): a
+/// daemon's descendant of another name is its helper (its spawner, its network process),
+/// whose run for a waiter's own clients is the daemon's ([`Looked::daemon_ran`]; ROOT's batch,
+/// KVM: the polled test's party progressed by a process of the daemon's serving its polls, 13
+/// of 30 whole binaries never refused).
 const VM_PROCESS: &str = "shards-vm";
+
+/// A party's processes from one listing of the system's (`listed`: each process's ID, its
+/// parent's and its name, [`processes`]): each of `roots`, and what descends from each, with
+/// whether it is a daemon's helper, under one of `daemons` with no VM process
+/// ([`VM_PROCESS`]) between them, whose run is the daemon's ([`Looked::daemon_ran`]). A VM
+/// process, and what descends from it, is a member of its own, whose run is its party's
+/// progress: on every host alike. On Windows a daemon was followed with its whole tree,
+/// its VM processes' run counted the daemon's, so a test that polled its daemon never saw
+/// its microVMs' work (ROOT's ruling, 2026-11-18; CI 44227612442, windows-2025, build.rs
+/// `an_images_healthcheck_probes_its_microvm`).
+pub fn party_tree(listed: &[(u32, u32, String)], roots: Vec<u32>, daemons: &[u32]) -> Vec<(u32, bool)> {
+    let vm = |name: &str| {
+        name.get(..VM_PROCESS.len())
+            .is_some_and(|start| start.eq_ignore_ascii_case(VM_PROCESS))
+    };
+    let mut tree: Vec<(u32, bool)> = roots.into_iter().map(|pid| (pid, false)).collect();
+    let mut i = 0;
+    while let Some(&(parent, parent_helps)) = tree.get(i) {
+        let under_daemon = parent_helps || daemons.contains(&parent);
+        for (pid, ppid, name) in listed {
+            if *ppid == parent && !tree.iter().any(|(member, _)| member == pid) {
+                tree.push((*pid, under_daemon && !vm(name)));
+            }
+        }
+        i += 1;
+    }
+    tree
+}
+
+/// Process `pid` followed alone, as each member of a party is: [`Party::members`] lists what
+/// descends from its roots itself ([`party_tree`]). shards-api's `of_pid` takes on Windows
+/// what descends from a process too, which counted a daemon's VM processes as its own run.
+fn followed(pid: u32) -> Option<shards_api::Followed> {
+    #[cfg(windows)]
+    let followed = shards_api::Followed::of_pid_alone(pid);
+    #[cfg(not(windows))]
+    let followed = shards_api::Followed::of_pid(pid);
+    followed.ok().flatten()
+}
 
 /// Whose processes a [`Party`]'s are, besides its home's daemon and what descends from it.
 #[derive(Clone)]
@@ -4570,13 +4608,12 @@ impl Party {
     }
 
     /// The processes it is now: its client (or this test's own VM processes) and its
-    /// daemon, and on Unix what descends from them, from one listing of the system's
-    /// ([`processes`]); on Windows each is followed with what descends from it (shards-api's
-    /// tree of a process, Toolhelp32). None for a machine of this process's.
+    /// daemon, and what descends from them, from one listing of the system's
+    /// ([`processes`], [`party_tree`]), each followed alone ([`followed`]). None for a machine
+    /// of this process's.
     fn members(&mut self) -> (Vec<u32>, std::collections::BTreeSet<u32>) {
         let listed = match &self.members {
             Members::Machine => Vec::new(),
-            Members::Clients(_) if cfg!(windows) => Vec::new(),
             Members::Clients(_) | Members::Own | Members::Started => processes(),
             #[cfg(unix)]
             Members::Groups(_) => processes(),
@@ -4600,35 +4637,19 @@ impl Party {
         // its own home's daemon is ([`Party::serving`]).
         let serving = self.serving_daemon().filter(|pid| Some(*pid) != daemon);
         let roots: Vec<u32> = own.into_iter().chain(daemon).chain(serving).collect();
-        #[cfg(windows)]
-        return (roots, std::collections::BTreeSet::new());
-        #[cfg(unix)]
-        {
-            // Each member, and whether it is a daemon's helper: under its daemon or the
-            // serving one, with no VM process between them.
-            let mut tree: Vec<(u32, bool)> = roots.into_iter().map(|pid| (pid, false)).collect();
-            let mut i = 0;
-            while let Some(&(parent, parent_helps)) = tree.get(i) {
-                let under_daemon = parent_helps || Some(parent) == daemon || Some(parent) == serving;
-                for (pid, ppid, name) in &listed {
-                    if *ppid == parent && !tree.iter().any(|(member, _)| member == pid) {
-                        tree.push((*pid, under_daemon && !name.starts_with(VM_PROCESS)));
-                    }
-                }
-                i += 1;
-            }
-            let helpers = tree
-                .iter()
-                .filter(|(_, helps)| *helps)
-                .map(|(pid, _)| *pid)
-                .collect();
-            self.kin = listed
-                .into_iter()
-                .filter(|(pid, ..)| tree.iter().any(|(member, _)| member == pid))
-                .map(|(pid, ppid, name)| (pid, (ppid, name)))
-                .collect();
-            (tree.into_iter().map(|(pid, _)| pid).collect(), helpers)
-        }
+        let daemons: Vec<u32> = daemon.into_iter().chain(serving).collect();
+        let tree = party_tree(&listed, roots, &daemons);
+        let helpers = tree
+            .iter()
+            .filter(|(_, helps)| *helps)
+            .map(|(pid, _)| *pid)
+            .collect();
+        self.kin = listed
+            .into_iter()
+            .filter(|(pid, ..)| tree.iter().any(|(member, _)| member == pid))
+            .map(|(pid, ppid, name)| (pid, (ppid, name)))
+            .collect();
+        (tree.into_iter().map(|(pid, _)| pid).collect(), helpers)
     }
 
     /// What it did since the look before: progressed where its daemon said something or a
@@ -4715,10 +4736,7 @@ impl Party {
             if self.watched.contains_key(&pid) {
                 continue;
             }
-            let watch = shards_api::Followed::of_pid(pid)
-                .ok()
-                .flatten()
-                .and_then(|followed| shards_api::Watch::of(followed).ok().flatten());
+            let watch = followed(pid).and_then(|followed| shards_api::Watch::of(followed).ok().flatten());
             // Its daemon named again once read: the ID its file names is still the process
             // that started then, so the one read is it.
             let Some(watch) =
