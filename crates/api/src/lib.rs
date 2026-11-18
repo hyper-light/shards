@@ -1022,11 +1022,9 @@ pub fn backend() -> Result<Backend, Refusal> {
     backend_of(std::env::consts::OS, std::env::consts::ARCH)
 }
 
-/// The least memory a guest of `arch` boots in, in MiB: shards-vmm's `MIN_MEMORY_MIB`
-/// (`crates/vmm/src/vm/aarch64.rs:28`, `crates/vmm/src/vm/x86_64.rs:28`).
-pub fn min_memory_mib(arch: &str) -> u64 {
-    if arch == "x86_64" { 128 } else { 64 }
-}
+/// The least memory a guest of `arch` boots in, in MiB: shards-abi's, which shards-vmm
+/// refuses less than; one source, which this crate takes without linking the VMM (D30).
+pub use shards_abi::bounds::min_memory_mib;
 
 /// Guest memory's unit, in MiB: shards-vmm boots an even number of MiB alone (`ram_bytes`
 /// in `vm/aarch64.rs`, `ram_ranges` in `vm/x86_64.rs`). On arm64 that keeps the DTB at

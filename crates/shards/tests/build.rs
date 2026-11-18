@@ -6412,6 +6412,67 @@ fn steps_are_kept_by_what_they_read() {
     }
 }
 
+/// A builder never boots under the least memory a guest of its architecture boots in, whatever
+/// its home learned its guest needs (D133, memory-15): a home whose record says its builder's
+/// guest needs less boots its next builder with that least, and its step runs. x86_64 alone:
+/// there a small build's guest was learned to need less than the 128 MiB its VM process
+/// refuses less than, so that the builder ended as it started (CI 44227612442,
+/// x86_64-pc-windows-msvc, `steps_are_kept_by_what_they_read`); arm64's least, 64 MiB, is
+/// under what a builder's guest is learned to need.
+#[test]
+fn a_builder_learned_to_need_less_than_its_floor_boots_with_the_floor() {
+    if cannot_run_vms() {
+        return;
+    }
+    if !cfg!(target_arch = "x86_64") {
+        eprintln!("SKIP: the floor a builder's learned need came under is x86_64's");
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("floor-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+        ("SHARDS_BUILD_MEMORY", "1024".as_ref()),
+    ];
+    let ctx = context(
+        "floor-ctx",
+        &format!("FROM {image}\nUSER root\nRUN [\"/bin/testguest\", \"fs\", \"write:/one=1\"]\n"),
+    );
+    let build = || {
+        run_shards_env(
+            &["build"],
+            &["--progress=plain", "--no-cache", ctx.to_str().unwrap()],
+            &env,
+        )
+    };
+    let first = build();
+    assert_eq!(first.status, Some(0), "{}", first.stderr);
+    // What the first builder's guest said it needs to boot, its record's line rewritten to
+    // two MiB under the least, as a home that learned it so would hold it.
+    let record = home.join("builder-memory");
+    let text = std::fs::read_to_string(&record).unwrap_or_else(|e| panic!("{e}: {}", first.stderr));
+    let under = (shards_abi::bounds::MIN_MEMORY_MIB_X86_64 - 2) << 20;
+    let mut seeded = 0;
+    let rewritten: String = text
+        .lines()
+        .map(
+            |line| match line.strip_prefix("boot ").and_then(|rest| rest.rsplit_once(' ')) {
+                Some((identity, _)) => {
+                    seeded += 1;
+                    format!("boot {identity} {under}\n")
+                }
+                None => format!("{line}\n"),
+            },
+        )
+        .collect();
+    assert_eq!(seeded, 1, "its guest's need recorded once:\n{text}");
+    std::fs::write(&record, rewritten).unwrap();
+    let next = build();
+    assert_eq!(next.status, Some(0), "{}", next.stderr);
+}
+
 /// `RUN --mount=type=cache` kept across builds (D114), as BuildKit keeps cache mounts:
 /// what a step writes is there for the next build's, a failing step's writes too; one id
 /// is one cache wherever it is mounted, twice in one step too; its root keeps the owner

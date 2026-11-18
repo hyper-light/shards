@@ -914,18 +914,39 @@ fn builder_cpus() -> u32 {
 /// ([`builder_identity`]), needs as it starts. Its steps and its layers share the most, the
 /// rest of it plugged as the build needs it: what a guest costs at boot grows with what it
 /// boots with (PM M82), not with what it may have. A host whose memory is unread, with
-/// nothing recorded, is refused ([`HostMemoryUnread`]).
-fn builder_memory_mib(needs: &Path, identity: &str) -> Result<(u64, u64), HostMemoryUnread> {
+/// nothing recorded, is refused, as is a most under the floor ([`builder_sizes`]).
+fn builder_memory_mib(needs: &Path, identity: &str) -> Result<(u64, u64), BuilderMemoryRefused> {
     let needed = Needed::read(needs);
     let learned = needed.boot_for(identity);
-    let most = match std::env::var("SHARDS_BUILD_MEMORY")
+    let asked: Option<u64> = std::env::var("SHARDS_BUILD_MEMORY")
         .ok()
-        .and_then(|v| v.parse().ok())
-    {
+        .and_then(|v| v.parse().ok());
+    let most = match asked {
         Some(m) => whole_blocks(m),
-        None => builder_most(host_memory(), host_available(), &needed, learned)?,
+        None => builder_most(host_memory(), host_available(), &needed, learned)
+            .map_err(BuilderMemoryRefused::Unread)?,
     };
+    builder_sizes(most, asked.is_some(), learned)
+}
+
+/// The most a builder may have and what it boots with, in MiB, where it may have `most`, its
+/// ceiling `SHARDS_BUILD_MEMORY`'s where `asked`, else its host's: [`builder_boot`] of what its
+/// guest was learned to need. Refused where `most` is under the least a guest of this
+/// architecture boots in ([`least_mib`]), which its VM process refuses as it starts: before,
+/// the build said only that the builder ended as it started.
+fn builder_sizes(most: u64, asked: bool, learned: Option<u64>) -> Result<(u64, u64), BuilderMemoryRefused> {
+    let least = least_mib();
+    if most < least {
+        return Err(BuilderMemoryRefused::UnderTheFloor { most, least, asked });
+    }
     Ok((most, builder_boot(most, learned)))
+}
+
+/// The least memory a builder's guest boots in, in MiB, in whole blocks: what a guest of this
+/// machine's architecture does (shards-abi's `min_memory_mib`), which its VM process refuses
+/// less than.
+fn least_mib() -> u64 {
+    whole_blocks_up(shards_abi::bounds::min_memory_mib(std::env::consts::ARCH))
 }
 
 /// A builder refused for want of its host's memory: unread, and nothing recorded in its home
@@ -938,6 +959,35 @@ impl std::fmt::Display for HostMemoryUnread {
         f.write_str(
             "the host's memory cannot be read, and no build of this home has said what a builder needs",
         )
+    }
+}
+
+/// Why a builder has no memory to boot with (D133).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuilderMemoryRefused {
+    /// Its host's memory unread, with nothing recorded to size it by.
+    Unread(HostMemoryUnread),
+    /// The most it may have, `most` MiB, under the `least` a guest of this architecture boots
+    /// in: `SHARDS_BUILD_MEMORY`'s where `asked`, else what its host gives it.
+    UnderTheFloor { most: u64, least: u64, asked: bool },
+}
+
+impl std::fmt::Display for BuilderMemoryRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unread(unread) => unread.fmt(f),
+            Self::UnderTheFloor { most, least, asked } => {
+                let given = if *asked {
+                    "SHARDS_BUILD_MEMORY gives the builder"
+                } else {
+                    "this host gives the builder"
+                };
+                write!(
+                    f,
+                    "{given} {most} MiB, less than the {least} MiB a guest of this machine's architecture boots in"
+                )
+            }
+        }
     }
 }
 
@@ -980,11 +1030,18 @@ fn builder_most(
 
 /// What a builder that may have `most` MiB boots with, in MiB (D133, memory-15): what its
 /// home learned its guest needs as it starts (`learned` bytes, [`boot_need`]), in whole
-/// blocks, within its most; with nothing learned for this guest (the cold start), all it may
-/// have, which always boots: it costs that boot the page structures of all of it, a 64th
-/// (PM M82, M193), once for each home and guest, and never a guessed floor.
+/// blocks, no less than the least a guest of this architecture boots in ([`least_mib`]),
+/// within its most; with nothing learned for this guest (the cold start), all it may have,
+/// which always boots: it costs that boot the page structures of all of it, a 64th (PM M82,
+/// M193), once for each home and guest, and never a guessed floor. A small build's guest was
+/// learned to need less than x86_64's 128 MiB, which its VM process refused, the builder
+/// ending as it started (CI 44227612442, x86_64-pc-windows-msvc).
 fn builder_boot(most: u64, learned: Option<u64>) -> u64 {
-    learned.map_or(most, |bytes| whole_blocks_up(bytes.div_ceil(1 << 20)).min(most))
+    learned.map_or(most, |bytes| {
+        whole_blocks_up(bytes.div_ceil(1 << 20))
+            .max(least_mib())
+            .min(most)
+    })
 }
 
 /// The memory a builder's guest needs to boot with, in bytes, from what one that booted with
@@ -6682,7 +6739,9 @@ fn redact_credentials(url: &str) -> String {
 
 #[cfg(test)]
 mod memory_tests {
-    use super::{HostMemoryUnread, Needed, builder_boot, builder_most};
+    use super::{
+        BuilderMemoryRefused, HostMemoryUnread, Needed, builder_boot, builder_most, builder_sizes, least_mib,
+    };
 
     const GIB: u64 = 1 << 30;
     const MIB: u64 = 1 << 20;
@@ -6808,6 +6867,43 @@ mod memory_tests {
         assert!(need - need / 64 >= 416 * MIB);
         assert_eq!(builder_boot(16_384, Some(need)), up(need.div_ceil(MIB)));
         assert!(builder_boot(16_384, Some(need)) < 16_384 / 8);
+    }
+
+    /// A builder never boots under the least memory a guest of its architecture boots in
+    /// (shards-abi's `min_memory_mib`: 128 MiB on x86_64, 64 on arm64), which its VM process
+    /// refuses: a guest learned to need less boots with that least, and a builder whose most
+    /// is under it is refused, saying so, before any VM starts (CI 44227612442,
+    /// x86_64-pc-windows-msvc: a learned need under 128 MiB, the builder ending as it started).
+    #[test]
+    fn a_builder_never_boots_under_its_architectures_floor() {
+        let up = super::whole_blocks_up;
+        let least = least_mib();
+        assert_eq!(
+            least,
+            up(shards_abi::bounds::min_memory_mib(std::env::consts::ARCH))
+        );
+        assert_eq!(builder_boot(1024, Some(100 * MIB)), up(100).max(least));
+        // Under the least on every architecture: x86_64's 128 MiB, arm64's 64.
+        assert_eq!(builder_boot(1024, Some(least / 2 * MIB)), least);
+        assert_eq!(builder_boot(1024, Some(1)), least);
+        assert_eq!(builder_sizes(least, true, Some(1)), Ok((least, least)));
+        assert_eq!(builder_sizes(1024, false, None), Ok((1024, 1024)));
+        let under = least - 2;
+        for asked in [true, false] {
+            let refused = builder_sizes(under, asked, None);
+            assert_eq!(
+                refused,
+                Err(BuilderMemoryRefused::UnderTheFloor {
+                    most: under,
+                    least,
+                    asked
+                })
+            );
+            let said = refused.unwrap_err().to_string();
+            assert!(said.contains(&format!("{under} MiB")), "{said}");
+            assert!(said.contains(&format!("{least} MiB")), "{said}");
+            assert_eq!(said.starts_with("SHARDS_BUILD_MEMORY"), asked, "{said}");
+        }
     }
 
     /// A home's record of its builds' needs keeps the most any needed, whether any was

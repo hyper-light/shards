@@ -24,8 +24,9 @@ use crate::{debug, platform, warn};
 
 const MIB: u64 = 1 << 20;
 const GIB: u64 = 1 << 30;
-/// Smallest guest that can hold a kernel, its early allocations and the DTB window.
-const MIN_MEMORY_MIB: u64 = 64;
+/// Smallest guest that can hold a kernel, its early allocations and the DTB window:
+/// shards-abi's, which what sizes a guest before it boots holds to as well.
+const MIN_MEMORY_MIB: u64 = shards_abi::bounds::MIN_MEMORY_MIB_AARCH64;
 const SPI_INTID_BASE: u32 = 32;
 
 /// How the vCPUs start.

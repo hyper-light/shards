@@ -21855,6 +21855,24 @@ each page, adds by the kernel's formula (`plug::Limits::raised`, above); the tes
 holds each limit at or above the guest booted with all of it and within a tenth past it,
 its window not widened.
 
+**A builder never boots under its architecture's least (2026-11-18, #36, CI 44227612442).**
+On x86_64-pc-windows-msvc (windows-2022 and windows-2025) a small build's guest was learned
+to need less than 128 MiB, the least an x86_64 guest boots in, which shards-vmm refuses less
+than (`vm/x86_64.rs`): its next builder's VM process refused its `--memory` ("guest memory
+must be an even number of MiB, at least 128"), the build saying only that the builder ended
+as it started (`steps_are_kept_by_what_they_read`, `run_steps_run_in_a_builder_microvm`). Now
+a builder boots with no less than the least a guest of its architecture boots in
+(`build::least_mib`, from shards-abi's `bounds::min_memory_mib`: one source for the VMM,
+shards-api's specs and the builder; shards-api's own copy is gone, and it still links no VMM,
+D30). A ceiling under that least, `SHARDS_BUILD_MEMORY`'s or what the host gives, is refused
+before any VM starts, typed (`build::BuilderMemoryRefused::UnderTheFloor`), saying which. The
+least is no guessed floor: it is what the guest's kernel needs to load (x86_64's at 16 MiB,
+its bss and early allocations; arm64's kernel and DTB window). Tests:
+`memory_tests::a_builder_never_boots_under_its_architectures_floor`, and on x86_64 the E2E
+`a_builder_learned_to_need_less_than_its_floor_boots_with_the_floor` (a home's record
+rewritten to two MiB under the least, its next builder boots). Red:
+lanes/redgreen/builder-floor.patch, builder-floor-most.patch.
+
 **R03 review memory-11..15 (2026-11-13):** reserve slack, pause/read floors,
 retry count, growth/retention ratios and boot floor remain owed to ROOT with
 designs in `docs/research/measurements/memory-fixes-v1/owed-designs.md`.

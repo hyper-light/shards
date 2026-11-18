@@ -23,8 +23,9 @@ use crate::{debug, info, platform, warn};
 
 const MIB: u64 = 1 << 20;
 const GIB: u64 = 1 << 30;
-/// Smallest guest that holds the kernel (loaded at 16 MiB), its bss and early allocations.
-const MIN_MEMORY_MIB: u64 = 128;
+/// Smallest guest that holds the kernel (loaded at 16 MiB), its bss and early allocations:
+/// shards-abi's, which what sizes a guest before it boots holds to as well.
+const MIN_MEMORY_MIB: u64 = shards_abi::bounds::MIN_MEMORY_MIB_X86_64;
 /// Kernel parameters the machine depends on: restart through the FADT's reset register,
 /// the power device's (arch/x86/kernel/reboot.c l. 608-610; D268), whatever `reboot=` the
 /// command line it is told says.

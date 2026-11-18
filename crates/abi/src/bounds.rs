@@ -147,6 +147,26 @@ pub fn console_said(kernel: ConsoleRecords, every: ConsoleRecords) -> usize {
     kernel.needs().or(every.needs()).unwrap_or(PANIC_FRAME)
 }
 
+/// The least memory, in MiB, an x86_64 guest boots in: its kernel, which the VMM loads at
+/// 16 MiB, then its bss and early allocations. shards-vmm refuses less (`vm/x86_64.rs`).
+pub const MIN_MEMORY_MIB_X86_64: u64 = 128;
+
+/// The least memory, in MiB, an arm64 guest boots in: a kernel, its early allocations and the
+/// DTB's window. shards-vmm refuses less (`vm/aarch64.rs`).
+pub const MIN_MEMORY_MIB_AARCH64: u64 = 64;
+
+/// The least memory, in MiB, a guest of `arch` boots in, as `std::env::consts::ARCH` names
+/// it: x86_64's, else arm64's, the other architecture shards boots. One source for the VMM,
+/// which refuses less, and for what sizes a guest before it boots: shards-api's specs, which
+/// link no VMM (D30), and a builder's boot (D133).
+pub fn min_memory_mib(arch: &str) -> u64 {
+    if arch == "x86_64" {
+        MIN_MEMORY_MIB_X86_64
+    } else {
+        MIN_MEMORY_MIB_AARCH64
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
