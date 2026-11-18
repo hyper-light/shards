@@ -155,25 +155,30 @@ fn exits(home: &Path, daemon: i32, what: &str) {
 /// home follows what descends from its daemon, and so none of them once it has gone, their
 /// party gone at its first look (CI 43968984258, x86_64 musl: `a_dead_daemons_waiting_vms_end`
 /// refused 3.0 ms and `a_restored_microvm_ends_with_its_home` 1.8 ms in, "its members now:
-/// none followed").
+/// none followed"). Listed again once those listed have ended, until none is, so that a
+/// process the first look missed is waited for too: on Windows a last look once found what
+/// no wait had followed, and the look after it disagreed (CI 44189693085: windows-2025's
+/// `a_dead_daemons_waiting_vms_end` named VM process 9424, and windows-2022's
+/// `a_killed_daemons_joined_microvms_end_with_it` failed naming none, `[]`).
 #[track_caller]
 fn all_end(named: &str, what: &str) {
     let kind = WaitKind::at(std::panic::Location::caller());
-    for (vm, _) in commands_with(named) {
-        let mut ending = Wait::begin(kind, vm, None, "a VM process's end, its daemon gone");
-        while alive(i32::try_from(vm).unwrap()) {
-            if let Err(stall) = ending.look(false) {
-                panic!("{what}: {:?}: {}", commands_with(named), ending.refused(&stall));
-            }
-            std::thread::sleep(ending.next_look());
+    loop {
+        let left = commands_with(named);
+        if left.is_empty() {
+            return;
         }
-        ending.answered();
+        for (vm, _) in left {
+            let mut ending = Wait::begin(kind, vm, None, "a VM process's end, its daemon gone");
+            while alive(i32::try_from(vm).unwrap()) {
+                if let Err(stall) = ending.look(false) {
+                    panic!("{what}: {:?}: {}", commands_with(named), ending.refused(&stall));
+                }
+                std::thread::sleep(ending.next_look());
+            }
+            ending.answered();
+        }
     }
-    assert!(
-        commands_with(named).is_empty(),
-        "{what}: {:?}",
-        commands_with(named)
-    );
 }
 
 fn daemon_pid(home: &Path) -> Option<i32> {
@@ -207,6 +212,36 @@ fn held_under(pid: i32, dir: &Path, named: impl Fn(&str) -> bool) -> Vec<PathBuf
             .filter(|p| p.starts_with(dir) && named(p))
             .collect()
     }
+}
+
+/// What is left under `dir`, a file a line, for a removal of it that failed to say what held
+/// it: on Windows each with the processes that use it, open or mapped ([`users`]), by ID and
+/// executable; elsewhere nothing, where a removal takes what is open.
+#[cfg(windows)]
+fn left_of(dir: &Path) -> String {
+    let names: std::collections::HashMap<u32, String> = common::processes()
+        .into_iter()
+        .map(|(pid, _, name)| (pid, name))
+        .collect();
+    files_under(dir)
+        .into_iter()
+        .map(|f| match std::panic::catch_unwind(|| users(&f)) {
+            Ok(pids) => {
+                let by: Vec<String> = pids
+                    .iter()
+                    .map(|p| format!("{p} {}", names.get(p).map_or("?", String::as_str)))
+                    .collect();
+                format!("{}: used by {}", f.display(), by.join(", "))
+            }
+            Err(_) => format!("{}: its users unread", f.display()),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[cfg(not(windows))]
+fn left_of(_dir: &Path) -> String {
+    String::new()
 }
 
 /// Every file under `dir`, its subdirectories' among them.
@@ -3344,9 +3379,23 @@ fn a_restored_microvm_ends_with_its_home() {
         !processes_with(&named).is_empty()
     });
     let daemon = daemon_pid(&home).expect("a daemon pid");
-    eventually(&home, "the home could not be removed", || {
-        matches!(std::fs::remove_dir_all(&path), Ok(())) || !path.exists()
-    });
+    // Removed as `eventually` would, its failure saying what held the home: its last error,
+    // and each file left with what uses it (jupiter r11 at 7254ebaeb8: windows-x86_64 failed
+    // every time, saying nothing more).
+    let mut patience = Patience::of(&home);
+    loop {
+        let removal = std::fs::remove_dir_all(&path);
+        if removal.is_ok() || !path.exists() {
+            break;
+        }
+        assert!(
+            patience.holds(),
+            "the home could not be removed: {removal:?}\n{}",
+            left_of(&path)
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    patience.done();
     // Its log went with its home: its end waited for while it and what it started go on
     // (`common::Wait` on its process, its home gone), and where its threads and its VMs'
     // wait said should it stop going on alive.

@@ -1224,26 +1224,42 @@ pub struct Listed {
 /// answers a standard user logged on over SSH, a network logon, "Access denied"
 /// (0x80041003; root\cimv2 grants remote enable to administrators alone), and tests run
 /// so (step 10's arm64 Windows host) found no warm or restored VM while the daemon's log
-/// said they ran. A process whose command line cannot be read is kept, its command line
-/// empty, and one of shards' is said on stderr, captured with a failing test's output.
+/// said they ran. A process that has ended is not listed, as [`alive`] has it ended: its end
+/// begun, its exit code set (TerminateProcess "initiates termination and returns
+/// immediately"), or its end under way as its command line is read, or gone since the
+/// snapshot ([`command_line`]'s `None`). CI 44189693085 listed such processes as live, the
+/// one look of a test that found them and the next disagreeing: windows-2025 a VM process
+/// [`alive`] had seen end, and windows-2022 VM and network processes whose reads said
+/// STATUS_PROCESS_IS_TERMINATING. A live process whose command line cannot be read is
+/// kept, its command line empty, and one of shards' is said on stderr, captured with a
+/// failing test's output.
 #[cfg(windows)]
 #[allow(clippy::print_stderr)]
 pub fn command_lines() -> Vec<Listed> {
     processes()
         .into_iter()
-        .map(|(pid, parent, name)| {
-            let command = command_line(pid).unwrap_or_else(|e| {
-                if name.to_ascii_lowercase().starts_with("shards") {
-                    eprintln!("the command line of {name} ({pid}) unread: {e}");
+        .filter_map(|(pid, parent, name)| {
+            let read = command_line(pid);
+            // Looked at after its read, so that one listed was live as it was read.
+            if !alive(i32::try_from(pid).unwrap_or(-1)) {
+                return None;
+            }
+            let command = match read {
+                Ok(Some(command)) => command,
+                Ok(None) => return None,
+                Err(e) => {
+                    if name.to_ascii_lowercase().starts_with("shards") {
+                        eprintln!("the command line of {name} ({pid}) unread: {e}");
+                    }
+                    String::new()
                 }
-                String::new()
-            });
-            Listed {
+            };
+            Some(Listed {
                 pid,
                 parent,
                 name,
                 command,
-            }
+            })
         })
         .collect()
 }
@@ -1256,18 +1272,26 @@ pub fn command_lines() -> Vec<Listed> {
 /// followed by its text, and STATUS_INFO_LENGTH_MISMATCH with the size needed in
 /// ReturnLength when the buffer is too small
 /// (<https://learn.microsoft.com/en-us/windows/win32/api/winternl/nf-winternl-ntqueryinformationprocess>).
+/// None for a process that has ended: one whose read says STATUS_PROCESS_IS_TERMINATING, "an
+/// attempt was made to access an exiting process" (MS-ERREF 2.3.1), and one gone since its
+/// pid was listed, which OpenProcess opens no more (ERROR_INVALID_PARAMETER, as CI
+/// 44189693085's windows-2022 job said of a network process its snapshot had listed).
 #[cfg(windows)]
-pub fn command_line(pid: u32) -> Result<String, String> {
+pub fn command_line(pid: u32) -> Result<Option<String>, String> {
     use windows_sys::Wdk::System::Threading::{NtQueryInformationProcess, ProcessCommandLineInformation};
     use windows_sys::Win32::Foundation::{
-        CloseHandle, STATUS_BUFFER_OVERFLOW, STATUS_BUFFER_TOO_SMALL, STATUS_INFO_LENGTH_MISMATCH,
-        UNICODE_STRING,
+        CloseHandle, ERROR_INVALID_PARAMETER, STATUS_BUFFER_OVERFLOW, STATUS_BUFFER_TOO_SMALL,
+        STATUS_INFO_LENGTH_MISMATCH, STATUS_PROCESS_IS_TERMINATING, UNICODE_STRING,
     };
     use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
     // SAFETY: a process's handle of one right, closed below.
     let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
     if process.is_null() {
-        return Err(format!("OpenProcess: {}", io::Error::last_os_error()));
+        let e = io::Error::last_os_error();
+        if e.raw_os_error() == Some(ERROR_INVALID_PARAMETER as i32) {
+            return Ok(None);
+        }
+        return Err(format!("OpenProcess: {e}"));
     }
     // In u64s, which align the UNICODE_STRING at its start as its pointer needs.
     let mut buffer = vec![0u64; 256];
@@ -1293,6 +1317,9 @@ pub fn command_line(pid: u32) -> Result<String, String> {
             buffer.resize(usize::try_from(needed).unwrap().div_ceil(size_of::<u64>()), 0);
             continue;
         }
+        if status == STATUS_PROCESS_IS_TERMINATING {
+            break Ok(None);
+        }
         if status < 0 {
             break Err(format!(
                 "NtQueryInformationProcess: NTSTATUS {:#010x}",
@@ -1302,11 +1329,11 @@ pub fn command_line(pid: u32) -> Result<String, String> {
         // SAFETY: the call succeeded, so the buffer starts with the UNICODE_STRING it wrote.
         let text = unsafe { buffer.as_ptr().cast::<UNICODE_STRING>().read() };
         if text.Buffer.is_null() || text.Length == 0 {
-            break Ok(String::new());
+            break Ok(Some(String::new()));
         }
         // SAFETY: the string's text, Length bytes in the buffer after it, which lives on.
         let units = unsafe { std::slice::from_raw_parts(text.Buffer, usize::from(text.Length) / 2) };
-        break Ok(String::from_utf16_lossy(units));
+        break Ok(Some(String::from_utf16_lossy(units)));
     };
     // SAFETY: the handle opened above, closed once.
     unsafe { CloseHandle(process) };
