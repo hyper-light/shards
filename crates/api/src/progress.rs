@@ -1175,7 +1175,7 @@ mod os {
 
     /// A task's run-queue wait in nanoseconds, its `schedstat`'s second field; none where it
     /// could not be read, or reads as zeros (no accounting, [`Queued::Unread`]).
-    fn run_delay(task: &Path) -> Option<u64> {
+    pub(super) fn run_delay(task: &Path) -> Option<u64> {
         let text = std::fs::read_to_string(task.join("schedstat")).ok()?;
         let mut fields = text.split_whitespace().map(str::parse::<u64>);
         let (ran, waited, slices) = (fields.next()?.ok()?, fields.next()?.ok()?, fields.next()?.ok()?);
@@ -1381,7 +1381,7 @@ mod os {
     }
 
     /// The kernel's tick: the resolution of CLOCK_MONOTONIC_COARSE (clock_getres(2)).
-    fn tick() -> Result<Duration, ProcessFailure> {
+    pub(super) fn tick() -> Result<Duration, ProcessFailure> {
         // SAFETY: a timespec, plain data, for the call to fill.
         let mut at: libc::timespec = unsafe { std::mem::zeroed() };
         // SAFETY: clock_getres(2) of a clock every Linux since 2.6.32 has, into a local.
@@ -3179,7 +3179,12 @@ mod tests {
     /// between, as its looks show, and looked at again over another: a sleeper is woken by a
     /// cgroup freezer's cycles, which a kiln run's cgroup goes through about six times a
     /// second, each a few µs of its CPU (PM M562), so no window is a sleeper's by its clock.
-    /// Each window is the spinners' start and the shared pressure's growth; they end past it.
+    /// Each window is the spinners' start and their wait on each other for a tick
+    /// ([`waited_a_tick`]); they end past it. The pressure the sleeper's cgroup shares is read
+    /// at its two ends alone, for the failure's words: each read of a pressure record moves
+    /// it, and one under a jiffy after the read before adds nothing to it, so a wait that
+    /// read it until it grew stood still for ever once no other thread took its CPU (CI
+    /// 44282442232, x86_64 musl: 64 minutes; D215, R-D).
     #[cfg(target_os = "linux")]
     #[test]
     fn a_sleeper_is_still_whatever_its_cgroups_others_wait_for() {
@@ -3189,16 +3194,11 @@ mod tests {
         let (before, now, shared) = loop {
             let ran = followed.look().unwrap().unwrap();
             let before = followed.hold();
-            let shared = shared_cpu_pressure(sleeper.id());
+            let from = shared_cpu_pressure(sleeper.id());
             let mut spinners = [spinner_on(cpu), spinner_on(cpu)];
-            // Waited for, where the kernel keeps it: the spinners' wait for their CPU shown in
-            // the pressure the sleeper's cgroup shares.
-            if let Some(from) = shared {
-                while shared_cpu_pressure(sleeper.id()).is_none_or(|now| now <= from) {
-                    std::thread::yield_now();
-                }
-            }
+            waited_a_tick(&mut spinners);
             let now = followed.hold();
+            let shared = (from, shared_cpu_pressure(sleeper.id()));
             let asleep =
                 !followed.look().unwrap().unwrap().ran_since(&ran) && !before.runnable && !now.runnable;
             for spinner in &mut spinners {
@@ -3214,8 +3214,81 @@ mod tests {
         assert_eq!(
             found(false, false, &before, &now),
             Found::Still,
-            "{before:?} {now:?} (shared pressure from {shared:?})"
+            "{before:?} {now:?} (shared pressure from {:?} to {:?})",
+            shared.0,
+            shared.1
         );
+    }
+
+    /// Waits until `spinners`, pinned to one CPU, have waited on each other for a tick: one's
+    /// own wait for its CPU ([`run_queue_wait`]), which a read does not move, grown by a tick
+    /// since this began. The tick is the kernel's own (clock_getres(2) of
+    /// CLOCK_MONOTONIC_COARSE), the unit in which PSI weights each CPU's stall time (v6.18
+    /// kernel/sched/psi.c `collect_percpu_times`), so that the pressure their wait makes is in
+    /// a record read at either end. A spinner that ends fails the wait, as no wait of theirs is
+    /// to come; so does a wait the kernel keeps no count of ([`run_queue_wait`]).
+    #[cfg(target_os = "linux")]
+    fn waited_a_tick(spinners: &mut [std::process::Child]) {
+        let tick = os::tick().unwrap();
+        let pids: Vec<u32> = spinners.iter().map(std::process::Child::id).collect();
+        let waited = |pid: u32| run_queue_wait(pid).unwrap_or_else(|why| panic!("{why}"));
+        let from: Vec<Duration> = pids.iter().map(|&pid| waited(pid)).collect();
+        loop {
+            for spinner in spinners.iter_mut() {
+                if let Some(status) = spinner.try_wait().unwrap() {
+                    panic!("a spinner ended before it had waited a tick: {status}");
+                }
+            }
+            if pids
+                .iter()
+                .zip(&from)
+                .any(|(&pid, &from)| waited(pid).saturating_sub(from) >= tick)
+            {
+                return;
+            }
+            std::thread::yield_now();
+        }
+    }
+
+    /// Process `pid`'s tasks' wait for a CPU: each task's schedstat `run_delay`, its second
+    /// field (Documentation/scheduler/sched-stats.rst), summed, whatever it is: a task that has
+    /// not waited for a CPU, or not run at all ("0 0 0"), reads 0, a reading like any other.
+    /// Read alone, as a hold also reads its host's pressure where a task of it waits in its
+    /// kernel (R-D), and each read moves that record. A task gone since its process's tasks
+    /// were listed has none to read. A failure where its tasks cannot be listed, where none is
+    /// left, where a task still there has no schedstat (its kernel keeps none: it keeps
+    /// `/proc/<pid>/task/<tid>/schedstat` only with CONFIG_SCHED_INFO, which CONFIG_SCHEDSTATS,
+    /// lib/Kconfig.debug, or CONFIG_TASK_DELAY_ACCT, init/Kconfig, selects; fs/proc/base.c),
+    /// or where one cannot be read or parsed.
+    #[cfg(target_os = "linux")]
+    fn run_queue_wait(pid: u32) -> Result<Duration, String> {
+        let listed = |e: std::io::Error| format!("process {pid}'s tasks, /proc/{pid}/task: {e}");
+        let mut waited: Option<u64> = None;
+        for task in std::fs::read_dir(format!("/proc/{pid}/task")).map_err(listed)? {
+            let dir = task.map_err(listed)?.path();
+            let file = dir.join("schedstat");
+            let text = match std::fs::read_to_string(&file) {
+                Ok(text) => text,
+                Err(_) if !dir.exists() => continue,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    return Err(format!(
+                        "{} absent: its kernel keeps no schedstat, as without CONFIG_SCHED_INFO \
+                         (selected by CONFIG_SCHEDSTATS or CONFIG_TASK_DELAY_ACCT)",
+                        file.display()
+                    ));
+                }
+                Err(e) => return Err(format!("{}: {e}", file.display())),
+            };
+            let delay = text
+                .split_whitespace()
+                .nth(1)
+                .and_then(|field| field.parse::<u64>().ok())
+                .ok_or_else(|| format!("{}: no run_delay, its second field, in {text:?}", file.display()))?;
+            waited = Some(waited.map_or(delay, |sum| sum.saturating_add(delay)));
+        }
+        waited
+            .map(Duration::from_nanos)
+            .ok_or_else(|| format!("process {pid} has no task left: it has ended"))
     }
 
     /// A process runnable on a CPU that others hold is held by its host (D215): it spins

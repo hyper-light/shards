@@ -30469,6 +30469,50 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
               and on Linux `a_readings_cpu_idle_is_said_per_cpu_and_under_a_tick_as_such`.
               Red: lanes/redgreen/own-38e-rd.patch. Owed first (R09): run 44243183339
               (budget-e2e, build.rs in full on 8 ubuntu-24.04 runners) shows the symptom.
+            - *A pressure record moves as it is read, and a read under a jiffy after the one
+              before adds nothing to it* (own-38h, ROOT's ruling of 2026-11-18; CI 44282442232,
+              x86_64 musl: "Tests, in Alpine" timed out at 64 minutes in
+              `a_sleeper_is_still_whatever_its_cgroups_others_wait_for`).
+              - Each read runs `psi_show`, which collects every CPU's stall time since the last
+                collection of that record, and adds it weighted by the CPU's non-idle time in
+                whole jiffies (v6.18 kernel/sched/psi.c `collect_percpu_times`: `nonidle =
+                nsecs_to_jiffies(times[PSI_NONIDLE])`). The time it weighted none is gone, as
+                the read moved `times_prev` (`get_recent_times`).
+              - That test waited for the shared pressure's total to grow, reading it in a
+                `yield_now` loop. Once no other thread took its CPU for a jiffy (it ran last in
+                its binary), its reads came microseconds apart and the total stood still.
+              - The rule was not at fault. In Alpine's container the sleeper's cgroup is the
+                namespace's root, whose pressure a hold does not read, and R-D reads its host's
+                only of a thread in `D`; the sleeper sleeps in `S`.
+              - The test's window now ends on the spinners' own wait for their CPU (each task's
+                schedstat `run_delay`, which a read does not move), grown by one tick: the
+                resolution of CLOCK_MONOTONIC_COARSE (clock_getres(2)), PSI's unit, from its
+                first reading, whatever it is: a task that has not waited, or not run ("0 0
+                0"), reads 0, a reading. A kernel that keeps no schedstat (its file absent)
+                fails the wait, saying so: it keeps one only with
+                CONFIG_SCHED_INFO, which CONFIG_SCHEDSTATS or CONFIG_TASK_DELAY_ACCT selects
+                (lib/Kconfig.debug, init/Kconfig). No other reading stands in for it (the
+                person's rule of 2026-11-18: no fallbacks). A spinner that ends fails the wait.
+                The pressure is read at the window's two ends alone, for its failure's words. Red:
+                lanes/redgreen/own-38h-rd-test.patch (the `!root && alone` guard removed).
+              - Owed (R09), the same fact in the rule: R-D asks whether its host's totals grew
+                since the look before, and looks, or any reader of the record, under a jiffy
+                apart show no growth, so a thread in `D` that its host's CPU or memory held can
+                read as unheld: a false refusal, never a false hold. Measured by
+                docs/research/measurements/psi-poll/poll.py (two spinners pinned to one CPU,
+                the record read in a tight loop and once a tick over the same span), ROOT's run
+                on adacachy (Linux, 32 CPUs; spinners on CPU 30, the reader on CPU 31; 50 ticks
+                an arm): tight, 10,521 and 10,758 reads, `some` total +896 µs and +431 µs;
+                once a tick, 52 reads, +4,335 µs and +4,090 µs; the spinners waited about
+                51,000 µs for their CPU in each arm. The mechanism stands. The rule's looks are
+                W*-paced, so CI is little exposed: changed after the tag.
+              - A second limit of that witness, the same run: the host's whole record
+                (`/proc/pressure/cpu`) averages the CPUs' stall times, each weighted by that
+                CPU's non-idle time over all CPUs' (`collect_percpu_times`), so one CPU's whole
+                wait is diluted by every other CPU that ran anything meanwhile: 51 ms of a
+                50-tick arm read +4.3 ms on 32 CPUs. A host's single starved CPU shows as a
+                fraction of its stall, the smaller the more of its other CPUs are busy. Weighed
+                with the first after the tag.
           - Windows, amended 2026-11-17 (kiln goal b2124227, lane ci-storms-judge; ROOT's
             brief: count Windows' hold only while its host shows progress, as Linux's and
             macOS's now are). A flush still shows by no wait reason (`Executive`, a pipe
