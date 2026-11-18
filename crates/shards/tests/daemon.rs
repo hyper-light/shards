@@ -1574,23 +1574,82 @@ fn try_slot(home: &Path) -> Taken {
             Err(e) => panic!("free: {e}"),
         }
         let n: u64 = std::str::from_utf8(&record).unwrap().trim_end().parse().unwrap();
-        // Its daemon holds the other end of each: neither open waits.
-        let answer = match std::fs::File::open(dir.join(format!("{n}.answer"))) {
-            Ok(answer) => answer,
+        // Opened as a client opens them (`shards_ipc::slots` `open_slot`), neither waiting:
+        // `answer` first, which a read's open takes with no writer, then `say`, which a
+        // write's open takes only while its daemon reads it (ENXIO), so that a daemon gone
+        // after it offered the slot is passed over, never waited for. Opened blocking, a test
+        // waited 17 min in open(2) of `answer` for a daemon that had died as it wrote slot
+        // 10's record (silent_slot, at b3df6c4470).
+        let open = |name: &str, write: bool| {
+            std::fs::OpenOptions::new()
+                .read(!write)
+                .write(write)
+                .custom_flags(libc::O_NONBLOCK)
+                .open(dir.join(format!("{n}.{name}")))
+        };
+        let answer = match open("answer", false) {
+            Ok(answer) => blocking(answer),
             Err(e) if removed(&e) => continue,
             Err(e) => panic!("slot {n}'s answer: {e}"),
         };
-        let mut say = match std::fs::OpenOptions::new()
-            .write(true)
-            .open(dir.join(format!("{n}.say")))
-        {
-            Ok(say) => say,
+        let mut say = match open("say", true) {
+            Ok(say) => blocking(say),
             Err(e) if removed(&e) => continue,
             Err(e) => panic!("slot {n}'s say: {e}"),
         };
         say.write_all(&[0]).unwrap();
         return Taken::Slot(Silent { _say: say, answer });
     }
+}
+
+/// `file` with O_NONBLOCK cleared, as [`try_slot`] reads and writes its slot.
+#[cfg(unix)]
+fn blocking(file: std::fs::File) -> std::fs::File {
+    use std::os::fd::AsRawFd as _;
+    // SAFETY: fcntl(2) of a descriptor `file` owns, reading then setting its status flags.
+    let flags = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFL) };
+    assert!(flags >= 0, "{}", std::io::Error::last_os_error());
+    // SAFETY: as above.
+    let set = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETFL, flags & !libc::O_NONBLOCK) };
+    assert_eq!(set, 0, "{}", std::io::Error::last_os_error());
+    file
+}
+
+/// A slot whose daemon has gone since it offered it is passed over, never waited for: its
+/// record still on `free`, which another holds open to write, and its `answer` and `say`
+/// there with no daemon at their other ends. Do: such a home, made by hand. Expect a look
+/// to find no slot while `free` has a writer, and no daemon once it has none. Red: the
+/// slot's FIFOs opened blocking, as at b3df6c4470, where the look waits in open(2) of
+/// `answer` for ever (17 min, its sample in open under `try_slot` under `silent_slot`).
+#[cfg(unix)]
+#[test]
+fn a_slot_whose_daemon_has_gone_is_passed_over() {
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let home = TempDir::new("slot-gone");
+    let dir = home.join("requests");
+    std::fs::create_dir(&dir).unwrap();
+    let fifo = |name: &str| {
+        let path = std::ffi::CString::new(dir.join(name).to_str().unwrap()).unwrap();
+        // SAFETY: mkfifo(3) of a NUL-terminated path in the test's own directory.
+        assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+    };
+    for name in ["free", "10.answer", "10.say"] {
+        fifo(name);
+    }
+    // The daemon's end of `free` as it wrote slot 10's record, held as it held it.
+    let free = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(dir.join("free"))
+        .unwrap();
+    (&free).write_all(format!("{:015}\n", 10).as_bytes()).unwrap();
+    assert!(
+        matches!(try_slot(&home), Taken::Busy),
+        "a slot taken with no daemon"
+    );
+    drop(free);
+    assert!(matches!(try_slot(&home), Taken::Gone), "a daemon found with none");
 }
 
 /// How many bytes wait in the pipe `out` reads: FIONREAD on Unix, PeekNamedPipe on Windows.
