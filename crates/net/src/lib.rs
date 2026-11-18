@@ -393,6 +393,16 @@ pub enum Policy {
     Host,
 }
 
+/// Where a TCP connection of the guest's goes, as its policy admits it ([`Config::tcp_flow`]).
+enum TcpFlow {
+    /// The host's resolver, at its address and port: DNS over TCP (D59).
+    Resolver((IpAddr, u16)),
+    /// A build's proxy's socket (D110).
+    Proxy(std::path::PathBuf),
+    /// Where the guest sent it, as its policy grants ([`Config::allows`]).
+    Granted,
+}
+
 /// The guest's link: its address and MAC, the gateway's, and the VM's policy.
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -637,6 +647,27 @@ impl Config {
             }
             _ => None,
         }
+    }
+
+    /// Where the guest's TCP connection to `to`'s `port` goes, or none where nothing admits
+    /// it: the one rule its SYN is admitted by, and on Windows its dial's answer held to again
+    /// (`Stack::dialed`), so that the two cannot drift apart. They had: an answer judged by
+    /// `allows` alone reset every flow of a build's proxy, which `allows` never admits (CI
+    /// 44227612442, x86_64-pc-windows-msvc, the proxy-cap E2E).
+    fn tcp_flow(&self, to: IpAddr, port: u16) -> Option<TcpFlow> {
+        // DNS over TCP past the microVM, for agents granted egress (D59), as by UDP: to the
+        // host's resolver, each question as its grants say.
+        if to == IpAddr::V4(self.gateway_ip)
+            && port == 53
+            && matches!(self.policy, Policy::Ports(_))
+            && let Some(&(resolver, at)) = self.resolvers.first()
+        {
+            return Some(TcpFlow::Resolver((IpAddr::V4(resolver), at)));
+        }
+        if let Some(socket) = self.proxy_flow(to, port) {
+            return Some(TcpFlow::Proxy(socket));
+        }
+        self.allows(to, Proto::Tcp, port).then_some(TcpFlow::Granted)
     }
 
     fn allows(&self, to: IpAddr, proto: Proto, port: u16) -> bool {
@@ -3015,15 +3046,7 @@ impl<'r> Stack<'r> {
                 }
                 return;
             }
-            // DNS over TCP past the microVM, for agents granted egress (D59), as by UDP: to
-            // the host's resolver, each question as its grants say.
-            let resolver = (ip.dst == IpAddr::V4(self.cfg.gateway_ip)
-                && seg.dst_port == 53
-                && matches!(self.cfg.policy, Policy::Ports(_)))
-            .then(|| self.cfg.resolvers.first().map(|&(a, p)| (IpAddr::V4(a), p)))
-            .flatten();
-            let proxy = self.cfg.proxy_flow(ip.dst, seg.dst_port);
-            if resolver.is_none() && proxy.is_none() && !self.cfg.allows(ip.dst, Proto::Tcp, seg.dst_port) {
+            let Some(flow) = self.cfg.tcp_flow(ip.dst, seg.dst_port) else {
                 let mut o = self.out();
                 o.segment(
                     &key,
@@ -3035,40 +3058,38 @@ impl<'r> Stack<'r> {
                     tcp::EMPTY,
                 );
                 return;
-            }
+            };
             // What the AppContainer keeps this process from goes through the spawner's
             // dialer (Windows, D142), asked for without waiting.
             #[cfg(windows)]
             if let Some(dialer) = self.dialer.as_ref() {
-                let to = match (resolver, &proxy) {
-                    (Some(to), _) => Some(std::net::SocketAddr::from(to)),
-                    (None, Some(_)) => None,
-                    (None, None) => Some(std::net::SocketAddr::from((
+                let to = match &flow {
+                    TcpFlow::Resolver(to) => Some(std::net::SocketAddr::from(*to)),
+                    TcpFlow::Proxy(_) => None,
+                    TcpFlow::Granted => Some(std::net::SocketAddr::from((
                         self.cfg.host_side(ip.dst, Proto::Tcp, seg.dst_port),
                         seg.dst_port,
                     ))),
                 };
                 if to.is_none_or(|to| dialer.reaches(to.ip())) {
-                    self.dial(key, to, &seg, resolver.is_some());
+                    self.dial(key, to, &seg, matches!(flow, TcpFlow::Resolver(_)));
                     return;
                 }
             }
-            let opened = match resolver {
-                Some(to) => Conn::open_to(key, to, &seg, self.isn(&key)).map(|mut c| {
+            let opened = match flow {
+                TcpFlow::Resolver(to) => Conn::open_to(key, to, &seg, self.isn(&key)).map(|mut c| {
                     let names = self.cfg.asked_names();
                     c.dns = Some(dns::Stream::new(self.cfg.dns_all, names));
                     c
                 }),
-                None => match proxy {
-                    Some(socket) => Conn::open_unix(key, &socket, &seg, self.isn(&key)),
-                    None => Conn::open_to(
-                        key,
-                        (self.cfg.host_side(ip.dst, Proto::Tcp, seg.dst_port), seg.dst_port),
-                        &seg,
-                        self.isn(&key),
-                    )
-                    .map(|c| self.injected(c)),
-                },
+                TcpFlow::Proxy(socket) => Conn::open_unix(key, &socket, &seg, self.isn(&key)),
+                TcpFlow::Granted => Conn::open_to(
+                    key,
+                    (self.cfg.host_side(ip.dst, Proto::Tcp, seg.dst_port), seg.dst_port),
+                    &seg,
+                    self.isn(&key),
+                )
+                .map(|c| self.injected(c)),
             };
             match opened {
                 Ok(c) => (self.tcp.reserve(key), c),
@@ -3245,9 +3266,9 @@ impl<'r> Stack<'r> {
     /// SYN reset, as the far end's refusal would.
     #[cfg(windows)]
     fn dialed(&mut self, d: dial::Dialing, got: io::Result<tcp::HostSock>) {
-        // Its grants may have changed while it was dialed (D273): one they no longer reach is
-        // reset, as a far end's refusal would be.
-        let granted = d.dns || self.cfg.allows(d.key.remote.0, Proto::Tcp, d.key.remote.1);
+        // Its grants may have changed while it was dialed (D273): one the rule its SYN was
+        // admitted by no longer admits is reset, as a far end's refusal would be.
+        let granted = self.cfg.tcp_flow(d.key.remote.0, d.key.remote.1).is_some();
         let got = match got {
             Ok(_) if !granted => Err(io::ErrorKind::ConnectionRefused.into()),
             got => got,
@@ -5065,6 +5086,90 @@ mod tests {
         stack.on_dialer(false);
         assert!(stack.dialer.is_none(), "forgotten");
         assert_eq!(sent(), [(40_002, wire::RST | wire::ACK)]);
+    }
+
+    /// A build's proxy's flow (D110), which an AppContainer keeps the network process from,
+    /// opens once its spawner's dialer answers it (Windows, D142): its answer is held to the
+    /// rule its SYN was admitted by (`Config::tcp_flow`), never to `allows` alone, which admits
+    /// no flow of a proxy's. Held to `allows`, every proxied request of the proxy-cap E2E was
+    /// refused (CI 44227612442, x86_64-pc-windows-msvc).
+    #[cfg(windows)]
+    #[test]
+    fn a_proxy_flow_its_dialer_answers_opens() {
+        use shards_ipc::kind;
+        let region = Region::map(shards_netring::memory().unwrap()).unwrap();
+        let (cw, pr) = shards_netring::doorbell().unwrap();
+        let (_, cr) = shards_netring::doorbell().unwrap();
+        let mut consumer = region.consumer(1, cr, cw);
+        let dir = shards_testdir::TempDir::new("net-proxy-dial").unwrap();
+        let socket = dir.join("p");
+        let _proxy = sys::UnixListener::bind(&socket).unwrap();
+        let bridge = bridge::Bridge::elect(&[]).unwrap();
+        let policy = Policy::Proxy {
+            port: 3128,
+            socket: socket.clone(),
+        };
+        let cfg = Config::on_bridge(policy, [2, 0, 0, 0, 0, 1], &bridge);
+        let (gateway, guest_ip) = (IpAddr::V4(cfg.gateway_ip), cfg.guest_ip);
+        let mut stack = stack(cfg, region.producer(1, pr));
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        stack.dialer = Some(Dialer::new(ours, Vec::new()).unwrap());
+        stack.wait_on_dialer();
+        let key = Key {
+            guest_port: 40_000,
+            remote: (gateway, 3128),
+        };
+        let mut frame = Vec::new();
+        stack.frames.tcp_headers(
+            &mut frame,
+            (IpAddr::V4(guest_ip), key.guest_port),
+            key.remote,
+            7,
+            0,
+            wire::SYN,
+            65_535,
+            Some((1460, Some(7))),
+            0,
+        );
+        let ip = wire::ipv4(frame.get(wire::VNET + wire::ETH..).unwrap()).unwrap();
+        stack.on_guest_tcp(&ip);
+        // Asked for the proxy: its number alone, no address.
+        let ask = shards_ipc::read_message(&theirs).unwrap().unwrap();
+        assert_eq!((ask.kind, ask.payload), (kind::DIAL, 0u32.to_be_bytes().to_vec()));
+        // Dialed as the spawner dials it (shards' netproc `serve_dials`): connected to the
+        // proxy's socket and shared.
+        let conn = UnixStream::connect(&socket).unwrap();
+        let info = conn.share_with(std::process::id()).unwrap();
+        shards_ipc::write_message(&theirs, kind::GRANTED, &[&0u32.to_be_bytes()[..], &info].concat())
+            .unwrap();
+        // Taken as the stack's poller says its dialer's link has the answer, whole.
+        while stack.dialer.as_ref().is_some_and(|dialer| dialer.asking(&key)) {
+            let mut events = Vec::new();
+            stack.poller.wait(&mut events, None).unwrap();
+            stack.on_dialer(false);
+        }
+        let taken = shards_ipc::read_message(&theirs).unwrap().unwrap();
+        assert_eq!(
+            (taken.kind, taken.payload),
+            (kind::TAKEN, 0u32.to_be_bytes().to_vec())
+        );
+        assert_eq!(stack.tcp.by_key.len(), 1, "the proxy's flow opened");
+        let mut reset = Vec::new();
+        while let Some(f) = consumer
+            .pop(|n, copy| {
+                let mut f = vec![0u8; n];
+                copy(0, f.as_mut_ptr(), n);
+                f
+            })
+            .unwrap()
+        {
+            let e = wire::eth(f.get(wire::VNET..).unwrap()).unwrap();
+            let seg = wire::tcp(wire::ipv4(e.payload).unwrap().payload).unwrap();
+            if seg.flags & wire::RST != 0 {
+                reset.push(seg.dst_port);
+            }
+        }
+        assert_eq!(reset, [], "nothing reset to the guest");
     }
 
     /// An Agentfile's egress grants: their ports alone, of their protocol, and never
