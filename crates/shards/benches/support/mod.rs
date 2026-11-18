@@ -160,9 +160,25 @@ pub fn run_env(args: &[String], hold: bool, env: &[(&str, &std::ffi::OsStr)]) ->
     measure(common::shards(), args, hold, env)
 }
 
+/// [`run_env`], whatever it ended with: a run whose failure its caller says in its own words
+/// (arrival.rs's `stalled`, whose stop of its daemon must not take the place of why it
+/// stopped it).
+#[cfg(any(unix, windows))]
+pub fn run_env_unchecked(args: &[String], hold: bool, env: &[(&str, &std::ffi::OsStr)]) -> Sample {
+    measured(common::shards(), args, hold, env)
+}
+
+/// [`measured`], which must have succeeded.
+#[cfg(any(unix, windows))]
+fn measure(bin: &std::path::Path, args: &[String], hold: bool, env: &[(&str, &std::ffi::OsStr)]) -> Sample {
+    let sample = measured(bin, args, hold, env);
+    assert_eq!(sample.run.status, Some(0), "shards failed: {}", sample.run);
+    sample
+}
+
 #[cfg(unix)]
 #[allow(clippy::zombie_processes)] // reaped by wait4, not Child::wait
-fn measure(bin: &std::path::Path, args: &[String], hold: bool, env: &[(&str, &std::ffi::OsStr)]) -> Sample {
+fn measured(bin: &std::path::Path, args: &[String], hold: bool, env: &[(&str, &std::ffi::OsStr)]) -> Sample {
     tick();
     let start = Instant::now();
     let mut child = Command::new(bin)
@@ -214,7 +230,6 @@ fn measure(bin: &std::path::Path, args: &[String], hold: bool, env: &[(&str, &st
         stderr: reader.join().unwrap(),
         elapsed,
     };
-    assert_eq!(run.status, Some(0), "shards failed: {run}");
     Sample {
         run,
         began: start,
@@ -222,10 +237,10 @@ fn measure(bin: &std::path::Path, args: &[String], hold: bool, env: &[(&str, &st
     }
 }
 
-/// [`measure`] on Windows: the child waited for, and ended where it outlives [`TIMEOUT`],
+/// [`measured`] on Windows: the child waited for, and ended where it outlives [`TIMEOUT`],
 /// by a watchdog holding a handle of its own to the child's process.
 #[cfg(windows)]
-fn measure(bin: &std::path::Path, args: &[String], hold: bool, env: &[(&str, &std::ffi::OsStr)]) -> Sample {
+fn measured(bin: &std::path::Path, args: &[String], hold: bool, env: &[(&str, &std::ffi::OsStr)]) -> Sample {
     use std::os::windows::io::{AsHandle as _, AsRawHandle as _};
     tick();
     let start = Instant::now();
@@ -275,7 +290,6 @@ fn measure(bin: &std::path::Path, args: &[String], hold: bool, env: &[(&str, &st
         stderr: reader.join().unwrap(),
         elapsed,
     };
-    assert_eq!(run.status, Some(0), "shards failed: {run}");
     Sample {
         run,
         began: start,

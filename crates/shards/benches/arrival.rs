@@ -359,10 +359,17 @@ fn stalled(rate: f64, answered: &[End], clients: &[u32], home: &std::path::Path,
             common::kill_now(pid);
         }
     }
-    support::run_env(
+    // Its daemon stopped, and the bench failed in its own words whatever that stop came to:
+    // a stop that failed is said after them, never in their place. CI 44245219858's stop,
+    // ended by the harness's watchdog, took the panic's place (`shards failed: status None,
+    // ended by signal 9`), the requests that never ended said only above it.
+    let stopped = support::run_env_unchecked(
         &["daemon".to_string(), "stop".to_string()],
         false,
         &[("SHARDS_HOME", home.as_os_str())],
     );
-    panic!("{said}");
+    if stopped.run.status == Some(0) {
+        panic!("{said}");
+    }
+    panic!("{said}\n--- its daemon's stop failed: {}", stopped.run);
 }
