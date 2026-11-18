@@ -3391,6 +3391,8 @@ fn run_ending(
         .get_envs()
         .find(|(k, _)| *k == "SHARDS_HOME")
         .and_then(|(_, v)| v.map(PathBuf::from));
+    // The home whose daemon serves it, where its context is another home's of this test's.
+    let serving = serving_home(&cmd, home.as_deref());
     let mut child = cmd
         .env("SHARDS_TIMING", "1")
         .stdin(Stdio::null())
@@ -3417,7 +3419,7 @@ fn run_ending(
             format!("{said}\n(still held open by another process)")
         }
     };
-    let mut wait = Wait::begin(kind, child.id(), home.as_deref(), &asked.join(" "));
+    let mut wait = Wait::begin(kind, child.id(), home.as_deref(), &asked.join(" ")).served_by(serving);
     // Its answer, its client's end, is missing as it begins: its client started just now,
     // so an end its first check finds before any look is its party's answer, which teaches
     // its kind, never one there before it.
@@ -4025,6 +4027,72 @@ fn host_class() -> String {
     )
 }
 
+/// The home whose daemon serves `cmd`, a command of `home`'s, where the context it runs in is
+/// another home's of this test's process (ROOT's word, 2026-11-18, D215): the context chosen as
+/// shards chooses it (context.rs `chosen`: `--context NAME`, `-c NAME` or `--context=NAME`
+/// before its command, else `SHARDS_CONTEXT`, else `DOCKER_CONTEXT`, else its home's current
+/// one), its record's address the one that home's daemon listens on (context.rs `LISTENING`),
+/// looked for among the homes beside `home` in this process's test directory. None where it
+/// runs here, or where no home beside its own listens there.
+pub fn serving_home(cmd: &Command, home: Option<&Path>) -> Option<PathBuf> {
+    let home = home?;
+    let words: Vec<&std::ffi::OsStr> = cmd.get_args().collect();
+    let word = |i: usize| words.get(i).and_then(|w| w.to_str());
+    let (mut given, mut at) = (None, 0usize);
+    loop {
+        match word(at) {
+            Some("--context" | "-c") => {
+                given = word(at.saturating_add(1)).map(str::to_string);
+                at = at.saturating_add(2);
+            }
+            Some(flag) if flag.starts_with("--context=") => {
+                given = Some(flag.trim_start_matches("--context=").to_string());
+                at = at.saturating_add(1);
+            }
+            _ => break,
+        }
+    }
+    // As the command's environment has it, set or removed there, else as this process's has.
+    let env = |name: &str| {
+        let set = cmd
+            .get_envs()
+            .find(|(key, _)| *key == name)
+            .map(|(_, value)| value);
+        let value = match set {
+            Some(value) => value.and_then(|v| v.to_str()).map(str::to_string),
+            None => std::env::var(name).ok(),
+        };
+        value.filter(|v| !v.is_empty())
+    };
+    let name = given
+        .or_else(|| env("SHARDS_CONTEXT"))
+        .or_else(|| env("DOCKER_CONTEXT"))
+        .or_else(|| {
+            std::fs::read_to_string(home.join("context"))
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        })?;
+    if name == "default" {
+        return None;
+    }
+    let record = std::fs::read_to_string(home.join("contexts").join(&name)).ok()?;
+    let address = record
+        .lines()
+        .find_map(|line| line.strip_prefix("address "))?
+        .trim()
+        .to_string();
+    std::fs::read_dir(home.parent()?)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .find(|dir| {
+            dir.as_path() != home
+                && std::fs::read_to_string(dir.join("listening"))
+                    .is_ok_and(|bound| bound.trim() == address.as_str())
+        })
+}
+
 /// What a wait on a command follows, the ruling's party: what the command prints (its
 /// caller's to tell, [`Wait::look`]), what its home's daemon says ([`Said`]), and the
 /// processes that serve it ([`Members`]), each followed by D215's readers
@@ -4033,6 +4101,10 @@ fn host_class() -> String {
 pub struct Party {
     members: Members,
     home: Option<PathBuf>,
+    /// The home whose daemon serves its command, where a context of its home's sends the
+    /// command to another home of this test's ([`serving_home`]): that daemon is a member, its
+    /// threads the party's, as its own home's daemon is (ROOT's word, 2026-11-18, D215).
+    serving: Option<PathBuf>,
     said: Option<Said>,
     watched: std::collections::BTreeMap<u32, shards_api::Watch>,
     cpu: Cpu,
@@ -4250,6 +4322,7 @@ impl Party {
         Party {
             members,
             home: home.map(Path::to_path_buf),
+            serving: None,
             said: home.map(Said::of),
             watched: std::collections::BTreeMap::new(),
             cpu: Cpu::Progress,
@@ -4271,6 +4344,13 @@ impl Party {
     /// started then, a crashed daemon's ID reused (#77 waits-09).
     fn daemon(&self) -> Option<u32> {
         let named = shards_ipc::Named::read(&self.home.as_ref()?.join(shards_ipc::PID))?;
+        named.lives().then_some(named.pid)
+    }
+
+    /// The daemon that serves its command from another home ([`Party::serving`]) now, as
+    /// [`daemon`](Self::daemon) reads its own home's.
+    fn serving_daemon(&self) -> Option<u32> {
+        let named = shards_ipc::Named::read(&self.serving.as_ref()?.join(shards_ipc::PID))?;
         named.lives().then_some(named.pid)
     }
 
@@ -4299,17 +4379,20 @@ impl Party {
             Members::Groups(groups) => grouped(&listed, groups).map(|(pid, ..)| *pid).collect(),
         };
         let daemon = self.daemon();
-        let roots: Vec<u32> = own.into_iter().chain(daemon).collect();
+        // The daemon that serves its command from another home, where one does: a member as
+        // its own home's daemon is ([`Party::serving`]).
+        let serving = self.serving_daemon().filter(|pid| Some(*pid) != daemon);
+        let roots: Vec<u32> = own.into_iter().chain(daemon).chain(serving).collect();
         #[cfg(windows)]
         return (roots, std::collections::BTreeSet::new());
         #[cfg(unix)]
         {
-            // Each member, and whether it is its daemon's helper: under the daemon, with no
-            // VM process between them.
+            // Each member, and whether it is a daemon's helper: under its daemon or the
+            // serving one, with no VM process between them.
             let mut tree: Vec<(u32, bool)> = roots.into_iter().map(|pid| (pid, false)).collect();
             let mut i = 0;
             while let Some(&(parent, parent_helps)) = tree.get(i) {
-                let under_daemon = parent_helps || Some(parent) == daemon;
+                let under_daemon = parent_helps || Some(parent) == daemon || Some(parent) == serving;
                 for (pid, ppid, name) in &listed {
                     if *ppid == parent && !tree.iter().any(|(member, _)| member == pid) {
                         tree.push((*pid, under_daemon && !name.starts_with(VM_PROCESS)));
@@ -4621,6 +4704,13 @@ impl Party {
         let who = match self.cpu {
             Cpu::Progress => who,
             Cpu::Liveness => format!("{who}, its CPU its liveness alone"),
+        };
+        let who = match (&self.serving, self.serving_daemon()) {
+            (Some(serving), Some(pid)) => format!("{who}, served by daemon {pid} of {}", serving.display()),
+            (Some(serving), None) => {
+                format!("{who}, served from {}, no daemon living there", serving.display())
+            }
+            (None, _) => who,
         };
         match (&self.home, self.daemon()) {
             (Some(home), Some(daemon)) => format!("{who}, daemon {daemon} of {}", home.display()),
@@ -5324,6 +5414,13 @@ impl Wait {
     /// wait (`shards_ipc::RETRY`, D209 Part 10).
     pub fn delivery_to(mut self, to: &str) -> Wait {
         self.party.delivery = Some(to.to_string());
+        self
+    }
+
+    /// It as a wait on a command another home's daemon serves, that home `serving`
+    /// ([`serving_home`]): its daemon a member of its party, as its own home's is.
+    fn served_by(mut self, serving: Option<PathBuf>) -> Wait {
+        self.party.serving = serving;
         self
     }
 

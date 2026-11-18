@@ -2795,3 +2795,50 @@ fn spinner() {
         );
     }
 }
+
+/// A command its home sends through a context to another home's daemon is served by that
+/// daemon, which joins its party (ROOT's word, 2026-11-18, D215): context.rs's
+/// `a_context_runs_commands_on_its_machine_whole` was refused on CI's x86_64 Windows (run
+/// 44189693085) with its party its client alone, "no daemon yet" in its own home, while the
+/// machine's daemon served it. The context is found as shards chooses it, and its daemon as
+/// the home beside it that listens on its record's address. Do: a context record naming one
+/// home's address, a third home listening elsewhere. Expect: the listening home found by
+/// `--context`, by `SHARDS_CONTEXT` and by the home's current context; none for `default`.
+/// Red where no serving home is found.
+#[test]
+fn a_contexts_command_is_served_by_the_home_that_listens_on_its_address() {
+    let laptop = TempDir::new("ctx-serves");
+    let machine = TempDir::new("ctx-served");
+    let elsewhere = TempDir::new("ctx-elsewhere");
+    // Ports below every OS's ephemeral range: no daemon of a test beside this one binds them.
+    std::fs::write(machine.join("listening"), "127.0.0.1:4711\n").unwrap();
+    std::fs::write(elsewhere.join("listening"), "127.0.0.1:4712\n").unwrap();
+    std::fs::create_dir_all(laptop.join("contexts")).unwrap();
+    std::fs::write(
+        laptop.join("contexts").join("gpu"),
+        format!(
+            "shards context 1\nname gpu\naddress 127.0.0.1:4711\ndaemon {}\ndescription \n",
+            "ab".repeat(32)
+        ),
+    )
+    .unwrap();
+    let home: &std::path::Path = &laptop;
+    let served = |cmd: &std::process::Command| common::serving_home(cmd, Some(home));
+    let machine = machine.to_path_buf();
+    let mut by_flag = std::process::Command::new("shards");
+    by_flag.args(["--context", "gpu", "ps"]);
+    assert_eq!(served(&by_flag), Some(machine.clone()), "by --context");
+    let mut by_env = std::process::Command::new("shards");
+    by_env.arg("images").env("SHARDS_CONTEXT", "gpu");
+    assert_eq!(served(&by_env), Some(machine.clone()), "by SHARDS_CONTEXT");
+    let mut here = std::process::Command::new("shards");
+    here.arg("images").env("SHARDS_CONTEXT", "default");
+    assert_eq!(served(&here), None, "the default context runs here");
+    std::fs::write(laptop.join("context"), "gpu\n").unwrap();
+    let mut current = std::process::Command::new("shards");
+    current
+        .arg("ps")
+        .env_remove("SHARDS_CONTEXT")
+        .env_remove("DOCKER_CONTEXT");
+    assert_eq!(served(&current), Some(machine), "by its home's current context");
+}

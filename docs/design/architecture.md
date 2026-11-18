@@ -29532,6 +29532,25 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
       still) is no live member, its end progress once, at the look that first finds it
       under way: a test's wait on a state reaps nothing, so an end under way for ever was
       progress for ever.
+    - *A command its context sends to another home's daemon has that daemon in its party*
+      (ROOT's word, 2026-11-18, CI 44189693085's x86_64 Windows cluster B). context.rs's
+      `a_context_runs_commands_on_its_machine_whole` was refused at context.rs:1625, its
+      `shards images` run from the laptop's home with `SHARDS_CONTEXT=gpu`: "made no progress
+      for 186.462ms, past the slowest answer of its kind seen on this host (97.9837ms)", its
+      party "client 3060, no daemon yet in …ctx-laptop-25", "0 of 3 threads runnable". The
+      daemon that served it was the machine's, another home of the test's, which its party
+      did not follow, so its client's wait on that daemon read as the client's own
+      stillness. Now a command's party (tests/common `Party::serving`) follows, beside its
+      client and its own home's daemon, the daemon of the home that serves its context:
+      the context chosen as shards chooses it (context.rs `chosen`: `--context`, then
+      `SHARDS_CONTEXT`, then `DOCKER_CONTEXT`, then the home's current one), its record's
+      `address` the one a home beside it listens on (that home's `listening`, which its
+      daemon writes once bound and removes as it stops), and that home's live daemon by its
+      `daemon.pid` (`shards_ipc::Named`). A command run here, or whose context names no home
+      of the test's, keeps the party it had. Red/green (harness.rs, stand-ins, no microVM):
+      `a_contexts_command_is_served_by_the_home_that_listens_on_its_address`, red under
+      `own-38b-context-unserved.patch` (no serving home found). Whether the refusal recurs
+      under load with the machine's daemon followed is owed to a run (ROOT's on jupiter).
     - *A refusal as its test unwinds says itself* (#77 slice 2): `run_command` refused while
       its thread is panicking (a cleanup's `Drop`) writes its account to stderr and returns
       a run of no status; a panic while panicking aborts the test binary, all its tests
