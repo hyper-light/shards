@@ -1009,7 +1009,7 @@ impl Service {
         }
         match self.read(io, conn, stream) {
             Ok(()) => self.flush(io),
-            Err(gone) => match self.refusal(gone) {
+            Err(gone) => match self.closes_with(gone) {
                 Some(reason) => self.refuse(io, conn, reason),
                 // A frame on its way as its host let the input go: nothing more of it is read,
                 // and the revocation closes its owner's connection with its own word.
@@ -1022,8 +1022,9 @@ impl Service {
     /// `gone` ([`Gone::reason`]): none where what was refused came after its host let the
     /// input go (revoked, or no room for it, D252), a frame on its way as it did and no
     /// protocol error of its owner's, as a control lane's ([`Service::over`]; CI 44189693085,
-    /// windows-2022: closed `Protocol` before the revocation's own word).
-    fn refusal(&self, gone: Gone) -> Option<Reason> {
+    /// windows-2022: closed `Protocol` before the revocation's own word). Not
+    /// [`refusal`](Service::refusal), the reason a lane to its let-go input is refused.
+    fn closes_with(&self, gone: Gone) -> Option<Reason> {
         match gone {
             Gone::Refused(_) if self.revoked() => None,
             gone => Some(gone.reason()),
@@ -1419,7 +1420,7 @@ mod tests {
             feed(service, &subscribe(scope(), 0)).unwrap();
             assert!(!service.over(), "an open input's lane is not over");
             assert_eq!(
-                service.refusal(Gone::Refused(Reason::Protocol)),
+                service.closes_with(Gone::Refused(Reason::Protocol)),
                 Some(Reason::Protocol),
                 "an open input's owner refused for a frame sent amiss"
             );
@@ -1427,7 +1428,7 @@ mod tests {
             assert_eq!(feed(service, &record_frame(0, b"first")), Err(Reason::Protocol));
             assert!(service.over(), "its lane over: what still comes of it is let go");
             assert_eq!(
-                service.refusal(Gone::Refused(Reason::Protocol)),
+                service.closes_with(Gone::Refused(Reason::Protocol)),
                 None,
                 "no owner refused for a frame on its way as its input was let go"
             );

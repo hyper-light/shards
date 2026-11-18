@@ -1290,7 +1290,7 @@ mod tests {
             wake.drain().unwrap();
             match try_() {
                 Err(e) if e.kind() == ErrorKind::WouldBlock => {
-                    rung(&wake);
+                    rung(wake);
                 }
                 other => return other,
             }
