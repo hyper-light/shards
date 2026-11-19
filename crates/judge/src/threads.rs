@@ -10,19 +10,20 @@ use std::cell::Cell;
 
 use windows_sys::Wdk::System::SystemInformation::{NtQuerySystemInformation, SystemProcessInformation};
 use windows_sys::Wdk::System::SystemServices::{
-    FreePage, PageIn, PoolAllocation, Suspended, WrFreePage, WrPageIn, WrPoolAllocation, WrSuspended,
+    FreePage, PageIn, PoolAllocation, Suspended, WrFastMutex, WrFreePage, WrGuardedMutex, WrMutex, WrPageIn,
+    WrPoolAllocation, WrPushLock, WrResource, WrSuspended,
 };
 use windows_sys::Win32::Foundation::STATUS_INFO_LENGTH_MISMATCH;
 use windows_sys::Win32::System::WindowsProgramming::{SYSTEM_PROCESS_INFORMATION, SYSTEM_THREAD_INFORMATION};
 
 /// What [`threads_held`] read of the threads it was asked of: how many the listing held, how
-/// many of those wanted or had a CPU (ready, running, standby), and how many waited on their
-/// host's paging.
+/// many of those wanted or had a CPU (ready, running, standby), and how many waited in their
+/// kernel on their host's work ([`in_kernel`]).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ThreadsHeld {
     pub read: usize,
     pub runnable: usize,
-    pub paging: usize,
+    pub in_kernel: usize,
 }
 
 // A thread's state in its record (`SYSTEM_THREAD_INFORMATION.ThreadState`), as WMI's
@@ -62,9 +63,9 @@ pub fn threads_held(pid: u32, tids: &[u32]) -> Option<ThreadsHeld> {
         held.runnable = held
             .runnable
             .saturating_add(usize::from(wants_cpu(t.ThreadState)));
-        held.paging = held
-            .paging
-            .saturating_add(usize::from(pages(t.ThreadState, t.WaitReason)));
+        held.in_kernel = held
+            .in_kernel
+            .saturating_add(usize::from(in_kernel(t.ThreadState, t.WaitReason)));
     });
     Some(held)
 }
@@ -158,15 +159,20 @@ fn wait_reason(reason: u32) -> Option<&'static str> {
         .map(|(_, name)| *name)
 }
 
-/// Whether a thread in `state`, waiting for `reason`, waits on its host's paging: its
-/// kernel stack brought back into memory (transition), a page brought in, or a free page or
-/// pool found for it ([`on_memory`]). Its host's disks serve each, a page-in being their
-/// read and a page freed by writing it out, and no count of its process's shows them, so
-/// such a wait is its host's only while those disks complete I/O (shards-api's
-/// `Hold::held_since`), as
-/// a Linux `D` and a macOS uninterruptible wait are: one that no disk serves is still.
-pub fn pages(state: u32, reason: u32) -> bool {
-    state == TRANSITION || (state == WAITING && on_memory(reason))
+/// Whether a thread in `state`, waiting for `reason`, waits in its kernel on its host's work,
+/// as a Linux `D` and a macOS uninterruptible wait do: on its host's paging (its kernel stack
+/// brought back into memory, transition; a page brought in, or a free page or pool found for it,
+/// [`on_memory`]), or on a kernel lock ([`on_kernel_lock`]), which a file system holds through
+/// its disks' I/O, as Linux's waits on a mutex or a read-write semaphore in its kernel are `D`.
+/// Its host's disks serve each, and no count of its process's shows them, so such a wait is its
+/// host's only while those disks complete I/O (shards-api's `Hold::held_since`): one that no disk
+/// serves is still. A kernel lock's wait was a party's own rest until 2026-11-19, and a client
+/// whose thread waited `WrResource` 335 ms, its daemon's every thread waiting too, was refused
+/// (CI 44449878966, windows-2025, moved.rs `a_move_refused_leaves_the_microvm_running_here`),
+/// where on Linux the same wait in its kernel is `D`. A flush itself waits `Executive`, as a
+/// pipe's reader does, and stays unread (PM M606).
+pub fn in_kernel(state: u32, reason: u32) -> bool {
+    state == TRANSITION || (state == WAITING && (on_memory(reason) || on_kernel_lock(reason)))
 }
 
 /// Whether a thread's wait `reason` is on its host's memory: a page brought in, or a free
@@ -184,6 +190,15 @@ fn on_memory(reason: u32) -> bool {
         ]
         .contains(&reason)
     })
+}
+
+/// Whether a thread's wait `reason` is on a kernel lock: an executive resource, a push lock, or
+/// a kernel, fast or guarded mutex (wdm.h's KWAIT_REASON: WrResource, WrPushLock, WrMutex,
+/// WrFastMutex, WrGuardedMutex), the locks NTFS and the cache manager hold a file's and a
+/// directory's state under through their I/O (Windows Internals, 7th ed., part 2, ch. 11).
+fn on_kernel_lock(reason: u32) -> bool {
+    i32::try_from(reason)
+        .is_ok_and(|reason| [WrResource, WrPushLock, WrMutex, WrFastMutex, WrGuardedMutex].contains(&reason))
 }
 
 /// Whether a thread's wait `reason` is its suspension.
@@ -351,17 +366,24 @@ mod tests {
     #[test]
     fn a_thread_waiting_on_its_hosts_paging_waits_in_its_kernel() {
         use windows_sys::Wdk::System::SystemServices::{
-            Executive, FreePage, PageIn, PoolAllocation, Suspended, UserRequest, WrPageIn,
+            Executive, FreePage, PageIn, PoolAllocation, Suspended, UserRequest, WrAlertByThreadId,
+            WrFastMutex, WrGuardedMutex, WrMutex, WrPageIn, WrPushLock, WrQueue, WrResource,
         };
         let reason = |r: i32| u32::try_from(r).unwrap();
         let (ready, waiting, transition) = (1, 5, 6);
         for paged in [PageIn, WrPageIn, FreePage, PoolAllocation] {
-            assert!(pages(waiting, reason(paged)), "reason {paged}");
+            assert!(in_kernel(waiting, reason(paged)), "reason {paged}");
         }
-        assert!(pages(transition, reason(Executive)), "its stack paged out");
-        for other in [Executive, UserRequest, Suspended] {
-            assert!(!pages(waiting, reason(other)), "reason {other}");
+        // A kernel lock's wait, as a Linux `D` on a mutex is (CI 44449878966's `WrResource`).
+        for locked in [WrResource, WrPushLock, WrMutex, WrFastMutex, WrGuardedMutex] {
+            assert!(in_kernel(waiting, reason(locked)), "reason {locked}");
         }
-        assert!(!pages(ready, reason(PageIn)), "ready");
+        assert!(in_kernel(transition, reason(Executive)), "its stack paged out");
+        // A flush's and a pipe read's `Executive` (PM M606), a sleep's, a queue's, a thread's
+        // own alert: its own rest.
+        for other in [Executive, UserRequest, Suspended, WrQueue, WrAlertByThreadId] {
+            assert!(!in_kernel(waiting, reason(other)), "reason {other}");
+        }
+        assert!(!in_kernel(ready, reason(PageIn)), "ready");
     }
 }

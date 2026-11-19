@@ -169,7 +169,7 @@ struct Hold {
     stopped: bool,
     /// A thread of it waits uninterruptibly in its kernel as it is looked at (macOS
     /// `TH_STATE_UNINTERRUPTIBLE`, Linux `D`, proc(5)'s "uninterruptible disk sleep"; Windows a
-    /// wait on its host's paging: shards-judge's `threads::pages`): its host's own work for it, a disk's flush or
+    /// wait on its host's paging or a kernel lock: shards-judge's `threads::in_kernel`): its host's own work for it, a disk's flush or
     /// a page-in, which no rate of its own runs at (PM M600: `shards guest use` spent 52 to
     /// 172 ms of its 69 to 192 ms so on a loaded Mac, F_FULLFSYNC's waits, at 14 to 16 ms of
     /// CPU). Its look vouches for no window of its rate ([`vouches`]), and one that ran
@@ -2725,7 +2725,7 @@ mod os {
     use super::{Declarations, Hold, Listing, Look};
     use crate::taken::io_failure;
     use crate::{ProcessFailure, ProcessOperation};
-    use shards_judge::threads::{WAITING, each_thread, is_suspension, pages, wants_cpu};
+    use shards_judge::threads::{WAITING, each_thread, in_kernel, is_suspension, wants_cpu};
     use std::io;
     use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
     use std::time::Duration;
@@ -2890,7 +2890,7 @@ mod os {
         /// the system's records of every process and its threads (NtQuerySystemInformation's
         /// SystemProcessInformation: each process's record followed by its threads', their
         /// states and wait reasons). A thread of a live one runnable where its state is ready,
-        /// running or standby; in its kernel where it waits on its host's paging ([`pages`]),
+        /// running or standby; in its kernel where it waits on its host's paging or a kernel lock ([`in_kernel`]),
         /// its host's disks then read ([`disks`]); stopped where every thread of its live
         /// processes is suspended (Suspended, WrSuspended), as a frozen Job's are. What it
         /// cannot read shows nothing.
@@ -2913,7 +2913,7 @@ mod os {
                     ..Hold::default()
                 };
             };
-            let (mut runnable, mut paging, mut threads, mut suspended) = (false, false, 0usize, 0usize);
+            let (mut runnable, mut kernel, mut threads, mut suspended) = (false, false, 0usize, 0usize);
             each_thread(records, |pid, t| {
                 if !self.members.iter().any(|m| m.pid == pid && !m.exited) {
                     return;
@@ -2922,14 +2922,14 @@ mod os {
                 let tid = t.ClientId.UniqueThread as usize as u64;
                 threads = threads.saturating_add(1);
                 runnable |= wants_cpu(state);
-                paging |= pages(state, reason) && !declaring.contains(&tid);
+                kernel |= in_kernel(state, reason) && !declaring.contains(&tid);
                 suspended = suspended.saturating_add(usize::from(state == WAITING && is_suspension(reason)));
             });
             Hold {
                 runnable,
                 stopped: threads > 0 && suspended == threads,
-                uninterruptible: paging,
-                disks: paging.then(disks).flatten(),
+                uninterruptible: kernel,
+                disks: kernel.then(disks).flatten(),
                 stalls: None,
                 io: super::Io {
                     done: self.io_done(),

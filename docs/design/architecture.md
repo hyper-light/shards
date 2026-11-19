@@ -32244,6 +32244,28 @@ ticks against a C* of eleven and an R* of two, which say nothing of the work don
   old C* above every new count (lenient); a larger one would bring C* nearer. Unverified, and
   no primary source read: owed before arm64 Windows records are trusted across a feature update.
 
+**2026-11-19, a Windows thread waiting on a kernel lock waits in its kernel, as Linux's `D`
+(#36; CI 44449878966).** windows-2025 refused moved.rs
+`a_move_refused_leaves_the_microvm_running_here`: "shards invite client ... made no progress for
+335.0963ms, past the slowest answer of its kind seen on this host (172.2916ms)", its client's
+main thread waiting `WrResource` and every other thread of its party waiting too. Windows' reader
+took only a wait on its host's paging for a wait in its kernel (`threads::pages`, PM M606), so a
+wait on an executive resource was its party's own rest, where on Linux a thread waiting on a
+mutex or a read-write semaphore in its kernel is `D` and its host's while its disks work.
+- *Decision.* `threads::in_kernel` (was `pages`): a thread waits in its kernel on its host's
+  work where it waits on its paging, as before, or on a kernel lock: `WrResource`,
+  `WrPushLock`, `WrMutex`, `WrFastMutex` and `WrGuardedMutex`, the locks NTFS and the cache
+  manager hold a file's and a directory's state under through their I/O. The rule is the one
+  Linux's `D` and macOS's uninterruptible wait have: its host's only while its host's disks
+  complete I/O (`Hold::held_since`), still where none do. `Executive`, a flush's and a pipe
+  read's alike (PM M606), stays unread. `ThreadsHeld::paging` is `in_kernel`.
+- *Costs.* A party deadlocked on a kernel lock of its own is refused only once its host's
+  disks stop, as on Linux; the tests' in-process parties (shards-testwait) count such a wait
+  held as they count a `D`.
+- *Held by* threads.rs `a_thread_waiting_on_its_hosts_paging_waits_in_its_kernel`, each lock
+  reason in its kernel and `Executive`, `UserRequest`, `Suspended`, `WrQueue` and
+  `WrAlertByThreadId` not.
+
 ### D231. An image booted for an orchestrator: a run of its own, hosted by one `shards` process (decided; building)
 
 **Why.** An orchestrator that runs each harness in a microVM of its own (Hex, for every

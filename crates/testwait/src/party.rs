@@ -267,8 +267,9 @@ impl Drop for Member {
 /// hold (shards-api `Hold::held_since`, ROOT's rule for runnable threads and `run_delay`),
 /// read of threads of this process. Windows keeps its threads' states in the system's whole
 /// listing alone, read once for every member (shards-judge's `threads_held`, the rule
-/// shards-api's judge holds a VM process's threads by: wanting a CPU, or waiting on its
-/// host's paging), 13.1 to 13.8 ms a read (PM M606), so that a wait reads it only at a look
+/// shards-api's judge holds a VM process's threads by: wanting a CPU, or waiting in its kernel
+/// on its host's paging or a kernel lock), 13.1 to 13.8 ms a read (PM M606), so that a wait
+/// reads it only at a look
 /// that found its party ran nothing. Its threads made and not yet run ([`Made`]) are runnable,
 /// on every OS: each wants a CPU it has never had.
 pub fn hold(id: u64) -> Hold {
@@ -331,7 +332,7 @@ pub fn hold(id: u64) -> Hold {
         Hold {
             read: held.read.saturating_add(made.read),
             runnable: held.runnable.saturating_add(made.runnable),
-            in_kernel: held.paging,
+            in_kernel: held.in_kernel,
             ..Hold::default()
         }
     }
@@ -344,7 +345,7 @@ pub fn hold(id: u64) -> Hold {
 /// What party `id`'s members but the thread that asks were doing as a wait on it was refused,
 /// for its account (shards-judge's `Stall::said`), as D215's judge says a VM process's threads:
 /// each by its thread's name where it has one, and its key, runnable (running, or wanting a
-/// CPU), in its kernel (waiting uninterruptibly there; on Windows, on its host's paging),
+/// CPU), in its kernel (waiting uninterruptibly there; on Windows, on its host's paging or a kernel lock),
 /// waiting, or unread (gone since, or its OS's reading failed); and each thread made for it and
 /// not yet run ([`Made`]).
 pub(crate) fn account(id: u64) -> String {
@@ -416,7 +417,7 @@ fn states(living: &[Living]) -> BTreeMap<u64, &'static str> {
 
 #[cfg(windows)]
 fn states(living: &[Living]) -> BTreeMap<u64, &'static str> {
-    use shards_judge::threads::{each_thread, pages, records, wants_cpu};
+    use shards_judge::threads::{each_thread, in_kernel, records, wants_cpu};
     let mut states = BTreeMap::new();
     let Ok(records) = records() else {
         return states;
@@ -435,7 +436,7 @@ fn states(living: &[Living]) -> BTreeMap<u64, &'static str> {
         };
         let said = if wants_cpu(t.ThreadState) {
             "runnable"
-        } else if pages(t.ThreadState, t.WaitReason) {
+        } else if in_kernel(t.ThreadState, t.WaitReason) {
             "in its kernel"
         } else {
             "waiting"
@@ -452,7 +453,7 @@ fn states(_living: &[Living]) -> BTreeMap<u64, &'static str> {
 
 /// What a look read of a party's members ([`hold`]): how many it read, how many were
 /// runnable (running, or waiting for a CPU) and how many waited uninterruptibly in their
-/// kernel (on Windows, on their host's paging); and (Linux) each one's wait for a CPU so far,
+/// kernel (on Windows, on their host's paging or a kernel lock); and (Linux) each one's wait for a CPU so far,
 /// in nanoseconds, by its key.
 #[derive(Debug, Default)]
 pub struct Hold {
