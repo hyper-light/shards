@@ -4535,6 +4535,7 @@ impl WaitKind {
         };
         self.record.merge(shards_api::Seen::Learned {
             slowest: kept.slowest,
+            quickest: kept.slowest,
             rated: kept.rated,
         });
         kept.others
@@ -4611,7 +4612,7 @@ impl WaitKind {
     ) -> std::io::Result<()> {
         static KEEPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let others = self.learn_kept();
-        let shards_api::Seen::Learned { slowest, rated } = self.record.seen() else {
+        let shards_api::Seen::Learned { slowest, rated, .. } = self.record.seen() else {
             return Ok(());
         };
         between();
@@ -4712,6 +4713,7 @@ pub fn kept_record(text: &str, served: bool, key: &str) -> Option<Kept> {
                     over: Duration::from_nanos(over),
                 },
                 most: shards_api::Work::of(most),
+                lightest: shards_api::Work::of(most),
                 answers,
             });
         }
@@ -6819,12 +6821,15 @@ impl Wait {
     pub fn account(&self) -> String {
         let record = match self.kind.record.seen() {
             shards_api::Seen::Cold => "none yet on this host: its party's liveness alone".to_string(),
-            shards_api::Seen::Learned { slowest, rated: None } => {
+            shards_api::Seen::Learned {
+                slowest, rated: None, ..
+            } => {
                 format!("W* {slowest:?}, no answer's work read through its end")
             }
             shards_api::Seen::Learned {
                 slowest,
                 rated: Some(rated),
+                ..
             } => format!(
                 "W* {slowest:?}, R* {} in {:?}, C* {}",
                 rated.least.work, rated.least.over, rated.most

@@ -1,26 +1,31 @@
 //! The judge of a wait that follows its party (D215), apart from how the party is looked at:
-//! what a kind of answer has taught ([`Record`]: W*, the slowest answer seen, and R*, the
-//! least rate a party still answered at), and a wait's schedule and verdict ([`Judge`]). A
-//! wait that begins before its kind's first answer follows its party's liveness alone; one
-//! that begins once its kind has an answer looks at its party once each W* past its start,
-//! and is refused, [`Stall`], at a look that finds it has made no progress at all over a
-//! whole W* since a look last found it progressed or held, as far as the looks saw it (from
-//! that look's end to this one's beginning, [`Span`], a window never shorter than their
-//! counters' resolution; a look with nothing before it, [`Found::Based`], shows nothing),
-//! its host not the reason: a party
-//! its host held from running (runnable on no CPU, stalled on its host's memory) is live,
-//! and a stopped or frozen one stalled; and the time the judge's own looks ran late, past
-//! when each was meant, is its host's hold of everyone, which no party's window counts
-//! (ROOT, 2026-11-13), but for the time its caller spent on its own work meanwhile, its own
-//! polls (D209 Part 8), which is no hold ([`Span::own`]). A party that does progress is
-//! refused too where it is too slow to be answering: past W* of its own unheld time, its
-//! work since its start over that time below R*, and that work already more than any answer
-//! of its kind took (C*) (D215, b24: a guest asleep for good, its VM process's housekeeping
-//! ticks its only CPU, was "progressing" for 62 minutes), judged only over the windows its
-//! caller saw it run unheld ([`Span::work`]), and only once two answers have taught R* and C*
-//! ([`SPREAD`]). What a look finds is its
-//! caller's to say ([`Found`]): shards-api's waits read their guest's VM process
-//! (`progress::Follow`), and so do the daemon's waits on a microVM's own answers (D188).
+//! what a kind of answer has taught ([`Record`]: W*, the slowest answer seen, and the
+//! quickest; R*, the least rate a party still answered at; C*, the most work an answer took,
+//! and the least), and a wait's schedule and verdict ([`Judge`]). Each bound takes its
+//! record's own spread, its most less its least: the next answer may differ from the slowest
+//! by as much as those seen differed, as CI's limits on its tests take theirs (D215 amended
+//! 2026-11-19, PM M619); one answer seen has none.
+//!
+//! A wait that begins before its kind's first answer follows its party's liveness alone; one
+//! that begins once its kind has an answer looks at its party once each window past its
+//! start, W* and its spread, and is refused, [`Stall`], at a look that finds it has made no
+//! progress at all over a whole window since a look last found it progressed or held, as far
+//! as the looks saw it (from that look's end to this one's beginning, [`Span`], a window
+//! never shorter than their counters' resolution; a look with nothing before it,
+//! [`Found::Based`], shows nothing), its host not the reason: a party its host held from
+//! running (runnable on no CPU, stalled on its host's memory) is live, and a stopped or
+//! frozen one stalled; and the time the judge's own looks ran late, past when each was meant,
+//! is its host's hold of everyone, which no party's window counts (ROOT, 2026-11-13), but for
+//! the time its caller spent on its own work meanwhile, its own polls (D209 Part 8), which is
+//! no hold ([`Span::own`]). A party that does progress is refused too where it is too slow to
+//! be answering: past a window of its own unheld time, its work since its start over that
+//! time below R*, and that work already more than any answer of its kind took (C*) and its
+//! spread (D215, b24: a guest asleep for good, its VM process's housekeeping ticks its only
+//! CPU, was "progressing" for 62 minutes), judged only over the windows its caller saw it run
+//! unheld ([`Span::work`]), and only once two answers have taught R* and C* ([`SPREAD`]).
+//! What a look finds is its caller's to say ([`Found`]): shards-api's waits read their
+//! guest's VM process (`progress::Follow`), and so do the daemon's waits on a microVM's own
+//! answers (D188).
 //!
 //! A crate of its own, of std alone, which shards-api re-exports: the tests' waits on their
 //! own threads (shards-testwait) judge by the same rule, and shards-remote's tests, beneath
@@ -131,27 +136,35 @@ impl Rate {
 
 /// What a wait that follows its party found as it refused it
 /// (shards-api's `Refusal::Stalled`). Kept in nanoseconds, each past u64's (584
-/// years) its most, and its kind's rates and its threads' account boxed apart, so that a
-/// refusal is no larger for them (clippy's `result_large_err` over a pair of refusals,
-/// crates/api/tests/sim.rs).
+/// years) its most, and what its kind's record said and its threads' account boxed apart,
+/// so that a refusal is no larger for them (clippy's `result_large_err` over a pair of
+/// refusals, crates/api/tests/sim.rs).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Stall {
     waited: u64,
     over: u64,
-    slowest: u64,
-    /// Its kind's R* and C* where an answer of it was rated, and its own rate where it was
-    /// refused for running below R* ([`Stall::rate`]).
-    rates: Option<Box<Rates>>,
+    kind: Box<Bounds>,
     /// Its party's threads as its caller read them as it refused it ([`Stall::said`]).
     threads: Option<Box<str>>,
 }
 
-/// A [`Stall`]'s rates: R*'s work ([`Work`]'s count) and wall (nanoseconds), C*'s work, and
-/// its own rate's work and wall where that was its refusal.
+/// What a [`Stall`]'s kind's record said as it was refused: W* and its spread (nanoseconds);
+/// its R* and C* where an answer of it was rated, and its own rate where it was refused for
+/// running below R* ([`Stall::rate`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Bounds {
+    slowest: u64,
+    spread: u64,
+    rates: Option<Rates>,
+}
+
+/// A [`Stall`]'s rates: R*'s work ([`Work`]'s count) and wall (nanoseconds), C*'s work and
+/// its spread, and its own rate's work and wall where that was its refusal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Rates {
     least: [u64; 2],
     most: u64,
+    spread: u64,
     rate: Option<[u64; 2]>,
 }
 
@@ -171,16 +184,22 @@ impl Stall {
         Stall {
             waited: ns(waited),
             over: ns(over),
-            slowest: ns(seen.slowest),
-            rates: seen.rated.map(|rated| {
-                Box::new(Rates {
+            kind: Box::new(Bounds {
+                slowest: ns(seen.slowest),
+                spread: ns(seen.spread()),
+                rates: seen.rated.map(|rated| Rates {
                     least: [rated.least.work.count(), ns(rated.least.over)],
                     most: rated.most.count(),
+                    spread: rated.spread().count(),
                     rate: None,
-                })
+                }),
             }),
             threads: None,
         }
+    }
+
+    fn rates(&self) -> Option<&Rates> {
+        self.kind.rates.as_ref()
     }
 
     /// It, with its party's threads as `threads` says them, read as it was refused: each
@@ -209,10 +228,10 @@ impl Stall {
     }
 
     /// A wait refused for running below R*: `rate` its work over its unheld time, more work
-    /// than C*.
+    /// than C* and its spread.
     fn slow(waited: Duration, rate: Rate, seen: Learned) -> Stall {
         let mut stall = Stall::new(waited, rate.over, seen);
-        if let Some(rates) = stall.rates.as_mut() {
+        if let Some(rates) = stall.kind.rates.as_mut() {
             rates.rate = Some([rate.work.count(), ns(rate.over)]);
         }
         stall
@@ -220,15 +239,21 @@ impl Stall {
 
     /// Where it was refused for running too slowly to be answering: its party's work since
     /// its start over the time it was seen to run unheld (`over`), below [`least`](Stall::least)
-    /// and more than [`most`](Stall::most). None where it was refused for making no progress
-    /// at all.
+    /// and more than [`most`](Stall::most) and its [spread](Stall::work_spread). None where it
+    /// was refused for making no progress at all.
     pub fn rate(&self) -> Option<Rate> {
-        self.rates.as_ref()?.rate.map(rate_of)
+        self.rates()?.rate.map(rate_of)
     }
 
     /// The most work an answer of its kind took (C*), where one was rated.
     pub fn most(&self) -> Option<Work> {
-        self.rates.as_ref().map(|rates| Work(rates.most))
+        self.rates().map(|rates| Work(rates.most))
+    }
+
+    /// C*'s spread, where an answer was rated: C* less the least work an answer of its kind
+    /// took ([`Rated::spread`]). A party refused by its rate had done more than C* and this.
+    pub fn work_spread(&self) -> Option<Work> {
+        self.rates().map(|rates| Work(rates.spread))
     }
 
     /// How far into the wait it was found.
@@ -236,23 +261,32 @@ impl Stall {
         Duration::from_nanos(self.waited)
     }
 
-    /// The time, a whole [`slowest`](Stall::slowest) or more, over which its party made no
-    /// progress at all since a look last found it progressed or held: the time its judge's
-    /// own looks ran late, its host holding the judge, not counted. Of one refused for its
-    /// [`rate`](Stall::rate), the time it was seen to run unheld, that rate's wall.
+    /// The time, a whole window or more ([`slowest`](Stall::slowest) and its
+    /// [spread](Stall::spread)), over which its party made no progress at all since a look
+    /// last found it progressed or held: the time its judge's own looks ran late, its host
+    /// holding the judge, not counted. Of one refused for its [`rate`](Stall::rate), the time
+    /// it was seen to run unheld, that rate's wall.
     pub fn over(&self) -> Duration {
         Duration::from_nanos(self.over)
     }
 
     /// The least rate at which a party of the wait's kind still answered (R*), where one was
-    /// rated: the bound a party past W* runs below and is refused ([`rate`](Stall::rate)).
+    /// rated: the bound a party past its window runs below and is refused
+    /// ([`rate`](Stall::rate)).
     pub fn least(&self) -> Option<Rate> {
-        self.rates.as_ref().map(|rates| rate_of(rates.least))
+        self.rates().map(|rates| rate_of(rates.least))
     }
 
-    /// The slowest answer of the wait's kind seen (W*), past which it was looked at.
+    /// The slowest answer of the wait's kind seen (W*), past which and its
+    /// [spread](Stall::spread) it was looked at.
     pub fn slowest(&self) -> Duration {
-        Duration::from_nanos(self.slowest)
+        Duration::from_nanos(self.kind.slowest)
+    }
+
+    /// W*'s spread: W* less the quickest answer of the wait's kind seen, none of one answer.
+    /// Its window was W* and this (D215 amended 2026-11-19).
+    pub fn spread(&self) -> Duration {
+        Duration::from_nanos(self.kind.spread)
     }
 }
 
@@ -262,28 +296,51 @@ impl Stall {
 pub enum Seen {
     /// No answer yet: a wait follows its party's liveness alone.
     Cold,
-    /// The slowest answer seen (W*), from a wait's start to its answer, past which a wait
-    /// looks at its party; and, once an answer's work was read through its end, its kind's
-    /// rates ([`Rated`]). Without them a wait is judged by its stillness alone.
-    Learned { slowest: Duration, rated: Option<Rated> },
+    /// The slowest answer seen (W*) and the quickest, each from a wait's start to its answer:
+    /// past W* and its spread, W* less the quickest, a wait looks at its party, and a whole
+    /// such window still refuses it (D215 amended 2026-11-19: the next answer may be slower
+    /// than the slowest by as much as those seen differed; one answer seen, none). And, once
+    /// an answer's work was read through its end, its kind's rates ([`Rated`]). Without them
+    /// a wait is judged by its stillness alone.
+    Learned {
+        slowest: Duration,
+        quickest: Duration,
+        rated: Option<Rated>,
+    },
 }
 
 /// What answers whose work was read through their end taught a kind (D215): the least rate
-/// at which a party still answered (R*), the most work an answer took (C*), and how many such
-/// answers taught them. A party past W* below R* that has done more than C* is too slow to be
-/// answering ([`Stall::rate`]), once [`SPREAD`] answers have taught them. An answer whose work
-/// was not read through its end (its process reaped before a look read its last CPU) teaches
-/// neither: R* of none, from no reading, would hold no floor.
+/// at which a party still answered (R*), the most work an answer took (C*) and the least, and
+/// how many such answers taught them. A party past its window below R* that has done more
+/// than C* and its spread ([`Rated::spread`]) is too slow to be answering ([`Stall::rate`]),
+/// once [`SPREAD`] answers have taught them. An answer whose work was not read through its
+/// end (its process reaped before a look read its last CPU) teaches none of them: R* of none,
+/// from no reading, would hold no floor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Rated {
     pub least: Rate,
     pub most: Work,
+    /// The least work an answer took, which with C* makes its spread.
+    pub lightest: Work,
     /// How many answers taught R* and C*, as far as this record knows: each answer taught it
     /// adds one ([`Record::teach`]); a record merged in ([`Record::merge`]) counts as many as
     /// the more of the two say, never their sum, as a kept record merged in again would count
     /// its answers twice. So no answer is counted twice, and two processes' answers may be
     /// counted as one's: a count low, which refuses by rate later, never sooner.
     pub answers: u64,
+}
+
+impl Rated {
+    /// C*'s spread: C* less the least work an answer took, none of one answer's. A party's
+    /// work passes C* and this before its rate refuses it (D215 amended 2026-11-19).
+    pub fn spread(&self) -> Work {
+        self.most.saturating_sub(self.lightest)
+    }
+
+    /// The work a party has done past which its rate refuses it: C* and its spread.
+    fn bound(&self) -> Work {
+        self.most.saturating_add(self.spread())
+    }
 }
 
 /// The fewest answers whose R* and C* refuse a party by its rate ([`Rated`]): one answer's
@@ -306,14 +363,35 @@ pub const LOOKS_TO_REFUSE: u32 = 3;
 #[derive(Debug, Clone, Copy)]
 struct Learned {
     slowest: Duration,
+    quickest: Duration,
     rated: Option<Rated>,
+}
+
+impl Learned {
+    /// W*'s spread: W* less the quickest answer seen, none of one answer.
+    fn spread(self) -> Duration {
+        self.slowest.saturating_sub(self.quickest)
+    }
+
+    /// The window a stillness is refused over, and looks come each of: W* and its spread.
+    fn window(self) -> Duration {
+        self.slowest.saturating_add(self.spread())
+    }
 }
 
 impl Seen {
     fn learned(self) -> Option<Learned> {
         match self {
             Seen::Cold => None,
-            Seen::Learned { slowest, rated } => Some(Learned { slowest, rated }),
+            Seen::Learned {
+                slowest,
+                quickest,
+                rated,
+            } => Some(Learned {
+                slowest,
+                quickest,
+                rated,
+            }),
         }
     }
 }
@@ -337,11 +415,13 @@ impl Record {
     }
 
     /// An answer came `wall` after its wait began, its party having done `work` meanwhile
-    /// (read through its end): the slowest rises to it where it is slower, the least rate
-    /// falls to its where its is less, the most work rises to its where it is more. A wait no
-    /// time long has no rate and teaches nothing. One whose work read none teaches its slowest
-    /// alone, as one not read through its end does: an answer its party ran nothing its
-    /// counters show for says nothing of the least rate a working party answers at, and R* 0
+    /// (read through its end): the slowest rises to it where it is slower and the quickest
+    /// falls to it where it is quicker, the least rate falls to its where its is less, the
+    /// most work rises to its where it is more and the least falls to its where it is less. A
+    /// wait no time long has no rate and teaches nothing. One whose work read none teaches its
+    /// slowest and quickest alone, as one not read through its end does: an answer its party
+    /// ran nothing its counters show for says nothing of the least rate a working party
+    /// answers at, and R* 0
     /// holds no floor. Windows' process times move in its clock's ticks (15.625 ms): a
     /// stand-in busy 50 ms on a busy host read as none, R* 0 ns over 70.6 ms, after which a
     /// party ticking 1 ms in 11 was served 22.9 s in (CI 44076016255, arm64 Windows,
@@ -356,9 +436,11 @@ impl Record {
         }
         let answer = Learned {
             slowest: wall,
+            quickest: wall,
             rated: Some(Rated {
                 least: Rate { work, over: wall },
                 most: work,
+                lightest: work,
                 answers: 1,
             }),
         };
@@ -366,21 +448,23 @@ impl Record {
     }
 
     /// An answer came `wall` after its wait began, its work not read through its end: it
-    /// teaches the slowest alone ([`Rated`]).
+    /// teaches the slowest and the quickest alone ([`Rated`]).
     pub fn teach_unrated(&self, wall: Duration) {
         if wall.is_zero() {
             return;
         }
         let answer = Learned {
             slowest: wall,
+            quickest: wall,
             rated: None,
         };
         self.fold(answer, u64::saturating_add);
     }
 
     /// What another record saw, taught in: each of W*, R* and C* where it goes past this
-    /// one's, as a record kept by another process comes back whole, and the more of the two
-    /// counts of the answers that taught them ([`Rated::answers`]).
+    /// one's, and the quickest answer and the least work where they fall below, as a record
+    /// kept by another process comes back whole, and the more of the two counts of the
+    /// answers that taught them ([`Rated::answers`]).
     pub fn merge(&self, other: Seen) {
         let Some(other) = other.learned() else {
             return;
@@ -388,8 +472,9 @@ impl Record {
         self.fold(other, u64::max);
     }
 
-    /// `other` taught in: each of W*, R* and C* where it goes past this record's, and the
-    /// answers that taught R* and C* counted by `count`, an answer's added, a record's merged.
+    /// `other` taught in: each of W*, R* and C* where it goes past this record's, the quickest
+    /// answer and the least work where they fall below it, and the answers that taught R* and
+    /// C* counted by `count`, an answer's added, a record's merged.
     fn fold(&self, other: Learned, count: fn(u64, u64) -> u64) {
         let mut seen = self.seen.lock().unwrap_or_else(PoisonError::into_inner);
         let was = seen.learned();
@@ -401,12 +486,17 @@ impl Record {
                     was.least
                 },
                 most: was.most.max(other.most),
+                lightest: was.lightest.min(other.lightest),
                 answers: count(was.answers, other.answers),
             }),
             (was, other) => was.or(other),
         };
+        let (slowest, quickest) = was.map_or((other.slowest, other.quickest), |was| {
+            (was.slowest.max(other.slowest), was.quickest.min(other.quickest))
+        });
         *seen = Seen::Learned {
-            slowest: was.map_or(other.slowest, |was| was.slowest.max(other.slowest)),
+            slowest,
+            quickest,
             rated,
         };
     }
@@ -415,12 +505,13 @@ impl Record {
 impl Record {
     /// Whether a wait of this kind whose party has made no progress since `since` is stalled
     /// by `now`, judged from outside the wait, as one that cannot look itself is (a writer
-    /// blocked in its write): none while the kind is cold, or less than W* has passed; else
-    /// the stall, `now - since` both how far into its stillness and the time judged over.
+    /// blocked in its write): none while the kind is cold, or less than its window has passed
+    /// (W* and its spread); else the stall, `now - since` both how far into its stillness and
+    /// the time judged over.
     pub fn stalled(&self, since: Instant, now: Instant) -> Option<Stall> {
         let seen = self.seen().learned()?;
         let over = now.saturating_duration_since(since);
-        (over >= seen.slowest).then(|| Stall::new(over, over, seen))
+        (over >= seen.window()).then(|| Stall::new(over, over, seen))
     }
 }
 
@@ -506,8 +597,8 @@ pub struct Judge<'a> {
     /// one that finds the record learned meanwhile.
     judged: bool,
     began: Instant,
-    /// When the look before was meant to be, or its beginning: its looks are due each W* past
-    /// its start, whenever each ran.
+    /// When the look before was meant to be, or its beginning: its looks are due each window
+    /// past its start ([`window`](Self::window)), whenever each ran.
     meant: Instant,
     /// When the look before ended, or its beginning.
     last: Instant,
@@ -532,14 +623,15 @@ pub struct Judge<'a> {
     unsure: bool,
     /// The least window its looks can show a stillness over: the coarsest resolution of the
     /// counters they read, and the longest a look of this wait took, whichever is longer.
-    /// Its looks come and its refusals stand on W* or this, whichever is longer: a W* below
-    /// it (an answer quicker than one look, or than its counters' least step) is looked at
-    /// no more often, and refuses over no shorter a window, than its looks can resolve.
+    /// Its looks come and its refusals stand on W* and its spread or this, whichever is
+    /// longer: a window below it (an answer quicker than one look, or than its counters'
+    /// least step) is looked at no more often, and refuses over no shorter a window, than its
+    /// looks can resolve.
     floor: Duration,
     /// Whether its party is refused for its work alone ([`by_work`](Self::by_work)): past
-    /// C*, whatever its rate.
+    /// C* and its spread, whatever its rate.
     by_work: bool,
-    /// Its due looks that found its party past C* and waited on
+    /// Its due looks that found its party past C* and its spread and waited on
     /// ([`waited_past_most`](Self::waited_past_most)).
     waited_past_most: u32,
 }
@@ -568,8 +660,9 @@ impl<'a> Judge<'a> {
     }
 
     /// It, refusing a party that progressed for its work alone: seen to run unheld a whole
-    /// window, its work since its start more than any answer of its kind took (C*), once
-    /// [`SPREAD`] answers have taught it, whatever its rate. For an answer of bounded work
+    /// window, its work since its start more than any answer of its kind took (C*) and its
+    /// spread, once [`SPREAD`] answers have taught it, whatever its rate. For an answer of
+    /// bounded work
     /// that no time spent working brings nearer, a VM's READY (D215 amended 2026-11-18, CI
     /// 44245219858: nine VMs ran at their host's fair share for 348 s, never ready, their rate
     /// above R*, so held for ever, and with them the runs and the stop that waited on them).
@@ -582,16 +675,16 @@ impl<'a> Judge<'a> {
     /// What its judging stands on now, for its caller's account: the time its party has been
     /// still since a look last found it progressed, held or based, less the time its looks
     /// ran late (its host's hold of the judge); that time's own lateness; and the window a
-    /// stillness is refused over (W*, or what its looks resolve where longer). None while it
-    /// is not judged.
+    /// stillness is refused over (W* and its spread, or what its looks resolve where longer).
+    /// None while it is not judged.
     pub fn stillness(&self) -> Option<(Duration, Duration, Duration)> {
-        let slowest = self.record.seen().learned().filter(|_| self.judged)?.slowest;
+        let seen = self.record.seen().learned().filter(|_| self.judged)?;
         let free = self
             .last
             .saturating_duration_since(self.since)
             .saturating_sub(self.held)
             .saturating_sub(self.hosted);
-        Some((free, self.held, self.window(slowest)))
+        Some((free, self.held, self.window(seen)))
     }
 
     /// The time its party's host held it, as its subject measured it, since a look last found
@@ -617,22 +710,20 @@ impl<'a> Judge<'a> {
     /// When its next look is due, its window ([`window`](Self::window)) after the look before
     /// was meant: none while it is not judged.
     pub fn due(&self) -> Option<Instant> {
-        match self.record.seen() {
-            Seen::Learned { slowest, .. } if self.judged => self.meant.checked_add(self.window(slowest)),
-            _ => None,
-        }
+        let seen = self.record.seen().learned().filter(|_| self.judged)?;
+        self.meant.checked_add(self.window(seen))
     }
 
-    /// The window its looks come each of and a stillness is refused over: W* (`slowest`), or
-    /// the least its looks can resolve ([`Judge::floor`]) where that is longer.
-    fn window(&self, slowest: Duration) -> Duration {
-        slowest.max(self.floor)
+    /// The window its looks come each of and a stillness is refused over: W* and its spread
+    /// (`seen`'s), or the least its looks can resolve ([`Judge::floor`]) where that is longer.
+    fn window(&self, seen: Learned) -> Duration {
+        seen.window().max(self.floor)
     }
 
     /// What a look at its party found since the look before, made now: refused where the
-    /// party made no progress at all over a whole W* or more since a look last found it
-    /// progressed or held, the time its own looks ran late not counted. A look before it is
-    /// due, or of a wait not judged, judges nothing.
+    /// party made no progress at all over a whole window or more (W* and its spread) since a
+    /// look last found it progressed or held, the time its own looks ran late not counted. A
+    /// look before it is due, or of a wait not judged, judges nothing.
     pub fn found(&mut self, found: Found) -> Result<(), Stall> {
         self.found_over(found, Span::at(Instant::now()))
     }
@@ -640,11 +731,11 @@ impl<'a> Judge<'a> {
     /// [`found`](Self::found), of a look made over `span`. Its party is judged still only
     /// over what the looks saw: from the end of the look from which it has been still to
     /// this look's beginning, less the time the judge's own looks ran late, and refused only
-    /// where that is a whole window, W* or what its looks can resolve where that is longer:
-    /// its counters' resolution, or the time one of its looks took (#77: a W* below one
-    /// look's span refused waits whose first look had nothing before it; b26: a W* of 9.6 µs,
-    /// a send's that found room at once, refused a live VM process 16.6 µs past its first
-    /// look, its macOS reading moving in steps of a clock tick). A based look
+    /// where that is a whole window, W* and its spread or what its looks can resolve where
+    /// that is longer: its counters' resolution, or the time one of its looks took (#77: a W*
+    /// below one look's span refused waits whose first look had nothing before it; b26: a W*
+    /// of 9.6 µs, a send's that found room at once, refused a live VM process 16.6 µs past its
+    /// first look, its macOS reading moving in steps of a clock tick). A based look
     /// ([`Found::Based`]) starts its evidence anew whether it is due or not.
     pub fn found_over(&mut self, found: Found, span: Span) -> Result<(), Stall> {
         self.floor = self
@@ -671,7 +762,6 @@ impl<'a> Judge<'a> {
         let Some(seen) = self.record.seen().learned() else {
             return Ok(());
         };
-        let slowest = seen.slowest;
         // Held from when it was meant, or from the look before's end where that ended later,
         // but while its caller worked on its own.
         let late = now
@@ -683,7 +773,7 @@ impl<'a> Judge<'a> {
         let between = now.saturating_duration_since(self.last).saturating_sub(late);
         let hosted = std::mem::take(&mut self.pending).min(between);
         self.hosted = self.hosted.saturating_add(hosted);
-        let window = self.window(slowest);
+        let window = self.window(seen);
         if !std::mem::take(&mut self.unsure) {
             self.unheld = self.unheld.saturating_add(between.saturating_sub(hosted));
         }
@@ -725,13 +815,13 @@ impl<'a> Judge<'a> {
     /// A party that progressed, refused where it is too slow to be answering: seen to run
     /// unheld a whole window or more, its work since its start over that time below the
     /// least rate any answer of its kind came at (R*), and that work more than any answer
-    /// took (C*), once two answers have taught them ([`SPREAD`]). Without C*, a party whose
-    /// answers wait on a peer (a registry, a server),
+    /// took (C*) and its spread, once two answers have taught them ([`SPREAD`]). Without C*, a
+    /// party whose answers wait on a peer (a registry, a server),
     /// their work alike and their wall not, would be refused for its first answer slower than
     /// all before, its rate then below all before. Its work in windows its looks could not
     /// vouch for counts, their time does not: a doubt raises its rate, never lowers it. A kind
     /// no rated answer taught ([`Rated`]) has no floor. A judge [`by_work`](Self::by_work)
-    /// refuses past C* whatever the rate.
+    /// refuses past C* and its spread whatever the rate.
     fn slower_than_any_answer(
         &self,
         work: Option<Work>,
@@ -753,15 +843,16 @@ impl<'a> Judge<'a> {
         Err(Stall::slow(now.saturating_duration_since(self.began), rate, seen))
     }
 
-    /// Whether a party that has done `work` since its start is past its kind's C*: seen to run
-    /// unheld a whole `window` or more, its work more than any answer took, once [`SPREAD`]
-    /// answers have taught it.
+    /// Whether a party that has done `work` since its start is past its kind's C* and its
+    /// spread ([`Rated::spread`]): seen to run unheld a whole `window` or more, its work more
+    /// than any answer took and that spread, once [`SPREAD`] answers have taught it.
     fn past_most(&self, work: Work, window: Duration, rated: Rated) -> bool {
-        rated.answers >= SPREAD && self.unheld >= window && work > rated.most
+        rated.answers >= SPREAD && self.unheld >= window && work > rated.bound()
     }
 
-    /// How many of its due looks found its party past C* ([`past_most`](Self::past_most))
-    /// and waited on: none of a judge [`by_work`](Self::by_work), which refuses at the first;
+    /// How many of its due looks found its party past C* and its spread
+    /// ([`past_most`](Self::past_most)) and waited on: none of a judge
+    /// [`by_work`](Self::by_work), which refuses at the first;
     /// a judge by rate may wait on such a party, its rate above R*. What a test of a judge by
     /// work tells its red from a host that held its party by (D215, CI 44268931283: a test
     /// that counted its own looks past C* beside the judge's ended a wait its judge rightly
@@ -853,70 +944,95 @@ mod tests {
         assert!(rate(1, 2).below(&most));
     }
 
-    /// A record learns its slowest answer, its least rate and its most work from its first
-    /// answer on, and counts the answers that taught them: its slowest only rises, its least
-    /// rate only falls, its most work only rises, each answer counts one, and a wait no time
-    /// long teaches nothing (D215).
-    #[test]
-    fn a_record_learns_its_slowest_answer_its_least_rate_and_its_most_work() {
-        let ms = Duration::from_millis;
-        let record = Record::new();
-        assert_eq!(record.seen(), Seen::Cold);
-        let learned = |slowest, cpu, over, most, answers| Seen::Learned {
+    /// A kind as its answers taught it: its slowest and quickest answer, R*'s work and wall,
+    /// its most and least work, and the answers that taught its rates.
+    fn learned(
+        (slowest, quickest): (Duration, Duration),
+        (cpu, over): (Duration, Duration),
+        (most, lightest): (Duration, Duration),
+        answers: u64,
+    ) -> Seen {
+        Seen::Learned {
             slowest,
+            quickest,
             rated: Some(Rated {
                 least: Rate { work: w(cpu), over },
                 most: w(most),
+                lightest: w(lightest),
                 answers,
             }),
-        };
-        record.teach(ms(2), w(ms(1)));
-        assert_eq!(record.seen(), learned(ms(2), ms(1), ms(2), ms(1), 1));
-        record.teach(ms(1), w(ms(1)));
-        assert_eq!(record.seen(), learned(ms(2), ms(1), ms(2), ms(1), 2));
-        record.teach(ms(4), w(ms(1)));
-        assert_eq!(record.seen(), learned(ms(4), ms(1), ms(4), ms(1), 3));
-        record.teach(ms(1), w(ms(3)));
-        assert_eq!(record.seen(), learned(ms(4), ms(1), ms(4), ms(3), 4));
-        record.teach(Duration::ZERO, Work::ZERO);
-        assert_eq!(record.seen(), learned(ms(4), ms(1), ms(4), ms(3), 4));
+        }
     }
 
-    /// A kept record merged in raises W* and C* and lowers R* where it goes past, and leaves
-    /// each that it does not; its count of answers is the more of the two, never their sum, as
-    /// the same kept record merged in again adds none (D215).
+    /// A record learns its slowest and quickest answer, its least rate and its most and least
+    /// work from its first answer on, and counts the answers that taught them: its slowest
+    /// only rises and its quickest only falls, its least rate only falls, its most work only
+    /// rises and its least only falls, each answer counts one, and a wait no time long teaches
+    /// nothing (D215; the minima since 2026-11-19).
+    #[test]
+    fn a_record_learns_its_slowest_answer_its_least_rate_and_its_most_work() {
+        let (ms, us) = (Duration::from_millis, Duration::from_micros);
+        let record = Record::new();
+        assert_eq!(record.seen(), Seen::Cold);
+        record.teach(ms(2), w(ms(1)));
+        assert_eq!(
+            record.seen(),
+            learned((ms(2), ms(2)), (ms(1), ms(2)), (ms(1), ms(1)), 1)
+        );
+        record.teach(ms(1), w(ms(1)));
+        assert_eq!(
+            record.seen(),
+            learned((ms(2), ms(1)), (ms(1), ms(2)), (ms(1), ms(1)), 2)
+        );
+        record.teach(ms(4), w(ms(1)));
+        assert_eq!(
+            record.seen(),
+            learned((ms(4), ms(1)), (ms(1), ms(4)), (ms(1), ms(1)), 3)
+        );
+        record.teach(ms(1), w(ms(3)));
+        assert_eq!(
+            record.seen(),
+            learned((ms(4), ms(1)), (ms(1), ms(4)), (ms(3), ms(1)), 4)
+        );
+        record.teach(ms(3), w(us(500)));
+        let taught = learned((ms(4), ms(1)), (us(500), ms(3)), (ms(3), us(500)), 5);
+        assert_eq!(record.seen(), taught);
+        record.teach(Duration::ZERO, Work::ZERO);
+        assert_eq!(record.seen(), taught);
+    }
+
+    /// A kept record merged in raises W* and C* and lowers R*, the quickest answer and the
+    /// least work where it goes past, and leaves each that it does not; its count of answers is
+    /// the more of the two, never their sum, as the same kept record merged in again adds none
+    /// (D215; the minima since 2026-11-19).
     #[test]
     fn a_record_merged_in_keeps_each_bound_past_the_others() {
         let ms = Duration::from_millis;
         let record = Record::new();
         record.merge(Seen::Cold);
         assert_eq!(record.seen(), Seen::Cold);
-        let learned = |slowest, cpu, over, most, answers| Seen::Learned {
-            slowest,
-            rated: Some(Rated {
-                least: Rate { work: w(cpu), over },
-                most: w(most),
-                answers,
-            }),
-        };
-        record.merge(learned(ms(10), ms(2), ms(4), ms(5), 1));
-        assert_eq!(record.seen(), learned(ms(10), ms(2), ms(4), ms(5), 1));
-        record.merge(learned(ms(8), ms(1), ms(4), ms(6), 3));
-        assert_eq!(record.seen(), learned(ms(10), ms(1), ms(4), ms(6), 3));
-        record.merge(learned(ms(12), ms(3), ms(4), ms(1), 2));
-        assert_eq!(record.seen(), learned(ms(12), ms(1), ms(4), ms(6), 3));
-        record.merge(learned(ms(12), ms(3), ms(4), ms(1), 2));
+        record.merge(learned((ms(10), ms(7)), (ms(2), ms(4)), (ms(5), ms(4)), 1));
         assert_eq!(
             record.seen(),
-            learned(ms(12), ms(1), ms(4), ms(6), 3),
-            "merged again"
+            learned((ms(10), ms(7)), (ms(2), ms(4)), (ms(5), ms(4)), 1)
         );
+        record.merge(learned((ms(8), ms(6)), (ms(1), ms(4)), (ms(6), ms(5)), 3));
+        assert_eq!(
+            record.seen(),
+            learned((ms(10), ms(6)), (ms(1), ms(4)), (ms(6), ms(4)), 3)
+        );
+        let kept = learned((ms(12), ms(9)), (ms(3), ms(4)), (ms(1), ms(1)), 2);
+        record.merge(kept);
+        let merged = learned((ms(12), ms(6)), (ms(1), ms(4)), (ms(6), ms(1)), 3);
+        assert_eq!(record.seen(), merged);
+        record.merge(kept);
+        assert_eq!(record.seen(), merged, "merged again");
     }
 
-    /// An answer whose work was not read through its end teaches W* alone: a kind no rated
-    /// answer taught has no rates, and its first rated answer gives them whole, an unrated
-    /// one after it leaving them as they are (D215: kept records of R* 0 ns, from answers
-    /// reaped before a look read their CPU, held no floor).
+    /// An answer whose work was not read through its end teaches W* and the quickest alone: a
+    /// kind no rated answer taught has no rates, and its first rated answer gives them whole,
+    /// an unrated one after it leaving them as they are (D215: kept records of R* 0 ns, from
+    /// answers reaped before a look read their CPU, held no floor).
     #[test]
     fn an_unrated_answer_teaches_its_slowest_alone() {
         let ms = Duration::from_millis;
@@ -926,6 +1042,7 @@ mod tests {
             record.seen(),
             Seen::Learned {
                 slowest: ms(5),
+                quickest: ms(5),
                 rated: None
             }
         );
@@ -936,12 +1053,14 @@ mod tests {
                 over: ms(3),
             },
             most: w(ms(2)),
+            lightest: w(ms(2)),
             answers: 1,
         });
         assert_eq!(
             record.seen(),
             Seen::Learned {
                 slowest: ms(5),
+                quickest: ms(3),
                 rated
             }
         );
@@ -950,15 +1069,16 @@ mod tests {
             record.seen(),
             Seen::Learned {
                 slowest: ms(9),
+                quickest: ms(3),
                 rated
             }
         );
     }
 
-    /// An answer whose work read none teaches its slowest alone, as an unrated one does: R*
-    /// and C* stay as answers that worked taught them, never R* 0 ns, a floor that refuses
-    /// nothing (CI 44076016255, arm64 Windows: a 50 ms stand-in read as none in Windows'
-    /// ticks). Red with such an answer rated, its R* 0 ns over its wall.
+    /// An answer whose work read none teaches its slowest and quickest alone, as an unrated
+    /// one does: R* and C* stay as answers that worked taught them, never R* 0 ns, a floor
+    /// that refuses nothing (CI 44076016255, arm64 Windows: a 50 ms stand-in read as none in
+    /// Windows' ticks). Red with such an answer rated, its R* 0 ns over its wall.
     #[test]
     fn an_answer_of_no_work_teaches_its_slowest_alone() {
         let ms = Duration::from_millis;
@@ -968,6 +1088,7 @@ mod tests {
             record.seen(),
             Seen::Learned {
                 slowest: ms(70),
+                quickest: ms(70),
                 rated: None
             }
         );
@@ -977,12 +1098,14 @@ mod tests {
             record.seen(),
             Seen::Learned {
                 slowest: ms(80),
+                quickest: ms(3),
                 rated: Some(Rated {
                     least: Rate {
                         work: w(ms(2)),
                         over: ms(3),
                     },
                     most: w(ms(2)),
+                    lightest: w(ms(2)),
                     answers: 1,
                 })
             }
@@ -1528,15 +1651,26 @@ mod tests {
         judge.answered(w(Duration::from_millis(1)));
         let Seen::Learned {
             slowest,
-            rated: Some(Rated { least, most, answers }),
+            quickest,
+            rated:
+                Some(Rated {
+                    least,
+                    most,
+                    lightest,
+                    answers,
+                }),
         } = record.seen()
         else {
             panic!("an answer taught nothing");
         };
         assert!(slowest >= Duration::from_millis(2), "{slowest:?}");
+        assert_eq!(quickest, slowest, "one answer's spread is none");
         assert_eq!(least.work, w(Duration::from_millis(1)));
         assert_eq!(least.over, slowest);
-        assert_eq!(most, w(Duration::from_millis(1)));
+        assert_eq!(
+            (most, lightest),
+            (w(Duration::from_millis(1)), w(Duration::from_millis(1)))
+        );
         assert_eq!(answers, 1);
     }
 
@@ -1579,7 +1713,11 @@ mod tests {
     /// b24's sleeper is still refused (D215, ROOT's ruling of 2026-11-17): a party that runs a
     /// little in every window, as a sleeping guest's VM process ticks, goes on through 40 looks
     /// while one answer alone has taught its kind, and once a second has, R* and C* each from
-    /// its own answer, is refused at the first due look at which its work passes C*.
+    /// its own answer, is refused at the first due look at which its work passes C* and its
+    /// spread (amended 2026-11-19). Its answers, 30 ms of 3 ms's work and 25 ms of 2 ms's, give
+    /// a window of 35 ms and a bound of 4 ms: its looks each 30 ms, 200 µs of work each, it
+    /// goes on past C* at looks 16 to 20 (3.2 to 4 ms) and is refused at 21, its due look then
+    /// (630 ms, the window's eighteenth). Red with the spreads taken as none: refused at 16.
     #[test]
     fn a_sleeper_is_refused_once_two_answers_taught_its_kind() {
         let (ms, us) = (Duration::from_millis, Duration::from_micros);
@@ -1593,7 +1731,9 @@ mod tests {
         record.teach(ms(25), w(ms(2)));
         let mut judge = Judge::begin(&record);
         let (n, stall) = ticking_until_refused(&mut judge, ms(30), |n| Some(us(200) * n)).unwrap();
-        assert_eq!(n, 16, "refused at look {n}");
+        assert_eq!(n, 21, "refused at look {n}");
+        assert_eq!(stall.waited(), ms(630));
+        assert_eq!(stall.rate().map(|rate| rate.work), Some(w(us(4200))));
         assert_eq!(
             stall.least(),
             Some(Rate {
@@ -1601,7 +1741,11 @@ mod tests {
                 over: ms(25)
             })
         );
-        assert_eq!(stall.most(), Some(w(ms(3))));
+        assert_eq!(
+            (stall.most(), stall.work_spread()),
+            (Some(w(ms(3))), Some(w(ms(1))))
+        );
+        assert_eq!((stall.slowest(), stall.spread()), (ms(30), ms(5)));
     }
 
     /// What its subject measured of its host's hold since the look before ([`Span::held`]) is
@@ -1647,5 +1791,112 @@ mod tests {
         };
         assert!(progress(&mut Judge::begin(&record), 0).is_err(), "unheld, slow");
         assert_eq!(progress(&mut Judge::begin(&record), 60), Ok(()), "held, not slow");
+    }
+
+    /// One answer's spread is none: its kind's window is its W* and its rates' bound its C*,
+    /// as before the spread (D215 amended 2026-11-19). Its first look is due W* past its
+    /// start, a party still from its start is refused there over W*, and the outside judge
+    /// stalls it a W* after its last progress, each stall saying spreads of none; and so again
+    /// once the same answer has taught it twice.
+    #[test]
+    fn one_answers_window_is_its_w_star_alone() {
+        let ms = Duration::from_millis;
+        let record = Record::new();
+        record.teach(ms(30), w(ms(3)));
+        for _ in 0..2 {
+            let mut judge = Judge::begin(&record);
+            let due = judge.due().unwrap();
+            assert_eq!(due, judge.began + ms(30));
+            let stall = judge.found_at(Found::Still, due).unwrap_err();
+            assert_eq!(
+                (stall.over(), stall.slowest(), stall.spread()),
+                (ms(30), ms(30), Duration::ZERO)
+            );
+            assert_eq!(
+                (stall.most(), stall.work_spread()),
+                (Some(w(ms(3))), Some(Work::ZERO))
+            );
+            let since = Instant::now();
+            assert_eq!(record.stalled(since, since + ms(29)), None);
+            let stall = record.stalled(since, since + ms(30)).unwrap();
+            assert_eq!(stall.spread(), Duration::ZERO);
+            record.teach(ms(30), w(ms(3)));
+        }
+    }
+
+    /// CI 44476277082's x86_64 musl job refused `shards daemon stop` (daemon.rs:3604,
+    /// `a_home_named_relatively_is_one_home`): "made no progress for 3.700498ms, past the
+    /// slowest answer of its kind seen on this host (2.964577ms)", 0.735921 ms past W*. Its
+    /// window is now W* and its spread (D215 amended 2026-11-19). Its kind's quickest answer
+    /// here is 2.228655 ms, the slowest at which that stillness is within the window (spread
+    /// 0.735922 ms, window 3.700499 ms): its first due look, which finds it still 3.700498 ms
+    /// from a based look's end, goes on, and its next, still a whole window and more, refuses
+    /// it, saying W* and its spread. The outside judge draws the same line: still 3.700498 ms
+    /// is no stall, 3.700499 ms is. Red with the spread taken as none: its looks due, and its
+    /// stillness refused, a W* apart.
+    #[test]
+    fn a_stillness_past_w_star_within_its_spread_goes_on() {
+        let ns = Duration::from_nanos;
+        let (slowest, spread, window) = (ns(2_964_577), ns(735_922), ns(3_700_499));
+        let record = Record::new();
+        record.teach_unrated(slowest);
+        record.teach_unrated(ns(2_228_655));
+        let mut judge = Judge::begin(&record);
+        let base = span(&judge, Duration::ZERO, ns(1), Duration::ZERO);
+        assert_eq!(judge.found_over(Found::Based, base), Ok(()));
+        let first = judge.due().unwrap();
+        assert_eq!(first, judge.began + window);
+        assert_eq!(judge.found_at(Found::Still, first), Ok(()), "CI's refusal");
+        assert_eq!(judge.stillness(), Some((ns(3_700_498), Duration::ZERO, window)));
+        let next = judge.due().unwrap();
+        assert_eq!(next, first + window);
+        let stall = judge.found_at(Found::Still, next).unwrap_err();
+        assert_eq!(stall.over(), window * 2 - ns(1));
+        assert_eq!((stall.slowest(), stall.spread()), (slowest, spread));
+        let since = Instant::now();
+        assert_eq!(record.stalled(since, since + ns(3_700_498)), None);
+        let stall = record.stalled(since, since + window).unwrap();
+        assert_eq!(
+            (stall.over(), stall.slowest(), stall.spread()),
+            (window, slowest, spread)
+        );
+    }
+
+    /// CI 44483143178's x86_64 musl job gave up a VM's start (daemon.rs:703,
+    /// `a_restored_microvm_goes_on_over_a_stopped_containers_kept_file`): "it ran 44.476835ms
+    /// of CPU in the 53.668555ms it was seen to run unheld, more than any start took
+    /// (44.435943ms of CPU), past the slowest start seen (37.838405ms)", 40.892 µs of CPU past
+    /// C*. A judge by work now refuses only past C* and its spread (D215 amended 2026-11-19).
+    /// Its kind taught a start of C*'s work and one of 44.395051 ms, the most at which that
+    /// work is within C* and its spread (40.892 µs), the same work at its first due look goes
+    /// on; taught one a nanosecond more, that look refuses it, saying C* and its spread. Each
+    /// start took W*, so that its window is W*, a whole one of which its look saw it run
+    /// unheld. Red with the spread taken as none: refused at that look either way.
+    #[test]
+    fn a_start_past_c_star_within_its_spread_goes_on() {
+        let ns = Duration::from_nanos;
+        let slowest = ns(37_838_405);
+        let (most, done) = (ns(44_435_943), ns(44_476_835));
+        let judged = |lightest: Duration| {
+            let record = Record::new();
+            record.teach(slowest, w(most));
+            record.teach(slowest, w(lightest));
+            let mut judge = Judge::begin(&record).by_work();
+            assert_eq!(judge.due(), Some(judge.began + slowest));
+            look_with(&mut judge, slowest, Found::Progressed, Some(done))
+        };
+        assert_eq!(judged(ns(44_395_051)), Ok(()), "CI's refusal");
+        let stall = judged(ns(44_395_052)).unwrap_err();
+        assert_eq!(
+            stall.rate(),
+            Some(Rate {
+                work: w(done),
+                over: slowest
+            })
+        );
+        assert_eq!(
+            (stall.most(), stall.work_spread()),
+            (Some(w(most)), Some(w(ns(40_891))))
+        );
     }
 }

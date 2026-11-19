@@ -4758,32 +4758,35 @@ mod tests {
         }
     }
 
-    /// Each kind learns apart, from its first answer on: its slowest answer only rises, its
-    /// least rate only falls, and a wait no time long teaches nothing (D215).
+    /// Each kind learns apart, from its first answer on: its slowest answer only rises and its
+    /// quickest only falls, its least rate only falls, and a wait no time long teaches nothing
+    /// (D215).
     #[test]
     fn a_kind_learns_its_slowest_answer_and_its_least_rate_apart() {
         let ms = Duration::from_millis;
         let records = Records::new();
         assert_eq!(records.seen(Awaited::Boot), Seen::Cold);
         records.teach(Awaited::Boot, ms(2), SOME_WORK);
-        let learned = |slowest, over, answers| Seen::Learned {
+        let learned = |slowest, quickest, over, answers| Seen::Learned {
             slowest,
+            quickest,
             rated: Some(crate::Rated {
                 least: Rate {
                     work: SOME_WORK,
                     over,
                 },
                 most: SOME_WORK,
+                lightest: SOME_WORK,
                 answers,
             }),
         };
-        assert_eq!(records.seen(Awaited::Boot), learned(ms(2), ms(2), 1));
+        assert_eq!(records.seen(Awaited::Boot), learned(ms(2), ms(2), ms(2), 1));
         records.teach(Awaited::Boot, ms(1), SOME_WORK);
-        assert_eq!(records.seen(Awaited::Boot), learned(ms(2), ms(2), 2));
+        assert_eq!(records.seen(Awaited::Boot), learned(ms(2), ms(1), ms(2), 2));
         records.teach(Awaited::Boot, ms(4), SOME_WORK);
-        assert_eq!(records.seen(Awaited::Boot), learned(ms(4), ms(4), 3));
+        assert_eq!(records.seen(Awaited::Boot), learned(ms(4), ms(1), ms(4), 3));
         records.teach(Awaited::Boot, Duration::ZERO, Work::ZERO);
-        assert_eq!(records.seen(Awaited::Boot), learned(ms(4), ms(4), 3));
+        assert_eq!(records.seen(Awaited::Boot), learned(ms(4), ms(1), ms(4), 3));
         assert_eq!(records.seen(Awaited::Connect), Seen::Cold);
         assert_eq!(records.seen(Awaited::End), Seen::Cold);
     }

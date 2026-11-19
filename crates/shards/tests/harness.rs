@@ -3455,6 +3455,7 @@ fn a_kept_rating_weighs_only_work_counted_as_this_host_counts_it() {
                 over: ns(over),
             },
             most: shards_api::Work::of(most),
+            lightest: shards_api::Work::of(most),
             answers,
         })
     };

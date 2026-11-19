@@ -234,11 +234,11 @@ impl Counted {
 
 /// A test's wait on its party, whose threads run in this process: judged as D215 judges
 /// a wait on a VM process (#77), its party its test's own threads ([`Counted`],
-/// [`party`]). Past the slowest wait of its tests seen ([`WAITS`], W*), it looks once
-/// each W*, and gives up only where no thread of its party but its waiters has run for a
-/// whole W* its host did not hold it in, counted from no earlier than the latest deadline
-/// a thread of its party waits until ([`Waiting`]): a party asleep on a deadline of its
-/// own has not stalled before it.
+/// [`party`]). Past the slowest wait of its tests seen ([`WAITS`], W*) and its spread, it
+/// looks once each such window, and gives up only where no thread of its party but its
+/// waiters has run for a whole window its host did not hold it in, counted from no earlier
+/// than the latest deadline a thread of its party waits until ([`Waiting`]): a party asleep
+/// on a deadline of its own has not stalled before it.
 /// Before its kind's first answer it is judged so by its host's scheduling granularity
 /// ([`COLD`]), and by its kind's record from the first answer on.
 ///
@@ -315,8 +315,8 @@ impl<'r> Wait<'r> {
     }
 
     /// Looks at its party where a look is due ([`Wait`]): refused where none of its
-    /// threads but its waiters has run for a whole W* its host did not hold it in, past
-    /// the latest deadline it waits until.
+    /// threads but its waiters has run for a whole window (W* and its spread) its host did
+    /// not hold it in, past the latest deadline it waits until.
     fn look(&mut self) -> Result<(), Stall> {
         let mine = cpu(false);
         self.party.waited(mine.saturating_sub(self.mine));
@@ -333,7 +333,8 @@ impl<'r> Wait<'r> {
         let Some(due) = self.judge.due() else {
             return Ok(());
         };
-        let Seen::Learned { slowest, .. } = self.judging.seen() else {
+        // The window its judge refuses a stillness over: W* and its spread (D215).
+        let Some((_, _, window)) = self.judge.stillness() else {
             return Ok(());
         };
         if now < due {
@@ -360,7 +361,7 @@ impl<'r> Wait<'r> {
         let free = now.saturating_duration_since(from).saturating_sub(self.held);
         let judged = self.judge.found(if ran {
             Found::Progressed
-        } else if held || free < slowest {
+        } else if held || free < window {
             Found::Held
         } else {
             Found::Still

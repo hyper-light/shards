@@ -16946,10 +16946,10 @@ mod tests {
             std::thread::sleep(Duration::from_millis(50));
             say(&vm, kind::STARTED, &[]);
             assert_eq!(joined(run), Ok(()));
-            assert_eq!(
-                t.t.daemon.answers.held.seen(),
-                Seen::Learned { slowest, rated: None },
-                "its process read within W*"
+            assert!(
+                matches!(t.t.daemon.answers.held.seen(), Seen::Learned { slowest: kept, rated: None, .. } if kept == slowest),
+                "its process read within W*: {:?}",
+                t.t.daemon.answers.held.seen()
             );
             say(&vm, kind::DONE, &[0]);
             until_ended(&t.t.daemon, &id);

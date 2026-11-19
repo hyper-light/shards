@@ -1197,7 +1197,7 @@ mod tests {
         let answered = began.elapsed();
         let ended = await_exit(&ours, begun);
         assert_eq!((ended.status, ended.cut), (Some(7), None));
-        let shards_api::Seen::Learned { slowest, rated } = record.seen() else {
+        let shards_api::Seen::Learned { slowest, rated, .. } = record.seen() else {
             panic!("an answer within its wait taught nothing");
         };
         assert!(
@@ -1230,7 +1230,7 @@ mod tests {
             .unwrap();
         assert_eq!(taken.kind, shards_ipc::kind::TAKEN);
         judged.answered();
-        let shards_api::Seen::Learned { slowest, rated } = record.seen() else {
+        let shards_api::Seen::Learned { slowest, rated, .. } = record.seen() else {
             panic!("a take there at its waiter's first look taught nothing");
         };
         assert!(
@@ -1258,10 +1258,10 @@ mod tests {
         assert!(judged.follow.is_none(), "its process read within W*");
         assert_eq!(due, Some(judged.asked + slowest), "not asked again at W*");
         judged.answered();
-        assert_eq!(
-            record.seen(),
-            shards_api::Seen::Learned { slowest, rated: None },
-            "an answer within W* taught a rate"
+        assert!(
+            matches!(record.seen(), shards_api::Seen::Learned { slowest: kept, rated: None, .. } if kept == slowest),
+            "an answer within W* taught a rate: {:?}",
+            record.seen()
         );
         let record = Record::new();
         let slowest = Duration::from_millis(1);
@@ -1294,10 +1294,10 @@ mod tests {
             shards_ipc::send(&theirs, shards_ipc::kind::EXIT, &[7], &[]).unwrap();
         });
         assert_eq!((ended.status, ended.cut), (Some(7), None));
-        assert_eq!(
-            record.seen(),
-            shards_api::Seen::Learned { slowest, rated: None },
-            "its process read within W*"
+        assert!(
+            matches!(record.seen(), shards_api::Seen::Learned { slowest: kept, rated: None, .. } if kept == slowest),
+            "its process read within W*: {:?}",
+            record.seen()
         );
     }
 
