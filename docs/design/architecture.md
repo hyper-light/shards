@@ -16582,6 +16582,55 @@ on windows-2025 (job 134953502265) and windows-11-arm.
   (`cpu-elastic/phases.py`) with lowered vCPUs below their host's busy loops, and Windows E2E
   timings beside it.
 
+**2026-11-19, each pool is charged all its threads ran, and the bound's test reads cycles
+(#36; CI 44379986478, 44408928475; PM M620).** On windows-2022
+`raised_threads_sharing_a_cpu_take_no_more_than_half_of_it` failed in both CI runs after the
+lowering went below the host's threads: "the three used 2.25s of 3.0008989s (at most
+1.56294945s ...); the normal thread was charged 703125000 ns" (144 and 45 of the window's 192
+GetThreadTimes steps); windows-2025 passed.
+- *Not a late switch.* Windows applies a lowering at once on both Server runners: a lowered
+  spinner stops within 11 µs, and a normal spinner beside it runs within 19 µs at p90 (PM M620,
+  `win-lower/lower.c`). The 2026-11-18 entry's premise holds.
+- *The clock's steps, not the CPU.* With the governor itself sampled each millisecond in the
+  test's scene (`win-lower/governor`), on windows-2022 the three were raised in 49.8% of its
+  looks and ran 53.4% of the cycles their CPU's four threads ran (QueryThreadCycleTime), but
+  GetThreadTimes charged them 78.6% of the window: each 15.625 ms step goes to the thread that
+  runs as it falls, and which that is follows the governor's raises and lowers. A pool charged
+  what its threads ran raised counted none of the steps their clock charged them in their
+  lowered looks, a quarter of the window there. Lowered, they also ran 3.7% to 8.8% of the
+  cycles beside the ready normal thread (a millisecond's cycles put to the level read as it
+  began). On windows-2025 GetThreadTimes charged them less than their cycles.
+- *Decision.* (a) Each pool is charged all its threads ran, raised or lowered (`charge`), as each
+  thread's own credit already was: the bound holds in the clock the governor reads whatever
+  Windows lets a lowered thread run and wherever its clock lands its steps. Lowered on a CPU no
+  host's thread wants, they still run there; their pool goes into debt, a period of each CPU at
+  most, which they pay before they are raised again. (b) The test reads the claim in the CPU's
+  time, not in GetThreadTimes' steps: on x86-64, the three's and the normal thread's cycles,
+  which Windows counts in the time stamp counter's ticks, one rate on every CPU, against the
+  window's ticks (RDTSC), the bound half of them and two periods' worth. arm64 Windows, whose
+  cycle counter was not measured, keeps the steps.
+- *Costs.* Where GetThreadTimes charges governed threads more than they ran, as on windows-2022,
+  they are held to half of its steps, so to less than half of the CPU's time: vCPUs there are
+  raised less than the bound allows. A busy governed thread on an idle CPU stays lowered while it
+  runs, and is raised again a period or two after a host's thread comes, as its pool's debt is
+  paid.
+- *Alternatives refused.* The look after each lowering charged, for a late switch: there is
+  none (`lower.c`). A switch forced by suspending the lowered thread: its suspension runs on it,
+  behind the host's threads, and GetThreadContext waited 0.3 to 4 s for it, the governor's lock
+  held. QueryThreadCycleTime as the governor's own clock: its cycles are of the time stamp
+  counter on x86-64 alone (Microsoft: "Do not attempt to convert the CPU clock cycles returned
+  by QueryThreadCycleTime to elapsed time"), unmeasured on arm64, and D191's g, its clock's step,
+  would fall from 15.625 ms to its wake's, the period with it: owed, with the cost of looks at
+  that period measured.
+- *Tested.* windows-lower runs 44459597265 (charge-all), 44460964294 (the cycles test) and
+  44462319845 (current priorities): 5 runs of `platform::windows_thread`'s tests on each Server
+  runner and 3 of the bound's test with `win-lower/red-raised-only.patch` (PM M620). windows-2025
+  holds the bound in cycles 5 of 5. windows-2022 holds it alone, the three at 50.5% to 51.7% of
+  their CPU's cycles, but not always beside busy threads: the cycles test failed 2 of 5 there
+  (55.7% of the window's ticks against 52.1%), the three running 6.9% to 7.5% of the cycles at
+  their lowered priority with no boost above it. Open: what runs a lowered thread there beside a
+  ready normal one, measured next (#36).
+
 **The priority governor's period and credit (platform-11, 2026-11-14).** `PERIOD` (100 ms,
 the hold's old period) is gone: each look's period is D191's for one thread held to half a
 CPU (`HALF`, 500 milli-CPU: the most a fair scheduler gives a thread that contends for its CPU

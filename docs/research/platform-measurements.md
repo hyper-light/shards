@@ -26507,3 +26507,98 @@ the counts are a process's, not a thread's. n is one run of each child.
   0.55 (x86_64 musl) minutes, which a bar of two would have lowered those limits on, to 11, 26
   and 28 (the script run so as an exercise over the same runs). The script derives the limits
   again as runs gather; limits.py (M613) still splits a job's builds and hangs from its logs.
+
+### M620. How Windows applies the priority governor's lowering, and what GetThreadTimes charges the threads it governs (D191; windows-2022, windows-2025)
+
+- **Question.** `raised_threads_sharing_a_cpu_take_no_more_than_half_of_it` failed on
+  windows-2022 in CI 44379986478 and 44408928475 ("the three used 2.25s of 3.0008989s (at most
+  1.56294945s ...); the normal thread was charged 703125000 ns": 144 and 45 of the window's 192
+  GetThreadTimes steps), and passed on windows-2025, since a thread out of credit went to
+  THREAD_PRIORITY_BELOW_NORMAL (900034bd41). Does Windows apply a lowering of a running thread
+  late, so that it runs on past the look that lowered it? If not, what gives the three three
+  quarters of the CPU?
+- **Method.** GitHub's windows-2022 (Windows Server 2022, 10.0.20348) and windows-2025 (10.0.26100)
+  runners, 4 vCPUs each, timer resolution 15.625 ms, Win32PrioritySeparation 0x2, 2026-11-19
+  (`.github/workflows/windows-lower.yml`; runs 44455118043 at d9c575f316, 44456466233 at
+  396ce7c733, 44459597265 at cb4bda1f4a):
+  - `docs/research/measurements/win-lower/lower.c` (zig cc): a spinner R and a normal spinner N
+    pinned to the highest CPU, R's boost off; a controller pinned to the lowest at
+    THREAD_PRIORITY_TIME_CRITICAL raises R to ABOVE_NORMAL (timed until R runs) and lowers it
+    (timed until N runs), a pseudo-random 10 to 40 ms between, so that each change lands at any
+    phase of the clock's tick: 300 rounds lowering to BELOW_NORMAL, 300 lowering to BELOW_NORMAL
+    then SuspendThread, GetThreadContext and ResumeThread, 30 lowering to NORMAL. A spinner resumed
+    at its first loop after one 100 µs or more before it.
+  - `win-lower/governor`, a crate of its own over shards-vmm: the test's scene with the governor
+    itself, three spinners raised by `prioritize_vcpu_thread` (their boost off) and a normal one,
+    all on the highest CPU, 5 rounds of 3 s alone and 5 beside 3 unpinned normal spinners. A
+    sampler on the lowest CPU at TIME_CRITICAL reads each one's priority and QueryThreadCycleTime
+    every millisecond, each millisecond's cycles put to the level read as it began; each governed
+    thread reads its own GetThreadTimes from its raise to its end, as the test does.
+- **Results.**
+  - A lowering, µs (p50 / p90 / p99 / max; n 300, NORMAL's 30):
+
+    | runner | lowered to | until N ran | R ran on past it | raised, until R ran |
+    |---|---|---|---|---|
+    | windows-2022 | BELOW_NORMAL | 14.1 / 18.6 / 227,926 / 454,665 | 7.7 / 8.9 / 10.3 / 10.8 | 17.6 / 26.6 / 108.7 / 501.2 |
+    | windows-2025 | BELOW_NORMAL | 14.1 / 19.1 / 1,923 / 489,354 | 6.5 / 8.3 / 10.3 / 13.1 | 16.3 / 1,737 / 22,029 / 25,170 |
+    | windows-2022 | NORMAL | 195,552 / 202,536 / 302,396 / 302,396 | | 17.4 / 27.5 / 40.0 / 40.0 |
+    | windows-2025 | NORMAL | 30,912 / 32,686 / 47,248 / 47,248 | | 16.4 / 65.5 / 18,166 / 18,166 |
+
+    Suspended after it was lowered, N's last resume before the suspension had come was 304 ms
+    (windows-2022) and 399 ms (windows-2025) after the lowering at p50, 3.7 and 4.0 s at most: R,
+    lowered behind N, runs its suspension only when it is given its CPU, and GetThreadContext waits
+    for it. GetThreadTimes charged R no step across a lowering in 300 of 300 rounds on
+    windows-2022, and one in 25 of 300 on windows-2025.
+  - The governor, charging each pool what its threads ran raised (as it did until 2026-11-19), on
+    windows-2022 alone, the one round whose three were raised within its window: GetThreadTimes
+    charged them 2.359 s of 3.001 s (78.6%; the test's bound 1.563 s) and the normal one 0.594 s;
+    of the four's cycles they ran 53.4% (49.7% raised, 3.7% lowered); 49.8% of the samples found
+    one of them raised. Beside 3 spinners: 1.672 s of 3.001 s (55.7%), 59.4% of the two parties'
+    cycles (50.5% raised, 8.8% lowered), raised in 50.1% of the samples. On windows-2025 beside 3
+    spinners: 50.0%, 52.1% and 51.0% of the window by GetThreadTimes, 62.6%, 59.9% and 58.1% of the
+    two parties' cycles (the spinners beside took from the normal one alone), raised in 49.8%,
+    52.0% and 51.1% of the samples.
+  - In the other rounds all three were watched late, 3.9 to 12 s after the window began, so no
+    sample was taken; why, these runs do not say (owed: a reading of each one's raise).
+  - The test, 5 runs a runner, with each pool charged all its threads ran (cb4bda1f4a): passed 5
+    of 5 on windows-2025, and 4 of 5 on windows-2022, its fifth "the three used 1.59375s of
+    3.0012487s (at most 1.56312435s ...); the normal thread was charged 1406250000 ns", two steps
+    past. Charged only what they ran raised (red-raised-only.patch), 3 runs a runner: windows-2025
+    passed 3; windows-2022 failed 1 ("the three used 3s of 3.0006572s ...; the normal thread was
+    charged 0 ns") and passed 2.
+  - The test reading the three's cycles against the window's counter ticks (e4f6b35bc1, run
+    44460964294), 5 runs a runner: windows-2025 passed the bound 5 of 5 (its run 2 failed
+    `a_thread_that_waits_between_its_runs_stays_raised` instead, a thread of a pool of its own);
+    windows-2022 failed it 2 of 5: "the three ... ran 4085632670 of its 7338194931 counter
+    ticks" (55.7%; the bound 3821936619, 52.1%), the normal thread 3229448572 (44.0%), and
+    GetThreadTimes charged them 55.7% too.
+  - The governor sampled from the moment all three were watched, with each one's current
+    priority (NtQueryInformationThread, run 44462319845 at ef2bc20f9a): on windows-2022 alone
+    the three ran 50.5% to 51.7% of the two parties' cycles, 0.2% to 0.5% of them lowered, and
+    49.8% to 50.7% of the window's ticks where watched from its start; beside 3 busy threads,
+    49.6% to 59.8% of the two parties' cycles (the busy threads took from the normal one alone)
+    and, in two rounds of five, 53.2% and 52.3% of the window's ticks, past the bound, 6.9% and
+    7.5% of the cycles run while sampled lowered, at a current priority of 7 (above it in 0.2%).
+    windows-2025: 49.8% to 52.8% alone, and 50.4% to 50.6% of the window's ticks beside 3 busy
+    threads where watched from its start.
+- **Reading.** Windows applies a lowering at once on both: a lowered spinner stops within 11 µs,
+  and the normal one beside it runs within 19 µs at p90. Lowered to the normal one's own priority,
+  a spinner keeps its CPU for its quantum, 12 clock steps on windows-2022 and 2 on windows-2025,
+  which no look ends: so the lowering below normal. A switch forced by suspending the lowered
+  thread waits for that thread to be given its CPU, as long as the threads above it keep it.
+  The governor keeps the three raised in half its looks on both. But GetThreadTimes, which
+  charges each 15.625 ms step to the thread that runs as it falls, does not charge them what they
+  ran: on windows-2022 it charged them 78.6% of a window whose CPU's cycles they ran 53.4% of,
+  on windows-2025 less than their cycles. A pool charged only the steps of its raised looks
+  left out every step its clock charged its threads in a lowered look, a quarter of the window on
+  windows-2022; charged all of them, the bound in the clock's own steps held but for the steps
+  it charges past the last look and the debt its floor forgives, two steps in one run of five.
+  The bound is a share of the CPU's time, which their cycles count and GetThreadTimes' steps do
+  not.
+- **Consequence.** D191 amended 2026-11-19: each pool is charged all its threads ran, raised or
+  lowered, as each thread's own credit is; and the test reads, on x86-64, what the three ran in
+  QueryThreadCycleTime's cycles, which x86-64's Windows counts in its time stamp counter's ticks,
+  against the window's ticks (RDTSC), its bound half of them and two periods'. arm64 Windows,
+  whose cycle counter was not measured here, keeps GetThreadTimes' steps. On windows-2022, beside
+  busy threads, the three still ran past the bound in two rounds of five, cycles run while their
+  sampled priority was the lowered one, with no boost above it: open, measured next.
