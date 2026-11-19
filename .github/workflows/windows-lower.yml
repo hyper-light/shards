@@ -12,6 +12,7 @@ on:
     paths:
       - .github/workflows/windows-lower.yml
       - docs/research/measurements/win-lower/**
+      - docs/research/measurements/whp-halt-clock-v1/**
   workflow_dispatch:
     inputs:
       rounds:
@@ -47,6 +48,12 @@ jobs:
           [Environment]::ProcessorCount
           (Get-CimInstance Win32_Processor).Name
           [System.Environment]::OSVersion.VersionString
+      - name: WHP halt clock (whp-halt-clock-v1)
+        shell: pwsh
+        run: |
+          powershell -ExecutionPolicy Bypass -File docs\research\measurements\whp-halt-clock-v1\run.ps1
+          Get-Content docs\research\measurements\whp-halt-clock-v1\host.txt
+          Get-Content docs\research\measurements\whp-halt-clock-v1\halt-clock.csv
       - name: Build
         shell: bash
         run: zig cc -O2 -Wall -Wextra -target x86_64-windows-gnu docs/research/measurements/win-lower/lower.c -o lower.exe -ladvapi32
