@@ -619,7 +619,13 @@ mod tests {
 
     /// `blobs` uploads through [`upload_all`], learned in `record`, each of ten steps of
     /// a MiB, each step 10 ms and answered in as long: 100 MiB a second each, whatever the
-    /// others do. How many uploads were under way as each began, in order.
+    /// others do and however late the host wakes them. Each step is due 10 ms after the
+    /// one before from its upload's start, and one whose time has passed goes at once, so
+    /// that a late wake catches up. Paced from wherever the last step ended instead, an
+    /// upload carried a MiB a sleep, at the scheduler's rate: on a loaded 3-core runner one
+    /// carried 44.5 MB/s, and the rate moved with the load, so that the climb measured no
+    /// more than the noise at three (CI 44408928475). How many uploads were under way as
+    /// each began, in order.
     fn uploaded(blobs: usize, record: &Record) -> Vec<usize> {
         let descs: Vec<Descriptor> = (0..blobs)
             .map(|i| described("application/octet-stream", format!("blob {i}").as_bytes()))
@@ -627,13 +633,15 @@ mod tests {
         let refs: Vec<&Descriptor> = descs.iter().collect();
         let now = AtomicUsize::new(0);
         let began = Mutex::new(Vec::new());
+        let step = Duration::from_millis(10);
         let up = |_: &Descriptor, link: &Link| {
             let at_once = now.fetch_add(1, Ordering::SeqCst) + 1;
             lock(&began).push(at_once);
-            for _ in 0..10 {
-                std::thread::sleep(Duration::from_millis(10));
+            let start = Instant::now();
+            for n in 1..=10 {
+                std::thread::sleep((start + step * n).saturating_duration_since(Instant::now()));
                 link.sent().fetch_add(1 << 20, Ordering::Relaxed);
-                link.answered(Duration::from_millis(10));
+                link.answered(step);
             }
             now.fetch_sub(1, Ordering::SeqCst);
             Ok(Layer::Pushed)
