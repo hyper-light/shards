@@ -276,8 +276,8 @@ fn writer() -> io::Result<Option<&'static Writer>> {
 static READER: OnceLock<Reader> = OnceLock::new();
 
 /// The reader of the home this process installed its slot file of ([`install`]), or recorded
-/// ([`install_at`]), made at the first call ([`Reader::open`]: a home not made yet is read
-/// once it is); none where it did neither. A failure to open it is its error, which a
+/// ([`install_at`]), made at the first call ([`Reader::open`]: a slot file not made yet is
+/// read once it is); none where it did neither. A failure to open it is its error, which a
 /// follower says, never taken for no declarations.
 pub fn installed() -> io::Result<Option<&'static Reader>> {
     if let Some(reader) = READER.get() {
@@ -575,8 +575,8 @@ pub(crate) fn declared<T>(file: &impl Target, write: impl FnOnce() -> io::Result
 }
 
 /// A follower's reader of a home's declarations ([`Reader::declared`]): the slot file mapped
-/// once, again only as it grows; opened at the first read that finds its home made, where it
-/// was not as the reader was made ([`Reader::open`]).
+/// once, again only as it grows; opened at the first read that finds it made, where it was
+/// not as the reader was made ([`Reader::open`]).
 #[derive(Debug)]
 pub struct Reader {
     file: OnceLock<File>,
@@ -588,10 +588,11 @@ pub struct Reader {
 }
 
 impl Reader {
-    /// A reader of the home `home`'s slot file, made where none is ([`open`]). Of a home not
-    /// made yet, it reads none until a read finds the home made, as the first durable write
-    /// of a process declaring there makes it ([`made_home`]): a follower makes no home, and one
-    /// that began before its subject's first durable write still reads it.
+    /// A reader of the home `home`'s slot file, as its declaring processes made it ([`open`]).
+    /// Of a home none has declared in yet, made or not, it reads none until a read finds the
+    /// slot file made, as the first durable write of a process declaring there makes it
+    /// ([`made_home`]): a follower makes nothing in the home it reads, and one that began
+    /// before its subject's first durable write still reads it.
     pub fn open(home: &Path) -> io::Result<Reader> {
         let reader = Reader {
             file: OnceLock::new(),
@@ -613,17 +614,27 @@ impl Reader {
         })
     }
 
-    /// Its slot file, opened now where its home has been made since it was last asked; none
-    /// while its home is not made, in which no process has declared.
+    /// Its slot file, opened now, to read, where a process declaring in its home has made it
+    /// since it was last asked; none while none has. Never made here: a follower that made
+    /// it made a file in a home being removed after the removal had emptied it, which so
+    /// failed, not empty (`rm -rf`, and the daemon's own as its lock goes: CI 44408928475's
+    /// `a_home_removed_once_is_gone_with_its_daemon`, its judge's follower made as the test
+    /// waited on the daemon's exit); and a home its follower may not write in was unread.
     fn file(&self) -> io::Result<Option<&File>> {
         if let Some(file) = self.file.get() {
             return Ok(Some(file));
         }
-        let Some(home) = self.home.as_deref().filter(|home| home.is_dir()) else {
+        let Some(home) = self.home.as_deref() else {
             return Ok(None);
         };
+        let file = match File::open(home.join(FILE)) {
+            Ok(file) => file,
+            // No process has declared there yet, its home made or not.
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e),
+        };
         // Another thread's, opened meanwhile, is kept where it was first: either is the home's.
-        let _ = self.file.set(open(home)?);
+        let _ = self.file.set(file);
         Ok(self.file.get())
     }
 
@@ -647,7 +658,13 @@ impl Reader {
             }
         };
         if grown {
-            let len = usize::try_from(file.metadata()?.len()).map_err(io::Error::other)?;
+            let len = file.metadata()?.len();
+            // Made by its declaring process, which makes its first granule next ([`made`]):
+            // nothing declared yet, and nothing to map.
+            if len < granule {
+                return Ok(Vec::new());
+            }
+            let len = usize::try_from(len).map_err(io::Error::other)?;
             *map = Some(Map::of(file, 0, len, false)?);
         }
         let Some(mapped) = map.as_ref() else {
@@ -1040,6 +1057,31 @@ mod tests {
         let (mut child, thread) = declaring_child(home.path(), true);
         let (pid, start) = (child.id(), sys::start_of(child.id()).unwrap().unwrap());
         let seen = Reader::open(home.path()).unwrap().declared(pid, start).unwrap();
+        assert_eq!(seen.len(), 1, "{seen:?}");
+        assert_eq!(seen[0].thread, thread);
+        child.stdin.take().unwrap().write_all(b"\n").unwrap();
+        assert!(child.wait().unwrap().success());
+    }
+
+    /// A follower makes nothing in the home it reads: a home made, in which no process has
+    /// declared yet, holds nothing after its reader's reads, which find none; once a process
+    /// declares there, its slot file is read. A follower that made the slot file made it in a
+    /// home being removed after the removal had emptied it, which so failed, not empty (CI
+    /// 44408928475, `a_home_removed_once_is_gone_with_its_daemon`).
+    #[test]
+    fn a_follower_makes_nothing_in_the_home_it_reads() {
+        let home = TempDir::new("durable-follower").unwrap();
+        let reader = Reader::open(home.path()).unwrap();
+        let (pid, start) = (std::process::id(), sys::start().unwrap());
+        assert!(reader.declared(pid, start).unwrap().is_empty());
+        let made: Vec<_> = std::fs::read_dir(home.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert!(made.is_empty(), "its follower made {made:?} in the home it reads");
+        let (mut child, thread) = declaring_child(home.path(), true);
+        let (pid, start) = (child.id(), sys::start_of(child.id()).unwrap().unwrap());
+        let seen = reader.declared(pid, start).unwrap();
         assert_eq!(seen.len(), 1, "{seen:?}");
         assert_eq!(seen[0].thread, thread);
         child.stdin.take().unwrap().write_all(b"\n").unwrap();
