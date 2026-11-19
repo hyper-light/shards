@@ -3462,6 +3462,7 @@ fn a_kept_rating_weighs_only_work_counted_as_this_host_counts_it() {
     let slowest = ns(240_614_800);
     let none = |others: Vec<String>| common::Kept {
         slowest,
+        quickest: slowest,
         rated: None,
         others,
     };
@@ -3482,6 +3483,7 @@ fn a_kept_rating_weighs_only_work_counted_as_this_host_counts_it() {
         )),
         Some(common::Kept {
             slowest,
+            quickest: slowest,
             rated: rated(62_500_000, 87_289_400, 343_750_000, 3),
             others: vec![theirs.clone()],
         })
@@ -3510,7 +3512,96 @@ fn a_kept_rating_weighs_only_work_counted_as_this_host_counts_it() {
     kind.keep();
     assert_eq!(
         std::fs::read_to_string(&file).unwrap(),
-        format!("100000000 rated {ours} 7 50000000 9 2 {theirs}\n")
+        format!("100000000 50000000 rated {ours} 7 50000000 9 7 2 {theirs}\n")
+    );
+}
+
+/// A kind's kept record keeps the quickest answer after its W* and the least work after each
+/// rating's C*, so that a later run's judge takes the spreads its answers showed (D215
+/// amended 2026-11-19). One kept before the minima, as CI's cache brings records back from
+/// runs before (`target/judge-records`), is read whole, each minimum its maximum: spreads of
+/// none, as its judge took them then, never refused for it and never broken. Do: read records
+/// of each shape; keep a kind taught two answers and read it back in another; keep an older
+/// record read in. Expect: each read as above, a least past its most and a rating of six
+/// numbers broken; what was kept read back the same; the older one written with its minima.
+#[test]
+fn a_kept_record_keeps_its_spreads_and_one_kept_before_reads_as_none() {
+    let ours = common::rated_key();
+    let ns = Duration::from_nanos;
+    let rated = |least: u64, over: u64, most: u64, lightest: u64, answers: u64| {
+        Some(shards_api::Rated {
+            least: shards_api::Rate {
+                work: shards_api::Work::of(least),
+                over: ns(over),
+            },
+            most: shards_api::Work::of(most),
+            lightest: shards_api::Work::of(lightest),
+            answers,
+        })
+    };
+    let kept = |text: &str| common::kept_record(text, true, ours);
+    assert_eq!(
+        kept(&format!(
+            "served 240614800 200000000 rated {ours} 62500000 87289400 343750000 300000000 3"
+        )),
+        Some(common::Kept {
+            slowest: ns(240_614_800),
+            quickest: ns(200_000_000),
+            rated: rated(62_500_000, 87_289_400, 343_750_000, 300_000_000, 3),
+            others: Vec::new(),
+        })
+    );
+    assert_eq!(
+        kept(&format!(
+            "served 240614800 rated {ours} 62500000 87289400 343750000 3"
+        )),
+        Some(common::Kept {
+            slowest: ns(240_614_800),
+            quickest: ns(240_614_800),
+            rated: rated(62_500_000, 87_289_400, 343_750_000, 343_750_000, 3),
+            others: Vec::new(),
+        }),
+        "kept before the minima"
+    );
+    for broken in [
+        "served 240614800 300000000".to_string(),
+        format!("served 240614800 rated {ours} 62500000 87289400 343750000 400000000 3"),
+        format!("served 240614800 rated {ours} 62500000 87289400 343750000 300000000 3 1"),
+    ] {
+        assert_eq!(kept(&broken), None, "{broken}");
+    }
+    let home = TempDir::new("kept-spreads");
+    let file = home.join("record");
+    let ms = Duration::from_millis;
+    let kind = common::WaitKind::apart(file.clone());
+    kind.record().teach(ms(50), shards_api::Work::of(9));
+    kind.record().teach(ms(20), shards_api::Work::of(7));
+    kind.keep();
+    let written = std::fs::read_to_string(&file).unwrap();
+    assert_eq!(
+        written,
+        format!("50000000 20000000 rated {ours} 9 50000000 9 7 2\n")
+    );
+    let back = common::WaitKind::apart(file.clone());
+    back.keep();
+    assert_eq!(back.record().seen(), kind.record().seen());
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), written);
+    let before = format!("240614800 rated {ours} 62500000 87289400 343750000 3\n");
+    std::fs::write(&file, &before).unwrap();
+    let older = common::WaitKind::apart(file.clone());
+    older.keep();
+    assert_eq!(
+        older.record().seen(),
+        shards_api::Seen::Learned {
+            slowest: ns(240_614_800),
+            quickest: ns(240_614_800),
+            rated: rated(62_500_000, 87_289_400, 343_750_000, 343_750_000, 3),
+        },
+        "its spreads none"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        format!("240614800 240614800 rated {ours} 62500000 87289400 343750000 343750000 3\n")
     );
 }
 

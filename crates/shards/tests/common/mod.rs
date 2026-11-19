@@ -4522,12 +4522,12 @@ impl WaitKind {
         &self.record
     }
 
-    /// Teaches its record what this host kept of it ([`kept_record`]): W*, and R*, C* and the
-    /// count of answers that taught them where it keeps a rating of this host's work's unit
-    /// and CPU model ([`rated_key`]), each as it was kept (`shards_api::Record::merge`); and
-    /// says the ratings it keeps of other keys, as kept, for its keep to write back. Nothing
-    /// where nothing whole is kept, and, for a command's kind, nothing that does not say it is
-    /// of served answers alone ([`SERVED`]).
+    /// Teaches its record what this host kept of it ([`kept_record`]): W* and the quickest
+    /// answer, and R*, C*, the least work and the count of answers that taught them where it
+    /// keeps a rating of this host's work's unit and CPU model ([`rated_key`]), each as it was
+    /// kept (`shards_api::Record::merge`); and says the ratings it keeps of other keys, as
+    /// kept, for its keep to write back. Nothing where nothing whole is kept, and, for a
+    /// command's kind, nothing that does not say it is of served answers alone ([`SERVED`]).
     fn learn_kept(&self) -> Vec<String> {
         let kept = std::fs::read_to_string(&self.file).unwrap_or_default();
         let Some(kept) = kept_record(&kept, self.served_only(), rated_key()) else {
@@ -4535,7 +4535,7 @@ impl WaitKind {
         };
         self.record.merge(shards_api::Seen::Learned {
             slowest: kept.slowest,
-            quickest: kept.slowest,
+            quickest: kept.quickest,
             rated: kept.rated,
         });
         kept.others
@@ -4612,7 +4612,12 @@ impl WaitKind {
     ) -> std::io::Result<()> {
         static KEEPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let others = self.learn_kept();
-        let shards_api::Seen::Learned { slowest, rated, .. } = self.record.seen() else {
+        let shards_api::Seen::Learned {
+            slowest,
+            quickest,
+            rated,
+        } = self.record.seen()
+        else {
             return Ok(());
         };
         between();
@@ -4630,14 +4635,15 @@ impl WaitKind {
         } else {
             String::new()
         };
-        let mut kept = format!("{tag}{}", ns(slowest));
+        let mut kept = format!("{tag}{} {}", ns(slowest), ns(quickest));
         if let Some(rated) = rated {
             kept.push_str(&format!(
-                " {RATED} {} {} {} {} {}",
+                " {RATED} {} {} {} {} {} {}",
                 rated_key(),
                 rated.least.work.count(),
                 ns(rated.least.over),
                 rated.most.count(),
+                rated.lightest.count(),
                 rated.answers
             ));
         }
@@ -4657,8 +4663,10 @@ impl WaitKind {
 pub struct Kept {
     /// W*.
     pub slowest: Duration,
-    /// R*, C* and the count of the answers that taught them, where it keeps a rating of this
-    /// host's key ([`rated_key`]).
+    /// The quickest answer, W*'s where the record keeps none (its spread none).
+    pub quickest: Duration,
+    /// R*, C*, the least work and the count of the answers that taught them, where it keeps a
+    /// rating of this host's key ([`rated_key`]).
     pub rated: Option<shards_api::Rated>,
     /// Each rating it keeps of another key, as kept (`rated KEY …`), which this host's keep
     /// writes back beside its own: one cache's records come back to runners of any CPU model
@@ -4667,45 +4675,67 @@ pub struct Kept {
 }
 
 /// A kept record `text` as a host whose ratings are keyed `key` ([`rated_key`]) reads it:
-/// `[served ]W*`, then each rating, `rated KEY R*WORK R*WALL C*WORK ANSWERS`, W* and R*'s
-/// wall in nanoseconds and R*'s and C*'s work in KEY's unit (`shards_api::Work`). Its W* is
-/// read whatever its ratings are, and its R* and C* from its rating of `key` alone: work
-/// counted in another unit or on another CPU model weighs nothing here (cycles are no time,
-/// and their rate is their CPU's: Microsoft Learn's QueryThreadCycleTime). A rating kept
-/// before ratings were keyed (`rated` and its numbers: CPU nanoseconds, or on Windows whole
-/// clock ticks', which refused a party of thirteen ticks past a C* of eleven, CI
-/// 44347282760) is read as none, its R* and C* taught anew; the record's W* stands. None
-/// where nothing whole is kept or a rating is not whole, and, `served` asked, where it does
-/// not say it is of served answers alone ([`SERVED`]).
+/// `[served ]W* QUICKEST`, then each rating, `rated KEY R*WORK R*WALL C*WORK LEAST ANSWERS`,
+/// W*, the quickest answer and R*'s wall in nanoseconds and R*'s, C*'s and the least work in
+/// KEY's unit (`shards_api::Work`): each least after its most, so that the record keeps the
+/// spread its judge's bounds take (D215 amended 2026-11-19). Its W* is read whatever its
+/// ratings are, and its R* and C* from its rating of `key` alone: work counted in another
+/// unit or on another CPU model weighs nothing here (cycles are no time, and their rate is
+/// their CPU's: Microsoft Learn's QueryThreadCycleTime). A record kept before the minima were
+/// (`[served ]W*`, its ratings `rated KEY R*WORK R*WALL C*WORK ANSWERS`), as CI's cache brings
+/// them back from runs before, is read whole, each minimum its maximum: its spreads none, as
+/// its judge took them then. A rating kept before ratings were keyed (`rated` and its numbers:
+/// CPU nanoseconds, or on Windows whole clock ticks', which refused a party of thirteen ticks
+/// past a C* of eleven, CI 44347282760) is read as none, its R* and C* taught anew; the
+/// record's W* stands. None where nothing whole is kept, a least is more than its most, or a
+/// rating is not whole, and, `served` asked, where it does not say it is of served answers
+/// alone ([`SERVED`]).
 pub fn kept_record(text: &str, served: bool, key: &str) -> Option<Kept> {
     let mut words = text.split_whitespace().peekable();
     if served && words.next() != Some(SERVED) {
         return None;
     }
+    let numeric = |word: &&str| word.parse::<u64>().is_ok();
     let number = |word: Option<&str>| word.and_then(|n| n.parse::<u64>().ok());
-    let slowest = Duration::from_nanos(number(words.next())?);
+    let slowest = number(words.next())?;
+    let quickest = number(words.next_if(numeric)).unwrap_or(slowest);
+    if quickest > slowest {
+        return None;
+    }
+    let (slowest, quickest) = (Duration::from_nanos(slowest), Duration::from_nanos(quickest));
     let (mut rated, mut others) = (None, Vec::new());
     while let Some(word) = words.next() {
         if word != RATED {
             return None;
         }
         // A rating kept before ratings were keyed: numbers alone, and the record's last.
-        if words.peek().is_some_and(|next| next.parse::<u64>().is_ok()) {
+        if words.peek().is_some_and(numeric) {
             return Some(Kept {
                 slowest,
+                quickest,
                 rated,
                 others,
             });
         }
         let of = words.next()?;
-        let (work, over, most) = (
-            number(words.next())?,
-            number(words.next())?,
-            number(words.next())?,
-        );
-        let answers = number(words.next()).filter(|&n| n > 0)?;
+        // Its numbers, five, or four where it was kept before the least work was.
+        let mut numbers = [0u64; 5];
+        let mut read = 0usize;
+        while let Some(n) = number(words.next_if(numeric)) {
+            *numbers.get_mut(read)? = n;
+            read += 1;
+        }
+        let [work, over, most, lightest, answers] = match (read, numbers) {
+            (4, [work, over, most, answers, _]) => [work, over, most, most, answers],
+            (5, numbers) => numbers,
+            _ => return None,
+        };
+        if answers == 0 || lightest > most {
+            return None;
+        }
         if of != key {
-            others.push(format!("{RATED} {of} {work} {over} {most} {answers}"));
+            let kept: Vec<String> = numbers.get(..read)?.iter().map(u64::to_string).collect();
+            others.push(format!("{RATED} {of} {}", kept.join(" ")));
         } else if rated.is_none() {
             rated = Some(shards_api::Rated {
                 least: shards_api::Rate {
@@ -4713,13 +4743,14 @@ pub fn kept_record(text: &str, served: bool, key: &str) -> Option<Kept> {
                     over: Duration::from_nanos(over),
                 },
                 most: shards_api::Work::of(most),
-                lightest: shards_api::Work::of(most),
+                lightest: shards_api::Work::of(lightest),
                 answers,
             });
         }
     }
     Some(Kept {
         slowest,
+        quickest,
         rated,
         others,
     })
@@ -4750,10 +4781,10 @@ pub fn rated_key() -> &'static str {
 const SERVED: &str = "served";
 
 /// The word before each of a kept record's ratings ([`WaitKind::keep`]): the key of the work
-/// it was counted in ([`rated_key`]), R*, C* and the count of the answers that taught them,
-/// of answers whose work was read through their end alone (`shards_api::Rated`). A record
-/// kept without it has none; one kept before ratings were keyed has none of any key
-/// ([`kept_record`]).
+/// it was counted in ([`rated_key`]), R*, C*, the least work and the count of the answers
+/// that taught them, of answers whose work was read through their end alone
+/// (`shards_api::Rated`). A record kept without it has none; one kept before ratings were
+/// keyed has none of any key ([`kept_record`]).
 const RATED: &str = "rated";
 
 /// Which answers teach a [`WaitKind`].
