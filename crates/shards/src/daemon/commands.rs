@@ -2097,6 +2097,8 @@ impl<D: crate::containers::Disk> Daemon<D> {
             // A signal that could not be sent went nowhere: its run's connection to its VM
             // is gone, which its guest says its end on too, so no end can come from the
             // guest, and its VM is killed at once.
+            // Its end is timed from its signal's sending, as `Ends::heard` takes it.
+            let sent = Instant::now();
             let (phase, deadline, followed, grace) = if linux == 9 {
                 let (wait, teardown) = self.kill_command(&id);
                 (Phase::Killed, wait.and_then(after), teardown, None)
@@ -2116,7 +2118,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 phase,
                 deadline,
                 followed,
-                since: Instant::now(),
+                since: sent,
                 grace,
             });
         }

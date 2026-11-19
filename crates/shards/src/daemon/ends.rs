@@ -290,10 +290,10 @@ impl Ends {
         }
         let mut text = format!(
             "teardown {}\nexit {}\nhelper {}\nstart {}\n",
-            kept.teardown.as_millis(),
-            kept.exit.as_millis(),
-            kept.helper.as_millis(),
-            kept.start.as_millis()
+            whole_ms(kept.teardown),
+            whole_ms(kept.exit),
+            whole_ms(kept.helper),
+            whole_ms(kept.start)
         );
         if kept.teardown_work.answers > 0 {
             text.push_str(&format!(
@@ -545,6 +545,14 @@ pub(crate) enum GoesOn {
     Still,
     /// It lives and could not be read: why. Given up on as one still is, and said.
     Unread(String),
+}
+
+/// A slice as the home's record keeps it, in whole milliseconds, rounded up: a heard end
+/// that took less than one is kept as one, never as none, which [`Ends::slice`] would read
+/// as nothing learned (Windows CI 44408928475: a kill's end heard in under a millisecond,
+/// kept as `teardown 0`).
+fn whole_ms(took: Duration) -> u128 {
+    took.as_nanos().div_ceil(1_000_000)
 }
 
 #[cfg(test)]
