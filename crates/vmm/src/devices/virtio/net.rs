@@ -788,6 +788,9 @@ mod tests {
     /// A flush with no deadline waits while its worker runs, however long it takes to
     /// answer (a second and a half here), where one given the second the VM process took
     /// gave up (warm.rs, until ROOT's (A), 2026-11-13); and a worker that ends answers it.
+    /// Timed from before the worker's thread is made, which may begin its wait before the
+    /// thread that made it reads the clock: timed from after, the flush measured 1.499911587 s
+    /// (CI 44464014557, aarch64 musl).
     #[test]
     fn a_flush_waits_while_its_worker_runs() {
         let flush = TxFlush::default();
@@ -795,11 +798,11 @@ mod tests {
         let late = std::time::Duration::from_millis(1500);
         std::thread::scope(|s| {
             let answering = flush.clone();
+            let began = Instant::now();
             s.spawn(move || {
                 std::thread::sleep(late);
                 answering.answer(1);
             });
-            let began = Instant::now();
             assert!(flush.flush(None), "a flush its worker answered");
             assert!(began.elapsed() >= late, "{:?}", began.elapsed());
         });
