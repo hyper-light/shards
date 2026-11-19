@@ -361,7 +361,15 @@ fn govern() {
             // thread is set once its Watch is gone.
             match period() {
                 Ok(period) => {
-                    governed.look(Instant::now(), period);
+                    let looked = Instant::now();
+                    governed.look(looked, period);
+                    // A look's own time, what governing costs its process (PM M620's A/B).
+                    crate::debug!(
+                        "priority governor: looked at {} threads in {} us, period {} us",
+                        governed.threads.len(),
+                        looked.elapsed().as_micros(),
+                        period.as_micros()
+                    );
                     period
                 }
                 // No period, no look: every thread back to normal and let go of, as no
@@ -394,8 +402,20 @@ impl Governed {
         match self.pools.iter_mut().find(|p| p.cpus == cpus) {
             Some(pool) => {
                 let passed = now.saturating_duration_since(pool.at);
+                let was = pool.credit;
                 pool.credit = granule::credited(pool.credit, passed, used, count, period);
                 pool.at = now;
+                // What the look did to the pool: what it credited, charged and kept (PM M620).
+                crate::debug!(
+                    "priority governor: pool {}:{:#x} after {} us: credit {} us, charged {} us, now {} us of {} us at most",
+                    cpus.group,
+                    cpus.mask,
+                    passed.as_micros(),
+                    was / 1_000,
+                    used / 1_000,
+                    pool.credit / 1_000,
+                    granule::most_credit(period, count) / 1_000
+                );
                 pool.credit
             }
             None => {

@@ -208,8 +208,177 @@ fn round(seconds: u64, load: usize, x: usize) -> Round {
     })
 }
 
+/// The governor's pool lines (shards-vmm's `pooled`, at SHARDS_LOG=debug) logged between
+/// `from` and `to` (µs since the log began), each the time since the last look and its
+/// credit before, charged and after, and its most: looks, their spacing, and what the pool's
+/// bounds took off, every pool of the CPU set `mask`.
+fn looks(log: &str, mask: usize, from: u128, to: u128) -> String {
+    let key = format!("pool 0:{mask:#x} after ");
+    let mut gaps = Vec::new();
+    let (mut forgiven, mut capped, mut charged) = (0i128, 0i128, 0i128);
+    for line in log.lines() {
+        let Some(at) = line.split_whitespace().nth(1).and_then(|t| t.strip_suffix("us")).and_then(|t| t.parse::<u128>().ok()) else {
+            continue;
+        };
+        if at < from || at > to {
+            continue;
+        }
+        let Some(rest) = line.split_once(&key).map(|(_, r)| r) else {
+            continue;
+        };
+        let nums: Vec<i128> = rest
+            .split(|c: char| !(c.is_ascii_digit() || c == '-'))
+            .filter_map(|w| w.parse().ok())
+            .collect();
+        let [passed, was, used, now, most] = nums[..] else {
+            continue;
+        };
+        gaps.push(passed);
+        charged += used;
+        let raw = was + passed / 2 - used;
+        if raw < -most {
+            forgiven += -most - raw;
+        } else if raw > most {
+            capped += raw - most;
+        }
+        let _ = now;
+    }
+    gaps.sort_unstable();
+    let pct = |q: f64| gaps.get(((q * gaps.len() as f64).ceil() as usize).saturating_sub(1)).copied().unwrap_or(0);
+    format!(
+        "{} looks, apart p50 {} us p90 {} us max {} us; charged {} us, forgiven at the floor {} us, kept from above the most {} us",
+        gaps.len(),
+        pct(0.5),
+        pct(0.9),
+        gaps.last().copied().unwrap_or(0),
+        charged,
+        forgiven,
+        capped
+    )
+}
+
+/// What a look reads of each of `n` watched threads, by each clock, timed over `looks` looks
+/// (µs a look: p50, p90, p99, max): GetThreadTimes and GetThreadGroupAffinity, as the governor
+/// reads them now, and QueryThreadCycleTime with them, as a governor counting cycles would. Half
+/// the threads spin, half sleep, so that some are running as they are read.
+fn look_cost(n: usize, looks: usize) {
+    use windows_sys::Win32::System::SystemInformation::GROUP_AFFINITY;
+    use windows_sys::Win32::System::Threading::GetThreadGroupAffinity;
+    let stop = AtomicBool::new(false);
+    std::thread::scope(|s| {
+        let stop = &stop;
+        let (tx, rx) = mpsc::channel();
+        for k in 0..n {
+            let tx = tx.clone();
+            s.spawn(move || {
+                tx.send(own()).unwrap();
+                while !stop.load(Ordering::Relaxed) {
+                    if k % 2 == 0 {
+                        std::hint::spin_loop();
+                    } else {
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                }
+            });
+        }
+        drop(tx);
+        let handles: Vec<usize> = rx.iter().take(n).collect();
+        let affinity = |h: HANDLE| {
+            let mut a = GROUP_AFFINITY::default();
+            // SAFETY: a thread handle with query access, and a structure to fill.
+            unsafe { GetThreadGroupAffinity(h, &mut a) };
+            a.Mask
+        };
+        let timed = |cycles_too: bool| {
+            let mut each = Vec::with_capacity(looks);
+            let mut sink = 0u64;
+            for _ in 0..looks {
+                let began = Instant::now();
+                for &h in &handles {
+                    let h = h as HANDLE;
+                    sink = sink.wrapping_add(times(h)).wrapping_add(affinity(h) as u64);
+                    if cycles_too {
+                        sink = sink.wrapping_add(cycles(h));
+                    }
+                }
+                each.push(began.elapsed().as_secs_f64() * 1e6);
+            }
+            each.sort_by(f64::total_cmp);
+            let at = |q: f64| each[((q * each.len() as f64).ceil() as usize).saturating_sub(1).min(each.len() - 1)];
+            println!(
+                "  {n} threads a look, {}: p50 {:.2} us, p90 {:.2}, p99 {:.2}, max {:.2} (n {looks}) [{}]",
+                if cycles_too { "GetThreadTimes, GetThreadGroupAffinity and QueryThreadCycleTime" } else { "GetThreadTimes and GetThreadGroupAffinity" },
+                at(0.5),
+                at(0.9),
+                at(0.99),
+                each[each.len() - 1],
+                sink % 2
+            );
+        };
+        timed(false);
+        timed(true);
+        stop.store(true, Ordering::Relaxed);
+        for h in handles {
+            // SAFETY: the handles `own` opened, closed once.
+            unsafe { CloseHandle(h as HANDLE) };
+        }
+    });
+}
+
+/// The governor's own looks (shards-vmm's `govern`, at SHARDS_LOG=debug) logged between `from`
+/// and `to` (µs since the log began): how many, each one's own time (p50, p99, max), their sum
+/// over the span, and the period they were made at.
+fn looked(log: &str, from: u128, to: u128) -> String {
+    let mut took = Vec::new();
+    let mut period = 0u128;
+    for line in log.lines() {
+        let Some(at) = line.split_whitespace().nth(1).and_then(|t| t.strip_suffix("us")).and_then(|t| t.parse::<u128>().ok()) else {
+            continue;
+        };
+        if at < from || at > to {
+            continue;
+        }
+        let Some(rest) = line.split_once("priority governor: looked at ").map(|(_, r)| r) else {
+            continue;
+        };
+        let nums: Vec<u128> = rest.split(|c: char| !c.is_ascii_digit()).filter_map(|w| w.parse().ok()).collect();
+        if let [_, us, p] = nums[..] {
+            took.push(us);
+            period = p;
+        }
+    }
+    took.sort_unstable();
+    let pct = |q: f64| took.get(((q * took.len() as f64).ceil() as usize).saturating_sub(1)).copied().unwrap_or(0);
+    let sum: u128 = took.iter().sum();
+    let span = to.saturating_sub(from).max(1);
+    format!(
+        "{} looks at a {} us period, each p50 {} us p99 {} us max {} us; {} us of {} us spent looking ({:.3}%)",
+        took.len(),
+        period,
+        pct(0.5),
+        pct(0.99),
+        took.last().copied().unwrap_or(0),
+        sum,
+        span,
+        100.0 * sum as f64 / span as f64
+    )
+}
+
 fn main() {
     let args: Vec<u64> = std::env::args().skip(1).map(|a| a.parse().unwrap()).collect();
+    if args.first() == Some(&0) {
+        println!("What a look reads, timed on this host:");
+        for n in [1, 4, 8, 16] {
+            look_cost(n, 20_000);
+        }
+        return;
+    }
+    // The governor's own account of each look, to a file of this run's.
+    // SAFETY: set before any thread of this process reads the environment.
+    unsafe { std::env::set_var("SHARDS_LOG", "debug") };
+    shards_vmm::log::init();
+    let log_path = std::env::temp_dir().join(format!("win-governor-{}.log", std::process::id()));
+    shards_vmm::log::to(std::fs::File::create(&log_path).unwrap());
     let rounds = args.first().copied().unwrap_or(5);
     let seconds = args.get(1).copied().unwrap_or(3);
     let load = usize::try_from(args.get(2).copied().unwrap_or(0)).unwrap();
@@ -229,7 +398,9 @@ fn main() {
     println!("|---|---|---|---|---|---|---|---|---|---|---|");
     let mut shown = 0;
     for r in 1..=rounds {
+        let began_us = shards_vmm::log::uptime_us();
         let round = round(seconds, load, x);
+        let ended_us = shards_vmm::log::uptime_us();
         let bound = round.elapsed / 2 + SLACK;
         let (mut raised, mut lowered, mut normal_level, mut normal_thread) = (0u64, 0u64, 0u64, 0u64);
         // Lowered cycles run at a current priority above its base's 7, and the highest seen.
@@ -305,6 +476,9 @@ fn main() {
             pct(all_lowered as u64, n as u64),
         );
         let interval = if n > 0 { round.elapsed.as_secs_f64() * 1000.0 / (n as f64) } else { 0.0 };
+        let log = std::fs::read_to_string(&log_path).unwrap_or_default();
+        println!("  round {r}: the governor's pool of the three's CPU: {}", looks(&log, x, began_us, ended_us));
+        println!("  round {r}: the governor's looks: {}", looked(&log, began_us, ended_us));
         println!(
             "  round {r}: {} samples, one each {interval:.2} ms of the window; lowered cycles run above base priority: {:.1}% of all, the highest current priority {highest}",
             round.samples.len(),
