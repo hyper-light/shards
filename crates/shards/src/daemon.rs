@@ -13862,12 +13862,20 @@ mod tests {
             let free = t.home.join(s::DIR).join("free");
             // A slot's names beside the lists: the maker's first look is done. Served
             // alone, its lists are as they were opened, and that look could find them half
-            // removed below and make them again as they go (gate e2, under load).
+            // removed below and make them again as they go (gate e2, under load). A slot's,
+            // its number and its part (`0.say`): the lists' directory holds its `taking` lock
+            // from its opening on, which any name but the lists' took for a slot, so the wait
+            // ended before the first look, and the removal below found a list that look was
+            // making again gone (CI 44476277082, macOS: NotFound).
             #[cfg(unix)]
             t.until("no slot was offered", |_| {
-                std::fs::read_dir(t.home.join(s::DIR))
-                    .unwrap()
-                    .any(|e| !matches!(e.unwrap().file_name().to_str(), Some("free" | "free-streams")))
+                std::fs::read_dir(t.home.join(s::DIR)).unwrap().any(|e| {
+                    e.unwrap()
+                        .file_name()
+                        .to_str()
+                        .and_then(|name| name.split_once('.'))
+                        .is_some_and(|(number, _)| number.parse::<u64>().is_ok())
+                })
             });
             // A slot is an instance of its list's pipe on Windows, named in no file: one a
             // client takes was offered after the maker's first look.
