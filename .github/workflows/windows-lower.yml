@@ -79,3 +79,14 @@ jobs:
               | grep -E "^test result|past their bound|panicked" || true
           done
           git checkout -- crates
+      - name: Governor's tests, red (red-floor.patch), 3 runs
+        shell: bash
+        run: |
+          git apply docs/research/measurements/win-lower/red-floor.patch
+          for i in 1 2 3; do
+            echo "=== red floor run $i"
+            cargo test --locked --profile test-release -p shards-vmm --lib -- --exact \
+              platform::windows_thread::tests::raised_threads_sharing_a_cpu_take_no_more_than_half_of_it 2>&1 \
+              | grep -E "^test result|past their bound|panicked" || true
+          done
+          git checkout -- crates

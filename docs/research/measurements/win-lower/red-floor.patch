@@ -1,0 +1,16 @@
+# Red for D191's floor (PM M620): a pool kept to a period's debt alone, as until 2026-11-19, the step of g it may owe past it forgiven.
+# Expected on windows-2022: raised_threads_sharing_a_cpu_take_no_more_than_half_of_it past its bound in some runs.
+diff --git a/crates/vmm/src/platform/granule.rs b/crates/vmm/src/platform/granule.rs
+index 56214a049b..89b50d26d1 100644
+--- a/crates/vmm/src/platform/granule.rs
++++ b/crates/vmm/src/platform/granule.rs
+@@ -200,7 +200,8 @@ pub fn credited(
+         .saturating_add(half.saturating_mul(i64::try_from(cpus).unwrap_or(i64::MAX)))
+         .saturating_sub(i64::try_from(used).unwrap_or(i64::MAX))
+         .min(most)
+-        .max(owed.saturating_neg())
++        // RED: kept to a period's debt alone, as until 2026-11-19.
++        .max(most.saturating_neg() + 0 * owed)
+ }
+ 
+ static WOKE: OnceLock<()> = OnceLock::new();
