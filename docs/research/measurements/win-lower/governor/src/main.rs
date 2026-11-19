@@ -208,8 +208,63 @@ fn round(seconds: u64, load: usize, x: usize) -> Round {
     })
 }
 
+/// The governor's pool lines (shards-vmm's `pooled`, at SHARDS_LOG=debug) logged between
+/// `from` and `to` (µs since the log began), each the time since the last look and its
+/// credit before, charged and after, and its most: looks, their spacing, and what the pool's
+/// bounds took off, every pool of the CPU set `mask`.
+fn looks(log: &str, mask: usize, from: u128, to: u128) -> String {
+    let key = format!("pool 0:{mask:#x} after ");
+    let mut gaps = Vec::new();
+    let (mut forgiven, mut capped, mut charged) = (0i128, 0i128, 0i128);
+    for line in log.lines() {
+        let Some(at) = line.split_whitespace().nth(1).and_then(|t| t.strip_suffix("us")).and_then(|t| t.parse::<u128>().ok()) else {
+            continue;
+        };
+        if at < from || at > to {
+            continue;
+        }
+        let Some(rest) = line.split_once(&key).map(|(_, r)| r) else {
+            continue;
+        };
+        let nums: Vec<i128> = rest
+            .split(|c: char| !(c.is_ascii_digit() || c == '-'))
+            .filter_map(|w| w.parse().ok())
+            .collect();
+        let [passed, was, used, now, most] = nums[..] else {
+            continue;
+        };
+        gaps.push(passed);
+        charged += used;
+        let raw = was + passed / 2 - used;
+        if raw < -most {
+            forgiven += -most - raw;
+        } else if raw > most {
+            capped += raw - most;
+        }
+        let _ = now;
+    }
+    gaps.sort_unstable();
+    let pct = |q: f64| gaps.get(((q * gaps.len() as f64).ceil() as usize).saturating_sub(1)).copied().unwrap_or(0);
+    format!(
+        "{} looks, apart p50 {} us p90 {} us max {} us; charged {} us, forgiven at the floor {} us, kept from above the most {} us",
+        gaps.len(),
+        pct(0.5),
+        pct(0.9),
+        gaps.last().copied().unwrap_or(0),
+        charged,
+        forgiven,
+        capped
+    )
+}
+
 fn main() {
     let args: Vec<u64> = std::env::args().skip(1).map(|a| a.parse().unwrap()).collect();
+    // The governor's own account of each look, to a file of this run's.
+    // SAFETY: set before any thread of this process reads the environment.
+    unsafe { std::env::set_var("SHARDS_LOG", "debug") };
+    shards_vmm::log::init();
+    let log_path = std::env::temp_dir().join(format!("win-governor-{}.log", std::process::id()));
+    shards_vmm::log::to(std::fs::File::create(&log_path).unwrap());
     let rounds = args.first().copied().unwrap_or(5);
     let seconds = args.get(1).copied().unwrap_or(3);
     let load = usize::try_from(args.get(2).copied().unwrap_or(0)).unwrap();
@@ -229,7 +284,9 @@ fn main() {
     println!("|---|---|---|---|---|---|---|---|---|---|---|");
     let mut shown = 0;
     for r in 1..=rounds {
+        let began_us = shards_vmm::log::uptime_us();
         let round = round(seconds, load, x);
+        let ended_us = shards_vmm::log::uptime_us();
         let bound = round.elapsed / 2 + SLACK;
         let (mut raised, mut lowered, mut normal_level, mut normal_thread) = (0u64, 0u64, 0u64, 0u64);
         // Lowered cycles run at a current priority above its base's 7, and the highest seen.
@@ -305,6 +362,8 @@ fn main() {
             pct(all_lowered as u64, n as u64),
         );
         let interval = if n > 0 { round.elapsed.as_secs_f64() * 1000.0 / (n as f64) } else { 0.0 };
+        let log = std::fs::read_to_string(&log_path).unwrap_or_default();
+        println!("  round {r}: the governor's pool of the three's CPU: {}", looks(&log, x, began_us, ended_us));
         println!(
             "  round {r}: {} samples, one each {interval:.2} ms of the window; lowered cycles run above base priority: {:.1}% of all, the highest current priority {highest}",
             round.samples.len(),

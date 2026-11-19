@@ -394,8 +394,21 @@ impl Governed {
         match self.pools.iter_mut().find(|p| p.cpus == cpus) {
             Some(pool) => {
                 let passed = now.saturating_duration_since(pool.at);
+                let was = pool.credit;
                 pool.credit = granule::credited(pool.credit, passed, used, count, period);
                 pool.at = now;
+                // What the look did to the pool: what it credited, charged and kept, and what
+                // its bounds took off (PM M620's windows-2022 overrun).
+                crate::debug!(
+                    "priority governor: pool {}:{:#x} after {} us: credit {} us, charged {} us, now {} us of {} us at most",
+                    cpus.group,
+                    cpus.mask,
+                    passed.as_micros(),
+                    was / 1_000,
+                    used / 1_000,
+                    pool.credit / 1_000,
+                    granule::most_credit(period, count) / 1_000
+                );
                 pool.credit
             }
             None => {
