@@ -12,7 +12,6 @@ on:
     paths:
       - .github/workflows/windows-lower.yml
       - docs/research/measurements/win-lower/**
-      - crates/vmm/src/platform/windows_thread.rs
   workflow_dispatch:
     inputs:
       rounds:

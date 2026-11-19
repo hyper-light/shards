@@ -72,8 +72,13 @@ struct Sample {
 
 struct Round {
     elapsed: Duration,
+    /// The time stamp counter's ticks over the window, which x86-64's Windows counts a
+    /// thread's cycles in (QueryThreadCycleTime): the CPU's whole time, in cycles.
+    stamps: u64,
     /// Each governed thread's own GetThreadTimes from its raise to its end, as the test reads.
     ran: Duration,
+    /// And its own cycles over the same.
+    ran_cycles: u64,
     normal_ran: Duration,
     samples: Vec<Sample>,
 }
@@ -105,6 +110,8 @@ fn round(seconds: u64, load: usize, x: usize) -> Round {
             });
         }
         let began = Instant::now();
+        // SAFETY: RDTSC reads the counter, as every x86-64 CPU has it.
+        let stamped = unsafe { std::arch::x86_64::_rdtsc() };
         let (gtx, grx) = mpsc::channel();
         let governed: Vec<_> = (0..GOVERNED)
             .map(|_| {
@@ -116,11 +123,11 @@ fn round(seconds: u64, load: usize, x: usize) -> Round {
                     let raised = shards_vmm::platform::prioritize_vcpu_thread().unwrap();
                     let h = own();
                     gtx.send(h).unwrap();
-                    let from = times(h as HANDLE);
+                    let (from, from_cycles) = (times(h as HANDLE), cycles(h as HANDLE));
                     while spinning.load(Ordering::Relaxed) {
                         std::hint::spin_loop();
                     }
-                    let ran = times(h as HANDLE) - from;
+                    let ran = (times(h as HANDLE) - from, cycles(h as HANDLE) - from_cycles);
                     drop(raised);
                     // SAFETY: the handle `own` opened, closed once.
                     unsafe { CloseHandle(h as HANDLE) };
@@ -145,11 +152,18 @@ fn round(seconds: u64, load: usize, x: usize) -> Round {
             std::thread::sleep(Duration::from_millis(1));
         }
         spinning.store(false, Ordering::Relaxed);
-        let ran: u64 = governed.into_iter().map(|t| t.join().unwrap()).sum();
+        let (ran, ran_cycles) = governed
+            .into_iter()
+            .map(|t| t.join().unwrap())
+            .fold((0, 0), |(t, c), (dt, dc)| (t + dt, c + dc));
         let elapsed = began.elapsed();
+        // SAFETY: as above.
+        let stamps = unsafe { std::arch::x86_64::_rdtsc() } - stamped;
         Round {
             elapsed,
+            stamps,
             ran: Duration::from_nanos(ran),
+            ran_cycles,
             normal_ran: Duration::from_nanos(normal.join().unwrap()),
             samples,
         }
@@ -172,9 +186,9 @@ fn main() {
     assert_ne!(unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL) }, 0);
     println!("CPUs {process:#x}, governed on {x:#x}, sampler on {low:#x}; {rounds} rounds of {seconds} s, {load} unpinned normal spinners beside");
     println!(
-        "| round | three's GetThreadTimes / elapsed | test's bound | normal's | three's cycles: share | raised | lowered | normal | samples: any raised | all lowered |"
+        "| round | three's GetThreadTimes / elapsed | test's bound | normal's | three's cycles: share | raised | lowered | normal | three's whole cycles, of the window's ticks | samples: any raised | all lowered |"
     );
-    println!("|---|---|---|---|---|---|---|---|---|---|");
+    println!("|---|---|---|---|---|---|---|---|---|---|---|");
     for r in 1..=rounds {
         let round = round(seconds, load, x);
         let bound = round.elapsed / 2 + SLACK;
@@ -223,7 +237,7 @@ fn main() {
         let pct = |v: u64, of: u64| if of == 0 { 0.0 } else { 100.0 * v as f64 / of as f64 };
         let n = round.samples.len().saturating_sub(1).max(1);
         println!(
-            "| {r} | {:.3} s / {:.3} s ({:.1}%) | {:.3} s {} | {:.3} s | {:.1}% | {:.1}% | {:.1}% | {:.1}% | {:.1}% | {:.1}% |",
+            "| {r} | {:.3} s / {:.3} s ({:.1}%) | {:.3} s {} | {:.3} s | {:.1}% | {:.1}% | {:.1}% | {:.1}% | {:.1}% | {:.1}% | {:.1}% |",
             round.ran.as_secs_f64(),
             round.elapsed.as_secs_f64(),
             100.0 * round.ran.as_secs_f64() / round.elapsed.as_secs_f64(),
@@ -234,6 +248,7 @@ fn main() {
             pct(raised, all),
             pct(lowered, all),
             pct(normal_level, all),
+            pct(round.ran_cycles, round.stamps),
             pct(any_raised as u64, n as u64),
             pct(all_lowered as u64, n as u64),
         );

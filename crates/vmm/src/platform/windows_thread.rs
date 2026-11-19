@@ -490,6 +490,63 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::mpsc;
     use windows_sys::Win32::System::Threading::{OpenThread, SetThreadPriorityBoost};
+    #[cfg(target_arch = "x86_64")]
+    use windows_sys::Win32::System::WindowsProgramming::QueryThreadCycleTime;
+
+    /// The calling thread's CPU cycles (QueryThreadCycleTime), which x86-64's Windows counts
+    /// in its time stamp counter's ticks, one rate on every CPU (an invariant TSC): a thread's
+    /// share of a window's ticks is its share of that time, with none of the clock steps
+    /// GetThreadTimes charges in, which on windows-2022 charged three governed spinners 78.6% of
+    /// a window whose cycles they ran 53.4% of (PM M620).
+    #[cfg(target_arch = "x86_64")]
+    fn cycles() -> u64 {
+        let mut cycles = 0u64;
+        // SAFETY: the calling thread's pseudo-handle, and a count to write.
+        let read = unsafe { QueryThreadCycleTime(GetCurrentThread(), &raw mut cycles) };
+        assert_ne!(read, 0, "{}", io::Error::last_os_error());
+        cycles
+    }
+
+    /// The time stamp counter now: the window [`cycles`] are a share of.
+    #[cfg(target_arch = "x86_64")]
+    fn stamp() -> u64 {
+        // SAFETY: RDTSC reads the counter, as every x86-64 CPU has it.
+        unsafe { std::arch::x86_64::_rdtsc() }
+    }
+
+    /// What a thread used, by GetThreadTimes ([`ThreadClock`]) and, on x86-64, in cycles.
+    #[derive(Debug, Clone, Copy, Default)]
+    struct Used {
+        clock: u64,
+        cycles: u64,
+    }
+
+    impl Used {
+        /// The calling thread's, so far.
+        fn now(clock: &ThreadClock) -> Used {
+            Used {
+                clock: clock.read().unwrap(),
+                #[cfg(target_arch = "x86_64")]
+                cycles: cycles(),
+                #[cfg(not(target_arch = "x86_64"))]
+                cycles: 0,
+            }
+        }
+
+        fn since(self, from: Used) -> Used {
+            Used {
+                clock: self.clock - from.clock,
+                cycles: self.cycles - from.cycles,
+            }
+        }
+
+        fn add(self, other: Used) -> Used {
+            Used {
+                clock: self.clock + other.clock,
+                cycles: self.cycles + other.cycles,
+            }
+        }
+    }
 
     /// The priority of thread `id` of this process, read from another thread.
     fn priority_of(id: u32) -> i32 {
@@ -692,7 +749,7 @@ mod tests {
         const RAISED_THREADS: usize = 3;
         let cpu = last_cpu();
         let spinning = AtomicBool::new(true);
-        let (raised_ran, host_ran, elapsed) = std::thread::scope(|s| {
+        let (raised_ran, host_ran, elapsed, stamps) = std::thread::scope(|s| {
             let stop = Stop(&spinning);
             let spinning = &spinning;
             // The normal thread, on the CPU before the three are watched: ready there
@@ -701,14 +758,17 @@ mod tests {
             let normal = s.spawn(move || {
                 pin(cpu);
                 let clock = ThreadClock::current().unwrap();
+                let from = Used::now(&clock);
                 on_cpu.send(()).unwrap();
                 while spinning.load(Ordering::Relaxed) {
                     std::hint::spin_loop();
                 }
-                clock.read().unwrap()
+                Used::now(&clock).since(from)
             });
             is_on_cpu.recv().unwrap();
             let began = Instant::now();
+            #[cfg(target_arch = "x86_64")]
+            let stamped = stamp();
             let raised: Vec<_> = (0..RAISED_THREADS)
                 .map(|_| {
                     s.spawn(move || {
@@ -717,11 +777,11 @@ mod tests {
                         pin(cpu);
                         let watch = raise_current().unwrap().unwrap();
                         let clock = ThreadClock::current().unwrap();
-                        let from = clock.read().unwrap();
+                        let from = Used::now(&clock);
                         while spinning.load(Ordering::Relaxed) {
                             std::hint::spin_loop();
                         }
-                        let ran = clock.read().unwrap() - from;
+                        let ran = Used::now(&clock).since(from);
                         drop(watch);
                         ran
                     })
@@ -729,18 +789,51 @@ mod tests {
                 .collect();
             std::thread::sleep(Duration::from_secs(3));
             drop(stop);
-            let raised_ran: u64 = raised.into_iter().map(|thread| thread.join().unwrap()).sum();
+            let raised_ran = raised
+                .into_iter()
+                .map(|thread| thread.join().unwrap())
+                .fold(Used::default(), Used::add);
             let elapsed = began.elapsed();
-            (Duration::from_nanos(raised_ran), normal.join().unwrap(), elapsed)
+            #[cfg(target_arch = "x86_64")]
+            let stamps = stamp() - stamped;
+            #[cfg(not(target_arch = "x86_64"))]
+            let stamps = 0;
+            (raised_ran, normal.join().unwrap(), elapsed, stamps)
         });
         let period = period().unwrap();
         let bound = elapsed / 2 + period * 2;
         let said = format!(
-            "the three used {raised_ran:?} of {elapsed:?} (at most {bound:?}: half of it and two \
-             periods of {period:?}); the normal thread was charged {host_ran} ns"
+            "the three were charged {:?} of {elapsed:?} by GetThreadTimes (half of it and two \
+             periods of {period:?}: {bound:?}), and ran {} of its {stamps} counter ticks; the normal \
+             thread was charged {} ns, and ran {} ticks",
+            Duration::from_nanos(raised_ran.clock),
+            raised_ran.cycles,
+            host_ran.clock,
+            host_ran.cycles,
         );
-        assert!(raised_ran <= bound, "past their bound: {said}");
-        assert!(host_ran > 0, "the normal thread never ran: {said}");
+        // On x86-64, what they ran, in cycles of the window's counter ticks, not the steps
+        // GetThreadTimes charged them in (PM M620); the bound's periods as many ticks as the
+        // window's ticks a nanosecond.
+        #[cfg(target_arch = "x86_64")]
+        {
+            let per_ns = |d: Duration| {
+                u64::try_from(u128::from(stamps) * d.as_nanos() / elapsed.as_nanos().max(1)).unwrap()
+            };
+            let most = stamps / 2 + per_ns(period * 2);
+            assert!(
+                raised_ran.cycles <= most,
+                "past their bound of {most} ticks: {said}"
+            );
+            assert!(host_ran.cycles > 0, "the normal thread never ran: {said}");
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            assert!(
+                Duration::from_nanos(raised_ran.clock) <= bound,
+                "past their bound: {said}"
+            );
+            assert!(host_ran.clock > 0, "the normal thread never ran: {said}");
+        }
     }
 
     /// A set of CPUs' pool is credited half of each CPU's time and kept to a period of each:
