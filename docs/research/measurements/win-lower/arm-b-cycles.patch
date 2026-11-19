@@ -1,0 +1,63 @@
+# Arm B of the Windows priority governor's A/B (PM M620): each watched thread's CPU time from its cycles (QueryThreadCycleTime) at the time stamp counter's rate, and D191's period from the governor's waits alone (a clock of cycles counts in no step of its own). x86-64 only. Applied by windows-lower.yml's B steps.
+diff --git a/crates/vmm/src/platform/windows_thread.rs b/crates/vmm/src/platform/windows_thread.rs
+index f6f93ac548..1bc5fb5375 100644
+--- a/crates/vmm/src/platform/windows_thread.rs
++++ b/crates/vmm/src/platform/windows_thread.rs
+@@ -148,8 +148,38 @@ fn period_at(g: Duration) -> Result<Duration, granule::Outgrown> {
+ }
+ 
+ /// [`period_at`] g as this process knows it now (`granule::g`).
++/// ARM B: g its waits' alone, as a clock of cycles counts in no step of its own.
+ fn period() -> Result<Duration, granule::Outgrown> {
+-    period_at(granule::g())
++    period_at(granule::LEAST_WAIT.saturating_add(granule::LATE.least().unwrap_or(Duration::ZERO)))
++}
++
++/// ARM B: a thread's CPU time from its cycles (QueryThreadCycleTime), which x86-64's Windows
++/// counts in its time stamp counter's ticks, at that counter's rate measured once.
++fn thread_ns(handle: HANDLE) -> io::Result<u64> {
++    let mut cycles = 0u64;
++    // SAFETY: a thread handle with THREAD_QUERY_LIMITED_INFORMATION, and a count to write.
++    if unsafe {
++        windows_sys::Win32::System::WindowsProgramming::QueryThreadCycleTime(handle, &raw mut cycles)
++    } == 0
++    {
++        return Err(io::Error::last_os_error());
++    }
++    let hz = u128::from(tsc_hz().max(1));
++    Ok(u64::try_from(u128::from(cycles) * 1_000_000_000 / hz).unwrap_or(u64::MAX))
++}
++
++/// ARM B: the time stamp counter's ticks a second, read across a 20 ms wait, once.
++fn tsc_hz() -> u64 {
++    static HZ: OnceLock<u64> = OnceLock::new();
++    *HZ.get_or_init(|| {
++        // SAFETY: RDTSC reads the counter.
++        let (t0, c0) = (Instant::now(), unsafe { std::arch::x86_64::_rdtsc() });
++        std::thread::sleep(Duration::from_millis(20));
++        // SAFETY: as above.
++        let (t1, c1) = (Instant::now(), unsafe { std::arch::x86_64::_rdtsc() });
++        let ns = t1.duration_since(t0).as_nanos().max(1);
++        u64::try_from(u128::from(c1.wrapping_sub(c0)) * 1_000_000_000 / ns).unwrap_or(u64::MAX)
++    })
+ }
+ 
+ /// The CPUs a thread may run on: a processor group, and its mask of them in it
+@@ -298,7 +328,7 @@ pub fn raise_current() -> Result<Option<Watch>, String> {
+         level: Level::Normal,
+         cpus: Cpus { group: 0, mask: 0 },
+     };
+-    watched.ran = super::windows::thread_time(handle).map_err(|e| format!("GetThreadTimes: {e}"))?;
++    watched.ran = thread_ns(handle).map_err(|e| format!("QueryThreadCycleTime: {e}"))?;
+     watched.cpus = Cpus::of(handle)?;
+     let mut governed = lock(&WATCHED);
+     // Raised only where its CPUs' pool has credit, as each look raises it; its own is full.
+@@ -475,7 +505,7 @@ fn charge(w: &mut Watched, now: Instant, period: Duration) -> Option<u64> {
+     if passed < period {
+         return None;
+     }
+-    let ran = match super::windows::thread_time(w.handle) {
++    let ran = match thread_ns(w.handle) {
+         Ok(ran) => ran,
+         Err(e) => {
+             crate::debug!("a watched thread's time is unread: {e}");

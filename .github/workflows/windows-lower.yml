@@ -1,22 +1,18 @@
 name: windows lower
 
-# How soon Windows takes a CPU from a running thread its priority governor lowers below a
-# ready one, and gives it to one it raises (D191, crates/vmm/src/platform/windows_thread.rs),
-# on both Windows Server runners CI tests on: docs/research/measurements/win-lower/lower.c.
-# Then the governor itself, sampled each millisecond in its test's scene, alone and beside
-# busy threads (win-lower/governor), and its tests, as they are and with the pool charged
-# only what its threads ran raised (red-raised-only.patch). Runs when either changes, or when
-# asked.
+# D191's Windows priority governor, A/B (PM M620): arm A as it is, counting each watched
+# thread's CPU in GetThreadTimes' steps at a period of 2g; arm B (win-lower/arm-b-cycles.patch)
+# counting it in cycles at the time stamp counter's rate, its period from its waits alone. Each
+# arm in turn, twice, on both Windows Server runners: the sampling harness alone and beside
+# three busy threads (the three's share of the window's counter ticks, the governor's pool
+# account and its looks' own time), and the bound's test five times. Runs when it changes, or
+# when asked.
 on:
   push:
     paths:
       - .github/workflows/windows-lower.yml
       - docs/research/measurements/win-lower/**
   workflow_dispatch:
-    inputs:
-      rounds:
-        description: rounds of each of the lowerings below and suspend
-        default: "300"
 
 permissions:
   contents: read
@@ -26,65 +22,46 @@ env:
   TOOLCHAIN: 1.98.1 # keep in sync with rust-toolchain.toml
 
 jobs:
-  lower:
+  ab:
     strategy:
       fail-fast: false
       matrix:
         runner: [windows-2022, windows-2025]
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 40
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7.0.1
       - name: Install pinned Rust
         shell: bash
         run: scripts/retry 5 30 rustup toolchain install "$TOOLCHAIN" --profile minimal
-      - name: zig
-        shell: bash
-        run: scripts/install-zig
       - name: Host
         shell: pwsh
         run: |
           [Environment]::ProcessorCount
           (Get-CimInstance Win32_Processor).Name
           [System.Environment]::OSVersion.VersionString
-      - name: Governor, built
-        shell: bash
-        run: cargo build --release --manifest-path docs/research/measurements/win-lower/governor/Cargo.toml
-      - name: Governor, alone
-        shell: bash
-        run: docs/research/measurements/win-lower/governor/target/release/win-governor.exe 5 3 0
-      - name: Governor, beside 3 busy threads
-        shell: bash
-        run: docs/research/measurements/win-lower/governor/target/release/win-governor.exe 5 3 3
-      - name: Governor's tests, built
-        shell: bash
-        run: cargo test --locked --profile test-release -p shards-vmm --lib --no-run
-      - name: Governor's tests, 5 runs
+      - name: A and B in turn, twice
         shell: bash
         run: |
-          for i in 1 2 3 4 5; do
-            echo "=== run $i"
-            cargo test --locked --profile test-release -p shards-vmm --lib -- platform::windows_thread 2>&1 \
-              | grep -E "^test |^test result|past their bound|panicked" || true
-          done
-      - name: Governor's tests, red (red-raised-only.patch), 3 runs
-        shell: bash
-        run: |
-          git apply docs/research/measurements/win-lower/red-raised-only.patch
-          for i in 1 2 3; do
-            echo "=== red run $i"
-            cargo test --locked --profile test-release -p shards-vmm --lib -- --exact \
-              platform::windows_thread::tests::raised_threads_sharing_a_cpu_take_no_more_than_half_of_it 2>&1 \
-              | grep -E "^test result|past their bound|panicked" || true
-          done
-          git checkout -- crates
-      - name: Build
-        shell: bash
-        run: zig cc -O2 -Wall -Wextra -target x86_64-windows-gnu docs/research/measurements/win-lower/lower.c -o lower.exe -ladvapi32
-      - name: Measure
-        shell: bash
-        env:
-          ROUNDS: ${{ github.event.inputs.rounds || '300' }}
-        run: |
+          set -u
+          harness=docs/research/measurements/win-lower/governor
+          bound=platform::windows_thread::tests::raised_threads_sharing_a_cpu_take_no_more_than_half_of_it
           echo "$(git rev-parse --short HEAD) on ${{ matrix.runner }}"
-          ./lower.exe "$ROUNDS"
+          for round in 1 2; do
+            for arm in A B; do
+              if [ "$arm" = B ]; then git apply docs/research/measurements/win-lower/arm-b-cycles.patch; fi
+              cargo build --release --manifest-path "$harness/Cargo.toml" 2>&1 | tail -1
+              cargo test --locked --profile test-release -p shards-vmm --lib --no-run 2>&1 | tail -1
+              for load in 0 3; do
+                echo "=== arm $arm round $round, the harness beside $load busy threads"
+                "$harness/target/release/win-governor.exe" 5 3 "$load" \
+                  | grep -E "\| [0-9] \||governor's (pool|looks)" || true
+              done
+              echo "=== arm $arm round $round, the bound's test five times"
+              for i in 1 2 3 4 5; do
+                cargo test --locked --profile test-release -p shards-vmm --lib -- --exact "$bound" 2>&1 \
+                  | grep -E "^test result|past their bound" || true
+              done
+              git checkout -- crates
+            done
+          done
