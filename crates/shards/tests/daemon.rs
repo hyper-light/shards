@@ -1913,6 +1913,28 @@ fn clients_past_the_cap_wait_their_turn() {
     assert_eq!(stopped.status, Some(0), "{stopped}");
 }
 
+/// D261's gate reads, beside the records, the refusals the daemons of this test process's
+/// homes logged, each with its moment and whether its guest had run: a warm VM, restored, keeps
+/// no records, and a burst's only witness may be in another test's home's log (CI 44449878966,
+/// x86_64 musl: VM 197598 refused before its guest ran, and VM 196663, another test's, after
+/// its guest ran, 178 µs later). Its moment is far from any refusal a test meets, so that no
+/// other test of this process reads it as a witness. No VM needed.
+#[test]
+fn a_refusal_another_homes_daemon_logged_is_read_as_a_witness() {
+    let home = TempDir::new("d261-logged");
+    let line = "shards daemon 1: VM 196663: vCPU 3: VM entry failed (hardware reason 0x7): the \
+                host's hypervisor (KVM under KVMKVMKVM) refused to enter it (after its guest ran, \
+                at 1000000000.000001 s, VM process 196663)";
+    std::fs::write(home.join("daemon.log"), format!("{line}\n")).unwrap();
+    let found = common::refusals_logged_here();
+    let witness = shards_vmm::vm::limits::Refusal {
+        at_us: 1_000_000_000_000_001,
+        machine: 196_663,
+        entered: true,
+    };
+    assert!(found.contains(&witness), "{found:?}");
+}
+
 /// A home removed once, as `rm -rf` or a test's directory removes it, goes with its daemon
 /// whatever order its names go in. One that takes the slots first, which the daemon then
 /// offers again, and the rest after, the lock among them, fails to remove the directory,

@@ -305,9 +305,48 @@ pub fn host_refusal(said: &str) -> Option<(shards_vmm::vm::limits::Said, HostVer
         .saturating_add(width())
         .saturating_sub(limits::now_us());
     std::thread::sleep(Duration::from_micros(wait));
-    let kept: Vec<limits::Refusal> = records.iter().flat_map(limits::Limits::refusals).collect();
+    let kept: Vec<limits::Refusal> = records
+        .iter()
+        .flat_map(limits::Limits::refusals)
+        .chain(refusals_logged_here())
+        .collect();
     let verdict = limits::the_hosts(&refused, &kept, width());
     Some((refused, verdict))
+}
+
+/// The refusals the daemons of this test process's homes logged, in D261's words, each with its
+/// moment and whether its guest had run: witnesses its gate reads beside the records, as a warm
+/// VM, restored, keeps none (helpers.rs `vcpu_records_words`: it is granted no records file).
+/// CI 44449878966 (x86_64 musl): `parallel_runs_keep_their_own_stdio`'s warm VM 197598 was
+/// refused before its guest ran, and VM 196663, another test's, after its guest ran 178 µs
+/// later, which only that test's daemon's log held: the gate found no witness, and the test
+/// failed where the other skipped. Each home's `daemon.log`, a directory of this process's or
+/// one beneath it, as a test names its home.
+pub fn refusals_logged_here() -> Vec<shards_vmm::vm::limits::Refusal> {
+    fn logs(dir: &Path, depth: usize, found: &mut Vec<PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if entry.file_name() == "daemon.log" {
+                found.push(path);
+            } else if depth > 0 && entry.file_type().is_ok_and(|t| t.is_dir()) {
+                logs(&path, depth - 1, found);
+            }
+        }
+    }
+    let mut found = Vec::new();
+    logs(&shards_testdir::this_process(), 3, &mut found);
+    found
+        .iter()
+        .filter_map(|log| std::fs::read_to_string(log).ok())
+        .flat_map(|log| {
+            shards_vmm::vm::limits::Said::every(&log)
+                .map(|said| said.refusal)
+                .collect::<Vec<_>>()
+        })
+        .collect()
 }
 
 /// Whether a run that failed, its error `said`, was ended by its VM's host's refusal to enter

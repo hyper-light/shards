@@ -103,6 +103,12 @@ fn say_panics() {
     }));
 }
 
+/// This test process's directory: `shards-tests/<pid>` under the system's temporary
+/// directory, where each [`TempDir`] it makes is. Read, never made here.
+pub fn this_process() -> PathBuf {
+    parent().join(std::process::id().to_string())
+}
+
 /// A test's directory, made empty, removed as it is dropped.
 #[derive(Debug)]
 pub struct TempDir(PathBuf);

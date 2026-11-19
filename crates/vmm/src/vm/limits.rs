@@ -860,7 +860,12 @@ impl Said {
     /// The last refusal `text` tells of in [`EntryRefused`]'s words: none where it tells of
     /// none, or only in words that name no moment (a VM process's of before D261's gate).
     pub fn find(text: &str) -> Option<Said> {
-        text.lines().filter_map(Said::read).next_back()
+        Said::every(text).next_back()
+    }
+
+    /// Every refusal `text` tells of in [`EntryRefused`]'s words, in its order.
+    pub fn every(text: &str) -> impl DoubleEndedIterator<Item = Said> + '_ {
+        text.lines().filter_map(Said::read)
     }
 
     /// The refusal `line` tells of.
