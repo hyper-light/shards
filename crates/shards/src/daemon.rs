@@ -4925,8 +4925,10 @@ impl<D: Disk> Daemon<D> {
     /// no count of tries). One started after the run asked (for it, or a refill since)
     /// that surely did not take it ends the start, said with why, rather than starting VMs
     /// against a failure that may be every VM's. One that may have taken it is followed as
-    /// it is, so no run starts twice. Returns the run, registered, for
-    /// [`follow`](Self::follow), or what its client is told.
+    /// it is, so no run starts twice. One its judge gave up on with nothing said is ended,
+    /// and is either, as what it said before its end tells ([`said_before_its_end`]); a
+    /// joiner's VM, its provider's, is never ended, and may have. Returns the run,
+    /// registered, for [`follow`](Self::follow), or what its client is told.
     #[allow(clippy::too_many_arguments)]
     fn start_run<'s, 'e>(
         &'s self,
@@ -4997,6 +4999,17 @@ impl<D: Disk> Daemon<D> {
             // Only now, so that starting its successor delays no run: on the refiller's
             // thread.
             self.refill_soon(threads, ready.pool.as_ref());
+            let handed = match handed {
+                Err(Untaken::Unanswered(e)) if ready.joined.is_none() => {
+                    log(format!(
+                        "warm VM {} left a run unanswered: {e}; ending it, its answer read to its end",
+                        ready.vm.id()
+                    ));
+                    ready.end();
+                    Err(said_before_its_end(&ready.socket))
+                }
+                handed => handed,
+            };
             match handed {
                 // The warm VM serves the client from here, and ours close. A detached
                 // client waits for the daemon to say whether its command started.
@@ -5016,7 +5029,7 @@ impl<D: Disk> Daemon<D> {
                     }
                 }
                 // What it sent before it ended tells what it did, as for any run.
-                Err(Untaken::Unknown(e)) => {
+                Err(Untaken::Unknown(e) | Untaken::Unanswered(e)) => {
                     log(format!(
                         "warm VM {} may have taken a run: {e}; ending it",
                         ready.vm.id()
@@ -10096,6 +10109,9 @@ enum Untaken {
     Surely(String),
     /// It may have: only what it sent before it ended can tell.
     Unknown(String),
+    /// Its judge gave up on it with nothing said (D215): which of the others it is, what it
+    /// says before its end tells, once it is ended ([`said_before_its_end`]).
+    Unanswered(String),
 }
 
 /// Gives a join share one volume of a joiner's on its `link`, `payload` its name, mode and
@@ -10128,8 +10144,10 @@ fn give_join_volume(
 /// its copies of the client's descriptors until then: macOS flushes a socket in flight
 /// that no process holds (shards_ipc). A warm VM says TAKEN before it touches the client's
 /// stdio or starts anything (warm.rs, receive), and if it cannot, it does neither: one
-/// that ends without a word never started the run. On Windows each of its shares' streams
-/// (`ends`, D197) follows the request, as a share process hands them to it on Unix.
+/// that ends without a word never started the run. One its judge gives up on before it says
+/// anything is left unanswered, for its caller to end and read to its end
+/// ([`said_before_its_end`]). On Windows each of its shares' streams (`ends`, D197) follows
+/// the request, as a share process hands them to it on Unix.
 fn hand_over(
     vm: &UnixStream,
     judged: &mut health::Judged<'_>,
@@ -10150,7 +10168,8 @@ fn hand_over(
 }
 
 /// Waits for a warm VM sent a run to say it has taken it, while its process goes on
-/// ([`hand_over`]'s judge): its TAKEN teaches the judge's record.
+/// ([`hand_over`]'s judge): its TAKEN teaches the judge's record. One its judge gives up on
+/// has said nothing ([`Untaken::Unanswered`]).
 fn taken(vm: &UnixStream, judged: &mut health::Judged<'_>) -> Result<(), Untaken> {
     match shards_ipc::recv_judged(vm, &mut || judged.judge()) {
         Ok(Some(m)) if m.kind == kind::TAKEN => {
@@ -10169,7 +10188,33 @@ fn taken(vm: &UnixStream, judged: &mut health::Judged<'_>) -> Result<(), Untaken
         Err(e) if e.kind() == io::ErrorKind::ConnectionReset => {
             Err(Untaken::Surely(format!("it ended with the run unread: {e}")))
         }
+        // Its judge's refusal (`health::Stalled`), which comes only where a look found no
+        // message whole: nothing had come, as TAKEN, a header alone that a stream takes in one
+        // write or not at all, is a warm VM's first word after its run (warm.rs, receive).
+        Err(e) if e.get_ref().is_some_and(|inner| inner.is::<health::Stalled>()) => {
+            Err(Untaken::Unanswered(e.to_string()))
+        }
         Err(e) => Err(Untaken::Unknown(e.to_string())),
+    }
+}
+
+/// Whether a warm VM its judge gave up on with nothing said ([`Untaken::Unanswered`]), since
+/// ended, took the run: what it said before its end tells. Nothing, and it surely did not
+/// ([`hand_over`]); anything, and it may have. Its socket is read to its end, which no time
+/// bounds: the end is its process's, whose copy is the only one left (launch.rs
+/// `run_reported`; on Unix its spawner's goes as it spawns it, ipc spawner.rs `made`, and the
+/// VM keeps its own from its children, warm.rs `inherited_socket`). A VM whose spawner has
+/// gone is beyond its kill (`shards_ipc::Child::kill`), and ends with the scope its spawner
+/// went with (`shards_ipc::group_ended`), as CI 44563056402's stopped slice ended its refill.
+fn said_before_its_end(vm: &UnixStream) -> Untaken {
+    match shards_ipc::recv(vm) {
+        Ok(None) => Untaken::Surely("it said nothing in its judge's window, then ended".into()),
+        // Its run unread as it ended: Linux resets its peer then ([`taken`]).
+        Err(e) if e.kind() == io::ErrorKind::ConnectionReset => Untaken::Surely(format!(
+            "it said nothing in its judge's window, then ended with the run unread: {e}"
+        )),
+        Ok(Some(m)) => Untaken::Unknown(format!("past its judge's window it said message kind {}", m.kind)),
+        Err(e) => Untaken::Unknown(format!("past its judge's window: {e}")),
     }
 }
 
@@ -15987,6 +16032,75 @@ mod tests {
             drop(vm);
             joined(starting.run).unwrap();
             assert_eq!(count_asks(&starting.asks, &starting.asked), 1);
+            let record = t.record(&id).unwrap();
+            assert_eq!((record.state, record.exit_code), (Life::Created, Some(128)));
+        });
+    }
+
+    /// A VM its judge gave up on, silent (D215), is ended, and what it said before its end is
+    /// its answer: nothing, and the run goes to another VM, which serves it; TAKEN, and the run
+    /// is followed with it, as one that may have started it. Red before: the refusal was taken
+    /// for "may have taken it", and the run ended 125 with a VM that had said nothing (CI run
+    /// 44563056402, x86_64-unknown-linux-gnu: a refill its stopped slice was ending).
+    #[test]
+    fn a_handoff_left_unanswered_goes_to_another_vm_once_its_vm_ends_without_a_word() {
+        let t = Test::new("handoff-silent");
+        t.run(|t| {
+            // A kind with no answer yet is waited on its VM's liveness alone: learned, so that
+            // its judge gives up on a VM whose process runs nothing past it.
+            t.daemon
+                .answers
+                .take
+                .teach(Duration::from_millis(20), shards_api::Work::of(1));
+            let id = t.create("silent");
+            let starting = t.start(&id);
+            let (ready, vm) = t.warm_vm(None);
+            let child = ready.vm.clone();
+            starting.warm.send(ready).unwrap();
+            assert_eq!(heard(&vm).0, kind::RUN);
+            // It says nothing, its end open until its process is ended, as a VM's end closes
+            // as its process dies.
+            assert_eq!(child.wait().unwrap(), 128 + shards_ipc::signal::SIGKILL);
+            drop(vm);
+            t.until("the run asked for another VM, or ended", |_| {
+                starting.asked() == 2 || starting.run.is_finished()
+            });
+            assert_eq!(
+                starting.asked(),
+                2,
+                "the run went with the VM that said nothing: {:?}",
+                t.record(&id).map(|r| (r.state, r.exit_code))
+            );
+            // Its answers there before its RUN is: its process runs nothing either, and a
+            // wait on it would be the judge's to give up on too.
+            let (ready, vm) = t.warm_vm(None);
+            say_together(
+                &vm,
+                &[(kind::TAKEN, &[]), (kind::STARTED, &[]), (kind::DONE, &[0])],
+            );
+            starting.warm.send(ready).unwrap();
+            assert_eq!(heard(&vm).0, kind::RUN);
+            joined(starting.run).unwrap();
+            assert_eq!(count_asks(&starting.asks, &starting.asked), 2);
+            let record = t.record(&id).unwrap();
+            assert_eq!((record.state, record.exit_code), (Life::Exited, Some(0)));
+
+            // One that said TAKEN before its end may have started the run: followed, the run
+            // ends with it, as a run whose VM ended before its command started.
+            let id = t.create("spoke");
+            let starting = t.start(&id);
+            let (ready, vm) = t.warm_vm(None);
+            let child = ready.vm.clone();
+            starting.warm.send(ready).unwrap();
+            assert_eq!(heard(&vm).0, kind::RUN);
+            assert_eq!(child.wait().unwrap(), 128 + shards_ipc::signal::SIGKILL);
+            say(&vm, kind::TAKEN, &[]);
+            drop(vm);
+            t.until("the run asked for another VM, or ended", |_| {
+                starting.asked() == 2 || starting.run.is_finished()
+            });
+            assert_eq!(starting.asked(), 1, "the run went on to another VM after TAKEN");
+            joined(starting.run).unwrap();
             let record = t.record(&id).unwrap();
             assert_eq!((record.state, record.exit_code), (Life::Created, Some(128)));
         });
