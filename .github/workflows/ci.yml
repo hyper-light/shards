@@ -30,6 +30,7 @@ on:
       - "!.github/workflows/whp-restore.yml"
       - "!.github/workflows/windows-binaries.yml"
       - "!.github/workflows/windows-wake.yml"
+      - "!.github/workflows/windows-lower.yml"
       - "!.github/workflows/whp-passthrough.yml"
       - "!.github/workflows/migrate-e2e.yml"
       - "!.github/workflows/softvirt-traps.yml"
