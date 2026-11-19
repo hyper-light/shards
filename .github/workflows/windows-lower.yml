@@ -51,6 +51,9 @@ jobs:
       - name: Governor, built
         shell: bash
         run: cargo build --release --manifest-path docs/research/measurements/win-lower/governor/Cargo.toml
+      - name: What a look reads, timed
+        shell: bash
+        run: docs/research/measurements/win-lower/governor/target/release/win-governor.exe 0
       - name: Governor, alone
         shell: bash
         run: docs/research/measurements/win-lower/governor/target/release/win-governor.exe 5 3 0

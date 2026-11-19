@@ -257,8 +257,83 @@ fn looks(log: &str, mask: usize, from: u128, to: u128) -> String {
     )
 }
 
+/// What a look reads of each of `n` watched threads, by each clock, timed over `looks` looks
+/// (µs a look: p50, p90, p99, max): GetThreadTimes and GetThreadGroupAffinity, as the governor
+/// reads them now, and QueryThreadCycleTime with them, as a governor counting cycles would. Half
+/// the threads spin, half sleep, so that some are running as they are read.
+fn look_cost(n: usize, looks: usize) {
+    use windows_sys::Win32::System::SystemInformation::GROUP_AFFINITY;
+    use windows_sys::Win32::System::Threading::GetThreadGroupAffinity;
+    let stop = AtomicBool::new(false);
+    std::thread::scope(|s| {
+        let stop = &stop;
+        let (tx, rx) = mpsc::channel();
+        for k in 0..n {
+            let tx = tx.clone();
+            s.spawn(move || {
+                tx.send(own()).unwrap();
+                while !stop.load(Ordering::Relaxed) {
+                    if k % 2 == 0 {
+                        std::hint::spin_loop();
+                    } else {
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                }
+            });
+        }
+        drop(tx);
+        let handles: Vec<usize> = rx.iter().take(n).collect();
+        let affinity = |h: HANDLE| {
+            let mut a = GROUP_AFFINITY::default();
+            // SAFETY: a thread handle with query access, and a structure to fill.
+            unsafe { GetThreadGroupAffinity(h, &mut a) };
+            a.Mask
+        };
+        let timed = |cycles_too: bool| {
+            let mut each = Vec::with_capacity(looks);
+            let mut sink = 0u64;
+            for _ in 0..looks {
+                let began = Instant::now();
+                for &h in &handles {
+                    let h = h as HANDLE;
+                    sink = sink.wrapping_add(times(h)).wrapping_add(affinity(h) as u64);
+                    if cycles_too {
+                        sink = sink.wrapping_add(cycles(h));
+                    }
+                }
+                each.push(began.elapsed().as_secs_f64() * 1e6);
+            }
+            each.sort_by(f64::total_cmp);
+            let at = |q: f64| each[((q * each.len() as f64).ceil() as usize).saturating_sub(1).min(each.len() - 1)];
+            println!(
+                "  {n} threads a look, {}: p50 {:.2} us, p90 {:.2}, p99 {:.2}, max {:.2} (n {looks}) [{}]",
+                if cycles_too { "GetThreadTimes, GetThreadGroupAffinity and QueryThreadCycleTime" } else { "GetThreadTimes and GetThreadGroupAffinity" },
+                at(0.5),
+                at(0.9),
+                at(0.99),
+                each[each.len() - 1],
+                sink % 2
+            );
+        };
+        timed(false);
+        timed(true);
+        stop.store(true, Ordering::Relaxed);
+        for h in handles {
+            // SAFETY: the handles `own` opened, closed once.
+            unsafe { CloseHandle(h as HANDLE) };
+        }
+    });
+}
+
 fn main() {
     let args: Vec<u64> = std::env::args().skip(1).map(|a| a.parse().unwrap()).collect();
+    if args.first() == Some(&0) {
+        println!("What a look reads, timed on this host:");
+        for n in [1, 4, 8, 16] {
+            look_cost(n, 20_000);
+        }
+        return;
+    }
     // The governor's own account of each look, to a file of this run's.
     // SAFETY: set before any thread of this process reads the environment.
     unsafe { std::env::set_var("SHARDS_LOG", "debug") };
