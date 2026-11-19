@@ -1,0 +1,49 @@
+name: windows lower
+
+# How soon Windows takes a CPU from a running thread its priority governor lowers below a
+# ready one, and gives it to one it raises (D191, crates/vmm/src/platform/windows_thread.rs),
+# on both Windows Server runners CI tests on: docs/research/measurements/win-lower/lower.c.
+# Runs when it changes, or when asked.
+on:
+  push:
+    paths:
+      - .github/workflows/windows-lower.yml
+      - docs/research/measurements/win-lower/**
+  workflow_dispatch:
+    inputs:
+      rounds:
+        description: rounds of each of the lowerings below and suspend
+        default: "300"
+
+permissions:
+  contents: read
+
+jobs:
+  lower:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [windows-2022, windows-2025]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: zig
+        shell: bash
+        run: scripts/install-zig
+      - name: Host
+        shell: pwsh
+        run: |
+          [Environment]::ProcessorCount
+          (Get-CimInstance Win32_Processor).Name
+          [System.Environment]::OSVersion.VersionString
+      - name: Build
+        shell: bash
+        run: zig cc -O2 -Wall -Wextra -target x86_64-windows-gnu docs/research/measurements/win-lower/lower.c -o lower.exe -ladvapi32
+      - name: Measure
+        shell: bash
+        env:
+          ROUNDS: ${{ github.event.inputs.rounds || '300' }}
+        run: |
+          echo "$(git rev-parse --short HEAD) on ${{ matrix.runner }}"
+          ./lower.exe "$ROUNDS"
