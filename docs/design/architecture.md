@@ -10931,6 +10931,21 @@ process, stop, health, metrics and commands tests (41 passed); clippy -D warning
 x86_64 Linux (shards-api) and x86_64 Windows (cargo-xwin, shards-api and shards). Owed: the
 real-VM kill and stop tests on HVF, KVM and WHP (ROOT's).
 
+**Amended 2026-11-19: a slice and a teardown's C* take their spread** (D215's rule of that
+day, the person's ruling). A kind's slice is its slowest end heard and its spread, the
+slowest less the quickest (`Took::slice`), and a teardown is given up past C* and its spread,
+C* less the least work a teardown took (`MostWork::bound`, `Followed::past`), said so in the
+daemon's log. The home's record is `teardown MS QUICKEST` (and `exit`, `helper`, `start`)
+and `teardown-work KEY WORK LEAST ANSWERS`; a line kept before (`teardown MS`,
+`teardown-work KEY WORK ANSWERS`) reads whole as a spread of none, and a quickest past its
+slowest, or a least past its most, as none. A keep writes only where the record's whole
+milliseconds change: a quickest known to the nanosecond in memory and rounded up in the
+record is no change, and costs no two flushes. Tests (daemon/ends.rs): the slices of ends
+heard and kept (900 ms and 19.383 s: 37.866 s), older lines read as spreads of none, C* and
+its spread kept and read, a teardown past C* within its spread going on, and
+`a_keep_that_changes_no_whole_millisecond_writes_nothing`; containers.rs'
+`a_kills_end_is_kept_as_this_hosts_in_its_home` reads the slowest from the new line.
+
 ### D188. A host short of memory gets back what its microVMs hold cold of their files (built)
 
 **Amended: a told line says what its host has available** (2026-11-16, ROOT's decision; lane
@@ -32265,6 +32280,100 @@ mutex or a read-write semaphore in its kernel is `D` and its host's while its di
 - *Held by* threads.rs `a_thread_waiting_on_its_hosts_paging_waits_in_its_kernel`, each lock
   reason in its kernel and `Executive`, `UserRequest`, `Suspended`, `WrQueue` and
   `WrAlertByThreadId` not.
+
+**2026-11-19, the judge's thresholds take their record's spread (the person's ruling; lane
+p/d215-spread).** A record's bounds were the single most extreme answers its host had seen,
+with no margin, and on CI's loaded runners they refused waits that went past them by less than
+those answers had differed among themselves:
+- CI 44483143178, x86_64-unknown-linux-musl, daemon.rs:703
+  `a_restored_microvm_goes_on_over_a_stopped_containers_kept_file`: the daemon gave a start
+  up, "VM 159797 was not ready: it ran 44.476835ms of CPU in the 53.668555ms it was seen to run
+  unheld, more than any start took (44.435943ms of CPU), past the slowest start seen
+  (37.838405ms)", 40.892 µs of CPU past C*.
+- CI 44476277082, x86_64 musl, daemon.rs:3604 `a_home_named_relatively_is_one_home`: "shards
+  daemon stop made no progress for 3.700498ms, past the slowest answer of its kind seen on this
+  host (2.964577ms)", 0.735921 ms past W*.
+- Others of that shape on windows-2025, as ROOT read them: storm restores' guest progress
+  (141 ms against a W* of 81 ms), harness.rs' streaming guest (16.5 ms against 10.7 ms), and
+  moved.rs' `rm -f` refused by its rate.
+- *The rule, and its precedent.* Each bound takes its record's own spread, its most less its
+  least, as CI's limits on its Tests steps have since PM M619: "a job's limit is its slowest
+  plus its spread (slowest less quickest): the next run may differ from the slowest by as much
+  as those measured differed". The ruling of 2026-11-13 ("the bound is the slowest answer
+  seen. No ×2") stands as to chosen multiples: the margin is each record's own data, and an
+  answer no time long teaches nothing, so a window stays under twice W* and a bound under
+  twice C*.
+- *Decision.*
+  - A record keeps the quickest answer (`Seen::Learned::quickest`, W_min) and the least work
+    an answer took (`Rated::lightest`, C_min), as minima: `Record::teach` and
+    `teach_unrated` lower them, and `Record::merge` takes the less of each as it takes the
+    more of W* and C*.
+  - The stillness window is W* and its spread, W* + (W* − W_min): a judge's looks come each
+    such window past its start, a party still a whole one is refused (`Judge::due`,
+    `stillness`, `found_over`), and `Record::stalled` stalls at it. Where its looks resolve
+    no finer (a counter's tick, a look's own time), that floor stands, the longer of the two.
+  - The rate rule refuses only work past C* and its spread, C* + (C* − C_min)
+    (`Rated::spread`), with the unheld time past the window and the rate below R* as before;
+    `Judge::by_work`, a start's, likewise.
+  - One answer seen: both spreads none, every bound as before.
+  - shards-testwait's own held threshold is its judge's window (`Judge::stillness`).
+  - A stall says both margins (`Stall::spread`, `Stall::work_spread`), its sentences kept
+    whole with the margin after the bound it qualifies: "past the slowest answer of its kind
+    seen on this host (W*) and its spread (S)", "more than any start took (C*) and its spread
+    (S)". So say shards-api's `Refusal::Stalled`, the tests' `Wait::refused` and their
+    record's account, the daemon's start, request, warm-VM claim, exec (health), visit,
+    network-process and leaf waits, the builder's start and end, shards-testwait's
+    `stalled` and its account, and engine_ring's settle. What its kind's record said is
+    boxed as one in the stall (`Bounds`), which is smaller than before (40 bytes against
+    48): the pair of refusals in crates/api/tests/sim.rs stays under clippy's
+    `result_large_err`.
+  - D217's ends take the same rule (D217, amended 2026-11-19).
+- *Alternatives.* A chosen multiple of W* or C* (R03; the ruling of 2026-11-13). A bound from
+  the order statistics of a kind's answers, as M619 lowers a limit only on 19 runs or more
+  (the next exceeding the slowest of n with chance 1/(n+1)): it needs each answer kept, where
+  a record keeps its extremes and a count alone. The record's own spread, which its extremes
+  give: taken, the person's ruling.
+- *What stays.* R* is a floor, as it was, with no spread. `SPREAD` (2) stays the fewest
+  answers whose rates refuse, and `LOOKS_TO_REFUSE` (3) the due looks within which a party
+  still throughout is refused. No literal is added.
+- *Kept records.* The tests' (`target/judge-records`, `common::kept_record`) are `[served ]W*
+  QUICKEST`, each rating `rated KEY R*WORK R*WALL C*WORK LEAST ANSWERS`, each minimum after
+  its maximum; a home's `ends` keeps `teardown MS QUICKEST` and `teardown-work KEY WORK LEAST
+  ANSWERS` (D217). A record kept before the minima (CI's cache restores the last run's
+  records, and homes keep theirs) is read whole as spreads of none, never broken and never
+  refused for it; a minimum past its maximum is read as broken (none). The other way is not
+  so, by those readers' code: a shards built before this one reads a record kept by it as
+  none (a number after W* where it reads `rated`; two numbers on a slice's line; four words on
+  a work line), its kinds cold (liveness alone) until their next answer rewrites the record,
+  and a home's slices and C* none until ends are heard again: never a refusal.
+- *Costs.* A stall is refused later. Each window is the spread longer: a party still from a
+  wait's start is refused within `LOOKS_TO_REFUSE` windows as before, up to three spreads
+  later; one that stops is refused within two windows of its stop, as before, up to two
+  spreads later. A party past C* is refused once its work also passes C*'s spread, later by
+  the time its own rate takes to do that work: b24's sleeper (200 µs of work each 30 ms look,
+  its kind taught 30 ms of 3 ms's work and 25 ms of 2 ms's) at look 21 where it was at 16. A
+  kind whose quickest answer came at once widens its window toward twice W*.
+- *Held by* judge.rs: `a_stillness_past_w_star_within_its_spread_goes_on` (the daemon stop's
+  numbers, its quickest answer at the boundary: still 3.700498 ms at its first due look goes
+  on, the next refuses; the outside judge at the same window),
+  `a_start_past_c_star_within_its_spread_goes_on` (the start's numbers: a least work of
+  44.395051 ms goes on, 1 ns more refuses), `one_answers_window_is_its_w_star_alone`, the
+  minima taught and merged (`a_record_learns_…`, `a_record_merged_in_…`), and b24's sleeper
+  (`a_sleeper_is_refused_once_two_answers_taught_its_kind`, look 21); harness.rs
+  `a_kept_record_keeps_its_spreads_and_one_kept_before_reads_as_none` and
+  `a_kept_rating_weighs_only_work_counted_as_this_host_counts_it`; ends.rs' record, slice and
+  C* tests. Red: lanes/redgreen/d215-spread-red.patch, every spread taken as none.
+- *Run* (light, lane p/d215-spread). On Adas-MacBook-Pro-2.local (macOS 26.4.1, arm64):
+  shards-judge 31 of 31 and shards-testwait 7 of 7; red, the judge's three above failing.
+  On Adas-MacBook-Pro-3.local (macOS 26.6, arm64; kiln, at 3a2f144616): clippy -D warnings
+  over shards-judge, shards-testwait, shards-api and shards, all targets, clean; shards-api's
+  progress tests 28 passed, 1 ignored; the shards bin's `daemon::ends` and the health,
+  reclaim and daemon tests whose texts changed, 21 of 21; harness.rs' kept tests 3 of 3. Red
+  there: the judge's 3 of 31 and `daemon::ends`' 5 of 13 failing, each as the patch says, and
+  the kept tests 3 of 3 passing (they hold the format, not the margin). scripts/lint there,
+  the seven targets, exit 0. A stall measured 48 bytes before and 40 after (rustc 1.98.1,
+  aarch64-apple-darwin). Owed (ROOT): the real-VM E2E (the refusals above under load, D217's
+  kill and stop tests), the tests on Linux and Windows, and CI.
 
 ### D231. An image booted for an orchestrator: a run of its own, hosted by one `shards` process (decided; building)
 
