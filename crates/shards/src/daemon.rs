@@ -8212,10 +8212,11 @@ impl<D: Disk> Daemon<D> {
                 match &mut stop.killed {
                     Some(teardown) => {
                         let went = teardown.goes_on();
-                        // More work than any teardown took (C*), its command not ended: given
-                        // up whatever its rate (D217, ROOT's ruling of 2026-11-18). Its work
-                        // unread, the bound takes nothing from this look, and says why. A look
-                        // that could not read it gives it up already, saying why.
+                        // More work than any teardown took (C*) and its spread, its command not
+                        // ended: given up whatever its rate (D217, ROOT's ruling of 2026-11-18;
+                        // D215 amended 2026-11-19). Its work unread, the bound takes nothing
+                        // from this look, and says why. A look that could not read it gives it
+                        // up already, saying why.
                         let past = match went {
                             ends::GoesOn::Unread(_) => None,
                             _ => teardown.past(self.ends.most_work()).unwrap_or_else(|why| {
@@ -8240,7 +8241,9 @@ impl<D: Disk> Daemon<D> {
                                     format!("its microVM's teardown could not be read at its look: {unread}")
                                 }
                                 (_, Some((work, most))) => format!(
-                                    "its microVM having run {work} since its SIGKILL, more than any teardown took ({most})"
+                                    "its microVM having run {work} since its SIGKILL, more than any teardown took ({}) and its spread ({})",
+                                    most.most(),
+                                    most.spread()
                                 ),
                                 (_, None) => format!(
                                     "its microVM gone on with nothing of its end for {:?}",
@@ -12999,7 +13002,11 @@ mod tests {
             let most = shards_api::Work::of_cpu(Duration::from_millis(1));
             t.daemon.ends.learn_work(most);
             t.daemon.ends.learn_work(most);
-            assert_eq!(t.daemon.ends.most_work(), Some(most));
+            assert_eq!(
+                t.daemon.ends.most_work().map(|kept| (kept.most(), kept.bound())),
+                Some((most, most)),
+                "two teardowns of one work: C* and a spread of none"
+            );
             let id = t.create("spinner");
             let starting = t.start(&id);
             let (mut ready, vm) = t.warm_vm(None);

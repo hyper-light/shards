@@ -16056,9 +16056,11 @@ fn a_kills_end_is_kept_as_this_hosts_in_its_home() {
     let dir = shards_vmm::platform::open_dir(&home).unwrap();
     let record =
         std::io::read_to_string(shards_vmm::platform::open_newest_in(&dir, "ends").unwrap()).unwrap();
+    // `teardown MS QUICKEST`: the slowest heard, then the quickest (D215 amended 2026-11-19).
     let ms: u64 = record
         .lines()
         .find_map(|l| l.strip_prefix("teardown "))
+        .and_then(|took| took.split_whitespace().next())
         .and_then(|ms| ms.parse().ok())
         .unwrap_or_else(|| panic!("no teardown kept: {record:?}"));
     assert!(ms > 0, "{record:?}");
