@@ -169,24 +169,38 @@ pub fn most_credit(period: Duration, cpus: u64) -> i64 {
 /// A share's credit at a look, in nanoseconds: `credit`, once `passed` has gone by since the
 /// last look and its threads used `used` nanoseconds of CPU time on `cpus` CPUs, given half of
 /// each CPU's time ([`HALF_CPU`]), charged what they used, and kept to a period of each CPU
-/// ([`most_credit`]) either way. Above none, its threads may be raised; what a look charges
-/// past it is owed, and the halves of later looks pay it before they are raised again. Kept
-/// to none, a share raised on a few nanoseconds of credit was forgiven the rest of a look it
-/// ran past it each time it drained (D191, 2026-11-18). At D191's period of 2g, no look within
-/// a step of its period charges a share it found above none a period past its credit: three
-/// steps at most, of which it credits one and more. So the floor forgives no raised look's
-/// overrun, only what a thread at its host's priority runs past a period's debt.
+/// ([`most_credit`]) above none, and to a period and a `step` of each below it. Above none, its
+/// threads may be raised; what a look charges past it is owed, and the halves of later looks pay
+/// it before they are raised again. Kept to none, a share raised on a few nanoseconds of credit
+/// was forgiven the rest of a look it ran past it each time it drained (D191, 2026-11-18). At
+/// D191's period of 2g, no look within a step of its period charges a share it found above none
+/// a period past its credit: three steps at most, of which it credits one and more. And a clock
+/// that counts in steps (GetThreadTimes', 15.625 ms, PM M294) charges a thread the step it ran
+/// in as the step ends, so the look after the one that lowered it may still be charged a step
+/// of its raised run: kept to a period's debt alone, windows-2022's pools were forgiven 78 to 146
+/// ms of it in each 3.5 s their three spinners ran beside a normal one (PM M620). So `step`,
+/// g, the finest the governor resolves, its clock's step where that is the coarser: the floor
+/// forgives no raised run, only what a share runs lowered on CPUs its host's threads do not want
+/// past a period's debt and a step.
 #[cfg(any(windows, test))]
-pub fn credited(credit: i64, passed: Duration, used: u64, cpus: u64, period: Duration) -> i64 {
+pub fn credited(
+    credit: i64,
+    passed: Duration,
+    used: u64,
+    cpus: u64,
+    period: Duration,
+    step: Duration,
+) -> i64 {
     let half =
         passed.as_nanos().saturating_mul(u128::from(HALF_CPU.get())) / u128::from(crate::vm::MILLI_PER_CPU);
     let half = i64::try_from(half).unwrap_or(i64::MAX);
     let most = most_credit(period, cpus);
+    let owed = most.saturating_add(most_credit(step, cpus));
     credit
         .saturating_add(half.saturating_mul(i64::try_from(cpus).unwrap_or(i64::MAX)))
         .saturating_sub(i64::try_from(used).unwrap_or(i64::MAX))
         .min(most)
-        .max(most.saturating_neg())
+        .max(owed.saturating_neg())
 }
 
 static WOKE: OnceLock<()> = OnceLock::new();
@@ -348,6 +362,7 @@ mod tests {
                 u64::try_from(used.as_nanos()).unwrap(),
                 1,
                 period,
+                step,
             );
             (at, ran) = (next, ran + used);
             looks.push((raised, ran, at / 2 + period * 2));
