@@ -204,6 +204,12 @@ fn the_vm_process_is_confined() {
         assert_eq!(mitigation(&process, policy) & bits, bits, "{what}");
     }
 
+    // Its spawner's record of its profile, held while the spawner lives, which no sweep takes
+    // (shards_ipc's `sweep`).
+    let name = format!("shards.vm.{cli}.0");
+    let record = shards_ipc::app_container_records().unwrap().join(&name);
+    assert!(record.exists(), "{} not made by its spawner", record.display());
+
     // Its spawner killed, it ends: the Job's last handle was the spawner's.
     vm.kill();
     // SAFETY: the process's handle.
@@ -211,10 +217,10 @@ fn the_vm_process_is_confined() {
     assert_eq!(waited, WAIT_OBJECT_0, "the VM process outlived its spawner");
 
     // The killed spawner left its profile and its record; the next spawner sweeps both,
-    // whatever its own VM does.
-    let name = format!("shards.vm.{cli}.0");
-    let record = shards_ipc::app_container_records().unwrap().join(&name);
-    assert!(record.exists(), "{} left", record.display());
+    // whatever its own VM does: this test's below, or that of a test run beside it, which may
+    // sweep them first. Looked for after the kill, the record was gone (CI 44464014557's
+    // windows-2025 job, "shards.vm.9396.0 left"), as
+    // `a_killed_spawners_profile_under_a_removed_home_is_swept_from_another`'s folder was.
     let next = vm_run(&["--kernel", "nonexistent-kernel"]);
     assert_ne!(next.status, Some(0), "{next}");
     assert!(!record.exists(), "{} swept", record.display());
