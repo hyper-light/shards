@@ -3,7 +3,8 @@ name: windows lower
 # How soon Windows takes a CPU from a running thread its priority governor lowers below a
 # ready one, and gives it to one it raises (D191, crates/vmm/src/platform/windows_thread.rs),
 # on both Windows Server runners CI tests on: docs/research/measurements/win-lower/lower.c.
-# Runs when it changes, or when asked.
+# Then the governor itself, sampled each millisecond in its test's scene, alone and beside
+# busy threads (win-lower/governor). Runs when either changes, or when asked.
 on:
   push:
     paths:
@@ -18,6 +19,10 @@ on:
 permissions:
   contents: read
 
+env:
+  CARGO_TERM_COLOR: never
+  TOOLCHAIN: 1.98.1 # keep in sync with rust-toolchain.toml
+
 jobs:
   lower:
     strategy:
@@ -25,9 +30,12 @@ jobs:
       matrix:
         runner: [windows-2022, windows-2025]
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 20
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7.0.1
+      - name: Install pinned Rust
+        shell: bash
+        run: scripts/retry 5 30 rustup toolchain install "$TOOLCHAIN" --profile minimal
       - name: zig
         shell: bash
         run: scripts/install-zig
@@ -37,6 +45,15 @@ jobs:
           [Environment]::ProcessorCount
           (Get-CimInstance Win32_Processor).Name
           [System.Environment]::OSVersion.VersionString
+      - name: Governor, built
+        shell: bash
+        run: cargo build --release --manifest-path docs/research/measurements/win-lower/governor/Cargo.toml
+      - name: Governor, alone
+        shell: bash
+        run: docs/research/measurements/win-lower/governor/target/release/win-governor.exe 5 3 0
+      - name: Governor, beside 3 busy threads
+        shell: bash
+        run: docs/research/measurements/win-lower/governor/target/release/win-governor.exe 5 3 3
       - name: Build
         shell: bash
         run: zig cc -O2 -Wall -Wextra -target x86_64-windows-gnu docs/research/measurements/win-lower/lower.c -o lower.exe -ladvapi32

@@ -1,0 +1,15 @@
+# The priority governor of crates/vmm (D191, platform/windows_thread.rs) on a host's own
+# scheduler, sampled each millisecond: its test's three governed spinners and a normal one on
+# one CPU. A crate of its own, outside the workspace. On a Windows host:
+# `cargo run --release -- [ROUNDS] [SECONDS] [LOAD]`.
+[package]
+name = "win-governor"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+shards-vmm = { path = "../../../../../crates/vmm" }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_System_WindowsProgramming"] }
