@@ -422,7 +422,12 @@ impl Settle<'_> {
         let (work, cpus) = self.kind;
         let seen = match self.record.seen() {
             Seen::Cold => "its kind not yet seen: followed while its microVM answers".to_string(),
-            Seen::Learned { slowest, .. } => format!("the slowest settle of its kind seen {slowest:?}"),
+            Seen::Learned {
+                slowest, quickest, ..
+            } => format!(
+                "the slowest settle of its kind seen {slowest:?} and its spread {:?}",
+                slowest.saturating_sub(quickest)
+            ),
         };
         format!(
             "{cpus} vCPUs: {work}: {pins} pages pinned, not {}, {:?} into its settle (its work took {:?}); {seen}",
@@ -433,8 +438,8 @@ impl Settle<'_> {
     }
 }
 
-/// A settle refused: no slot freed over a whole W*, the slowest settle of its kind seen,
-/// since its judge's look before.
+/// A settle refused: no slot freed over a whole window, the slowest settle of its kind seen
+/// and its spread, since its judge's look before.
 #[derive(Debug, PartialEq, Eq)]
 struct Stalled {
     /// Pages pinned at the look that refused it, and the count it waits for.
@@ -447,12 +452,13 @@ impl std::fmt::Display for Stalled {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "{} pages pinned, not {}, after {:?}: none released over the last {:?}, the slowest settle of its kind seen {:?}",
+            "{} pages pinned, not {}, after {:?}: none released over the last {:?}, the slowest settle of its kind seen {:?} and its spread {:?}",
             self.now,
             self.want,
             self.stall.waited(),
             self.stall.over(),
-            self.stall.slowest()
+            self.stall.slowest(),
+            self.stall.spread()
         )
     }
 }

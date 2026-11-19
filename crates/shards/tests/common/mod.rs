@@ -3508,9 +3508,9 @@ impl Patience {
         self.wait.account()
     }
 
-    /// The window a stillness of its party is refused over as its looks so far say it: W*, or
-    /// what its looks resolve where that is longer (a counter's tick, a look's own time). None
-    /// while it is not judged.
+    /// The window a stillness of its party is refused over as its looks so far say it: W* and
+    /// its spread, or what its looks resolve where that is longer (a counter's tick, a look's
+    /// own time). None while it is not judged.
     pub fn window(&self) -> Option<Duration> {
         self.wait.judge.stillness().map(|(_, _, window)| window)
     }
@@ -4167,7 +4167,9 @@ fn run_ending(
             (Err(stall), None) => {
                 let said = wait.refused(&stall);
                 let seen = stuck(child.id(), home.as_deref());
-                let (started, left) = end_run(&mut child, stall.slowest(), leftovers);
+                // Its processes given its kind's window to end in: W* and its spread.
+                let within = stall.slowest().saturating_add(stall.spread());
+                let (started, left) = end_run(&mut child, within, leftovers);
                 take_all(&mut [&mut out, &mut err]);
                 return Err(Ended {
                     said: format!(
@@ -6853,17 +6855,24 @@ impl Wait {
         let record = match self.kind.record.seen() {
             shards_api::Seen::Cold => "none yet on this host: its party's liveness alone".to_string(),
             shards_api::Seen::Learned {
-                slowest, rated: None, ..
-            } => {
-                format!("W* {slowest:?}, no answer's work read through its end")
-            }
+                slowest,
+                quickest,
+                rated: None,
+            } => format!(
+                "W* {slowest:?} and its spread {:?}, no answer's work read through its end",
+                slowest.saturating_sub(quickest)
+            ),
             shards_api::Seen::Learned {
                 slowest,
+                quickest,
                 rated: Some(rated),
-                ..
             } => format!(
-                "W* {slowest:?}, R* {} in {:?}, C* {}",
-                rated.least.work, rated.least.over, rated.most
+                "W* {slowest:?} and its spread {:?}, R* {} in {:?}, C* {} and its spread {}",
+                slowest.saturating_sub(quickest),
+                rated.least.work,
+                rated.least.over,
+                rated.most,
+                rated.spread()
             ),
         };
         let kind = if self.kind.line.is_empty() {
@@ -6940,23 +6949,26 @@ impl Wait {
     pub fn refused(&self, stall: &shards_api::Stall) -> String {
         if let (Some(rate), Some(least)) = (stall.rate(), stall.least()) {
             return format!(
-                "{} ran too slowly to be answering: {} in the {:?} it was seen to run unheld, below the least rate any answer of its kind came at on this host (R* {} in {:?}) and more than any such answer took (C* {}), past the slowest such answer ({:?}), {:?} into its wait\n--- its wait\n{}",
+                "{} ran too slowly to be answering: {} in the {:?} it was seen to run unheld, below the least rate any answer of its kind came at on this host (R* {} in {:?}) and more than any such answer took (C* {}) and its spread ({}), past the slowest such answer ({:?}) and its spread ({:?}), {:?} into its wait\n--- its wait\n{}",
                 self.asked,
                 rate.work,
                 rate.over,
                 least.work,
                 least.over,
                 stall.most().unwrap_or_default(),
+                stall.work_spread().unwrap_or_default(),
                 stall.slowest(),
+                stall.spread(),
                 stall.waited(),
                 self.account()
             );
         }
         format!(
-            "{} made no progress for {:?}, past the slowest answer of its kind seen on this host ({:?}), {:?} into its wait\n--- its wait\n{}",
+            "{} made no progress for {:?}, past the slowest answer of its kind seen on this host ({:?}) and its spread ({:?}), {:?} into its wait\n--- its wait\n{}",
             self.asked,
             stall.over(),
             stall.slowest(),
+            stall.spread(),
             stall.waited(),
             self.account()
         )

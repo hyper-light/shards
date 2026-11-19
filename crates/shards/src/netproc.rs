@@ -172,10 +172,11 @@ pub fn until_ready(
         if let Some(followed) = follow.as_mut() {
             followed.look().map_err(|why| match why {
                 shards_api::Unfollowed::Stalled(stall) => format!(
-                    "its network process ({}) ran nothing for {:?}, past the slowest answer one has given ({:?}){}",
+                    "its network process ({}) ran nothing for {:?}, past the slowest answer one has given ({:?}) and its spread ({:?}){}",
                     net.pid,
                     stall.over(),
                     stall.slowest(),
+                    stall.spread(),
                     stall.account()
                 ),
                 shards_api::Unfollowed::Process { failure, .. } => {

@@ -363,9 +363,10 @@ fn emptied(events: &Path, procs: &Path, record: &shards_api::Record) -> std::io:
             };
             judge.found_over(found, span).map_err(|stall| {
                 std::io::Error::other(format!(
-                    "its processes ran nothing for {:?}, past the slowest a leaf emptied in ({:?})",
+                    "its processes ran nothing for {:?}, past the slowest a leaf emptied in ({:?}) and its spread ({:?})",
                     stall.over(),
-                    stall.slowest()
+                    stall.slowest(),
+                    stall.spread()
                 ))
             })?;
         }

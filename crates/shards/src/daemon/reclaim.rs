@@ -434,7 +434,8 @@ mod tests {
     const LEAST: shards_api::Work = shards_api::Work::of(7_000_000);
 
     /// A stall as the daemon's wait refuses one ([`Cut::Stalled`]): a microVM that ran no CPU
-    /// over a whole W*, its kind's slowest answer of 100 ms, from the wait's start.
+    /// over a whole window, its kind's slowest answer of 100 ms and its spread, none of one
+    /// answer, from the wait's start.
     fn stalled() -> Option<Cut> {
         let record = shards_api::Record::new();
         record.teach(Duration::from_millis(100), LEAST);
@@ -458,7 +459,7 @@ mod tests {
         let said = given(&quiet("", Some(137), stall.clone())).unwrap_err();
         assert!(
             said.starts_with("its microVM ran no CPU in ")
-                && said.contains(" past the slowest answer seen (100ms), ")
+                && said.contains(" past the slowest answer seen (100ms) and its spread (0ns), ")
                 && said.contains(&format!(
                     " into the wait (the least a microVM ran and still answered: {LEAST} in 100ms)"
                 ))

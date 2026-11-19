@@ -9261,11 +9261,12 @@ impl<D: Disk> Daemon<D> {
                 leave(&mut state, waiting);
                 return Err(Claim::Failed(format!(
                     "no warm VM of {} was ready in {:?}: none of its refills came ready for {:?}, past \
-                     the slowest start seen ({:?}), for no fault of its template's",
+                     the slowest start seen ({:?}) and its spread ({:?}), for no fault of its template's",
                     key.dir.display(),
                     began.elapsed(),
                     stall.over(),
-                    stall.slowest()
+                    stall.slowest(),
+                    stall.spread()
                 )));
             }
         }
@@ -10604,9 +10605,10 @@ fn grant(
             };
             followed.look().map_err(|why| match why {
                 shards_api::Unfollowed::Stalled(stall) => format!(
-                    "VM {pid} asked nothing after {sent} messages: it ran nothing for {:?}, past the slowest request seen ({:?}), {:?} into its wait{}",
+                    "VM {pid} asked nothing after {sent} messages: it ran nothing for {:?}, past the slowest request seen ({:?}) and its spread ({:?}), {:?} into its wait{}",
                     stall.over(),
                     stall.slowest(),
+                    stall.spread(),
                     began.elapsed(),
                     stall.account()
                 ),
@@ -10797,21 +10799,25 @@ fn ready(socket: &UnixStream, pid: u32, record: &shards_api::Record) -> Result<(
         };
         followed.look().map_err(|why| match why {
             // A start ends in READY, work no time spent working brings nearer: one that has
-            // done more than any start took (C*) is given up on, whatever its rate (D215).
+            // done more than any start took (C*) and its spread is given up on, whatever its
+            // rate (D215).
             shards_api::Unfollowed::Stalled(stall) => NotReady::Refused(match stall.rate() {
                 Some(rate) => format!(
-                    "VM {pid} was not ready: it ran {} in the {:?} it was seen to run unheld, more than any start took ({}), past the slowest start seen ({:?}), {:?} after it began{}",
+                    "VM {pid} was not ready: it ran {} in the {:?} it was seen to run unheld, more than any start took ({}) and its spread ({}), past the slowest start seen ({:?}) and its spread ({:?}), {:?} after it began{}",
                     rate.work,
                     rate.over,
                     stall.most().unwrap_or_default(),
+                    stall.work_spread().unwrap_or_default(),
                     stall.slowest(),
+                    stall.spread(),
                     into(),
                     stall.account()
                 ),
                 None => format!(
-                    "VM {pid} was not ready: it ran nothing for {:?}, past the slowest start seen ({:?}), {:?} after it began{}",
+                    "VM {pid} was not ready: it ran nothing for {:?}, past the slowest start seen ({:?}) and its spread ({:?}), {:?} after it began{}",
                     stall.over(),
                     stall.slowest(),
+                    stall.spread(),
                     into(),
                     stall.account()
                 ),
@@ -19555,10 +19561,11 @@ mod tests {
                         }
                         panic!(
                             "its child stalled: it ran nothing for {:?}, {:?} into the wait, past \
-                             the slowest child's {:?} (D215)",
+                             the slowest child's {:?} and its spread {:?} (D215)",
                             stall.over(),
                             stall.waited(),
-                            stall.slowest()
+                            stall.slowest(),
+                            stall.spread()
                         );
                     }
                     std::thread::sleep(Duration::from_millis(1));
@@ -20080,10 +20087,11 @@ mod tests {
     }
 
     /// The exec of `read metrics` its microVM never answers is ended, once the daemon has seen
-    /// a metrics read answered, where the VM process ran nothing for a whole W* past the
-    /// slowest it has seen: told SIGKILL, its end waited for, and the read refused, saying so
-    /// (finding 4 of audit-fix-host-v1: it was waited for with no end, holding its client and
-    /// a daemon thread; D215's judge, which follows a cold kind's microVM while it lives).
+    /// a metrics read answered, where the VM process ran nothing for a whole window, the
+    /// slowest it has seen and its spread (none, of one answer): told SIGKILL, its end waited
+    /// for, and the read refused, saying so (finding 4 of audit-fix-host-v1: it was waited for
+    /// with no end, holding its client and a daemon thread; D215's judge, which follows a cold
+    /// kind's microVM while it lives).
     #[test]
     fn metrics_whose_microvm_runs_nothing_are_ended() {
         let t = Test::new("metrics-stalled");
@@ -20122,7 +20130,7 @@ mod tests {
             let end = ", so its metrics were not read\n";
             assert!(
                 err.starts_with("shards: read metrics: stalled: its microVM ran no CPU in ")
-                    && err.contains(" past the slowest answer seen (50ms), ")
+                    && err.contains(" past the slowest answer seen (50ms) and its spread (0ns), ")
                     && (after == end || (after.starts_with("; its threads: ") && after.ends_with(end))),
                 "{err}"
             );

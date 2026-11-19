@@ -390,9 +390,10 @@ impl<'r> Wait<'r> {
             },
         );
         let account = format!(
-            "{}; {judged}, {:?}; {deadline}",
+            "{}; {judged}, {:?}, and its spread, {:?}; {deadline}",
             self.party.account(),
-            stall.slowest()
+            stall.slowest(),
+            stall.spread()
         );
         stall.said(Some(account))
     }
@@ -411,10 +412,11 @@ impl<'r> Wait<'r> {
 pub fn stalled(stall: &Stall) -> String {
     format!(
         "no thread of its party ran for {:?} its host did not hold it in, {:?} into the \
-         wait, its window {:?} (D215){}",
+         wait, its window W* {:?} and its spread {:?} (D215){}",
         stall.over(),
         stall.waited(),
         stall.slowest(),
+        stall.spread(),
         stall.account()
     )
 }

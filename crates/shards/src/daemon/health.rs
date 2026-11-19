@@ -93,8 +93,9 @@ pub(super) struct Quiet {
 pub(super) enum Cut {
     /// Its [`Wait::For`] passed with no end.
     Timeout(Duration),
-    /// Its microVM's process ran no CPU at all over a whole W* or more since the look before,
-    /// past the slowest answer of the exec's kind seen ([`Wait::WhileRuns`]).
+    /// Its microVM's process ran no CPU at all over a whole window or more since the look
+    /// before, past the slowest answer of the exec's kind seen and its spread
+    /// ([`Wait::WhileRuns`]).
     Stalled(Stall),
     /// Its microVM's process could not be read while it lived ([`Wait::WhileRuns`]): never
     /// taken for no progress.
@@ -117,10 +118,11 @@ impl std::fmt::Display for Cut {
             Cut::Timeout(timeout) => write!(f, "no answer within {timeout:?}"),
             Cut::Stalled(stall) => write!(
                 f,
-                "its microVM ran no CPU in {:?} past the slowest answer seen ({:?}), {:?} into the \
-                 wait ({}){}",
+                "its microVM ran no CPU in {:?} past the slowest answer seen ({:?}) and its spread \
+                 ({:?}), {:?} into the wait ({}){}",
                 stall.over(),
                 stall.slowest(),
+                stall.spread(),
                 stall.waited(),
                 stall.least().map_or_else(
                     || "no answer of its kind had its CPU read".to_string(),
@@ -1058,9 +1060,10 @@ impl std::fmt::Display for Stalled {
         match &self.0 {
             Cut::Stalled(stall) => write!(
                 f,
-                "its process ran no CPU in {:?} past the slowest answer seen ({:?}), {:?} into the wait{}",
+                "its process ran no CPU in {:?} past the slowest answer seen ({:?}) and its spread ({:?}), {:?} into the wait{}",
                 stall.over(),
                 stall.slowest(),
+                stall.spread(),
                 stall.waited(),
                 stall.account()
             ),
