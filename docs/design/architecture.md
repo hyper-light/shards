@@ -32375,6 +32375,117 @@ those answers had differed among themselves:
   aarch64-apple-darwin). Owed (ROOT): the real-VM E2E (the refusals above under load, D217's
   kill and stop tests), the tests on Linux and Windows, and CI.
 
+**2026-11-19, a test's wait is held where its host holds any thread of its process, its progress
+its party's alone (#36; CI 44563056402, job aarch64-unknown-linux-musl).** At main 1f116bedb5
+the shards binary's `a_capture_failure_of_the_daemons_own_stops_its_run_and_its_vms_end_does_not`
+was refused at `running()`'s wait for RUN (daemon.rs `heard`): "no thread of its party ran for
+69.675µs its host did not hold it in, 279.191µs into the wait, its window 69.675µs (D215); its
+threads: recorder (#4) waiting, #5 waiting; judged cold". Its daemon then logged "warm VM 2276
+did not take a run: it ended first".
+- *Which wait, and that it was false.* A refusal forced at each of that test's two `heard` waits
+  (scratch tests, macOS, at 1f116bedb5) said "recorder (#1) waiting, #2 waiting, reader (#3)
+  waiting" at the first, and at the second `refiller`, `files`, `packer`, `followers`, its
+  stopping thread and a second reader besides. CI's account is the first's, its reader (#6) gone:
+  a reader leaves its party only once it has read a whole message, so RUN came between the
+  refusing look and its account, and the test's socket closed as it panicked (`taken`'s
+  `Ok(None)`). Its run thread (#5) had slept, neither runnable nor in its kernel, through the
+  windows before.
+- *Where it slept.* From its making to that RUN the run thread waits on no member: it joins its
+  party, then `start_run` (`acquire`'s first send makes its channel's first block, its blocking
+  receive its thread's context), `commit` (the daemon's `runs` lock, which no other member
+  took), `tell_net` (no network) and `send_judged` (no allocation). What is left is a lock of the
+  whole process, which any thread may hold: on musl its allocator's one lock (mallocng
+  `__malloc_lock`, which every `malloc` takes and holds through the `mmap` a new group needs;
+  src/malloc/mallocng/glue.h, malloc.c), where glibc gives each thread an arena of its own. A
+  thread of another test, or of none, held by its host while it held such a lock left the member
+  asleep on it, which the look read as the member's own rest. Which lock is not known: Linux keeps
+  no futex's holder, and CI kept no reading of the thread's wait.
+- *Decision.* A look that finds its party ran nothing reads every thread of its process for its
+  host's hold (`party::hold`): its members as before, and every other thread (`party::Others`)
+  by the rule D215 reads a VM process's threads by: waiting uninterruptibly in its kernel now, or
+  runnable now with no CPU at all since the look before (shards-api's `starved`). Their run is
+  still none of its party's progress (CI 43990298220), and its threshold its judge's window
+  (above).
+  - Linux: each task of `/proc/self/task`, its state (`D`, `R`) and its own CPU clock
+    (`(~tid << 3) | 6`, which `task_sched_runtime` brings up to date for a thread on a CPU).
+  - Windows: from the listing its look reads already (PM M606), a thread waiting in its kernel
+    (`threads::in_kernel`), or ready or standby with no switch to a CPU since
+    (`threads_switched`).
+  - macOS: a thread `TH_STATE_UNINTERRUPTIBLE` alone. `TH_STATE_RUNNING` is a thread running or
+    waiting for one alike, and another thread's times move only as it enters its kernel: a
+    spinning thread's, read each 20 µs over 200 ms, moved at 816 to 2360 of 8975 to 9697 reads
+    and stood still 1.6 to 4.0 ms at most (testwait's `how_often_a_running_threads_times_move`,
+    three runs each on an M5 Max, macOS 26.4.1, and an M5 Pro, macOS 26.6), so `starved` would
+    read another test's busy thread as held over any shorter window; and its host's idle time
+    moves in ticks of 10 ms (`kern.clockrate` hz 100), coarser than a window, which the
+    2026-11-18 ruling's "macOS only while its host had no idle CPU over the look's interval"
+    needs.
+  - Not another thread's `run_delay` growth, which that ruling named: the kernel adds every wait
+    to it as its thread reaches a CPU, a wake's among them (kernel/sched/stats.h
+    `sched_info_enqueue`, `sched_info_arrive`), so that it grows wherever a thread woke and ran;
+    a member's is read only where its party ran nothing.
+  - A wait reads its members alone as it begins (`party::members`, Linux's baseline of their
+    `run_delay`), and the others only at a look that found its party ran nothing.
+  - The first look that reads the others has no reading of their run to judge it since: it is
+    based (`Found::Based`, `party::Hold::based`), its judge's evidence begun anew at its end and
+    the wait's own count of its stillness going on, so that a party still from its wait's start
+    is refused at its third due look, as `LOOKS_TO_REFUSE` derives. Without it the new test below
+    was refused at its first due look 5 times of 20 on aarch64 musl (20.5 ms in, its window
+    20 ms), its member asleep on the lock before its wait began. macOS reads no other thread's
+    run, so no look there is based for it.
+  - shards-judge's `threads_held` and `ThreadsHeld` are deleted, with shards-api's re-export:
+    the tests' party was their one caller, and reads its members and the others from one
+    listing itself now (`threads::records`, `each_thread`, `wants_cpu`, `in_kernel`,
+    `threads_switched`).
+- *Alternatives.* Knowing what a member sleeps on: Linux shows its futex's address
+  (`/proc/<tid>/syscall`), but neither musl's lock word (its waiters' count) nor std's futex
+  mutex (0, 1 or 2) names a holder. An allocator of the tests' own: it would leave the process's
+  other shared locks (this crate's registries, std's stdio).
+- *Costs.* A still party is held while another thread of its process is kept from every CPU
+  through a window, or waits in its kernel; never by another's run. A look reads every thread
+  (testwait's `what_a_look_at_every_thread_costs`): with four members and 301 other threads
+  asleep, n 200 each, p50 194.6 µs, p90 202.1 µs, p99 219.2 µs, max 234.3 µs on the M5 Max (load
+  7.6 on 18 CPUs), and p50 156.8 µs, p90 163.7 µs, p99 236.2 µs, max 291.0 µs on the M5 Pro (load
+  15 on 15). On Linux, in the M5 Pro's Docker Desktop VM (Linux 7.0.14-linuxkit, 15 CPUs, its
+  host's load 52 to 59 of other work), a `stat` read and a CPU clock a thread: aarch64 musl p50
+  1.268 ms, p90 1.627 ms, p99 2.023 ms, max 2.264 ms, its members alone p50 20.6 µs; aarch64
+  glibc p50 1.643 ms, p90 1.848 ms, p99 2.082 ms, max 2.712 ms, its members alone p50 19.3 µs.
+  Every look that finds its party ran nothing pays it, and a cold wait looks at each of its
+  host's granularity. Windows reads its listing at every such look, where before it read it only
+  for a party with a member besides its waiter.
+- *Held by* testwait's `a_member_asleep_on_a_lock_whose_holder_its_host_holds_is_held_not_refused`
+  (Linux and Windows): its member asleep on a lock that a thread of no party holds, which the test
+  keeps from every CPU on its own word (the CPU it runs on for its own, at SCHED_IDLE or
+  THREAD_PRIORITY_IDLE, a spinner of no party there), let go only after `LOOKS_TO_REFUSE` and one
+  more of its wait's due looks; its red and green on Linux below. Its holder still runs: 0.46 to
+  9.86 ms of each run of 81 to 94 ms (80 runs, the Linux VM below, which counts no steal, so that
+  a vCPU its host pauses charges the thread it ran), and a run in which it ran in the intervals
+  of two looks in a row is refused, `starved` reading no CPU at all: 1 of its 140 runs below.
+  macOS cannot reach the state on a test's word: Apple silicon takes no thread's affinity
+  (KERN_NOT_SUPPORTED), so that only every CPU kept busy would, the test's own threads starved
+  with it; no red holds its reading there.
+- *Run* (light, lane p/cold-hold, at main 9e649df34e with this change). Linux, in containers on
+  the M5 Pro's Docker Desktop (29.9.2; Linux 7.0.14-linuxkit, aarch64, 15 CPUs), each built as
+  .kiln/ci.yaml's musl leg builds: CI's musl image (rust:1.98.1-alpine@sha256:7cc1c22d…, aarch64
+  musl, the failing job's target) and rust:1.98.1-bookworm (aarch64, glibc 2.36).
+  - The new test: musl 60 of 60, glibc 59 of 60 (20 each, then 40 reading its holder), the one
+    refused 64.5 ms in, 36.1 ms unheld. shards-testwait, the new test among its 8: 10 of 10 on
+    each.
+  - Red: main's shards-testwait with the new test, refused 20 of 20 on each (83 ms in);
+    `Others::held_since` out of `Hold::since`, refused 20 of 20 on each; no base, refused 5 of
+    20 (musl) and 3 of 20 (glibc), each at its first due look.
+  - macOS (the M5 Pro, 26.6, load 45 to 82 of other work): rustfmt clean; clippy over
+    shards-testwait, shards-judge and shards-api, all targets, the seven triples, `-D warnings`,
+    clean; the capture test 10 of 10. shards-testwait 28 of 30 (10, then 20 interleaved with
+    main's, which passed 20 of 20): both failures `a_cold_wait_refuses_a_still_party`, its own
+    wait given up first ("never gave up"), a wait on stand-ins, which read no other thread and
+    are never based; not explained.
+  - Earlier, at batch 11's 03c6c252e1 with the same shards-testwait less the base: the capture
+    test 10 of 10, and 10 of 10 at 1f116bedb5 (load up to 100 on 15 CPUs).
+- *Owed*: the red and green on Windows and on x86_64 Linux (the containers were aarch64); the
+  macOS cold wait's two failures above; and, ROOT's, the shards binary's tests on the seven
+  targets and CI's aarch64 musl job.
+
 ### D231. An image booted for an orchestrator: a run of its own, hosted by one `shards` process (decided; building)
 
 **Why.** An orchestrator that runs each harness in a microVM of its own (Hex, for every

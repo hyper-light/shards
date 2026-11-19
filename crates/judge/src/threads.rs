@@ -3,8 +3,8 @@
 //! keeps a thread's state in that listing alone, every process's, 13.1 to 13.8 ms a read on
 //! jupiter (PM M606). shards-api's judge reads a VM process's threads through it (its
 //! `Listing`, read once for every reading of one look: its `Followed`'s hold, threads and
-//! trace, and its party's account), and the tests' party (shards-testwait) its own members,
-//! so that one listing rule holds both (ROOT, 2026-11-17).
+//! trace, and its party's account), and the tests' parties (shards-testwait) every thread of
+//! their own process, so that one listing rule holds both (ROOT, 2026-11-17).
 
 use std::cell::Cell;
 
@@ -15,16 +15,6 @@ use windows_sys::Wdk::System::SystemServices::{
 };
 use windows_sys::Win32::Foundation::STATUS_INFO_LENGTH_MISMATCH;
 use windows_sys::Win32::System::WindowsProgramming::{SYSTEM_PROCESS_INFORMATION, SYSTEM_THREAD_INFORMATION};
-
-/// What [`threads_held`] read of the threads it was asked of: how many the listing held, how
-/// many of those wanted or had a CPU (ready, running, standby), and how many waited in their
-/// kernel on their host's work ([`in_kernel`]).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct ThreadsHeld {
-    pub read: usize,
-    pub runnable: usize,
-    pub in_kernel: usize,
-}
 
 // A thread's state in its record (`SYSTEM_THREAD_INFORMATION.ThreadState`), as WMI's
 // Win32_Thread class documents its values: ready (1), running (2) and standby (3) want or
@@ -38,36 +28,11 @@ pub const TRANSITION: u32 = 6;
 
 /// Whether a thread in `state` wants or has a CPU: ready, running or standby (WMI's
 /// `Win32_Thread`). One rule for each Windows reading of D215's holds (shards-api's
-/// `Followed::hold` and `runnable_threads`, [`threads_held`]). A thread leaves ready only by
-/// running or ending, so one its host has kept from a CPU since it last ran is in it still as a
-/// look reads it.
+/// `Followed::hold` and `runnable_threads`, shards-testwait's `party::hold`). A thread leaves
+/// ready only by running or ending, so one its host has kept from a CPU since it last ran is in
+/// it still as a look reads it.
 pub fn wants_cpu(state: u32) -> bool {
     matches!(state, READY | RUNNING | STANDBY)
-}
-
-/// What threads `tids` of process `pid` are doing as one read of the system's whole listing
-/// shows them (D215): of those it lists, how many want or have a CPU and how many wait on
-/// their host's paging, each classed as shards-api's `Followed` classes a VM process's
-/// threads ([`wants_cpu`], [`pages`]): one rule for its judge and for a waiter that follows
-/// threads of its own process, as the tests' parties do (shards-testwait). A waiter reads it
-/// only at a look that found its threads ran nothing. None where it could not be read.
-pub fn threads_held(pid: u32, tids: &[u32]) -> Option<ThreadsHeld> {
-    let records = records().ok()?;
-    let mut held = ThreadsHeld::default();
-    each_thread(&records, |of, t| {
-        let tid = u32::try_from(t.ClientId.UniqueThread as usize).unwrap_or(u32::MAX);
-        if of != pid || !tids.contains(&tid) {
-            return;
-        }
-        held.read = held.read.saturating_add(1);
-        held.runnable = held
-            .runnable
-            .saturating_add(usize::from(wants_cpu(t.ThreadState)));
-        held.in_kernel = held
-            .in_kernel
-            .saturating_add(usize::from(in_kernel(t.ThreadState, t.WaitReason)));
-    });
-    Some(held)
 }
 
 /// Each thread of process `pid` as one read of the system's whole listing, `words`

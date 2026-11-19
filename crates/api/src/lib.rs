@@ -70,8 +70,6 @@ pub use native::{
 pub use physical::{GpuName, GpuProbe, GpuProbeError, PhysicalGpu, PhysicalGpuError, ResolvedGpu};
 pub use progress::{Awaited, Bound, Follow, Followed, Listing, Threads, Unfollowed, Watch, starved};
 pub use shards_judge::{Found, Judge, LOOKS_TO_REFUSE, Rate, Rated, Record, SPREAD, Seen, Span, Stall, Work};
-#[cfg(windows)]
-pub use shards_judge::{ThreadsHeld, threads_held};
 
 /// A guest to boot.
 #[derive(Debug, Clone, PartialEq, Eq)]

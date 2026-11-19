@@ -10,7 +10,9 @@
 //! refused in 81 ms, ROOT's r669). As a test's wait on a home counts its home's daemon and
 //! what descends from it (shards' tests/common `Patience`), never the test's process. A thread
 //! of no party (made by another crate, or by std itself) counts for no party's wait, and a
-//! wait on a thread of none counts this process's threads, as before parties were.
+//! wait on a thread of none counts this process's threads, as before parties were. What its
+//! host holds is read of every thread of this process ([`hold`]): any of them may hold what a
+//! member waits on.
 
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
@@ -263,83 +265,202 @@ impl Drop for Member {
     }
 }
 
-/// What party `id`'s living members but the thread that asks are doing as it asks: D215's
-/// hold (shards-api `Hold::held_since`, ROOT's rule for runnable threads and `run_delay`),
-/// read of threads of this process. Windows keeps its threads' states in the system's whole
-/// listing alone, read once for every member (shards-judge's `threads_held`, the rule
-/// shards-api's judge holds a VM process's threads by: wanting a CPU, or waiting in its kernel
-/// on its host's paging or a kernel lock), 13.1 to 13.8 ms a read (PM M606), so that a wait
-/// reads it only at a look
-/// that found its party ran nothing. Its threads made and not yet run ([`Made`]) are runnable,
-/// on every OS: each wants a CPU it has never had.
+/// What a look at party `id` finds its host holding, D215's hold (shards-api
+/// `Hold::held_since`, ROOT's rule for runnable threads and `run_delay`): what its living
+/// members but the thread that asks are doing as it asks, its threads made and not yet run
+/// ([`Made`]) runnable on every OS, each wanting a CPU it has never had; and every other thread
+/// of this process ([`Others`]), any of which may hold what a member waits on. Windows keeps
+/// its threads' states in the system's whole listing alone, read once for all of them (the
+/// rule shards-api's judge holds a VM process's threads by: wanting a CPU, or waiting in its
+/// kernel on its host's paging or a kernel lock), 13.1 to 13.8 ms a read (PM M606), so that a
+/// wait reads it only at a look that found its party ran nothing.
 pub fn hold(id: u64) -> Hold {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
-        // Read outside the parties' lock, which every member takes as it starts and ends: a
-        // thread gone since reads as none. Its unstarted with them, so that one that starts
-        // meanwhile is read as one or the other.
-        let (threads, unstarted): (Vec<(u64, Thread)>, usize) = parties()
-            .get(&id)
-            .map(|party| {
-                let threads = party
-                    .threads
-                    .iter()
-                    .map(|(&key, &thread)| (key, thread))
-                    .collect();
-                (threads, party.unstarted.len())
-            })
-            .unwrap_or_default();
+        let (threads, unstarted) = living(id);
         let asks = Thread::own();
-        let mut hold = Hold::made(unstarted);
-        for (key, thread) in threads {
-            if thread == asks {
-                continue;
-            }
-            let Some(state) = thread.read() else {
-                continue;
-            };
-            hold.read += 1;
-            hold.runnable += usize::from(state.runnable);
-            hold.in_kernel += usize::from(state.in_kernel);
-            if let Some(queued) = state.queued {
-                hold.queued.insert(key, queued);
-            }
-        }
+        let mut hold = read(&threads, unstarted, asks);
+        let members: Vec<Thread> = threads.iter().map(|&(_, thread)| thread).collect();
+        hold.others = others(&members, asks);
         hold
     }
     #[cfg(windows)]
     {
+        use shards_judge::threads::{each_thread, in_kernel, records, threads_switched, wants_cpu};
         let asks = Thread::own();
-        let (tids, unstarted): (Vec<u32>, usize) = parties()
+        let (members, unstarted): (Vec<u32>, usize) = parties()
             .get(&id)
             .map(|party| {
-                let tids = party
-                    .threads
-                    .values()
-                    .filter(|thread| **thread != asks)
-                    .map(|thread| thread.0)
-                    .collect();
-                (tids, party.unstarted.len())
+                let members = party.threads.values().map(|thread| thread.0).collect();
+                (members, party.unstarted.len())
             })
             .unwrap_or_default();
-        let made = Hold::made(unstarted);
-        if tids.is_empty() {
-            return made;
-        }
-        let Some(held) = shards_judge::threads_held(std::process::id(), &tids) else {
-            return made;
+        let mut hold = Hold::made(unstarted);
+        let Ok(words) = records() else {
+            return hold;
         };
-        Hold {
-            read: held.read.saturating_add(made.read),
-            runnable: held.runnable.saturating_add(made.runnable),
-            in_kernel: held.in_kernel,
-            ..Hold::default()
+        let pid = std::process::id();
+        each_thread(&words, |of, t| {
+            let tid = u32::try_from(t.ClientId.UniqueThread as usize).unwrap_or(u32::MAX);
+            if of != pid || tid == asks.0 {
+                return;
+            }
+            let kernel = usize::from(in_kernel(t.ThreadState, t.WaitReason));
+            if members.contains(&tid) {
+                hold.read += 1;
+                hold.runnable += usize::from(wants_cpu(t.ThreadState));
+                hold.in_kernel += kernel;
+            } else {
+                hold.others.read += 1;
+                hold.others.in_kernel += kernel;
+            }
+        });
+        hold.others.ran = threads_switched(&words, &[pid], Some(asks.0));
+        for member in members {
+            hold.others.ran.remove(&u64::from(member));
         }
+        hold
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     {
         Hold::made(parties().get(&id).map_or(0, |party| party.unstarted.len()))
     }
+}
+
+/// [`hold`] of party `id`'s members alone, none of this process's other threads read: a wait's
+/// reading of them as it begins, which a look's growth in their waits for a CPU is judged
+/// from. Linux's alone, where a thread keeps that wait (`run_delay`); its other threads' are
+/// read at a look alone.
+#[cfg(target_os = "linux")]
+pub fn members(id: u64) -> Hold {
+    let (threads, unstarted) = living(id);
+    read(&threads, unstarted, Thread::own())
+}
+
+/// Party `id`'s living members' threads, by their keys, and how many threads made for it have
+/// yet to run ([`Made`]), read under the parties' lock, which every member takes as it starts
+/// and ends: so that one that starts meanwhile is counted as one or the other.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn living(id: u64) -> (Vec<(u64, Thread)>, usize) {
+    parties()
+        .get(&id)
+        .map(|party| {
+            let threads = party
+                .threads
+                .iter()
+                .map(|(&key, &thread)| (key, thread))
+                .collect();
+            (threads, party.unstarted.len())
+        })
+        .unwrap_or_default()
+}
+
+/// What `threads`, a party's living members, are doing but `asks`, read outside the parties'
+/// lock (a thread gone since reads as none), with its `unstarted` threads made and not yet run.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn read(threads: &[(u64, Thread)], unstarted: usize, asks: Thread) -> Hold {
+    let mut hold = Hold::made(unstarted);
+    for &(key, thread) in threads {
+        if thread == asks {
+            continue;
+        }
+        let Some(state) = thread.read() else {
+            continue;
+        };
+        hold.read += 1;
+        hold.runnable += usize::from(state.runnable);
+        hold.in_kernel += usize::from(state.in_kernel);
+        if let Some(queued) = state.queued {
+            hold.queued.insert(key, queued);
+        }
+    }
+    hold
+}
+
+/// This process's threads but `members` and `asks` ([`Others`]): each task `/proc/self/task`
+/// lists, by its ID, its own CPU clock ([`Thread::cpu`]) and whether it is runnable (`R`); and
+/// how many wait uninterruptibly in their kernel (`D`). One gone between the listing and its
+/// reads has none.
+#[cfg(target_os = "linux")]
+fn others(members: &[Thread], asks: Thread) -> Others {
+    let mut others = Others::default();
+    let Ok(tasks) = std::fs::read_dir("/proc/self/task") else {
+        return others;
+    };
+    for task in tasks.flatten() {
+        let Some(thread) = task
+            .file_name()
+            .to_str()
+            .and_then(|tid| tid.parse().ok())
+            .map(Thread)
+        else {
+            continue;
+        };
+        if thread == asks || members.contains(&thread) {
+            continue;
+        }
+        let (Some(cpu), Some(state)) = (thread.cpu(), thread.state()) else {
+            continue;
+        };
+        others.read += 1;
+        others.in_kernel += usize::from(state == b'D');
+        if let Ok(id) = u64::try_from(thread.0) {
+            others.ran.insert(id, (cpu, state == b'R'));
+        }
+    }
+    others
+}
+
+#[cfg(target_os = "macos")]
+unsafe extern "C" {
+    /// This task's port, which the SDK's `mach_task_self()` reads (mach/mach_init.h), as
+    /// shards-vmm's `platform` binds it.
+    static mach_task_self_: libc::mach_port_t;
+    /// Releases one reference of right `name` in `task`'s port space (mach/mach_port.h;
+    /// libSystem), which libc binds no name for.
+    fn mach_port_deallocate(task: libc::mach_port_t, name: libc::mach_port_t) -> libc::kern_return_t;
+}
+
+/// This process's threads but `members` and `asks` ([`Others`]): each thread task_threads(2)
+/// lists, and how many of them wait uninterruptibly in their kernel
+/// (`TH_STATE_UNINTERRUPTIBLE`, [`Thread::read`]). None is read as wanting a CPU: macOS's
+/// `TH_STATE_RUNNING` is a thread running or waiting for one alike, and the times thread_info
+/// gives of another thread move only as it enters its kernel, so that one running reads as one
+/// that had no CPU over any window shorter than that (a spinning thread's, read each 20 µs
+/// over 200 ms, moved at 816 to 1223 of some 9500 reads and stood still 4.0 ms at most, three
+/// runs of `how_often_a_running_threads_times_move` on an M5 Max, macOS 26.4.1). A thread gone
+/// between the list and its read has none.
+#[cfg(target_os = "macos")]
+fn others(members: &[Thread], asks: Thread) -> Others {
+    let mut others = Others::default();
+    let mut list: libc::thread_act_array_t = std::ptr::null_mut();
+    let mut count: libc::mach_msg_type_number_t = 0;
+    // SAFETY: a read of the task's port, which the system sets before main and never
+    // changes.
+    let task = unsafe { mach_task_self_ };
+    // SAFETY: task_threads(2) of this task, into a list and a count it allocates and fills;
+    // each port it names carries a send right of ours, released below.
+    if unsafe { libc::task_threads(task, &raw mut list, &raw mut count) } != libc::KERN_SUCCESS {
+        return others;
+    }
+    let listed = usize::try_from(count).unwrap_or(0);
+    for at in 0..listed {
+        // SAFETY: `count` ports the call wrote at `list`.
+        let thread = Thread(unsafe { *list.add(at) });
+        if thread != asks
+            && !members.contains(&thread)
+            && let Some(state) = thread.read()
+        {
+            others.read += 1;
+            others.in_kernel += usize::from(state.in_kernel);
+        }
+        // SAFETY: the send right task_threads gave of this port, released once.
+        unsafe { mach_port_deallocate(task, thread.0) };
+    }
+    let bytes = listed.saturating_mul(size_of::<libc::thread_act_t>());
+    // SAFETY: the list task_threads allocated in this task, of `count` ports, freed once.
+    unsafe { libc::vm_deallocate(task, list as libc::vm_address_t, bytes as libc::vm_size_t) };
+    others
 }
 
 /// What party `id`'s members but the thread that asks were doing as a wait on it was refused,
@@ -454,22 +575,24 @@ fn states(_living: &[Living]) -> BTreeMap<u64, &'static str> {
 /// What a look read of a party's members ([`hold`]): how many it read, how many were
 /// runnable (running, or waiting for a CPU) and how many waited uninterruptibly in their
 /// kernel (on Windows, on their host's paging or a kernel lock); and (Linux) each one's wait for a CPU so far,
-/// in nanoseconds, by its key.
+/// in nanoseconds, by its key. And this process's other threads, as the same look read them.
 #[derive(Debug, Default)]
 pub struct Hold {
     pub read: usize,
     pub runnable: usize,
     pub in_kernel: usize,
     queued: BTreeMap<u64, u64>,
+    pub others: Others,
 }
 
 impl Hold {
-    /// Whether its host held a member since the look that read `before`, as D215's
-    /// `Hold::held_since` reads a VM process's threads: one runnable now, or waiting
+    /// Whether its host held its party since the look that read `before`, as D215's
+    /// `Hold::held_since` reads a VM process's threads: a member runnable now, or waiting
     /// uninterruptibly in its kernel now, or one's wait for a CPU grown since (the kernel
     /// adds a wait to `run_delay` as its thread reaches a CPU, so one runnable throughout
-    /// shows by its state instead). A daemon's thread waits uninterruptibly in its kernel
-    /// only on its host's work (its storage, its pages), never on another of its party.
+    /// shows by its state instead); or another thread of this process held ([`Others`]). A
+    /// daemon's thread waits uninterruptibly in its kernel only on its host's work (its
+    /// storage, its pages), never on another of its party.
     pub(crate) fn since(&self, before: &Hold) -> bool {
         self.runnable > 0
             || self.in_kernel > 0
@@ -477,6 +600,16 @@ impl Hold {
                 .queued
                 .iter()
                 .any(|(key, now)| before.queued.get(key).is_some_and(|was| now > was))
+            || self.others.held_since(&before.others)
+    }
+
+    /// Whether it is the first reading of this process's other threads' run, `before` having
+    /// none: a wait's reading as it begins reads its members alone (`members`), so that its
+    /// first look that reads them has nothing to judge their run since by, and is based (D215's
+    /// `Found::Based`), its stillness counted from it. Linux and Windows; macOS reads no
+    /// other thread's run (`Others::ran`).
+    pub(crate) fn based(&self, before: &Hold) -> bool {
+        !self.others.ran.is_empty() && before.others.ran.is_empty()
     }
 
     /// A party's `unstarted` threads made and not yet run ([`Made`]), each runnable.
@@ -498,19 +631,65 @@ impl Hold {
     }
 }
 
-/// A member's thread as another thread of this process reads its state ([`hold`]): its
-/// task's ID on Linux.
+/// This process's threads but a party's members and the thread that asks, as a look read them
+/// ([`hold`]): other tests' parties' threads, and threads of none. Any of them may hold what a
+/// member waits on: a lock of this process's, as musl's allocator takes one lock for every
+/// thread's allocations (mallocng `__malloc_lock`, src/malloc/mallocng/glue.h), so that its
+/// host holding one holds the member asleep on it, which its state shows as its own rest (CI
+/// 44563056402, aarch64 musl). Their holds are their party's ([`Hold::since`]), and their run
+/// none of its progress (CI 43990298220, the module's).
+#[derive(Debug, Default)]
+pub struct Others {
+    /// How many it read, and how many of those waited uninterruptibly in their kernel (as a
+    /// member's [`Hold::in_kernel`]).
+    pub read: usize,
+    pub in_kernel: usize,
+    /// Each one's own count of its run, by its OS's ID for it, and whether it was runnable as
+    /// it was read: Linux its CPU clock in nanoseconds (`Thread::cpu`) and its state `R`,
+    /// running or waiting for a CPU; Windows its switches to a CPU, doubled, and one more while
+    /// it runs, and whether it was ready or standby, waiting for one (shards-judge's
+    /// `threads_switched`); macOS none (`others`).
+    ran: BTreeMap<u64, (u64, bool)>,
+}
+
+impl Others {
+    /// Whether its host held one of them since the look that read `before`: one waiting
+    /// uninterruptibly in its kernel now, or one runnable now that had no CPU at all since
+    /// ([`Others::starved`]). Not one's wait for a CPU grown since (Linux `run_delay`), which a
+    /// member's is: the kernel adds every wait to it as its thread reaches a CPU, a wake's
+    /// among them (kernel/sched/stats.h, `sched_info_enqueue`, `sched_info_arrive`), so that it
+    /// grows wherever a thread woke and ran, as another test's do; a member's is read only
+    /// where its party ran nothing.
+    fn held_since(&self, before: &Others) -> bool {
+        self.in_kernel > 0 || self.ran.keys().any(|&id| self.starved(before, id))
+    }
+
+    /// Whether thread `id` (its OS's ID for it) is runnable now and had no CPU at all since the
+    /// look that read `before`: its host kept it from every CPU between the two (shards-api's
+    /// `starved`, the rule a VM process's threads and the tests' machine parties are read by).
+    /// One running moves its count, and one that `before` did not see shows nothing.
+    fn starved(&self, before: &Others, id: u64) -> bool {
+        matches!(
+            (self.ran.get(&id), before.ran.get(&id)),
+            (Some(&(now, true)), Some(&(was, _))) if now == was
+        )
+    }
+}
+
+/// A thread of this process as another of its threads reads its state ([`hold`]): its task's
+/// ID on Linux.
 #[cfg(target_os = "linux")]
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Thread(libc::pid_t);
 
-/// A member's thread as another thread of this process reads its state ([`hold`]): its
-/// Mach port on macOS (pthread_mach_thread_np(3)), held by its thread while it lives.
+/// A thread of this process as another of its threads reads its state ([`hold`]): its Mach
+/// port on macOS (pthread_mach_thread_np(3), task_threads(2)), held by its thread while it
+/// lives.
 #[cfg(target_os = "macos")]
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Thread(libc::mach_port_t);
 
-/// A member's thread as another thread of this process reads its state ([`hold`]): its ID on
+/// A thread of this process as another of its threads reads its state ([`hold`]): its ID on
 /// Windows, by which the system's listing names it.
 #[cfg(windows)]
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -540,12 +719,10 @@ impl Thread {
         Thread(unsafe { libc::gettid() })
     }
 
-    /// Its state, `/proc/self/task/<tid>/stat`'s third field (proc(5)): R runnable, D
-    /// waiting uninterruptibly; and its `schedstat`'s second, `run_delay`, its wait for a
-    /// CPU so far (Documentation/scheduler/sched-stats.rst). None once it has gone.
+    /// Its state ([`Thread::state`]), and its `schedstat`'s second field, `run_delay`, its
+    /// wait for a CPU so far (Documentation/scheduler/sched-stats.rst). None once it has gone.
     fn read(self) -> Option<State> {
-        let stat = std::fs::read_to_string(format!("/proc/self/task/{}/stat", self.0)).ok()?;
-        let state = stat.rsplit_once(')')?.1.trim_start().bytes().next()?;
+        let state = self.state()?;
         let queued = std::fs::read_to_string(format!("/proc/self/task/{}/schedstat", self.0))
             .ok()
             .and_then(|text| text.split_whitespace().nth(1)?.parse().ok());
@@ -554,6 +731,33 @@ impl Thread {
             in_kernel: state == b'D',
             queued,
         })
+    }
+
+    /// Its state, `/proc/self/task/<tid>/stat`'s third field (proc(5)): `R` runnable, `D`
+    /// waiting uninterruptibly. None once it has gone.
+    fn state(self) -> Option<u8> {
+        let stat = std::fs::read_to_string(format!("/proc/self/task/{}/stat", self.0)).ok()?;
+        stat.rsplit_once(')')?.1.trim_start().bytes().next()
+    }
+
+    /// Its own CPU clock, in nanoseconds: the clock its task ID names
+    /// (`CPUCLOCK_PERTHREAD_MASK`, 4, with `CPUCLOCK_SCHED`, 2: `(~tid << 3) | 6`,
+    /// include/linux/posix-timers.h `make_thread_cpuclock`; glibc's and musl's
+    /// `pthread_getcpuclockid` make the same), which brings a thread running on another CPU up
+    /// to date as it is read (kernel/sched/core.c `task_sched_runtime`). None once it has gone.
+    fn cpu(self) -> Option<u64> {
+        let clock = (!self.0).checked_shl(3)? | 6;
+        let mut now = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        // SAFETY: clock_gettime(2) of a CPU clock, into a local timespec.
+        if unsafe { libc::clock_gettime(clock, &raw mut now) } != 0 {
+            return None;
+        }
+        let secs = u64::try_from(now.tv_sec).ok()?;
+        let nanos = u64::try_from(now.tv_nsec).ok()?;
+        secs.checked_mul(1_000_000_000)?.checked_add(nanos)
     }
 }
 

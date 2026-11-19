@@ -37,7 +37,7 @@ use std::time::{Duration, Instant};
 #[cfg(windows)]
 pub mod threads;
 #[cfg(windows)]
-pub use threads::{ThreadsHeld, threads_held, threads_said, threads_switched};
+pub use threads::{threads_said, threads_switched};
 
 /// A party's work, its threads' run, as its OS counts it exactly: D215's rate and C* are of it.
 /// On Linux and macOS the CPU time its threads ran, in nanoseconds (Linux's CPU clock, macOS's

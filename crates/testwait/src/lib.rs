@@ -201,14 +201,25 @@ impl Counted {
         }
     }
 
-    /// What its members are doing now ([`party::hold`]): a test's party's, whose threads
-    /// it knows; a stand-in's as its test says; none read of this process's, of which
-    /// every thread that has run counts already.
+    /// What its host holds of it now ([`party::hold`]): a test's party's members, whose
+    /// threads it knows, and every other thread of this process; a stand-in's as its test
+    /// says; none read of this process's, of which every thread that has run counts already.
     fn hold(self) -> party::Hold {
         match self {
             Counted::Party(id) => party::hold(id),
             Counted::Process => party::Hold::default(),
             Counted::StandIn { held, .. } => party::Hold::standing(held()),
+        }
+    }
+
+    /// Its members' waits for a CPU so far, as a wait on it begins, which a look's growth in
+    /// them is judged from (Linux, `party::members`): this process's other threads are read
+    /// at a look alone. None read elsewhere, whose holds are their states at a look alone.
+    fn members(self) -> party::Hold {
+        match self {
+            #[cfg(target_os = "linux")]
+            Counted::Party(id) => party::members(id),
+            _ => party::Hold::default(),
         }
     }
 
@@ -252,6 +263,14 @@ impl Counted {
 /// runs the waiter and not the member (CI 44164945050, aarch64 gnu,
 /// `a_change_while_its_record_is_written_is_written_after`: refused, W* 1.11 ms, while its
 /// record's writer, done with its disk, had yet to run or take the registry's lock).
+/// And this process's other threads, as D215 reads every thread of a VM process
+/// ([`party::Others`]): one its host kept from any CPU since the look before, or waiting in
+/// its kernel, may hold what a member sleeps on, a lock the process's threads share, and so
+/// holds its party; their run is none of its party's progress (CI 43990298220, [`party`]).
+/// Before, a member asleep on such a lock read as its own rest (CI 44563056402, aarch64 musl,
+/// `a_capture_failure_of_the_daemons_own_stops_its_run_and_its_vms_end_does_not`: refused
+/// cold, 279 µs in, its window 69.7 µs, its run thread asleep on its way to the RUN it sent
+/// as the refusal was said).
 struct Wait<'r> {
     record: &'r Record,
     /// What it is judged by: its kind's record, or while that is cold, [`COLD`].
@@ -291,11 +310,7 @@ impl<'r> Wait<'r> {
             // Its members as it begins, which a look's growth in their waits for a CPU is
             // judged from (Linux); Windows' and macOS's holds are their states at a look
             // alone, and Windows lists every thread of the system to read them.
-            hold: if cfg!(target_os = "linux") {
-                party.hold()
-            } else {
-                party::Hold::default()
-            },
+            hold: party.members(),
         }
     }
 
@@ -344,12 +359,18 @@ impl<'r> Wait<'r> {
         let ran = others > std::mem::replace(&mut self.others, others);
         // A member its host holds since the look before: its stillness counted from here,
         // as D215's judge counts it from a look that found its party held. Read only where
-        // its party ran nothing, which has progressed whatever its host did.
-        let held = !ran && {
+        // its party ran nothing, which has progressed whatever its host did. The first such
+        // reading of this process's other threads is their baseline ([`party::Hold::based`]):
+        // its judge's evidence begins anew at it. Its own count of the stillness goes on, so
+        // that the look after, less than a window past the base, is not held for that, and a
+        // party still throughout is refused at its third due look (`LOOKS_TO_REFUSE`).
+        let (held, based) = if ran {
+            (false, false)
+        } else {
             let hold = self.party.hold();
-            let held = hold.since(&self.hold);
+            let read = (hold.since(&self.hold), hold.based(&self.hold));
             self.hold = hold;
-            held
+            read
         };
         if ran || held {
             (self.since, self.held) = (now, Duration::ZERO);
@@ -361,6 +382,8 @@ impl<'r> Wait<'r> {
         let free = now.saturating_duration_since(from).saturating_sub(self.held);
         let judged = self.judge.found(if ran {
             Found::Progressed
+        } else if based && !held {
+            Found::Based
         } else if held || free < window {
             Found::Held
         } else {
@@ -708,10 +731,275 @@ mod tests {
         assert_eq!(waited, Ok(Ok(())));
     }
 
+    /// A member asleep on a lock that a thread of no party holds, its host keeping that holder
+    /// from every CPU, holds its party's wait: any thread of this process may hold what a member
+    /// waits on (musl's allocator takes one lock for every thread's allocations), so a look
+    /// reads every thread's hold, its party's run alone its progress (`party::Others`; CI
+    /// 44563056402, aarch64 musl: refused cold, 279 µs in, its run thread asleep on its way to
+    /// the RUN it sent as the refusal was said). Its holder is kept from a CPU by the test, never
+    /// by load: it takes the CPU it runs on for its own at the least priority its OS gives a
+    /// thread ([`pinned`]), and a thread of no party then spins there, which its host runs
+    /// first. Its member is let go only once the wait has made `LOOKS_TO_REFUSE` due looks and
+    /// one more, as its own looks say ([`looked_at_least`]), within which a still party is
+    /// refused; its record's own W*, 20 ms, as the cases above. Red where a look reads its
+    /// party's threads alone: refused, its member asleep on the lock throughout. macOS cannot
+    /// keep one thread from every CPU on a test's word: Apple silicon takes no thread's affinity
+    /// (THREAD_AFFINITY_POLICY: KERN_NOT_SUPPORTED, macOS 26.4.1), so that only every CPU kept
+    /// busy would, the test's own threads starved with it.
+    #[cfg(any(target_os = "linux", windows))]
+    #[test]
+    fn a_member_asleep_on_a_lock_whose_holder_its_host_holds_is_held_not_refused() {
+        static ON_HELD: Record = Record::new();
+        ON_HELD.teach(Duration::from_millis(20), Work::ZERO);
+        let id = party::of_test();
+        let (lock, go, spin) = (Mutex::new(()), AtomicBool::new(false), AtomicBool::new(true));
+        let (lock, go, spin) = (&lock, &go, &spin);
+        std::thread::scope(|s| {
+            let (took, taken) = mpsc::channel();
+            s.spawn(move || {
+                let _held = lock.lock().unwrap();
+                took.send(pinned::least_here()).unwrap();
+                while !go.load(Ordering::Relaxed) {
+                    std::hint::spin_loop();
+                }
+            });
+            let cpu = taken.recv().unwrap();
+            let (spinning, spun) = mpsc::channel();
+            s.spawn(move || {
+                pinned::on(cpu);
+                spinning.send(()).unwrap();
+                while spin.load(Ordering::Relaxed) {
+                    std::hint::spin_loop();
+                }
+            });
+            spun.recv().unwrap();
+            let (answer, answered) = mpsc::channel();
+            party::spawn_in(s, move || {
+                let _taken = lock.lock();
+                let _ = answer.send(());
+            });
+            s.spawn(move || {
+                looked_at_least(id, shards_judge::LOOKS_TO_REFUSE + 1);
+                spin.store(false, Ordering::Relaxed);
+                go.store(true, Ordering::Relaxed);
+            });
+            let got = received_on(&ON_HELD, Counted::here(), &answered);
+            looked(Counted::Party(id), true);
+            assert_eq!(
+                got,
+                Ok(()),
+                "a wait on a member asleep on a lock whose holder its host held was refused"
+            );
+        });
+    }
+
+    /// What a look at a party reads its host's hold in (`party::hold`): its members, four of
+    /// them asleep, and every other thread of this process, `SHARDS_LOOK_THREADS` (300) asleep
+    /// beside it; and, on Linux, its members' alone (`party::members`, a wait's reading as it
+    /// begins). Each `SHARDS_LOOK_ROUNDS` times (200), as n, p50, p90, p99 and max. Run with
+    /// `--ignored --nocapture` under the test-release profile.
+    #[test]
+    #[ignore = "a measurement"]
+    fn what_a_look_at_every_thread_costs() {
+        let env = |name: &str, or: usize| {
+            std::env::var(name)
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(or)
+        };
+        let (beside, rounds) = (env("SHARDS_LOOK_THREADS", 300), env("SHARDS_LOOK_ROUNDS", 200));
+        let id = party::of_test();
+        let done = AtomicBool::new(false);
+        let rest = || {
+            while !done.load(Ordering::SeqCst) {
+                std::thread::park();
+            }
+        };
+        let said = |what: &str, mut took: Vec<Duration>| {
+            took.sort();
+            let at = |q: f64| took[((took.len() - 1) as f64 * q).round() as usize];
+            println!(
+                "{what}: n {} p50 {:?} p90 {:?} p99 {:?} max {:?}",
+                took.len(),
+                at(0.5),
+                at(0.9),
+                at(0.99),
+                took[took.len() - 1]
+            );
+        };
+        std::thread::scope(|s| {
+            let mut threads: Vec<_> = (0..4).map(|_| party::spawn_in(s, rest)).collect();
+            threads.extend((0..beside).map(|_| s.spawn(rest)));
+            let hold = party::hold(id);
+            let mut took = Vec::new();
+            for _ in 0..rounds {
+                let began = Instant::now();
+                std::hint::black_box(party::hold(id));
+                took.push(began.elapsed());
+            }
+            said(
+                &format!(
+                    "a look, its party's {} members and {} other threads",
+                    hold.read, hold.others.read
+                ),
+                took,
+            );
+            #[cfg(target_os = "linux")]
+            {
+                let mut took = Vec::new();
+                for _ in 0..rounds {
+                    let began = Instant::now();
+                    std::hint::black_box(party::members(id));
+                    took.push(began.elapsed());
+                }
+                said("its members alone", took);
+            }
+            done.store(true, Ordering::SeqCst);
+            for thread in &threads {
+                thread.thread().unpark();
+            }
+        });
+    }
+
+    /// How often a running thread's times move as another thread reads them on macOS, by which
+    /// `party::others` reads none of macOS's other threads as wanting a CPU: a spinning thread's
+    /// user and system time (thread_info(2), THREAD_BASIC_INFO), read each 20 µs over 200 ms,
+    /// as how many reads found them moved and the longest they stood still. Run with
+    /// `--ignored --nocapture`.
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "a measurement"]
+    fn how_often_a_running_threads_times_move() {
+        let spin = AtomicBool::new(true);
+        let spin = &spin;
+        std::thread::scope(|s| {
+            let (sent, port) = mpsc::channel();
+            s.spawn(move || {
+                // SAFETY: this thread's own pthread, whose port it returns without a new
+                // reference.
+                sent.send(unsafe { libc::pthread_mach_thread_np(libc::pthread_self()) })
+                    .unwrap();
+                while spin.load(Ordering::Relaxed) {
+                    std::hint::spin_loop();
+                }
+            });
+            let port = port.recv().unwrap();
+            let times = || {
+                // SAFETY: plain data, for thread_info to fill.
+                let mut info: libc::thread_basic_info = unsafe { std::mem::zeroed() };
+                let mut count = libc::THREAD_BASIC_INFO_COUNT;
+                let flavor = libc::thread_flavor_t::try_from(libc::THREAD_BASIC_INFO).unwrap();
+                // SAFETY: THREAD_BASIC_INFO of a living thread's port into a local of its
+                // count's size (mach/thread_info.h).
+                let code = unsafe { libc::thread_info(port, flavor, (&raw mut info).cast(), &raw mut count) };
+                assert_eq!(code, libc::KERN_SUCCESS);
+                (
+                    info.user_time.seconds,
+                    info.user_time.microseconds,
+                    info.system_time.seconds,
+                    info.system_time.microseconds,
+                )
+            };
+            let (began, mut last, mut moved_at) = (Instant::now(), times(), Instant::now());
+            let (mut reads, mut moved, mut still) = (0, 0, Duration::ZERO);
+            while began.elapsed() < Duration::from_millis(200) {
+                let asked = Instant::now();
+                while asked.elapsed() < Duration::from_micros(20) {
+                    std::hint::spin_loop();
+                }
+                let now = times();
+                reads += 1;
+                if now != last {
+                    moved += 1;
+                    still = still.max(moved_at.elapsed());
+                    moved_at = Instant::now();
+                }
+                last = now;
+            }
+            spin.store(false, Ordering::Relaxed);
+            println!(
+                "a spinning thread's times read {reads} times: moved at {moved}, still {still:?} at most"
+            );
+        });
+    }
+
+    /// A thread kept from every CPU by its test ([`a_member_asleep_on_a_lock_whose_holder_its_host_holds_is_held_not_refused`]):
+    /// on one CPU alone (sched_setaffinity(2)), at SCHED_IDLE (sched(7)), whose weight is 3 to a
+    /// nice-0 thread's 1024 (kernel/sched/sched.h `WEIGHT_IDLEPRIO`, kernel/sched/core.c
+    /// `sched_prio_to_weight`), so that a thread spinning there at nice 0 runs before it, but
+    /// for a turn of its scheduler's slice each 341 of the spinner's.
+    #[cfg(target_os = "linux")]
+    mod pinned {
+        /// This thread on CPU `cpu` alone.
+        pub fn on(cpu: usize) {
+            // SAFETY: an all-zero cpu_set_t is the empty set.
+            let mut set: libc::cpu_set_t = unsafe { std::mem::zeroed() };
+            // SAFETY: CPU_SET(3) of a CPU index into a local set, which drops one past its size.
+            unsafe { libc::CPU_SET(cpu, &mut set) };
+            // SAFETY: sched_setaffinity(2) of this thread (0), from a local set of its size.
+            let set = unsafe { libc::sched_setaffinity(0, size_of::<libc::cpu_set_t>(), &raw const set) };
+            assert_eq!(set, 0, "{}", std::io::Error::last_os_error());
+        }
+
+        /// This thread on the CPU it runs on alone, at SCHED_IDLE: that CPU.
+        pub fn least_here() -> usize {
+            // SAFETY: sched_getcpu(3) takes nothing.
+            let cpu = usize::try_from(unsafe { libc::sched_getcpu() }).unwrap();
+            on(cpu);
+            // SAFETY: an all-zero sched_param is priority 0, SCHED_IDLE's only one (musl's has
+            // fields of its own beside it, each zero).
+            let param: libc::sched_param = unsafe { std::mem::zeroed() };
+            // SAFETY: sched_setscheduler(2) of this thread (0), from a local sched_param; made
+            // raw, as musl's wrapper says ENOSYS, its POSIX meaning a process's.
+            let set = unsafe {
+                libc::syscall(
+                    libc::SYS_sched_setscheduler,
+                    0,
+                    libc::SCHED_IDLE,
+                    &raw const param,
+                )
+            };
+            assert_eq!(set, 0, "{}", std::io::Error::last_os_error());
+            cpu
+        }
+    }
+
+    /// A thread kept from every CPU by its test ([`a_member_asleep_on_a_lock_whose_holder_its_host_holds_is_held_not_refused`]):
+    /// on one CPU alone (SetThreadAffinityMask), at THREAD_PRIORITY_IDLE, base priority 1 in a
+    /// normal process, below a normal thread's 8, which Windows runs before it every time, but
+    /// for its balance set manager's boost of a thread ready for about 4 s (Windows Internals,
+    /// 7th ed., part 1, ch. 4, "Priority boosts for CPU starvation").
+    #[cfg(windows)]
+    mod pinned {
+        use windows_sys::Win32::System::Threading::{
+            GetCurrentProcessorNumber, GetCurrentThread, SetThreadAffinityMask, SetThreadPriority,
+            THREAD_PRIORITY_IDLE,
+        };
+
+        /// This thread on CPU `cpu` of its group alone.
+        pub fn on(cpu: usize) {
+            // SAFETY: this thread's pseudo-handle, which needs no closing, and one CPU of its
+            // group.
+            let was = unsafe { SetThreadAffinityMask(GetCurrentThread(), 1 << cpu) };
+            assert_ne!(was, 0, "{}", std::io::Error::last_os_error());
+        }
+
+        /// This thread on the CPU it runs on alone, at THREAD_PRIORITY_IDLE: that CPU.
+        pub fn least_here() -> usize {
+            // SAFETY: GetCurrentProcessorNumber takes nothing.
+            let cpu = usize::try_from(unsafe { GetCurrentProcessorNumber() }).unwrap();
+            on(cpu);
+            // SAFETY: this thread's pseudo-handle, which needs no closing.
+            let set = unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_IDLE) };
+            assert_ne!(set, 0, "{}", std::io::Error::last_os_error());
+            cpu
+        }
+    }
+
     /// A party's members are read as their OS shows them (`party::hold`): one that spins is
     /// runnable, one asleep on a channel neither runnable nor waiting in its kernel, and the
     /// thread that reads is none of them. On Windows from the system's listing (shards-judge's
-    /// `threads_held`); red there where it reads none, as before (0 of 0 read).
+    /// `threads::records`); red there where it reads none, as before (0 of 0 read).
     #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     #[test]
     fn a_partys_members_are_read_as_their_os_shows_them() {
