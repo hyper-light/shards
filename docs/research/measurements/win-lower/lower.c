@@ -19,7 +19,12 @@
  * long R ran on past the lowering (its last loop before N ran), and what GetThreadTimes
  * charged R across it, in its 15.625 ms steps.
  *
- * Usage: lower.exe [ROUNDS]     ROUNDS of each of below and suspend (default 300)
+ * With LOAD, that many normal spinners more, unpinned, as CI runs tests beside one another: and
+ * what R ran while it was lowered, from its lowering to its next raise (QueryThreadCycleTime,
+ * against the time stamp counter's ticks over that stretch), each round.
+ *
+ * Usage: lower.exe [ROUNDS] [LOAD]   ROUNDS of each of below and suspend (default 300), LOAD
+ *                                    unpinned normal spinners beside (default 0)
  * Build: zig cc -O2 -target x86_64-windows-gnu lower.c -o lower.exe -ladvapi32
  */
 #define WIN32_LEAN_AND_MEAN
@@ -115,14 +120,31 @@ enum { BELOW, SUSPEND, NORMAL, ARMS };
 static const char *names[ARMS] = {"below", "suspend", "normal"};
 
 typedef struct {
-    double *lower, *ran_on, *raise;
+    double *lower, *ran_on, *raise, *lowered_share;
     int steps[4];
-    int n, raises, timeouts;
+    int n, raises, timeouts, lowered_n;
 } Arm;
 
-static void round_of(HANDLE r, int arm, Arm *a) {
-    /* R lowered, N running: raise R. */
+/* R's cycles when its stretch at the lowered priority began, and the counter's ticks then. */
+static ULONG64 lowered_cycles_at, lowered_stamp_at;
+static int lowered_arm = -1;
+
+static ULONG64 cycles_of(HANDLE h) {
+    ULONG64 c = 0;
+    if (!QueryThreadCycleTime(h, &c)) die("QueryThreadCycleTime");
+    return c;
+}
+
+static void round_of(HANDLE r, int arm, Arm *a, Arm *arms) {
+    /* R lowered, N running: raise R, first reading what R ran since it was lowered. */
     wait_us(pause_us());
+    if (lowered_arm >= 0) {
+        ULONG64 ran = cycles_of(r) - lowered_cycles_at;
+        ULONG64 ticks = __rdtsc() - lowered_stamp_at;
+        Arm *was = &arms[lowered_arm];
+        if (ticks > 0) was->lowered_share[was->lowered_n++] = 100.0 * (double)ran / (double)ticks;
+        lowered_arm = -1;
+    }
     LONGLONG t1 = now();
     if (!SetThreadPriority(r, THREAD_PRIORITY_ABOVE_NORMAL)) die("raise");
     if (!until(&r_last, t1)) {
@@ -162,6 +184,10 @@ static void round_of(HANDLE r, int arm, Arm *a) {
         if (!SetThreadPriority(r, THREAD_PRIORITY_BELOW_NORMAL)) die("lower again");
         if (!until(&n_last, t2)) die("N never ran again");
     }
+    /* What R runs from here, lowered, until the next round raises it. */
+    lowered_cycles_at = cycles_of(r);
+    lowered_stamp_at = __rdtsc();
+    lowered_arm = arm;
 }
 
 static int cmp(const void *x, const void *y) {
@@ -190,8 +216,15 @@ static void line(const char *arm, const char *what, double *v, int n) {
 typedef LONG(NTAPI *QueryTimerResolution)(PULONG, PULONG, PULONG);
 typedef LONG(NTAPI *GetVersion_)(OSVERSIONINFOW *);
 
+static DWORD WINAPI busy(LPVOID unused) {
+    (void)unused;
+    while (!quit) YieldProcessor();
+    return 0;
+}
+
 int main(int argc, char **argv) {
     int rounds = argc > 1 ? atoi(argv[1]) : 300;
+    int load = argc > 2 ? atoi(argv[2]) : 0;
     LARGE_INTEGER f;
     DWORD_PTR process, system;
     if (rounds < 1) rounds = 1;
@@ -233,6 +266,9 @@ int main(int argc, char **argv) {
     HANDLE n = start(0, THREAD_PRIORITY_NORMAL);
     HANDLE r = start(1, THREAD_PRIORITY_BELOW_NORMAL);
     (void)n;
+    for (int i = 0; i < load; i++)
+        if (!CreateThread(NULL, 0, busy, NULL, 0, NULL)) die("CreateThread (load)");
+    printf("%d unpinned normal spinners beside\n", load);
     wait_us(100000);
 
     int each[ARMS] = {rounds, rounds, rounds / 10 > 0 ? rounds / 10 : 1};
@@ -242,12 +278,13 @@ int main(int argc, char **argv) {
         arms[a].lower = calloc((size_t)each[a], sizeof(double));
         arms[a].ran_on = calloc((size_t)each[a], sizeof(double));
         arms[a].raise = calloc((size_t)each[a], sizeof(double));
-        if (!arms[a].lower || !arms[a].ran_on || !arms[a].raise) die("calloc");
+        arms[a].lowered_share = calloc((size_t)each[a], sizeof(double));
+        if (!arms[a].lower || !arms[a].ran_on || !arms[a].raise || !arms[a].lowered_share) die("calloc");
     }
     for (int i = 0; i < rounds; i++) {
-        round_of(r, BELOW, &arms[BELOW]);
-        round_of(r, SUSPEND, &arms[SUSPEND]);
-        if (i % 10 == 9 || (rounds < 10 && i == 0)) round_of(r, NORMAL, &arms[NORMAL]);
+        round_of(r, BELOW, &arms[BELOW], arms);
+        round_of(r, SUSPEND, &arms[SUSPEND], arms);
+        if (i % 10 == 9 || (rounds < 10 && i == 0)) round_of(r, NORMAL, &arms[NORMAL], arms);
     }
     quit = 1;
 
@@ -259,6 +296,8 @@ int main(int argc, char **argv) {
         line(names[a], "R ran on past it", arms[a].ran_on, arms[a].n);
         line(names[a], "raised until R ran", arms[a].raise, arms[a].raises);
     }
+    printf("\n| arm | %% of a lowered stretch R ran (its cycles of the counter's ticks) | n | p50 | p90 | p99 | max |\n|---|---|---|---|---|---|---|\n");
+    for (int a = 0; a < ARMS; a++) line(names[a], "R ran lowered", arms[a].lowered_share, arms[a].lowered_n);
     printf("\nGetThreadTimes steps charged R across the lowering (0 / 1 / 2 / 3+), and timeouts (%d s):\n",
            TIMEOUT_US / 1000000);
     for (int a = 0; a < ARMS; a++)
