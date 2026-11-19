@@ -17617,8 +17617,9 @@ mod tests {
             let kept = ends::newest(&t.home.join(ends::RECORD)).unwrap_or_default();
             assert!(
                 kept.lines()
-                    .filter(|l| l.starts_with("helper "))
-                    .eq(["helper 200"]),
+                    .filter_map(|l| l.strip_prefix("helper "))
+                    .map(|l| l.split_whitespace().next())
+                    .eq([Some("200")]),
                 "an end the daemon made was kept as the host's: {kept}"
             );
             // The VM is reaped once its ports are freed (follow.rs), which the wait above

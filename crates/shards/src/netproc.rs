@@ -1016,12 +1016,19 @@ mod reap_tests {
     use std::path::Path;
     use std::time::{Duration, Instant};
 
-    /// The helper end a home's record keeps, in milliseconds: none where it keeps none.
+    /// The helper end a home's record keeps, in milliseconds, its slowest (`helper MS QUICKEST`,
+    /// D217 amended 2026-11-19): none where it keeps none.
     fn kept(home: &Path) -> Option<u64> {
         crate::daemon::ends::newest(&home.join(crate::daemon::ends::RECORD))
             .unwrap_or_default()
             .lines()
-            .find_map(|line| line.strip_prefix("helper ")?.parse().ok())
+            .find_map(|line| {
+                line.strip_prefix("helper ")?
+                    .split_whitespace()
+                    .next()?
+                    .parse()
+                    .ok()
+            })
             .filter(|&ms| ms > 0)
     }
 
