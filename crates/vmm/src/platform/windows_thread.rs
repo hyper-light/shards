@@ -66,15 +66,24 @@
 //!
 //! A thread's half bounds what it takes alone, not what raised threads take together: three
 //! that share one CPU each run a third of it, each under its half, and keep it from the
-//! host's threads between them (platform-10). So the raised threads that may run on one set
+//! host's threads between them (platform-10). So the watched threads that may run on one set
 //! of CPUs (GetThreadGroupAffinity: a processor group and a mask in it, read at each look)
-//! also share a pool, credited half of each of those CPUs' time and charged what they ran
-//! raised, kept to a period of each either way: a thread is raised only while its own credit
-//! and its set's pool both have some, and lowered while either has none. Raised threads so
-//! take half of the CPUs they run on over any long stretch, and two periods of each more at
-//! most, however many share them, and lowered ones only what no host's thread wants. A
-//! pool is the governor's, one a process: the raised threads of other processes (other VM
-//! processes on the host) draw on pools of their own, which no owner here sees (owed, D191).
+//! also share a pool, credited half of each of those CPUs' time and charged all they ran,
+//! raised or lowered, as each thread's own credit is, kept to a period of each either way: a
+//! thread is raised only while its own credit and its set's pool both have some, and lowered
+//! while either has none. Watched threads so take half of the CPUs they run on over any long
+//! stretch, by the clock the governor reads, and two periods of each more at most, however
+//! many share them and whatever Windows runs them at. Lowered, they run where no host's
+//! thread wants their CPU, and what they run there leaves their pool in debt, a period at
+//! most, which they pay before they are raised again. A pool charged only what its threads
+//! ran raised, as until 2026-11-19, left out what its clock charged them lowered: on
+//! windows-2022 three spinners beside a normal thread on one CPU were raised in 49.8% of the
+//! governor's looks, ran 53.4% of the CPU's cycles (QueryThreadCycleTime), and were charged
+//! 78.6% of 3 s by GetThreadTimes, the steps it lands on them across the looks that lower
+//! them charged to no pool (PM M620; the test below failed there twice, CI 44379986478 and
+//! 44408928475). A pool is the governor's, one a process: the watched threads of other
+//! processes (other VM processes on the host) draw on pools of their own, which no owner here
+//! sees (owed, D191).
 //!
 //! The credit is what keeps a thread that waits raised, as GetThreadTimes counts: in whole
 //! steps of its clock, 15.625 ms (PM M294), each charged to the thread that runs as it
@@ -403,10 +412,10 @@ impl Governed {
     }
 
     /// One look at every watched thread at `now`, over `period`: each charged what it used
-    /// since its last ([`charge`]), and its CPUs' pool what it ran raised; then each raised
-    /// where its own credit and its pool's both have some, else lowered.
+    /// since its last ([`charge`]), and its CPUs' pool all of it, raised or lowered; then each
+    /// raised where its own credit and its pool's both have some, else lowered.
     fn look(&mut self, now: Instant, period: Duration) {
-        // Each set of CPUs a thread may run on, and what its threads ran raised.
+        // Each set of CPUs a thread may run on, and what its threads ran.
         let mut sets: Vec<(Cpus, u64)> = Vec::new();
         for w in &mut self.threads {
             let used = charge(w, now, period).unwrap_or(0);
@@ -439,8 +448,8 @@ impl Governed {
 
 /// A watched thread's look at `now`, once a `period` has passed since its last: its credit
 /// given half of the time since and charged the CPU time it used, and its CPUs read again.
-/// What it ran raised, its pool's to be charged: `None` where no look was due or its time is
-/// unread.
+/// What it used, its pool's to be charged too, whatever its level: `None` where no look was
+/// due or its time is unread.
 fn charge(w: &mut Watched, now: Instant, period: Duration) -> Option<u64> {
     let passed = now.saturating_duration_since(w.at);
     if passed < period {
@@ -461,10 +470,7 @@ fn charge(w: &mut Watched, now: Instant, period: Duration) -> Option<u64> {
         Ok(cpus) => w.cpus = cpus,
         Err(e) => crate::debug!("a watched thread's CPUs are those last read: {e}"),
     }
-    Some(match w.level {
-        Level::Raised => used,
-        Level::Lowered | Level::Normal => 0,
-    })
+    Some(used)
 }
 
 /// Sets a watched thread at `level`, where it is not at it already; refused, it stays at the
@@ -668,16 +674,19 @@ mod tests {
     /// Do: pin a thread of normal priority to one CPU, spinning, then three threads there
     /// that the governor watches, spinning too, for 3 s. Expect the three to have used no
     /// more than half of the time and two periods, the module's bound for one CPU, and the
-    /// normal thread to have run. Raised, they take what their pool is credited (its
-    /// arithmetic held by granule's `a_share_takes_half_its_cpu_and_two_periods_over_any_stretch`);
-    /// lowered, they run "only when there are no executable threads at a higher level"
-    /// (SetThreadPriority), and the normal thread, ready on their CPU throughout, is at one.
-    /// Their boost on waking is off: one woken from a wait for the governor's lock would be
-    /// lifted to the normal thread's priority or past it, a level less each time slice it
-    /// completed (Priority Boosts). Their use is read from their own clocks (GetThreadTimes),
-    /// whose steps the governor charges them. Lowered to the normal thread's priority, as until
-    /// 2026-11-18, they kept the CPU between them, and on windows-2022 the normal thread was
-    /// charged no step in the 3 s (CI 44347282760).
+    /// normal thread to have run. Their pool is credited half of the CPU and charged all
+    /// they ran (its arithmetic held by granule's
+    /// `a_share_takes_half_its_cpu_and_two_periods_over_any_stretch`); lowered, they run
+    /// "only when there are no executable threads at a higher level" (SetThreadPriority), and
+    /// the normal thread, ready on their CPU throughout, is at one. Their boost on waking is
+    /// off: one woken from a wait for the governor's lock would be lifted to the normal
+    /// thread's priority or past it, a level less each time slice it completed (Priority
+    /// Boosts). Their use is read from their own clocks (GetThreadTimes), whose steps the
+    /// governor charges them. Lowered to the normal thread's priority, as until 2026-11-18,
+    /// they kept the CPU between them, and on windows-2022 the normal thread was charged no
+    /// step in the 3 s (CI 44347282760); their pool charged only what they ran raised, as until
+    /// 2026-11-19, they were charged 2.25 s of 3.0 there, the steps of their lowered looks
+    /// uncharged (CI 44408928475, PM M620).
     #[test]
     fn raised_threads_sharing_a_cpu_take_no_more_than_half_of_it() {
         const RAISED_THREADS: usize = 3;
