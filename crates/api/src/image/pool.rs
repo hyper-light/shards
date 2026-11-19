@@ -96,8 +96,10 @@ pub struct Released {
 }
 
 /// What one pool holds of its room now: its warm and starting hosts, and their memory in bytes
-/// and vCPUs, as claimed (each its spec's whole size); and each warm host's resident footprint
-/// in bytes, as its VM process reports it, one reading for each warm host whose reading is in.
+/// and vCPUs, as claimed (each its spec's whole size); each warm host's resident footprint in
+/// bytes, as its VM process reports it, one reading for each warm host whose reading is in; and
+/// the claims it has asked its room for that the room has not yet answered to it, which it
+/// counts toward its hosts until they are answered.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PoolHeld {
     pub pool: PoolId,
@@ -106,6 +108,7 @@ pub struct PoolHeld {
     pub warm: usize,
     pub starting: usize,
     pub footprints: Vec<u64>,
+    pub claiming: usize,
 }
 
 /// A pool, by the SHA-256 of its key (its run host and its runs' exemplar): the same while
@@ -769,6 +772,7 @@ impl<H: Hosts> Pools<H> {
                         .iter()
                         .filter_map(|r| self.hosts.footprint(&r.warm))
                         .collect(),
+                    claiming: pool.claiming,
                 }
             })
             .collect()
@@ -2384,10 +2388,16 @@ mod tests {
         let pools = Pooling::new(hosted.clone(), room.clone(), KEEP_TEST).unwrap();
         drop(boot(&pools, &request(1, None)));
         until_ready(&pools, 1);
+        // The room says its refusal as it answers it, before its thread sends the answer to the
+        // pools: a ticket dropped before the pools heard it found its pool's refill still
+        // claiming, its pool full, and its host ended where the test waited for its new claim
+        // (CI 44464014557, windows-2022, claims 1 for 30 s). So each waits for the pools to
+        // have heard it too.
         let reserve = |refused| {
             fits(0);
             let ticket = pools.reserve(&spec(), &request(1, None)).unwrap();
             room.until("its refill refused", |r| r.refused >= refused);
+            heard(&pools);
             ticket
         };
         let ticket = reserve(1);
@@ -2449,6 +2459,18 @@ mod tests {
 
     /// Waits until `pools` hold `ready` warm hosts ready, as their thread holds them: a host
     /// warm is its pool's only once its thread has taken it in, after the host's own word.
+    /// Until every claim of the pools' has been answered to them by their room.
+    fn heard(pools: &Pooling<Hosted>) {
+        let deadline = Instant::now() + PATIENCE;
+        while pools.held().iter().any(|h| h.claiming > 0) {
+            assert!(
+                Instant::now() < deadline,
+                "the pools heard their room within {PATIENCE:?}"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
     fn until_ready(pools: &Pooling<Hosted>, ready: usize) {
         let deadline = Instant::now() + PATIENCE;
         while pools.held().iter().map(|h| h.warm).sum::<usize>() != ready {
