@@ -1,12 +1,9 @@
 name: windows lower
 
-# D191's Windows priority governor, A/B (PM M620): arm A as it is, counting each watched
-# thread's CPU in GetThreadTimes' steps at a period of 2g; arm B (win-lower/arm-b-cycles.patch)
-# counting it in cycles at the time stamp counter's rate, its period from its waits alone. Each
-# arm in turn, twice, on both Windows Server runners: the sampling harness alone and beside
-# three busy threads (the three's share of the window's counter ticks, the governor's pool
-# account and its looks' own time), and the bound's test five times. Runs when it changes, or
-# when asked.
+# D191's Windows priority governor (PM M620): where windows-2022's pool forgives the three ~92 ms a
+# round that windows-2025's does not. The bound's test ten times on each runner at SHARDS_LOG=debug,
+# each look's account of every watched thread (charged, its own credit, its level before and after)
+# and of the pool; the whole account of the first two failing runs and of the first passing one.
 on:
   push:
     paths:
@@ -22,13 +19,13 @@ env:
   TOOLCHAIN: 1.98.1 # keep in sync with rust-toolchain.toml
 
 jobs:
-  ab:
+  leak:
     strategy:
       fail-fast: false
       matrix:
         runner: [windows-2022, windows-2025]
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 90
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7.0.1
       - name: Install pinned Rust
@@ -40,28 +37,27 @@ jobs:
           [Environment]::ProcessorCount
           (Get-CimInstance Win32_Processor).Name
           [System.Environment]::OSVersion.VersionString
-      - name: A and B in turn, twice
+      - name: The bound's test ten times, its governor's account
         shell: bash
+        env:
+          SHARDS_LOG: debug
         run: |
           set -u
-          harness=docs/research/measurements/win-lower/governor
           bound=platform::windows_thread::tests::raised_threads_sharing_a_cpu_take_no_more_than_half_of_it
           echo "$(git rev-parse --short HEAD) on ${{ matrix.runner }}"
-          for round in 1 2; do
-            for arm in A B; do
-              if [ "$arm" = B ]; then git apply docs/research/measurements/win-lower/arm-b-cycles.patch; fi
-              cargo build --release --manifest-path "$harness/Cargo.toml" 2>&1 | tail -1
-              cargo test --locked --profile test-release -p shards-vmm --lib --no-run 2>&1 | tail -1
-              for load in 0 3; do
-                echo "=== arm $arm round $round, the harness beside $load busy threads"
-                "$harness/target/release/win-governor.exe" 5 3 "$load" \
-                  | grep -E "\| [0-9] \||governor's (pool|looks)" || true
-              done
-              echo "=== arm $arm round $round, the bound's test five times"
-              for i in 1 2 3 4 5; do
-                cargo test --locked --profile test-release -p shards-vmm --lib -- --exact "$bound" 2>&1 \
-                  | grep -E "^test result|past their bound" || true
-              done
-              git checkout -- crates
-            done
+          cargo test --locked --profile test-release -p shards-vmm --lib --no-run 2>&1 | tail -1
+          failed=0; passed=0
+          for i in 1 2 3 4 5 6 7 8 9 10; do
+            out="run-$i.txt"
+            cargo test --locked --profile test-release -p shards-vmm --lib -- --exact "$bound" --nocapture > "$out" 2>&1
+            result=$(grep -E "^test result" "$out" | head -1)
+            forgiven=$(grep -c "priority governor: pool" "$out")
+            echo "run $i: $result; $forgiven pool lines; $(grep -E 'past their bound' "$out" | sed -E 's/.*and ran ([0-9]+) of its ([0-9]+) counter ticks.*/ran \1 of \2 ticks/')"
+            show=0
+            if grep -q "^test result: FAILED" "$out"; then failed=$((failed+1)); [ "$failed" -le 2 ] && show=1; else passed=$((passed+1)); [ "$passed" -le 1 ] && show=1; fi
+            if [ "$show" = 1 ]; then
+              echo "----- run $i, the governor's account"
+              grep -E "priority governor|past their bound|test result" "$out"
+              echo "----- run $i ends"
+            fi
           done

@@ -437,8 +437,12 @@ impl Governed {
     fn look(&mut self, now: Instant, period: Duration) {
         // Each set of CPUs a thread may run on, and what its threads ran.
         let mut sets: Vec<(Cpus, u64)> = Vec::new();
+        // PROBE (PM M620's leak): what each thread was charged at this look, none where no look was due.
+        let mut charged: Vec<Option<u64>> = Vec::with_capacity(self.threads.len());
         for w in &mut self.threads {
-            let used = charge(w, now, period).unwrap_or(0);
+            let used = charge(w, now, period);
+            charged.push(used);
+            let used = used.unwrap_or(0);
             match sets.iter_mut().find(|(cpus, _)| *cpus == w.cpus) {
                 Some((_, sum)) => *sum = sum.saturating_add(used),
                 None => sets.push((w.cpus, used)),
@@ -450,7 +454,7 @@ impl Governed {
             .into_iter()
             .map(|(cpus, used)| (cpus, self.pooled(cpus, now, used, period)))
             .collect();
-        for w in &mut self.threads {
+        for (w, used) in self.threads.iter_mut().zip(&charged) {
             let pooled = credits
                 .iter()
                 .any(|(cpus, credit)| *cpus == w.cpus && *credit > 0);
@@ -459,6 +463,14 @@ impl Governed {
             } else {
                 Level::Lowered
             };
+            crate::debug!(
+                "priority governor: thread {} charged {:?} us, own credit {} us, {:?} -> {:?}",
+                w.id,
+                used.map(|u| u / 1_000),
+                w.credit / 1_000,
+                w.level,
+                level
+            );
             if let Err(e) = hold(w, level) {
                 crate::debug!("a watched thread stays at its priority: {e}");
             }
@@ -767,6 +779,8 @@ mod tests {
     #[test]
     fn raised_threads_sharing_a_cpu_take_no_more_than_half_of_it() {
         const RAISED_THREADS: usize = 3;
+        // PROBE: the governor's account at SHARDS_LOG=debug (PM M620's leak).
+        crate::log::init();
         let cpu = last_cpu();
         let spinning = AtomicBool::new(true);
         let (raised_ran, host_ran, elapsed, stamps) = std::thread::scope(|s| {
