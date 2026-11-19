@@ -22,6 +22,7 @@ use windows_sys::Win32::System::Threading::{
     THREAD_QUERY_LIMITED_INFORMATION,
 };
 use windows_sys::Win32::System::WindowsProgramming::QueryThreadCycleTime;
+use windows_sys::Wdk::System::Threading::{NtQueryInformationThread, ThreadBasicInformation};
 
 const GOVERNED: usize = 3;
 /// THREAD_PRIORITY_ABOVE_NORMAL and THREAD_PRIORITY_BELOW_NORMAL.
@@ -65,8 +66,42 @@ fn priority(h: HANDLE) -> i32 {
     unsafe { GetThreadPriority(h) }
 }
 
+/// THREAD_BASIC_INFORMATION (winternl.h): its current priority, with any boost, and its base.
+#[repr(C)]
+struct BasicInformation {
+    exit_status: i32,
+    teb: *mut core::ffi::c_void,
+    process: usize,
+    thread: usize,
+    affinity: usize,
+    priority: i32,
+    base_priority: i32,
+}
+
+/// A thread's current priority, 0 to 31, its boosts with it (NtQueryInformationThread's
+/// ThreadBasicInformation).
+fn current(h: HANDLE) -> i32 {
+    let mut info = BasicInformation {
+        exit_status: 0,
+        teb: std::ptr::null_mut(),
+        process: 0,
+        thread: 0,
+        affinity: 0,
+        priority: 0,
+        base_priority: 0,
+    };
+    let len = u32::try_from(std::mem::size_of::<BasicInformation>()).unwrap();
+    // SAFETY: a thread handle with query access, and a structure of the class's size to fill.
+    let status = unsafe {
+        NtQueryInformationThread(h, ThreadBasicInformation, (&raw mut info).cast(), len, std::ptr::null_mut())
+    };
+    if status < 0 { -1 } else { info.priority }
+}
+
 struct Sample {
     prio: [i32; GOVERNED + 1],
+    /// Each one's current priority, boosts with it.
+    now: [i32; GOVERNED + 1],
     cycles: [u64; GOVERNED + 1],
 }
 
@@ -142,10 +177,13 @@ fn round(seconds: u64, load: usize, x: usize) -> Round {
         }
         let window = Duration::from_secs(seconds);
         let mut samples = Vec::with_capacity(usize::try_from(seconds * 1100).unwrap_or(4096));
-        while began.elapsed() < window {
-            let mut sample = Sample { prio: [0; GOVERNED + 1], cycles: [0; GOVERNED + 1] };
+        // Sampled for the window from the moment all three are watched, however late that is.
+        let watched = Instant::now();
+        while watched.elapsed() < window {
+            let mut sample = Sample { prio: [0; GOVERNED + 1], now: [0; GOVERNED + 1], cycles: [0; GOVERNED + 1] };
             for (k, h) in handles.iter().enumerate() {
                 sample.prio[k] = priority(*h as HANDLE);
+                sample.now[k] = current(*h as HANDLE);
                 sample.cycles[k] = cycles(*h as HANDLE);
             }
             samples.push(sample);
@@ -189,10 +227,13 @@ fn main() {
         "| round | three's GetThreadTimes / elapsed | test's bound | normal's | three's cycles: share | raised | lowered | normal | three's whole cycles, of the window's ticks | samples: any raised | all lowered |"
     );
     println!("|---|---|---|---|---|---|---|---|---|---|---|");
+    let mut shown = 0;
     for r in 1..=rounds {
         let round = round(seconds, load, x);
         let bound = round.elapsed / 2 + SLACK;
         let (mut raised, mut lowered, mut normal_level, mut normal_thread) = (0u64, 0u64, 0u64, 0u64);
+        // Lowered cycles run at a current priority above its base's 7, and the highest seen.
+        let (mut lowered_boosted, mut highest) = (0u64, 0i32);
         let (mut any_raised, mut all_lowered) = (0usize, 0usize);
         let mut line = String::new();
         for pair in round.samples.windows(2) {
@@ -203,7 +244,13 @@ fn main() {
                 let dc = b.cycles[k] - a.cycles[k];
                 match a.prio[k] {
                     RAISED => raised += dc,
-                    LOWERED => lowered += dc,
+                    LOWERED => {
+                        lowered += dc;
+                        if a.now[k] > 7 || b.now[k] > 7 {
+                            lowered_boosted += dc;
+                            highest = highest.max(a.now[k]).max(b.now[k]);
+                        }
+                    }
                     _ => normal_level += dc,
                 }
                 if dc > most.0 {
@@ -217,7 +264,7 @@ fn main() {
             if levels.iter().all(|p| *p == LOWERED) {
                 all_lowered += 1;
             }
-            if r == 1 && line.len() < 3 * 400 {
+            if line.len() < 7 * 300 && !round.samples.is_empty() && shown == 0 {
                 let tag = if levels.iter().all(|p| *p == RAISED) {
                     'R'
                 } else if levels.iter().all(|p| *p == LOWERED) {
@@ -229,6 +276,11 @@ fn main() {
                 };
                 line.push(tag);
                 line.push(if most.0 == 0 { '.' } else { most.1 });
+                // The runner's current priority, where it is a governed thread.
+                if most.0 != 0 && most.1 != '0' {
+                    let k = usize::from(u8::try_from(most.1).unwrap() - b'0');
+                    line.push_str(&format!("@{}", b.now[k]));
+                }
                 line.push(' ');
             }
         }
@@ -252,8 +304,15 @@ fn main() {
             pct(any_raised as u64, n as u64),
             pct(all_lowered as u64, n as u64),
         );
-        if r == 1 {
-            println!("\nRound 1's first {} ms: the three's levels (R all raised, L all lowered, m mixed, N normal), then who ran most of the ms (0 the normal thread, 1-3 the governed, . none):\n{line}\n", line.len() / 3);
+        let interval = if n > 0 { round.elapsed.as_secs_f64() * 1000.0 / (n as f64) } else { 0.0 };
+        println!(
+            "  round {r}: {} samples, one each {interval:.2} ms of the window; lowered cycles run above base priority: {:.1}% of all, the highest current priority {highest}",
+            round.samples.len(),
+            pct(lowered_boosted, all)
+        );
+        if shown == 0 && !line.is_empty() {
+            shown = r;
+            println!("\nRound {r}'s first samples: the three's levels (R all raised, L all lowered, m mixed, N normal), then who ran most of the interval (0 the normal thread, 1-3 the governed, . none), @ its current priority:\n{line}\n");
         }
     }
 }
