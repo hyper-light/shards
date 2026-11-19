@@ -1,0 +1,19 @@
+# Red for D191's pool charge (PM M620): the pool charged only what its threads ran raised, as until 2026-11-19.
+# Expected on windows-2022: platform::windows_thread::tests::raised_threads_sharing_a_cpu_take_no_more_than_half_of_it panics 'past their bound'.
+diff --git a/crates/vmm/src/platform/windows_thread.rs b/crates/vmm/src/platform/windows_thread.rs
+index c760ae1ba5..d967e1ef2b 100644
+--- a/crates/vmm/src/platform/windows_thread.rs
++++ b/crates/vmm/src/platform/windows_thread.rs
+@@ -470,7 +470,11 @@ fn charge(w: &mut Watched, now: Instant, period: Duration) -> Option<u64> {
+         Ok(cpus) => w.cpus = cpus,
+         Err(e) => crate::debug!("a watched thread's CPUs are those last read: {e}"),
+     }
+-    Some(used)
++    // RED: the pool charged only what its threads ran raised, as until 2026-11-19.
++    Some(match w.level {
++        Level::Raised => used,
++        Level::Lowered | Level::Normal => 0,
++    })
+ }
+ 
+ /// Sets a watched thread at `level`, where it is not at it already; refused, it stays at the

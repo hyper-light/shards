@@ -4,12 +4,15 @@ name: windows lower
 # ready one, and gives it to one it raises (D191, crates/vmm/src/platform/windows_thread.rs),
 # on both Windows Server runners CI tests on: docs/research/measurements/win-lower/lower.c.
 # Then the governor itself, sampled each millisecond in its test's scene, alone and beside
-# busy threads (win-lower/governor). Runs when either changes, or when asked.
+# busy threads (win-lower/governor), and its tests, as they are and with the pool charged
+# only what its threads ran raised (red-raised-only.patch). Runs when either changes, or when
+# asked.
 on:
   push:
     paths:
       - .github/workflows/windows-lower.yml
       - docs/research/measurements/win-lower/**
+      - crates/vmm/src/platform/windows_thread.rs
   workflow_dispatch:
     inputs:
       rounds:
@@ -54,6 +57,28 @@ jobs:
       - name: Governor, beside 3 busy threads
         shell: bash
         run: docs/research/measurements/win-lower/governor/target/release/win-governor.exe 5 3 3
+      - name: Governor's tests, built
+        shell: bash
+        run: cargo test --locked --profile test-release -p shards-vmm --lib --no-run
+      - name: Governor's tests, 5 runs
+        shell: bash
+        run: |
+          for i in 1 2 3 4 5; do
+            echo "=== run $i"
+            cargo test --locked --profile test-release -p shards-vmm --lib -- platform::windows_thread 2>&1 \
+              | grep -E "^test |^test result|past their bound|panicked" || true
+          done
+      - name: Governor's tests, red (red-raised-only.patch), 3 runs
+        shell: bash
+        run: |
+          git apply docs/research/measurements/win-lower/red-raised-only.patch
+          for i in 1 2 3; do
+            echo "=== red run $i"
+            cargo test --locked --profile test-release -p shards-vmm --lib -- --exact \
+              platform::windows_thread::tests::raised_threads_sharing_a_cpu_take_no_more_than_half_of_it 2>&1 \
+              | grep -E "^test result|past their bound|panicked" || true
+          done
+          git checkout -- crates
       - name: Build
         shell: bash
         run: zig cc -O2 -Wall -Wextra -target x86_64-windows-gnu docs/research/measurements/win-lower/lower.c -o lower.exe -ladvapi32
