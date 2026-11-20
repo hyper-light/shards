@@ -104,3 +104,10 @@ backend failure and expiry cases, pre-send commitment boundary, normal member
 terminal metadata, full hard aggregate accounting, route coverage, broker/native
 adapters/credentials/generations and actual supported hardware matrix.
 These are open work, not completion of the managed-runtime plan.
+
+## Paths
+
+Shortened 2026-11-19, so that a Windows checkout holds every path (`scripts/lint` refuses
+one over 144 characters): each case directory names its guest program's records `guest.*`.
+[renamed.tsv](renamed.tsv) gives each moved file the path its run wrote, which the
+manifests, checksums and logs here name; every file keeps its bytes.

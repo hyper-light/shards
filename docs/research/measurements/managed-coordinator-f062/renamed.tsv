@@ -1,0 +1,30 @@
+# Shortened 2026-11-19 so that a Windows checkout holds every path (scripts/lint).
+# Each line: a file's path here, then the path its run wrote, which this folder's
+# manifests, checksums and logs name. Its bytes are the run's.
+mount-fs-mutation-v1/command.json	root-managed-mount-fs-mutation-f062-v1/command.json
+mount-fs-mutation-v1/driver.exit	root-managed-mount-fs-mutation-f062-v1/driver.exit
+mount-fs-mutation-v1/driver.log	root-managed-mount-fs-mutation-f062-v1/driver.log
+mount-fs-mutation-v1/driver.py	root-managed-mount-fs-mutation-f062-v1/driver.py
+mount-fs-mutation-v1/mutation.patch	root-managed-mount-fs-mutation-f062-v1/mutation.patch
+mount-fs-mutation-v1/original.rs	root-managed-mount-fs-mutation-f062-v1/original.rs
+mount-fs-mutation-v1/removed-fs-unshare/environment.json	root-managed-mount-fs-mutation-f062-v1/removed-fs-unshare/environment.json
+mount-fs-mutation-v1/removed-fs-unshare/observed.json	root-managed-mount-fs-mutation-f062-v1/removed-fs-unshare/observed.json
+mount-fs-mutation-v1/removed-fs-unshare/sock-addr-udp4-connected.cmdline	root-managed-mount-fs-mutation-f062-v1/removed-fs-unshare/sock-addr-udp4-connected.cmdline
+mount-fs-mutation-v1/removed-fs-unshare/sock-addr-udp4-connected.identity.json	root-managed-mount-fs-mutation-f062-v1/removed-fs-unshare/sock-addr-udp4-connected.identity.json
+mount-fs-mutation-v1/removed-fs-unshare/sock-addr-udp4-connected.status.json	root-managed-mount-fs-mutation-f062-v1/removed-fs-unshare/sock-addr-udp4-connected.status.json
+mount-fs-mutation-v1/removed-fs-unshare/sock-addr-udp4-connected.stderr	root-managed-mount-fs-mutation-f062-v1/removed-fs-unshare/sock-addr-udp4-connected.stderr
+mount-fs-mutation-v1/removed-fs-unshare/sock-addr-udp4-connected.stdout	root-managed-mount-fs-mutation-f062-v1/removed-fs-unshare/sock-addr-udp4-connected.stdout
+mount-fs-mutation-v1/removed-fs-unshare/test.exit	root-managed-mount-fs-mutation-f062-v1/removed-fs-unshare/test.exit
+mount-fs-mutation-v1/removed-fs-unshare/test.log	root-managed-mount-fs-mutation-f062-v1/removed-fs-unshare/test.log
+mount-fs-mutation-v1/restored.diff	root-managed-mount-fs-mutation-f062-v1/restored.diff
+mount-fs-mutation-v1/restored.sha256	root-managed-mount-fs-mutation-f062-v1/restored.sha256
+mount-fs-mutation-v1/restored/environment.json	root-managed-mount-fs-mutation-f062-v1/restored/environment.json
+mount-fs-mutation-v1/restored/observed.json	root-managed-mount-fs-mutation-f062-v1/restored/observed.json
+mount-fs-mutation-v1/restored/sock-addr-udp4-connected.cmdline	root-managed-mount-fs-mutation-f062-v1/restored/sock-addr-udp4-connected.cmdline
+mount-fs-mutation-v1/restored/sock-addr-udp4-connected.identity.json	root-managed-mount-fs-mutation-f062-v1/restored/sock-addr-udp4-connected.identity.json
+mount-fs-mutation-v1/restored/sock-addr-udp4-connected.status.json	root-managed-mount-fs-mutation-f062-v1/restored/sock-addr-udp4-connected.status.json
+mount-fs-mutation-v1/restored/sock-addr-udp4-connected.stderr	root-managed-mount-fs-mutation-f062-v1/restored/sock-addr-udp4-connected.stderr
+mount-fs-mutation-v1/restored/sock-addr-udp4-connected.stdout	root-managed-mount-fs-mutation-f062-v1/restored/sock-addr-udp4-connected.stdout
+mount-fs-mutation-v1/restored/test.exit	root-managed-mount-fs-mutation-f062-v1/restored/test.exit
+mount-fs-mutation-v1/restored/test.log	root-managed-mount-fs-mutation-f062-v1/restored/test.log
+mount-fs-mutation-v1/source.json	root-managed-mount-fs-mutation-f062-v1/source.json

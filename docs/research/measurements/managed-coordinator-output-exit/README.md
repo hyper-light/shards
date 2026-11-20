@@ -36,9 +36,9 @@ are finite cases, not latency distributions, a scaling law or kernel-charge proo
 
 ## r523: negative witnesses and individual guard removals
 
-[Driver](root-managed-exit-negative-guards-ebbd-v1/driver.py),
-[driver log](root-managed-exit-negative-guards-ebbd-v1/driver.log) and
-[results](root-managed-exit-negative-guards-ebbd-v1/results.json) retain the
+[Driver](negative-guards-v1/driver.py),
+[driver log](negative-guards-v1/driver.log) and
+[results](negative-guards-v1/results.json) retain the
 campaign. Every case compiled 0, used explicit N0 and recorded protocol completion
 plus successful unchanged owner stop/observer join. Each case directory retains
 its `mutation.patch`, exact command/environment, test artifact hash, test log and
@@ -47,12 +47,12 @@ observed; it does not turn guarded failures or false accepts into normal passes.
 
 | Case | Actual test exit | Observed witness |
 | --- | --- | --- |
-| [wrong-identity-guarded](root-managed-exit-negative-guards-ebbd-v1/wrong-identity-guarded/test.log) | 101 | Private daemon expected start incremented by 1; typed DifferentIdentity at before_watch, no valid daemon watch; VM exit ready, FD7 + 3 → 10 → 7. |
-| [wrong-identity-check-removed](root-managed-exit-negative-guards-ebbd-v1/wrong-identity-check-removed/test.log) | 0 | Same fault, removing only the PinnedProcess comparison: false accept with both exit events and FD7 + 5 → 12 → 7. |
-| [extra-fd-guarded](root-managed-exit-negative-guards-ebbd-v1/extra-fd-guarded/test.log) | 101 | One owned `/dev/null` File opened after unchanged stop; final FD count 8 versus baseline 7, exact_delta_and_return=false. |
-| [extra-fd-check-removed](root-managed-exit-negative-guards-ebbd-v1/extra-fd-check-removed/test.log) | 0 | Same extra File, removing only the total-FD assertion: false accept despite the retained 8-versus-7 witness. |
-| [expired-exit-deadline](root-managed-exit-negative-guards-ebbd-v1/expired-exit-deadline/test.log) | 101 | Finish receives an expired deadline after real stop; both roles typed Deadline; FD7 + 5 → 12 → 7 and exact return true. |
-| [restored](root-managed-exit-negative-guards-ebbd-v1/restored/test.log) | 0 | Fresh closing case: both valid exit events, FD7 + 5 → 12 → 7, exact return true. |
+| [wrong-identity-guarded](negative-guards-v1/wrong-identity-guarded/test.log) | 101 | Private daemon expected start incremented by 1; typed DifferentIdentity at before_watch, no valid daemon watch; VM exit ready, FD7 + 3 → 10 → 7. |
+| [wrong-identity-check-removed](negative-guards-v1/wrong-identity-check-removed/test.log) | 0 | Same fault, removing only the PinnedProcess comparison: false accept with both exit events and FD7 + 5 → 12 → 7. |
+| [extra-fd-guarded](negative-guards-v1/extra-fd-guarded/test.log) | 101 | One owned `/dev/null` File opened after unchanged stop; final FD count 8 versus baseline 7, exact_delta_and_return=false. |
+| [extra-fd-check-removed](negative-guards-v1/extra-fd-check-removed/test.log) | 0 | Same extra File, removing only the total-FD assertion: false accept despite the retained 8-versus-7 witness. |
+| [expired-exit-deadline](negative-guards-v1/expired-exit-deadline/test.log) | 101 | Finish receives an expired deadline after real stop; both roles typed Deadline; FD7 + 5 → 12 → 7 and exact return true. |
+| [restored](negative-guards-v1/restored/test.log) | 0 | Fresh closing case: both valid exit events, FD7 + 5 → 12 → 7, exact return true. |
 
 The identity fault targets only the fixture's own private daemon identity; it
 does not adopt or signal a discovered process. The extra File is RAII-owned and
@@ -60,8 +60,8 @@ closes when its scope leaves: this witnesses a descriptor retained at the check,
 not a permanent leak. The deadline case forces observation expiry after stop;
 **deadline guard removal was not run** and remains owed.
 
-Final [restored SHA](root-managed-exit-negative-guards-ebbd-v1/restored.sha256)
-matches the original above; [restored.diff](root-managed-exit-negative-guards-ebbd-v1/restored.diff)
+Final [restored SHA](negative-guards-v1/restored.sha256)
+matches the original above; [restored.diff](negative-guards-v1/restored.diff)
 is empty. The closing artifact hash matches the normal r518 artifact. These are
 restoration facts for this exact source, not validation of later changed code.
 
@@ -96,3 +96,10 @@ record root-owned revision-specific effects, counterfactuals and limits.
 R08/R14 costs remain unclaimed/root-owned; R11 skips and unavailable coverage
 remain unverified. R16 source, evidence, credentials and active caches are
 preserved. No build, campaign, child agent or main merge was performed here.
+
+## Paths
+
+Shortened 2026-11-19, so that a Windows checkout holds every path (`scripts/lint` refuses
+one over 144 characters): run directories dropped the words their folder already says.
+[renamed.tsv](renamed.tsv) gives each moved file the path its run wrote, which the
+manifests, checksums and logs here name; every file keeps its bytes.

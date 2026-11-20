@@ -112,3 +112,10 @@ Policy coordinator receipt: origin/main f5cec365, R01–R16 SHA256
 Root owns the actual review/tests/mutation/samples; implementers provided scoped
 source and light checks only. No production panic-free, leak-free, 4–5x,
 all-platform or complete-layer claim follows. Windows ARM remains paused.
+
+## Paths
+
+Shortened 2026-11-19, so that a Windows checkout holds every path (`scripts/lint` refuses
+one over 144 characters): run directories dropped the words their folder already says.
+[renamed.tsv](renamed.tsv) gives each moved file the path its run wrote, which the
+manifests, checksums and logs here name; every file keeps its bytes.

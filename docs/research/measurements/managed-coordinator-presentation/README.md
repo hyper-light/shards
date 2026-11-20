@@ -38,8 +38,8 @@ missing hook record or alert.
 
 Exact executed drivers, source/build/executable identities, selected environment,
 raw console, commands, status, observed records and patches are under
-`root-managed-presentation-e1bf-v1/` and
-`root-managed-presentation-hook-mutations-e1bf-v1/`. Their `results.json` files
+`presentation-v1/` and
+`hook-mutations-v1/`. Their `results.json` files
 preserve individual strict outcomes. All156 regular records were transferred
 privately and checked by `MANIFEST.json`; `TRANSFER.json` retains archive68851B,
 SHA256 `aa09dbb2a30b5349536f6525b9a56b1c3e345fbc69ece17ea4e94decc67c7c2a`.
@@ -84,3 +84,11 @@ R15 campaigns/review/merges stayed coordinator-owned; implementers supplied
 scoped source/light checks. R16 preserves original source, evidence, caches and
 paused-VM instruction without host privilege changes. No phase/goal completion,
 whole-program panic freedom, leak freedom or 4–5× claim follows.
+
+## Paths
+
+Shortened 2026-11-19, so that a Windows checkout holds every path (`scripts/lint` refuses
+one over 144 characters): run directories dropped the words their folder already says, and
+each case directory names its guest program's records `guest.*`. [renamed.tsv](renamed.tsv)
+gives each moved file the path its run wrote, which the manifests, checksums and logs here
+name; every file keeps its bytes.

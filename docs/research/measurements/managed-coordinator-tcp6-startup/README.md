@@ -11,7 +11,7 @@ Root r293 at combined5b7d1bf57990e0ec7aef64601dbe3dee6e4f692c passes ten fresh K
 guests: local-loopback, local-self, local-to-peer, forward and forward-relay-absent
 on IPv6, then the same five IPv4 regressions. All ten actual case exits are0.
 Raw commands/source/artifact/config/inputs, actual bytes/tuples/namespace IDs,
-counts, joins and outcomes are in linux/managed-intercept-5b7d-both-families-v1.
+counts, joins and outcomes are in linux/both-families-v1.
 This is the same experimental kernel/owned synthetic topology, not a product pin,
 real forwarding relay or complete route mediation. Addresses/flags derive from
 the pinned primary contracts in managed-network-intercept/TCP6.md.
@@ -121,3 +121,11 @@ supported targets/hypervisors and closing gates owed, Windows ARM paused. R16:
 private admitted resources and inactive read-only reflink basis; Mac>=30GiB.
 Full managed-runtime budgets, mandatory routes, brokerage/adapters/credentials
 and generation-safe restore remain required, incomplete work.
+
+## Paths
+
+Shortened 2026-11-19, so that a Windows checkout holds every path (`scripts/lint` refuses
+one over 144 characters): run directories dropped the words their folder already says, and
+each case directory names its guest program's records `guest.*`. [renamed.tsv](renamed.tsv)
+gives each moved file the path its run wrote, which the manifests, checksums and logs here
+name; every file keeps its bytes.

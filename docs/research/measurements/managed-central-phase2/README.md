@@ -15,13 +15,13 @@ Earlier source gates are not passing gates for later revisions.
 
 | Source / root run | Actual outcome | Raw directory beneath linux/ unless stated |
 | --- | --- | --- |
-| 22ea / r227 | Removing the entire selected PREROUTING rule lets the loopback client reach the backend: accepted2, relay0, joinedtrue, cargo101. Own-address also receives the second backend bytes, but ENOTCONN107 loses the old worker completion record; wrapper1 honestly rejects incomplete evidence. Source byte-identically restored in finally. | managed-intercept-22ea-local-mutations-v1 |
+| 22ea / r227 | Removing the entire selected PREROUTING rule lets the loopback client reach the backend: accepted2, relay0, joinedtrue, cargo101. Own-address also receives the second backend bytes, but ENOTCONN107 loses the old worker completion record; wrapper1 honestly rejects incomplete evidence. Source byte-identically restored in finally. | local-mutations-v1 |
 | 22ea / r230 | Independently rerun restored loopback and own-address cases pass. The prior driver assertion had prevented this green stage. | same directory, restored artifacts |
 | 02542 / r273 | Actual task fixture fails before Fill because control endpoints have no host publications. This is a fixture error, not an exhaustion or isolation finding. | managed-limits-0254-v1 |
 | e982 / r276 | Actual finite task exhaustion/recovery plus focused units7/0. EAGAIN after held2; fresh healthy-tenant and main nonces. Release reaps3, replacementPID6, held0. | managed-limits-e982-v1 |
-| 37a62 / r279 | Four present IPv4 TCP origin cases pass; absent listener without fallback gives actual direct backend effect, accepted2/receipts2/relay0, joinedStoppedtrue, cargo101. Task recovery and cancellation batch8/0, including both actual guests. | managed-combined-37a6-runtime-v1 |
-| 2cc8 / r284 | Four present IPv4 origins pass. With separate selected DROP fallback and no listener, client ConnectCall expires at the original absolute deadline; backend remains baseline1/1, joinedtrue. Old strict refusal predicate fails101, honestly retained. | managed-intercept-drop-2cc8-v1 |
-| ba28 / r286 | Corrected typed bounded predicate passes. Removing ONLY appended fallback DROP produces clientSuccessBackend, actual backend2/2/relay0, joinedStoppedtrue, cargo101. Byte-identical source restoration and repeated guarded case pass. | managed-absence-ba28-mutation-v1 |
+| 37a62 / r279 | Four present IPv4 TCP origin cases pass; absent listener without fallback gives actual direct backend effect, accepted2/receipts2/relay0, joinedStoppedtrue, cargo101. Task recovery and cancellation batch8/0, including both actual guests. | combined-runtime-v1 |
+| 2cc8 / r284 | Four present IPv4 origins pass. With separate selected DROP fallback and no listener, client ConnectCall expires at the original absolute deadline; backend remains baseline1/1, joinedtrue. Old strict refusal predicate fails101, honestly retained. | intercept-drop-v1 |
+| ba28 / r286 | Corrected typed bounded predicate passes. Removing ONLY appended fallback DROP produces clientSuccessBackend, actual backend2/2/relay0, joinedStoppedtrue, cargo101. Byte-identical source restoration and repeated guarded case pass. | absence-mutation-v1 |
 | ba28 / r289 | Real command-line helper safely returns BootError; its exact production map_err(to_string) operation aborts when the thread-local allocator refuses the next allocation. Cargo101/SIGABRT. Diagnostic driver0 means the expected abort was captured, not that product is safe. Restored ordinary composer4/0. | managed-cmdline-report-oom-ba28-v1 |
 | 37a62 / macOS r280 | Full supported seven-target scripts/lint0, lockf and cargo-j4. No later source inherits it. | macos/managed-seven-target-37a6-v1 |
 | bce / macOS r275 | Independent native test-only pthread prototype build/clippy/event exchange/expired wait/join/destroy0 under main-thread Rust global allocation refusal. No production adapter or native malloc failure proof. | macos/root-managed-pthread-probe-launch-v1 and root-managed-pthread-probe-evidence |
@@ -139,3 +139,11 @@ source/full hardware VM combinations unverified, Windows ARM explicitly paused.
 R16: admitted private resources, active caches/source/evidence preserved and Mac
 floor respected. Full P0–P13 plan, hard aggregate guarantees, mandatory routes,
 semantic broker/adapters, credential and generation-safe restore gates remain open.
+
+## Paths
+
+Shortened 2026-11-19, so that a Windows checkout holds every path (`scripts/lint` refuses
+one over 144 characters): run directories dropped the words their folder already says, and
+each case directory names its guest program's records `guest.*`. [renamed.tsv](renamed.tsv)
+gives each moved file the path its run wrote, which the manifests, checksums and logs here
+name; every file keeps its bytes.

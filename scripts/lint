@@ -31,6 +31,41 @@ case $status in
 *) echo "searching crates/ for F_FULLFSYNC failed ($status)" >&2; exit 1 ;;
 esac
 
+echo "== paths"
+# Every path git tracks, or would add, fits a Windows checkout without core.longpaths, which
+# Windows' git and cargo leave off. Cargo checks a git dependency out with libgit2, which
+# refuses a path past MAX_PATH, 260 characters (libgit2 1.9.6, cargo 1.99's: fs_path.c
+# validate_length), under the longest prefix a checkout of shards has:
+# C:\Users\<user>\.cargo\git\checkouts\shards-<16 hex>\<id>\, 116 characters with a user name
+# of 20, the most Windows allows (USER_INFO_1), and an id of 40 hex digits, the most cargo's 7
+# grows to while they are ambiguous (sources/git/utils.rs to_short_id). 260 - 116 = 144. Git
+# for Windows writes a file of 259 characters and a directory of 247 at most (compat/mingw.c
+# handle_long_path, mingw_mkdir): from the longest clone prefix, kiln's runner's
+# C:\Users\<user>\AppData\Local\kiln\agent\work\w\<8 hex>\shards\ (78 with a user name of
+# 20), a path of 144 reaches 222 and its directory 220. Counted in UTF-16 code units, as
+# Windows counts them.
+bound=144
+long=$(perl -CS -e '
+	my ($root, $bound) = @ARGV;
+	open(my $git, "-|", "git", "-C", $root, "ls-files", "-z", "--cached", "--others", "--exclude-standard")
+		or die "git ls-files: $!\n";
+	binmode($git, ":encoding(UTF-8)");
+	local $/ = "\0";
+	while (my $path = <$git>) {
+		chomp $path;
+		my $n = length($path) + (() = $path =~ /[^\x{0}-\x{FFFF}]/g);
+		print "$path: $n\n" if $n > $bound;
+	}
+	close($git) or die "git ls-files failed\n";
+' "$root" "$bound")
+if [ -n "$long" ]; then
+	printf '%s\n' "$long" >&2
+	printf '%s\n' "paths past $bound characters, the most a Windows checkout holds without core.longpaths:" \
+		'libgit2'"'"'s MAX_PATH (260) less cargo'"'"'s checkout C:\Users\<user>\.cargo\git\checkouts\shards-<16 hex>\<id>\' \
+		'(116, a user name of 20 and an id of 40). Shorten them; a measurement folder keeps the names its records use in renamed.tsv.' >&2
+	exit 1
+fi
+
 for target in ${*:-$all}; do
 	case " $(printf '%s' "$all" | tr '\n' ' ') " in
 		*" $target "*) ;;
