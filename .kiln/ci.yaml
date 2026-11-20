@@ -311,6 +311,23 @@ jobs:
           fi
           echo "$python" >> "$GITHUB_PATH"
           echo "$tools/$llvm/bin" >> "$GITHUB_PATH"
+      # On macOS the build finds what it built with the host's pkg-config, which GitHub's macOS
+      # image carries and a kiln Mac may lack (meson: "Pkg-config for machine host machine not
+      # found", run 01a1f6b7d63470498128bb071aaa6ccf): pkgconf's own arm64 executable, from the
+      # PyPI wheel of the version scripts/gpu-libs pins for Windows, by digest, kept in the
+      # runner's tool cache. Its wheel's Python wrapper takes 3.10, past the Macs' 3.9.
+      - name: pkg-config for the GPU's renderer (macOS)
+        if: runner.os == 'macOS' && steps.gpu-kept.outputs.cache-hit != 'true'
+        run: |
+          command -v pkg-config && exit 0
+          dir=$RUNNER_TOOL_CACHE/shards-gpu/pkgconf-3.0.7.post0
+          if [ ! -x "$dir/pkg-config" ]; then
+            curl -fsSL --retry 5 --retry-all-errors --retry-delay 10 -o "$RUNNER_TEMP/pkgconf.whl" https://files.pythonhosted.org/packages/py3/p/pkgconf/pkgconf-3.0.7.post0-py3-none-macosx_11_0_arm64.whl
+            echo "47cbf6889d84297b9a4e1741ae016daa4e198f3ec8bab7ce74554cc50b77cce4  $RUNNER_TEMP/pkgconf.whl" | shasum -a 256 -c
+            rm -rf "$RUNNER_TEMP/pkgconf" && unzip -q "$RUNNER_TEMP/pkgconf.whl" pkgconf/.bin/pkgconf -d "$RUNNER_TEMP/pkgconf"
+            mkdir -p "$dir" && mv "$RUNNER_TEMP/pkgconf/pkgconf/.bin/pkgconf" "$dir/pkg-config"
+          fi
+          echo "$dir" >> "$GITHUB_PATH"
       - name: The GPU's renderer
         run: |
           if [ "${{ steps.gpu-kept.outputs.cache-hit }}" != true ]; then
