@@ -527,6 +527,16 @@ pub mod kind {
     /// a range of one protocol's ports, and the way a flow opens. Taken back, every flow it
     /// let open that no other grant admits ends. Answered as `NET_JOIN` is.
     pub const NET_PEER_GRANT: u8 = 116;
+    /// Orchestrator → run host, on its links socket (D287, Unix): the streams of the run's
+    /// shares another server serves (`shards_api::image::wire::Request::served`), in the
+    /// request's order, [`MAX_FDS`](super::MAX_FDS) a message at most and no payload, all of
+    /// them sent before the run's request (`CREATE`), which says how many. Not answered: its
+    /// sender holds its copies until the run has started or been refused (M24). 118, the first
+    /// number no other kind has (`LAYER_LOST` took 117 first; no two kinds share one,
+    /// `tests::every_message_kind_has_its_own_number`). kiln's recorded change, which carried it
+    /// before this did, numbers it 117: a run host of either build refuses the other's as a
+    /// message of another kind where its streams were due (`Cause::Request`).
+    pub const SERVED_SHARES: u8 = 118;
     /// Daemon → a running microVM's VM process: a run joins its network (D119). Its number
     /// (a big-endian u64, which `EXEC_TAKEN` answers), with the VM's end of the joiner's
     /// own connection to the daemon, on which the joiner's run goes as a warm VM's does
