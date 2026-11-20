@@ -19,6 +19,8 @@ pub mod notices;
 #[cfg(windows)]
 pub mod ntfs;
 pub mod proto;
+#[cfg(unix)]
+pub mod resync;
 pub mod server;
 #[cfg(unix)]
 pub mod window;
@@ -84,6 +86,10 @@ pub struct Slot {
     /// Which files its window maps, learned from what each way costs here (D189,
     /// memory-09): made as it first learns.
     crossover: std::sync::Mutex<Option<crossover::Crossover>>,
+    /// Its server's resync channel, where it gave one (D288): over it a successor of a
+    /// server that died hands the device a fresh stream.
+    #[cfg(unix)]
+    resync: std::sync::Mutex<Option<resync::Resync>>,
 }
 
 /// A share's slot, which the VM's owner fills.
@@ -149,7 +155,58 @@ impl Slot {
             window: std::sync::Mutex::new(None),
             mappings: std::sync::Mutex::new(Vec::new()),
             crossover: std::sync::Mutex::new(None),
+            #[cfg(unix)]
+            resync: std::sync::Mutex::new(None),
         }
+    }
+
+    /// Takes `channel`, its server's resync channel (D288), its `Attached` read: from here
+    /// on a stream that fails is replaced by the one a successor hands over on it.
+    #[cfg(unix)]
+    pub fn resync_on(&self, channel: std::os::unix::net::UnixStream) -> Result<(), String> {
+        let taken = resync::Resync::attached(channel).map_err(|e| format!("its share's server: {e}"))?;
+        *self
+            .resync
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(taken);
+        Ok(())
+    }
+
+    /// The stream a successor of the server behind `conn` hands over, `conn` replaced by
+    /// it and every DAX mapping of the window asked for again on it (D288, slates' condition
+    /// 4b): Err `failed`, the old stream's error, where the share has no channel or its
+    /// channel gives no stream; the share then ends as before.
+    #[cfg(unix)]
+    fn resynced(&self, conn: &mut Option<Stream>, failed: io::Error) -> io::Result<()> {
+        let fresh = {
+            let channel = self
+                .resync
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let Some(channel) = channel.as_ref() else {
+                return Err(failed);
+            };
+            match channel.fresh() {
+                Ok(fd) => Stream::from(fd),
+                Err(why) => {
+                    debug!("virtio-fs: its share's stream failed ({failed}) and {why}");
+                    return Err(failed);
+                }
+            }
+        };
+        let mut fresh = fresh;
+        if let Some(window) = self.window() {
+            for (moffset, m) in window.mappings() {
+                let again = descriptor_on(&mut fresh, m.node, m.writable, m.foffset, m.len)
+                    .and_then(|fd| window.map(fd, m.node, m.foffset, moffset, m.len, m.writable));
+                if again.is_err() {
+                    // Its file reached no more: zeros there, as a restore's (`attach`).
+                    let _ = window.map_zeros(m.node, m.foffset, moffset, m.len, m.writable);
+                }
+            }
+        }
+        *conn = Some(fresh);
+        Ok(())
     }
 
     /// What `f` learns or tells of which files the window maps ([`crossover`]).
@@ -251,12 +308,18 @@ impl Slot {
             .conn
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let conn = conn.as_mut().ok_or(io::ErrorKind::NotConnected)?;
-        write_frame(conn, req)?;
-        if !read_frame_into(conn, reply)? {
-            return Err(io::ErrorKind::UnexpectedEof.into());
+        loop {
+            let asked = exchange(conn.as_mut().ok_or(io::ErrorKind::NotConnected)?, req, reply);
+            match asked {
+                Ok(took) => return Ok(took),
+                // Asked again whole, its unique unchanged, on its server's successor's stream
+                // (D288); a successor that dies too is followed by the next.
+                #[cfg(unix)]
+                Err(failed) => self.resynced(&mut conn, failed)?,
+                #[cfg(windows)]
+                Err(failed) => return Err(failed),
+            }
         }
-        Ok(!reply.is_empty())
     }
 
     /// Replaces a server reply its device cannot give the guest with EIO.
@@ -426,6 +489,16 @@ fn release_reply(conn: &mut Stream, req: &[u8], reply: &[u8]) -> Result<(), Unre
         }
     });
     done.and(released)
+}
+
+/// `req` written on `conn` and its reply read into `reply`: false for a request that takes
+/// none.
+fn exchange(conn: &mut Stream, req: &[u8], reply: &mut Vec<u8>) -> io::Result<bool> {
+    write_frame(conn, req)?;
+    if !read_frame_into(conn, reply)? {
+        return Err(io::ErrorKind::UnexpectedEof.into());
+    }
+    Ok(!reply.is_empty())
 }
 
 /// The descriptor of the file of node `node` of the server at the other end of `conn`,
@@ -2536,6 +2609,81 @@ mod tests {
         assert!(zeros.iter().all(|&b| b == 0));
         drop(restored);
         second.join().unwrap();
+    }
+
+    /// A request whose server dies before answering it is asked again whole on the stream its
+    /// successor hands over on the share's resync channel, and answered there (D288); with no
+    /// channel, or a resync naming another attachment or token, the share ends as before.
+    #[test]
+    fn a_request_its_server_died_holding_is_asked_again_on_its_successors_stream() {
+        use super::resync::tests::{attached, channel, resync, send};
+        use std::os::fd::AsFd as _;
+        const TOKEN: [u8; 16] = [3; 16];
+        let request = {
+            let mut r = 56u32.to_le_bytes().to_vec();
+            r.extend_from_slice(&1u32.to_le_bytes());
+            r.extend_from_slice(&0xabcdu64.to_le_bytes());
+            r.resize(56, 0x11);
+            r
+        };
+        // The first server reads the request and dies; what the successor is sent decides.
+        let ask_after_death = |resynced: Option<[u8; 28]>, with_channel: bool| {
+            let (ours, theirs) = UnixStream::pair().unwrap();
+            let slot = Share::default();
+            slot.attach(ours).unwrap();
+            let (server_channel, device_channel) = channel();
+            if with_channel {
+                send(&server_channel, &attached(9, TOKEN), &[]);
+                slot.resync_on(device_channel).unwrap();
+            }
+            let dying = std::thread::spawn(move || {
+                let mut conn = theirs;
+                read_frame(&mut conn).unwrap().unwrap()
+            });
+            let asking = {
+                let (slot, request) = (slot.clone(), request.clone());
+                std::thread::spawn(move || slot.ask(&request))
+            };
+            let first = dying.join().unwrap();
+            let (fresh, mut successor) = UnixStream::pair().unwrap();
+            if let Some(message) = resynced {
+                send(&server_channel, &message, &[fresh.as_fd()]);
+            }
+            drop(fresh);
+            let answering = std::thread::spawn(move || {
+                let again = read_frame(&mut successor).ok().flatten();
+                if let Some(req) = &again {
+                    let mut out = 16u32.to_le_bytes().to_vec();
+                    out.extend_from_slice(&0i32.to_le_bytes());
+                    out.extend_from_slice(&req[8..16]);
+                    write_frame(&mut successor, &out).unwrap();
+                }
+                again
+            });
+            if resynced.is_none() || !with_channel {
+                drop(server_channel);
+            }
+            let answer = asking.join().unwrap();
+            drop(slot);
+            (first, answer, answering.join().unwrap())
+        };
+
+        let (first, answer, again) = ask_after_death(Some(resync(9, TOKEN)), true);
+        assert_eq!(first, request);
+        assert_eq!(
+            again.as_deref(),
+            Some(&request[..]),
+            "asked again whole, its unique unchanged"
+        );
+        let answer = answer.unwrap().unwrap();
+        assert_eq!(&answer[8..16], &0xabcdu64.to_le_bytes(), "the successor's answer");
+
+        let (_, answer, again) = ask_after_death(None, false);
+        assert!(answer.is_err(), "no channel: the share ends as before");
+        assert_eq!(again, None);
+        let (_, answer, again) = ask_after_death(Some(resync(8, TOKEN)), true);
+        assert!(answer.is_err(), "another attachment's resync is refused");
+        assert_eq!(again, None, "nothing asked on a stream it refused");
     }
 
     fn share(hold: mpsc::Receiver<()>, asked: mpsc::Sender<Vec<u8>>) -> (Share, std::thread::JoinHandle<()>) {

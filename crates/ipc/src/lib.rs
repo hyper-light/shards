@@ -537,6 +537,17 @@ pub mod kind {
     /// before this did, numbers it 117: a run host of either build refuses the other's as a
     /// message of another kind where its streams were due (`Cause::Request`).
     pub const SERVED_SHARES: u8 = 118;
+    /// Orchestrator → run host, on its links socket (D288, Unix): the resync channels of the
+    /// run's shares another server serves that have one (`wire::ServedAt::resync`), in the
+    /// request's order, [`MAX_FDS`](super::MAX_FDS) a message at most and no payload, sent
+    /// after their streams' [`SERVED_SHARES`] and before the run's request. Not answered: its
+    /// sender holds its copies as it holds the streams'. 119, the first number no other kind
+    /// has.
+    pub const SERVED_RESYNCS: u8 = 119;
+    /// A run's share process → its VM process (D288, Unix): the resync channel of the share
+    /// in slot `u32` (little-endian, its payload), one descriptor, sent before the shares'
+    /// [`SHARE_ENDS`], which the VM's `TAKEN` answers for both.
+    pub const SHARE_RESYNC: u8 = 120;
     /// Daemon → a running microVM's VM process: a run joins its network (D119). Its number
     /// (a big-endian u64, which `EXEC_TAKEN` answers), with the VM's end of the joiner's
     /// own connection to the daemon, on which the joiner's run goes as a warm VM's does

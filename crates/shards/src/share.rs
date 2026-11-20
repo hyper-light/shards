@@ -97,6 +97,11 @@ fn take_durable(args: &mut Vec<OsString>) -> Result<(), String> {
 /// stream; as records its guest's init takes as they are (`run::builtin::NOTICE`).
 pub(crate) const NOTICES: &str = "--notices";
 
+/// The flag after [`NOTICES`] that names the shares whose server gave a resync channel (D288),
+/// by their places among the shares joined by `,`: each channel on a descriptor past the
+/// others, in the order named, which this process hands its VM as it is (`SHARE_RESYNC`).
+pub(crate) const RESYNCS: &str = "--resyncs";
+
 /// The flag before a share process's shares that bounds one of them (D281), after
 /// [`MOVED`] and [`NOTICES`]: its three arguments the share's place among them, the bytes its
 /// files may take, and its volume's count file, which its server maps. One for each bounded
@@ -174,7 +179,7 @@ fn bound(server: &Server, bytes: u64, count: &Path) -> Result<(), String> {
 fn take_notices(args: &mut Vec<OsString>) -> Result<Option<Vec<Vec<u8>>>, String> {
     let at = args
         .iter()
-        .take_while(|a| *a == MOVED || *a == NOTICES)
+        .take_while(|a| *a == MOVED || *a == NOTICES || *a == RESYNCS)
         .position(|a| a == NOTICES);
     let Some(at) = at else {
         return Ok(None);
@@ -186,6 +191,32 @@ fn take_notices(args: &mut Vec<OsString>) -> Result<Option<Vec<Vec<u8>>>, String
     let tags = args.remove(at);
     let tags = bytes_of(&tags)?;
     Ok(Some(tags.split(|&b| b == b',').map(<[u8]>::to_vec).collect()))
+}
+
+/// The shares' places [`RESYNCS`] names, taken out with it: none where it is not there.
+#[cfg(unix)]
+fn take_resyncs(args: &mut Vec<OsString>) -> Result<Vec<u32>, String> {
+    let at = args
+        .iter()
+        .take_while(|a| *a == MOVED || *a == RESYNCS)
+        .position(|a| a == RESYNCS);
+    let Some(at) = at else {
+        return Ok(Vec::new());
+    };
+    args.remove(at);
+    if at >= args.len() {
+        return Err("share: --resyncs takes its shares' places".into());
+    }
+    let places = args.remove(at);
+    bytes_of(&places)?
+        .split(|&b| b == b',')
+        .map(|p| {
+            std::str::from_utf8(p)
+                .ok()
+                .and_then(|p| p.parse::<u32>().ok())
+                .ok_or_else(|| "share: --resyncs: a place that is no number".to_string())
+        })
+        .collect()
 }
 
 /// Tells `out` what the host changes beneath each of `servers`' shares (D235), the k-th as
@@ -410,11 +441,29 @@ pub fn share(args: impl Iterator<Item = OsString>) -> ExitCode {
         Ok(notices) => notices,
         Err(e) => return failed(&e),
     };
+    let resynced = match take_resyncs(&mut args) {
+        Ok(places) => places,
+        Err(e) => return failed(&e),
+    };
     let moved = take_moved(&mut args);
     let given = match given(&mut args) {
         Ok(given) => given,
         Err(e) => return failed(&e),
     };
+    // Its served shares' resync channels (D288): past its notices' pipe, or where that would
+    // be, in the order named, each a socket the daemon left for this process alone.
+    let past = 5 + i32::try_from(given.len()).unwrap_or(i32::MAX) + i32::from(notices.is_some());
+    let mut resyncs: Vec<(u32, UnixStream)> = Vec::with_capacity(resynced.len());
+    for (k, place) in resynced.into_iter().enumerate() {
+        let at = past.saturating_add(i32::try_from(k).unwrap_or(i32::MAX));
+        if usize::try_from(place).map_or(true, |p| p >= given.len()) || !is(at, libc::S_IFSOCK) {
+            return failed(&format!(
+                "share: descriptor {at} is not share {place}'s resync channel"
+            ));
+        }
+        // SAFETY: a socket the daemon left for this process alone, checked above.
+        resyncs.push((place, unsafe { UnixStream::from_raw_fd(at) }));
+    }
     // Where its notices go (D235): past the home's private directory.
     let notices = match notices {
         Some(tags) => {
@@ -531,11 +580,23 @@ pub fn share(args: impl Iterator<Item = OsString>) -> ExitCode {
             &kept
         }
     };
-    // The VM's ends, kept until it says it has them all.
+    // Its served shares' resync channels first (D288), each with its share's slot, then the
+    // VM's ends, all kept until it says it has them.
+    for (place, channel) in &resyncs {
+        use std::os::fd::AsFd as _;
+        if let Err(e) = shards_ipc::send(
+            &vm,
+            shards_ipc::kind::SHARE_RESYNC,
+            &place.to_le_bytes(),
+            &[channel.as_fd()],
+        ) {
+            return failed(&format!("share: the VM's resync channels: {e}"));
+        }
+    }
     if let Err(e) = hand_over(&vm, &theirs) {
         return failed(&format!("share: the VM's connections: {e}"));
     }
-    drop((theirs, vm));
+    drop((theirs, vm, resyncs));
     let mut status = ExitCode::SUCCESS;
     std::thread::scope(|scope| {
         let mut threads = Vec::new();
@@ -759,6 +820,36 @@ fn joiner(server: &Server, link: &Link) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// D288: `--resyncs PLACES` after `--notices`, as the run host passes them, is taken with
+    /// its places, the shares' modes and names left; a place that is no number is refused.
+    #[cfg(unix)]
+    #[test]
+    fn its_resync_places_are_taken_after_its_notices() {
+        let args = |a: &[&str]| -> Vec<OsString> { a.iter().map(OsString::from).collect() };
+        let mut given = args(&[
+            "--notices",
+            "shards0,shards1",
+            "--resyncs",
+            "1",
+            "rw",
+            "",
+            "rw",
+            "",
+        ]);
+        assert!(take_notices(&mut given).unwrap().is_some());
+        assert_eq!(take_resyncs(&mut given).unwrap(), [1]);
+        assert_eq!(given, args(&["rw", "", "rw", ""]));
+        let mut given = args(&["--resyncs", "0,2", "ro", "f"]);
+        assert_eq!(take_resyncs(&mut given).unwrap(), [0, 2]);
+        let mut none = args(&["rw", "--resyncs"]);
+        assert_eq!(
+            take_resyncs(&mut none).unwrap(),
+            Vec::<u32>::new(),
+            "a share's name is no flag"
+        );
+        assert!(take_resyncs(&mut args(&["--resyncs", "x", "rw", ""])).is_err());
+    }
 
     /// `--notices TAGS` and `--moved` are taken before the shares in either order, and a
     /// share's mode and name never taken for them.

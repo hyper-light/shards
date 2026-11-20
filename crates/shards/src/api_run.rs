@@ -328,8 +328,8 @@ fn host(answers: &Answers) -> Result<(), No> {
         return hosted::warm(answers, &request, input);
     }
     let ready_by = deadline(request.ready_by, SystemTime::now())?;
-    let served = served_streams(&request)?;
-    hosted::run(answers, &request, ready_by, input, served)
+    let (served, resyncs) = served_streams(&request)?;
+    hosted::run(answers, &request, ready_by, input, served, resyncs)
 }
 
 /// The streams of the run's shares another server serves (D287), one for each of `request`'s,
@@ -338,12 +338,12 @@ fn host(answers: &Answers) -> Result<(), No> {
 /// came, a message of another kind came first, or the request names a handle, which no Unix
 /// stream has. Each is the VM's in its share slot as it is, its server answering it.
 #[cfg(unix)]
-fn served_streams(request: &wire::Request) -> Result<Vec<OwnedFd>, No> {
+fn served_streams(request: &wire::Request) -> Result<(Vec<OwnedFd>, Vec<OwnedFd>), No> {
     let refused = |why: String| No(Cause::Request, why);
     let want = request.served.len();
     let mut streams: Vec<OwnedFd> = Vec::with_capacity(want);
     if want == 0 {
-        return Ok(streams);
+        return Ok((streams, Vec::new()));
     }
     if let Some(s) = request.served.iter().find(|s| s.handle.is_some()) {
         return Err(refused(format!(
@@ -390,7 +390,52 @@ fn served_streams(request: &wire::Request) -> Result<Vec<OwnedFd>, No> {
             )));
         }
     }
-    Ok(streams)
+    let resyncs = served_resyncs(request, links)?;
+    Ok((streams, resyncs))
+}
+
+/// The resync channels of the run's shares another server serves that have one (D288), in the
+/// request's order of those: those its orchestrator sent on this process's links socket after
+/// the streams (`kind::SERVED_RESYNCS`), each a socket; refused `Request` as their streams are.
+#[cfg(unix)]
+fn served_resyncs(request: &wire::Request, links: &Links) -> Result<Vec<OwnedFd>, No> {
+    let refused = |why: String| No(Cause::Request, why);
+    let want = request.served.iter().filter(|s| s.resync).count();
+    let mut resyncs: Vec<OwnedFd> = Vec::with_capacity(want);
+    while resyncs.len() < want {
+        let message = links.next().map_err(refused)?.ok_or_else(|| {
+            refused(format!(
+                "{} of its {want} served shares' resync channels came before its request",
+                resyncs.len()
+            ))
+        })?;
+        if message.kind != kind::SERVED_RESYNCS || message.fds.is_empty() {
+            return Err(refused(format!(
+                "message kind {} with {} descriptors before its request, where its served shares' resync channels were due",
+                message.kind,
+                message.fds.len()
+            )));
+        }
+        resyncs.extend(message.fds);
+    }
+    if resyncs.len() != want {
+        return Err(refused(format!(
+            "{} resync channels for its {want} served shares that have one",
+            resyncs.len()
+        )));
+    }
+    for channel in &resyncs {
+        use std::os::unix::fs::FileTypeExt as _;
+        let socket = channel
+            .try_clone()
+            .map(std::fs::File::from)
+            .and_then(|f| f.metadata())
+            .is_ok_and(|m| m.file_type().is_socket());
+        if !socket {
+            return Err(refused("a served share's resync channel is no socket".into()));
+        }
+    }
+    Ok(resyncs)
 }
 
 /// [`served_streams`] on Windows: each a pipe its orchestrator duplicated into this process for
@@ -399,9 +444,15 @@ fn served_streams(request: &wire::Request) -> Result<Vec<OwnedFd>, No> {
 /// standard handles, a pipe, no value twice) and owned from here on; refused `Request` where a
 /// share names none.
 #[cfg(windows)]
-fn served_streams(request: &wire::Request) -> Result<Vec<OwnedFd>, No> {
+fn served_streams(request: &wire::Request) -> Result<(Vec<OwnedFd>, Vec<OwnedFd>), No> {
     use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _};
     let refused = |why: String| No(Cause::Request, why);
+    if let Some(s) = request.served.iter().find(|s| s.resync) {
+        return Err(refused(format!(
+            "{}: a served share's resync channel, which Windows' shares take none of yet (D288)",
+            s.at
+        )));
+    }
     let mut streams: Vec<OwnedFd> = Vec::with_capacity(request.served.len());
     let mut values: Vec<u64> = Vec::with_capacity(request.served.len());
     for s in &request.served {
@@ -419,7 +470,7 @@ fn served_streams(request: &wire::Request) -> Result<Vec<OwnedFd>, No> {
         // checked a pipe of this process's above and named once: owned from here, closed once.
         streams.push(unsafe { OwnedFd::from_raw_handle(pipe.as_raw_handle()) });
     }
-    Ok(streams)
+    Ok((streams, Vec::new()))
 }
 
 /// Why frame `kind`, come before its run's request, refuses the run: the channel is no run
@@ -3362,6 +3413,9 @@ mod hosted {
         /// Its sign-in grants, whose asks its host relays (D242, step 8).
         signing: Vec<wire::SignInGrant>,
         dirs: Vec<(OwnedFd, bool, OsString)>,
+        /// The resync channels of its shares another server serves that have one (D288), each
+        /// by its share's place in `dirs`.
+        resyncs: Vec<(usize, OwnedFd)>,
         /// The bound each bounded volume's share among them is served with (D281).
         bounds: Vec<crate::volumes::Bounded>,
         /// The named volumes among them, held since they were opened (D281): its live state's
@@ -3412,13 +3466,14 @@ mod hosted {
         ready_by: Option<u64>,
         input: super::Input,
         served: Vec<OwnedFd>,
+        resyncs: Vec<OwnedFd>,
     ) -> Result<(), No> {
         let mut checking = Checking::begin();
         let home = shards_ipc::home().map_err(no(Cause::Boot))?;
         let (shaped, layering) = shape(request, &home, &mut checking)?;
         let made = shaped.made.clone();
-        let plan =
-            plan(request, ready_by, shaped, served).inspect_err(|_| end(&home, None, &made, Vec::new()))?;
+        let plan = plan(request, ready_by, shaped, served, resyncs)
+            .inspect_err(|_| end(&home, None, &made, Vec::new()))?;
         launch_and_serve(answers, input, &home, plan, checking, layering)
     }
 
@@ -3804,6 +3859,7 @@ mod hosted {
         ready_by: Option<u64>,
         shaped: Shaped,
         served: Vec<OwnedFd>,
+        resyncs: Vec<OwnedFd>,
     ) -> Result<Plan, No> {
         let Shaped {
             mut run,
@@ -3855,8 +3911,18 @@ mod hosted {
         // output, what it stages, its members' ends asked for, and its own command or
         // `ATTEND`.
         let (_, _, most) = crate::run::sizes(&run.resources, crate::build::host_memory());
-        // Its shares another server serves (D287), in the slots after its own shares'.
+        // Its shares another server serves (D287), in the slots after its own shares', and the
+        // resync channels of those that have one (D288), each by its slot.
+        let first_served = opened.dirs.len();
         served_slots(&mut opened, &request.served, served)?;
+        let resyncs: Vec<(usize, OwnedFd)> = request
+            .served
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.resync)
+            .map(|(i, _)| first_served.saturating_add(i))
+            .zip(resyncs)
+            .collect();
         // The shares it gives members as they start (D277), told in their entries.
         let given = super::share_members(request, &members)?;
         let volumes = agentfile
@@ -3996,6 +4062,7 @@ mod hosted {
             granted: request.credentials.iter().map(|g| g.reference.clone()).collect(),
             signing: request.sign_ins.clone(),
             dirs: opened.dirs,
+            resyncs,
             bounds: opened.bounds,
             volumes: opened.held,
             made,
@@ -4132,6 +4199,9 @@ mod hosted {
     struct Launch<'a> {
         prepared: &'a crate::run::Prepared,
         dirs: &'a [(OwnedFd, bool, OsString)],
+        /// The resync channels of its served shares that have one (D288), by place in `dirs`.
+        #[cfg_attr(windows, allow(dead_code))]
+        resyncs: &'a [(usize, OwnedFd)],
         bounds: &'a [crate::volumes::Bounded],
         bridge: Option<&'a shards_net::bridge::Bridge>,
         /// Whether its network process makes its run's credential grants (D242).
@@ -4148,6 +4218,7 @@ mod hosted {
             Launch {
                 prepared: &self.prepared,
                 dirs: &self.dirs,
+                resyncs: &self.resyncs,
                 bounds: &self.bounds,
                 bridge: self.bridge.as_ref(),
                 credentials: self.credentials.is_some(),
@@ -4163,6 +4234,7 @@ mod hosted {
             Launch {
                 prepared: &self.prepared,
                 dirs: &self.opened.dirs,
+                resyncs: &[],
                 bounds: &self.opened.bounds,
                 bridge: self.bridge.as_ref(),
                 credentials: self.credentials.is_some(),
@@ -4361,7 +4433,7 @@ mod hosted {
         let tags = run_tags(plan.dirs.len());
         #[cfg(unix)]
         let shares = (!plan.dirs.is_empty())
-            .then(|| start_shares(home, plan.dirs, plan.bounds, Some(&tags)))
+            .then(|| start_shares(home, plan.dirs, plan.resyncs, plan.bounds, Some(&tags)))
             .transpose()
             .map_err(boot)?;
         #[cfg(windows)]
@@ -4630,6 +4702,7 @@ mod hosted {
     fn start_shares(
         home: &Path,
         dirs: &[(OwnedFd, bool, OsString)],
+        resyncs: &[(usize, OwnedFd)],
         bounds: &[crate::volumes::Bounded],
         tags: Option<&[String]>,
     ) -> Result<Shares, String> {
@@ -4648,6 +4721,17 @@ mod hosted {
             }
             None => None,
         };
+        // Its served shares' resync channels (D288), by their shares' places, on descriptors
+        // past its others.
+        let resynced: OsString = resyncs
+            .iter()
+            .map(|(at, _)| at.to_string())
+            .collect::<Vec<_>>()
+            .join(",")
+            .into();
+        if !resyncs.is_empty() {
+            args.extend([OsStr::new(crate::share::RESYNCS), resynced.as_os_str()]);
+        }
         let bounded = crate::share::bound_args(bounds.iter().map(|b| (b.share, b)));
         args.extend(bounded.iter().map(OsString::as_os_str));
         for (_, read_only, only) in dirs {
@@ -4664,6 +4748,12 @@ mod hosted {
         fds.push((ghosts.as_fd(), number(4usize.saturating_add(dirs.len()))?));
         if let Some((_, w)) = &notices {
             fds.push((w.as_fd(), number(5usize.saturating_add(dirs.len()))?));
+        }
+        let past = 5usize
+            .saturating_add(dirs.len())
+            .saturating_add(usize::from(notices.is_some()));
+        for (k, (_, channel)) in resyncs.iter().enumerate() {
+            fds.push((channel.as_fd(), number(past.saturating_add(k))?));
         }
         let child = shards_ipc::spawn_in(&exe, &args, &fds, false, &[])
             .map_err(|e| format!("starting the share process: {e}"))?;
@@ -7889,7 +7979,7 @@ mod hosted {
         // No served share's stream (D287): its share process started before its run asked, so a
         // run naming one is another microVM's than this one (its exemplar's check above), and
         // one this host's exemplar names is refused by `served_slots` for its streams' want.
-        let plan = match plan(&request, ready_by, shaped, Vec::new()) {
+        let plan = match plan(&request, ready_by, shaped, Vec::new(), Vec::new()) {
             Ok(plan) => plan,
             // Its shares' directories went with `shaped`, as `plan` failed.
             Err(e) => {
@@ -10177,7 +10267,8 @@ mod hosted {
             .into_iter()
             .collect();
         #[cfg(unix)]
-        let mut share = start_shares(live.home, &dirs, &bounds, Some(&tags)).map_err(|e| (R::Host, e))?;
+        let mut share =
+            start_shares(live.home, &dirs, &[], &bounds, Some(&tags)).map_err(|e| (R::Host, e))?;
         #[cfg(windows)]
         let mut share =
             start_shares(live.home, &dirs, &bounds, live.job, Some(&tags)).map_err(|e| (R::Host, e))?;
@@ -10473,6 +10564,7 @@ mod hosted {
                 exec,
                 members: None,
                 handle: None,
+                resync: false,
             };
             let mut opened = own();
             served_slots(
@@ -14261,6 +14353,7 @@ mod tests {
             exec: true,
             members: Some(to),
             handle: None,
+            resync: false,
         };
         let mut r = request(Vec::new());
         r.shares = vec![wire::ShareAt {

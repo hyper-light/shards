@@ -2200,6 +2200,7 @@ mod tests {
                 exec: true,
                 members: None,
                 handle: None,
+                resync: false,
             }],
             ..request(1, None)
         };

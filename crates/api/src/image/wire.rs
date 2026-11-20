@@ -146,8 +146,12 @@ pub use shards_abi::run::nesting::Ready;
 /// on its links socket before the request, `shards_ipc::kind::SERVED_SHARES`; on Windows
 /// duplicated into its process, [`ServedAt::handle`]), put in a share slot of its microVM after
 /// its own shares', so that a side that serves none refuses the run as it is asked, rather than
-/// starting its members without the directory their orchestrator gave them.
-pub const VERSION: u8 = 52;
+/// starting its members without the directory their orchestrator gave them; 53, a served
+/// share's resync channel ([`ServedAt::resync`], D288): on Unix its end comes on the links
+/// socket after the streams (`shards_ipc::kind::SERVED_RESYNCS`), and the share's device takes
+/// a fresh stream on it when its server dies, so that a side that knows no such channel
+/// refuses the run as it is asked, rather than its share ending with its server's daemon.
+pub const VERSION: u8 = 53;
 
 /// The run host's links socket's descriptor on Unix (version 50, D285 slice 4): the first past
 /// its standard streams, given it as it starts with [`LINKS_ARG`] on its command line, on which
@@ -687,6 +691,10 @@ pub struct ServedAt {
     /// request's order (`shards_ipc::kind::SERVED_SHARES`). Never part of a pool's exemplar
     /// ([`Request::exemplar`]).
     pub handle: Option<u64>,
+    /// Whether its server gives a resync channel beside its stream (D288; slates' A-316), whose
+    /// end comes on the links socket after the streams (`shards_ipc::kind::SERVED_RESYNCS`), in
+    /// the request's order of those that have one; Unix's alone. Appended in version 53.
+    pub resync: bool,
 }
 
 /// The run an orchestrator asks for.
@@ -2767,6 +2775,8 @@ impl Request {
                     w.u64(value);
                 }
             }
+            // Whether it has a resync channel, appended in version 53 (D288).
+            w.u8(u8::from(s.resync));
         }
         w.done()
     }
@@ -3009,8 +3019,9 @@ impl Request {
             control.stdio = r.flag()?;
         }
         // Its shares another server serves, appended in version 52 (D287): each at least its
-        // place's length, its two flags, its members' tag and its handle's flag.
-        let n = r.count(4 + 1 + 1 + 1 + 1)?;
+        // place's length, its two flags, its members' tag, its handle's flag and, appended in
+        // version 53 (D288), its resync channel's.
+        let n = r.count(4 + 1 + 1 + 1 + 1 + 1)?;
         let mut served = Vec::with_capacity(n);
         for _ in 0..n {
             let at = r.text()?;
@@ -3018,12 +3029,14 @@ impl Request {
             let exec = r.flag()?;
             let members = r.share_to()?;
             let handle = if r.flag()? { Some(r.u64()?) } else { None };
+            let resync = r.flag()?;
             served.push(ServedAt {
                 at,
                 read_only,
                 exec,
                 members,
                 handle,
+                resync,
             });
         }
         r.end()?;
@@ -6180,8 +6193,9 @@ mod tests {
         );
     }
 
-    /// The run's shares another server serves (version 52, D287), the request's last field. Do:
-    /// carry one with no handle (a Unix stream's), one with a handle's value (a Windows pipe's),
+    /// The run's shares another server serves (version 52, D287; its resync flag version 53's,
+    /// D288), the request's last field. Do: carry one with no handle and no resync channel, one
+    /// with a handle's value (a Windows pipe's) and a resync channel,
     /// given to every member and to members named, read-only and not to be run from. Expect:
     /// each reads back as written; its exemplar keeps each but its handle. Do: a handle's flag
     /// of another value, a members' tag no version has, and four billion of them in a few
@@ -6200,6 +6214,7 @@ mod tests {
                 exec: true,
                 members: Some(ShareTo::Members(vec![codex])),
                 handle: None,
+                resync: false,
             },
             ServedAt {
                 at: "/data".into(),
@@ -6207,6 +6222,7 @@ mod tests {
                 exec: false,
                 members: Some(ShareTo::Every),
                 handle: Some(0x0000_0000_0000_0a4c),
+                resync: true,
             },
         ];
         let bytes = r.encode().unwrap();
@@ -6228,9 +6244,9 @@ mod tests {
                 .collect::<Vec<_>>(),
             exemplar.served
         );
-        // The second's handle's flag, before its value, the request's last eight bytes.
+        // The second's resync flag (version 53, D288), the request's last byte.
         let mut bad = bytes.clone();
-        let at = bad.len() - 8 - 1;
+        let at = bad.len() - 1;
         assert_eq!(bad[at], 1);
         bad[at] = 2;
         assert_eq!(
@@ -6240,9 +6256,21 @@ mod tests {
                 tag: 2
             })
         );
-        // The second's members' tag, before its handle's flag and value.
+        // The second's handle's flag, before its value's eight bytes and its resync flag.
         let mut bad = bytes.clone();
-        let at = bad.len() - 8 - 1 - 1;
+        let at = bad.len() - 1 - 8 - 1;
+        assert_eq!(bad[at], 1);
+        bad[at] = 2;
+        assert_eq!(
+            Request::decode(&bad),
+            Err(WireError::Tag {
+                what: "a flag",
+                tag: 2
+            })
+        );
+        // The second's members' tag, before its handle's flag and value and its resync flag.
+        let mut bad = bytes.clone();
+        let at = bad.len() - 1 - 8 - 1 - 1;
         assert_eq!(bad[at], 1);
         bad[at] = 3;
         assert_eq!(

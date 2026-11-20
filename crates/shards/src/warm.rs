@@ -371,14 +371,28 @@ fn watch_windows(daemon: &UnixStream, slots: &[shards_vmm::devices::virtio::fs::
 }
 
 /// Takes a connection for each of `slots` from the run's share process, in order, and
-/// says it has them (`kind::SHARE_ENDS`).
+/// says it has them (`kind::SHARE_ENDS`); and before them the resync channel of each served
+/// share whose server gave one, by its slot (`kind::SHARE_RESYNC`, D288).
 #[cfg(unix)]
 fn shared(link: &UnixStream, slots: &[shards_vmm::devices::virtio::fs::Share]) -> Result<(), String> {
     let mut ends = Vec::with_capacity(slots.len());
+    let mut resyncs: Vec<(usize, UnixStream)> = Vec::new();
     while ends.len() < slots.len() {
         let m = shards_ipc::recv(link)
             .map_err(|e| format!("the share process: {e}"))?
             .ok_or("the share process ended first")?;
+        if m.kind == kind::SHARE_RESYNC {
+            let slot = <[u8; 4]>::try_from(m.payload.as_slice())
+                .ok()
+                .and_then(|b| usize::try_from(u32::from_le_bytes(b)).ok())
+                .filter(|&at| at < slots.len() && !resyncs.iter().any(|(s, _)| *s == at));
+            let mut fds = m.fds.into_iter();
+            match (slot, fds.next(), fds.next()) {
+                (Some(at), Some(channel), None) => resyncs.push((at, UnixStream::from(channel))),
+                _ => return Err("the share process sent a resync channel for no share of its own".into()),
+            }
+            continue;
+        }
         if m.kind != kind::SHARE_ENDS {
             return Err(format!("the share process said message kind {}", m.kind));
         }
@@ -396,6 +410,11 @@ fn shared(link: &UnixStream, slots: &[shards_vmm::devices::virtio::fs::Share]) -
     // from a save of its run (D176), before the run's guest runs.
     for (slot, end) in slots.iter().zip(ends) {
         slot.attach(end)?;
+    }
+    for (at, channel) in resyncs {
+        if let Some(slot) = slots.get(at) {
+            slot.resync_on(channel)?;
+        }
     }
     Ok(())
 }
@@ -2809,6 +2828,60 @@ fn open_lane(owner: &UnixStream, to: &'static ToGuest, number: [u8; 8], name: Ve
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    /// D288: a served share's resync channel, sent by the share process before the shares'
+    /// ends, reaches the slot it names, which reads its `Attached` at once. Do: a channel for
+    /// slot 1 of two, its `Attached` queued, then both ends. Expect: TAKEN, and the `Attached`
+    /// read off the channel. Do: a channel for slot 2 of two. Expect: refused.
+    #[cfg(unix)]
+    #[test]
+    fn a_served_shares_resync_channel_reaches_its_slot_and_no_other() {
+        use shards_vmm::devices::virtio::fs::Share;
+        use std::io::{Read as _, Write as _};
+        use std::os::fd::AsFd as _;
+        let mut attached = [0u8; 28];
+        attached[0] = 1;
+        attached[1] = 1;
+        attached[4] = 9;
+        let take = |slot: u32| {
+            let (vm, share_process) = UnixStream::pair().unwrap();
+            let slots = [Share::default(), Share::default()];
+            let (mut server, device) = UnixStream::pair().unwrap();
+            server.write_all(&attached).unwrap();
+            let device_copy = device.try_clone().unwrap();
+            shards_ipc::send(
+                &share_process,
+                kind::SHARE_RESYNC,
+                &slot.to_le_bytes(),
+                &[device.as_fd()],
+            )
+            .unwrap();
+            drop(device);
+            let ends = [UnixStream::pair().unwrap(), UnixStream::pair().unwrap()];
+            shards_ipc::send(
+                &share_process,
+                kind::SHARE_ENDS,
+                &[],
+                &[ends[0].0.as_fd(), ends[1].0.as_fd()],
+            )
+            .unwrap();
+            let taken = shared(&vm, &slots);
+            (taken, share_process, device_copy, server)
+        };
+        let (taken, share_process, device, _server) = take(1);
+        assert_eq!(taken, Ok(()));
+        let told = shards_ipc::recv(&share_process).unwrap().unwrap();
+        assert_eq!(told.kind, kind::TAKEN);
+        device.set_nonblocking(true).unwrap();
+        let mut left = [0u8; 1];
+        assert_eq!(
+            (&device).read(&mut left).map_err(|e| e.kind()),
+            Err(io::ErrorKind::WouldBlock),
+            "its slot read the channel's Attached"
+        );
+        let (taken, ..) = take(2);
+        assert!(taken.is_err(), "a channel for no slot of its own is refused");
+    }
 
     /// Do write the `DONE` of a run that ended, of one whose init said why it failed with words
     /// dockerd amends (`start_failed`: "not a directory"), and the code its microVM keeps.

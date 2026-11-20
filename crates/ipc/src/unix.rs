@@ -702,6 +702,24 @@ fn recv_until(sock: &UnixStream, deadline: Option<Instant>) -> io::Result<Option
     Ok(Some(Message { kind, payload, fds }))
 }
 
+/// Exactly `buf.len()` bytes, and the descriptors that came with them, waiting as long as
+/// that takes: a channel of fixed-length messages that are no [`Message`]s of this crate's
+/// framing (slates' resync channel, D288). `None` where the peer closed before any byte;
+/// `UnexpectedEof` where it closed partway through.
+pub fn recv_exact(sock: &UnixStream, buf: &mut [u8]) -> io::Result<Option<Vec<OwnedFd>>> {
+    let mut fds = Vec::new();
+    let got = recv_part(sock, buf, &mut fds, None)?;
+    if got == 0 {
+        return if fds.is_empty() {
+            Ok(None)
+        } else {
+            Err(io::ErrorKind::UnexpectedEof.into())
+        };
+    }
+    fill(sock, buf.get_mut(got..).unwrap_or_default(), &mut fds, None)?;
+    Ok(Some(fds))
+}
+
 /// Reads exactly `buf.len()` more bytes of a message.
 fn fill(
     sock: &UnixStream,

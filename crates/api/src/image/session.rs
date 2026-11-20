@@ -1033,12 +1033,21 @@ pub(crate) struct Host {
 
 /// `served`'s streams sent on a run host's links socket `links` (D287): `SERVED_SHARES` messages
 /// of `shards_ipc::MAX_FDS` descriptors at most and no payload, in order, as its host takes them
-/// before its request.
+/// before its request; then the resync channels of those that have one (D288), in order, as
+/// `SERVED_RESYNCS` messages of as many at most.
 #[cfg(unix)]
 fn send_served(links: &std::os::unix::net::UnixStream, served: &[super::ServedShare]) -> io::Result<()> {
     let fds: Vec<_> = served.iter().map(|s| s.stream.as_fd()).collect();
     for batch in fds.chunks(shards_ipc::MAX_FDS) {
         shards_ipc::send(links, shards_ipc::kind::SERVED_SHARES, &[], batch)?;
+    }
+    let resyncs: Vec<_> = served
+        .iter()
+        .filter_map(|s| s.resync.as_ref())
+        .map(|r| r.as_fd())
+        .collect();
+    for batch in resyncs.chunks(shards_ipc::MAX_FDS) {
+        shards_ipc::send(links, shards_ipc::kind::SERVED_RESYNCS, &[], batch)?;
     }
     Ok(())
 }
@@ -1339,6 +1348,12 @@ impl Begun {
         }
         #[cfg(windows)]
         {
+            if served.iter().any(|s| s.resync.is_some()) {
+                return Err(ImageRefusal::Spec {
+                    what: "the served shares",
+                    why: "a resync channel, which Windows' shares take none of yet (D288)".into(),
+                });
+            }
             let mut handed = request.clone();
             for (at, share) in handed.served.iter_mut().zip(served) {
                 let value = self.host.give(share.stream.as_fd()).map_err(os)?;
@@ -6273,6 +6288,61 @@ mod tests {
         assert_eq!(layer_files(&home), [others], "its run host's layer outlived it");
     }
 
+    /// D288: the resync channels of a run's served shares that have one follow their streams on
+    /// its host's links socket, in the request's order of those. Do: three shares, the first and
+    /// third with a channel. Expect: one `SERVED_SHARES` of three, then one `SERVED_RESYNCS` of
+    /// two, each the very socket sent in its place.
+    #[cfg(unix)]
+    #[test]
+    fn a_served_shares_resync_channel_follows_the_streams() {
+        use std::io::{Read as _, Write as _};
+        use std::os::unix::net::UnixStream;
+        let (links, host) = UnixStream::pair().unwrap();
+        let pair = || UnixStream::pair().unwrap();
+        let streams = [pair(), pair(), pair()];
+        let channels = [pair(), pair()];
+        let mut handed = channels.iter();
+        let served: Vec<super::super::ServedShare> = streams
+            .iter()
+            .enumerate()
+            .map(|(i, (ours, _))| super::super::ServedShare {
+                stream: super::super::ServedStream::new(ours.try_clone().unwrap().into()),
+                at: format!("/s{i}"),
+                read_only: false,
+                exec: true,
+                members: None,
+                resync: (i != 1).then(|| {
+                    let (ours, _) = handed.next().unwrap();
+                    super::super::ServedStream::new(ours.try_clone().unwrap().into())
+                }),
+            })
+            .collect();
+        send_served(&links, &served).unwrap();
+        let first = shards_ipc::recv(&host).unwrap().unwrap();
+        assert_eq!(
+            (first.kind, first.fds.len()),
+            (shards_ipc::kind::SERVED_SHARES, 3)
+        );
+        let second = shards_ipc::recv(&host).unwrap().unwrap();
+        assert_eq!(
+            (second.kind, second.fds.len()),
+            (shards_ipc::kind::SERVED_RESYNCS, 2)
+        );
+        for (i, (_, peer)) in channels.iter().enumerate() {
+            (&*peer).write_all(&[u8::try_from(i).unwrap()]).unwrap();
+        }
+        let read: Vec<u8> = second
+            .fds
+            .into_iter()
+            .map(|fd| {
+                let mut byte = [0u8; 1];
+                UnixStream::from(fd).read_exact(&mut byte).unwrap();
+                byte[0]
+            })
+            .collect();
+        assert_eq!(read, [0, 1], "each channel in its share's order");
+    }
+
     /// D287: a run's served shares' streams go on its host's links socket in their order,
     /// `shards_ipc::MAX_FDS` a message at most and no payload, as its host takes them before
     /// its request. Do: send one more than a message carries. Expect: two `SERVED_SHARES`
@@ -6296,6 +6366,7 @@ mod tests {
                 read_only: false,
                 exec: true,
                 members: None,
+                resync: None,
             })
             .collect();
         send_served(&links, &served).unwrap();

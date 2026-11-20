@@ -234,6 +234,10 @@ pub struct ServedShare {
     pub exec: bool,
     /// The members given it as they start (D277), as an [`ImageShare`]'s.
     pub members: Option<PlugFor>,
+    /// Its server's resync channel (D288; slates' A-316), Unix's alone: the device's end of a
+    /// channel over which a successor of the server, should it die, hands the share a fresh
+    /// stream. Handed to the run host after the streams, held as a stream is.
+    pub resync: Option<ServedStream>,
 }
 
 /// The stream a [`ServedShare`]'s server answers on: on Unix a connected stream socket, on
@@ -1514,6 +1518,7 @@ fn request(spec: &ImageSpec) -> Result<wire::Request, ImageRefusal> {
             exec: s.exec,
             members: share_to(&s.at, s.members.as_ref())?,
             handle: None,
+            resync: s.resync.is_some(),
         });
     }
     // The instant it becomes is nanoseconds since the Unix epoch in a u64, as `ready-by=`
@@ -2161,6 +2166,7 @@ mod tests {
             read_only,
             exec,
             members,
+            resync: None,
         };
         let mut s = spec();
         s.served = vec![
@@ -2181,6 +2187,7 @@ mod tests {
                     exec: true,
                     members: None,
                     handle: None,
+                    resync: false,
                 },
                 wire::ServedAt {
                     at: "/data".into(),
@@ -2191,6 +2198,7 @@ mod tests {
                         name: "codex".into(),
                     }])),
                     handle: None,
+                    resync: false,
                 },
             ]
         );

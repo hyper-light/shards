@@ -45460,6 +45460,82 @@ through its slot's DAX window) on HVF, KVM and WHP; the Windows run host's pass-
 served pipe (`start_shares`, no Windows build here); and kiln's and Hex's sides, which take it
 through Hex's `ShardsImage` (kiln goal 01a1ec34…).
 
+### D288. A served share outlives its server's daemon: the device's half of slates' resync channel (built: the device, the image channel's version 53, the run host, the share process and the VM process, unit-tested on macOS arm64; real-VM runs owed)
+
+**Asked.** A share another server serves (D38, D287) ends with its server: the device reads its
+stream whole by length, so a stream its server died partway through is never asked on again, and
+the guest's every later request fails. slates' daemon restarts under its anchor (slates §4.6)
+and its successor keeps each attachment, but its Shards streams ended with the dead daemon, so a
+kiln agent's microVM lost its project with a daemon restart (kiln goal 90, its second microVM
+step: kiln's `SlatesVolumes` drops the resync end slates hands it, as no layer below takes one).
+
+**What there is.** slates offers the device's half and holds its own (slates A-316, A-339 for
+macOS, A-418/A-427/A-433 for Windows; `slates_bridge_fuse::shards_resync`, whose parse is this
+one's reference; slates' conditions 4a-4c, set with Shards' coordinator 2026-11-18): at the
+attach a second channel beside the stream, sequenced packets on Linux, a stream on macOS (whose
+datagram pairs never tell a survivor its peer is gone, slates' measurement 2026-11-18), one way;
+its first message `Attached` tells the device the attachment and a 128-bit token, each `Resync`
+after it carries one descriptor, the device's end of a fresh stream; the successor answers a
+resent request its predecessor applied from the reply it published with the effect, never twice.
+
+**Alternatives** (R02).
+1. *Reconnect by path*: the device dials a socket file the successor listens on. Refused for the
+   reason D287 refuses a path: a confined VM process opens no path it is not granted (D30), and a
+   path proves nothing of who listens; slates' channel is a descriptor its daemon's anchor holds.
+2. *The successor re-plugs the share* (D235's plug): a guest's open files, its DAX mappings and
+   its mount would all be lost; the guest's kernel sees a new device, not the same share.
+3. *The device's own retry of the dead stream*: a stream a daemon died in is cut at an unknown
+   byte (slates' rationale), so nothing on it can be trusted again.
+4. *Taken: slates' channel, as slates specifies it*, the device holding it beside the stream.
+
+**Built.**
+- `vmm` `devices::virtio::fs::resync` (Unix): `Resync::attached` reads the channel's `Attached`
+  (refused unless first and descriptor-free); `Resync::fresh` waits for the next `Resync` and
+  takes it only where it parses, is version 1, carries exactly one descriptor and names the
+  attachment and token `Attached` named, the token compared in time independent of where it
+  differs. Every other outcome is a typed `Ended` (R04: `Closed`, `Transport`, `Malformed`,
+  `Unexpected`, `Descriptors`, `Foreign`), and the share ends as a share with no channel does.
+- `Slot::resync_on` keeps the channel; `Slot::ask_into`, where an exchange fails, takes the fresh
+  stream, asks every DAX mapping's descriptor again on it (zeros where its file reaches no more,
+  as a restore's `attach` does), replaces the stream and asks the outstanding request again whole,
+  its unique unchanged; a successor that dies too is followed by the next. A slot with no channel
+  fails as before. The channel is read only once a stream has failed: an event wait, no probe
+  (R05). The successor keeps its copy of the fresh end until the device's first bytes (slates
+  A-339), which the resent request is.
+- `shards_ipc::recv_exact`: a fixed-length message and the descriptors riding it, for a channel
+  in no framing of shards_ipc's own.
+- The image channel's version 53: `ServedAt::resync`, appended; on Unix its end comes on the
+  run host's links socket after the streams (`kind::SERVED_RESYNCS`, 119); shards-api's
+  `ServedShare::resync` sends it. The run host keeps each by its share's slot and gives it to the
+  run's share process past its other descriptors (`share --resyncs PLACES`), which hands it to
+  the VM process before the shares' ends (`kind::SHARE_RESYNC`, 120: the slot as a u32, one
+  descriptor); the VM process gives it to its slot (`warm::shared`).
+- Windows: no channel is taken yet (slates' Windows `Resync` names a handle its holder duplicated,
+  condition 4c's spawner grants); a run asking one there is refused by field, on both ends.
+
+**Literals** (R03): 28, 1, 2, version 1 and 16 are slates' wire format (`RESYNC_MESSAGE_BYTES`,
+its kinds, `RESYNC_VERSION`, `TOKEN_BYTES`), not choices; 119 and 120 the first kinds no other
+has (`tests::every_message_kind_has_its_own_number`).
+
+**Evidence** (macOS arm64, Mac Studio, local, debug): `cargo test -p shards-vmm --lib -- resync
+a_request_its_server_died` 4 passed; mutation: `ask_into` without the resync failed
+`a_request_its_server_died_holding_is_asked_again_on_its_successors_stream` at its first
+assertion (nothing asked again); `-p shards-api --lib` (`each_served_share_rides_the_request_last`,
+`a_served_share_rides_its_request_by_place_alone`, `a_served_shares_resync_channel_follows_the_streams`)
+3 passed; `-p shards-ipc --lib every_message_kind_has_its_own_number`; `-p shards-vm-process
+a_served_shares_resync_channel_reaches_its_slot_and_no_other`; `-p shards --bin shards
+its_resync_places_are_taken_after_its_notices its_flags_are_taken_before_its_shares`; clippy
+`-D warnings --all-targets` over shards-ipc, shards-vmm, shards-api, shards, shards-vm-process
+clean; rustfmt clean.
+
+**Owed** (R09-R11, R14, R15; the coordinator's): the live run, a slates daemon killed under a
+running image microVM serving a kiln agent (KVM and Hypervisor.framework), its guest's request
+answered by the successor and its DAX reads unchanged; the seven targets' lint (`scripts/lint`);
+Linux's sequenced-packet channel run (the unit tests take that branch on Linux alone); Windows
+(not built). Not reproduced live before building: the loss is by construction (no layer took
+the channel), the fix's own tests stand in until the live run.
+
+
 ## 4. Start path (≤ 5 ms budget)
 
 The target: a user's `shards run IMAGE COMMAND` to its command executing in its microVM
