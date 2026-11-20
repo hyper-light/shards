@@ -1,127 +1,503 @@
-# shards CI on kiln, from .github/workflows/ci.yml. The platform matrix (docs/design/architecture.md
-# D13) keeps its Linux x86_64 lanes: lints in a pod, VM tests on the bare-metal KVM host, and the
-# static musl lane in Alpine under the host's docker.
-# Not reproduced: the macOS, Windows and arm64 lanes (aarch64/x86_64-apple-darwin,
-# aarch64-unknown-linux-gnu, x86_64/aarch64-pc-windows-msvc, aarch64-unknown-linux-musl): no such
-# agents. The `firecracker` job is .kiln/bench.yaml.
+# shards CI on kiln's runners, after .github/workflows/ci.yml. Each leg asks for what it needs
+# (kiln's W05-R22 facts: OS, architecture, Hypervisor.framework or KVM, tools, free disk), never
+# for a machine. A push to main runs it, as does a run asked for by hand on any branch.
+#
+# A leg that builds the workspace holds the shape of the GitHub runner its job passes on to itself
+# (`exclusive`; docs.github.com, standard runners for public repositories: 4 CPUs and 16 GB for
+# Linux and Windows on x64, 3 CPUs and 7 GB for macOS on arm64). kiln pins that share's cores on
+# Linux; elsewhere the share holds its room and the leg sees the machine's CPUs, as do the musl
+# legs' containers, which dockerd starts (W05-R03). What a leg takes of a kiln runner's CPUs and
+# memory is unmeasured: kiln's runtime keeps no leg's peak memory or CPU time. The other legs take
+# a slot each. A leg that builds starts only with 30 GiB free, the floor the owner keeps for
+# builds (R16).
+#
+# Not reproduced: no kiln runner is Linux or Windows on arm64, so aarch64-unknown-linux-gnu,
+# aarch64-unknown-linux-musl and aarch64-pc-windows-msvc are linted (`lint`) but neither built on
+# their own hosts nor tested; x86_64 Windows runs on one Windows 11 host, not on Windows Server
+# 2022 and 2025. The tests that pull from Docker Hub itself skip: kiln's runners share one address,
+# whose anonymous pulls Docker Hub counts (tests/common `cannot_reach_docker_hub`). The
+# `firecracker` job is .kiln/bench.yaml.
 name: ci
 on:
-  push: { branches: [main, dev] }
-  pull_request: {}
-  manual: true
-concurrency:
-  group: "ci-${{ branch }}"
-  cancel-in-progress: true
+  push:
+    branches: [main]
+    # GitHub's CI's: every change but a measurement's own scripts, patches, notes and data, and
+    # the workflows that run them alone, which no build or test reads.
+    paths:
+      - "**"
+      - "!docs/research/measurements/**/*.py"
+      - "!docs/research/measurements/**/*.sh"
+      - "!docs/research/measurements/**/*.patch"
+      - "!docs/research/measurements/**/*.md"
+      - "!docs/research/measurements/**/*.json"
+      - "!docs/research/measurements/**/*.c"
+      - "!docs/research/measurements/**/Dockerfile"
+      - "!docs/research/measurements/**/*.txt"
+      - "!docs/research/measurements/**/*.ps1"
+      - "!.github/workflows/builder-cold.yml"
+      - "!.github/workflows/builder-pressure.yml"
+      - "!.github/workflows/dax-budget.yml"
+      - "!.github/workflows/dax-huge.yml"
+      - "!.github/workflows/dax-boot-memory.yml"
+      - "!.github/workflows/envelope.yml"
+      - "!.github/workflows/budget-e2e.yml"
+      - "!.github/workflows/restore-faults.yml"
+      - "!.github/workflows/windows-pipe.yml"
+      - "!.github/workflows/windows-watch.yml"
+      - "!.github/workflows/whp-restore.yml"
+      - "!.github/workflows/windows-binaries.yml"
+      - "!.github/workflows/windows-wake.yml"
+      - "!.github/workflows/windows-lower.yml"
+      - "!.github/workflows/whp-passthrough.yml"
+      - "!.github/workflows/migrate-e2e.yml"
+      - "!.github/workflows/softvirt-traps.yml"
+      - "!.github/workflows/d261-intel.yml"
+      - "!.github/workflows/whp-maxvcpu.yml"
+  workflow_dispatch: {}
+
 env:
   CARGO_TERM_COLOR: always
-  TOOLCHAIN: "1.98.0" # keep in sync with rust-toolchain.toml
-  # Static musl builds run in this Alpine image on their native architecture. The digest pins
-  # the multi-arch index, so each host pulls its own architecture.
-  MUSL_IMAGE: rust:1.98.0-alpine@sha256:a10e64dd139b7387337c7fbe8aca31b959b57b2fd4c8ae20a02cf1d6ea424dce
+  TOOLCHAIN: 1.98.1 # keep in sync with rust-toolchain.toml
+  # Static musl builds run in this Alpine image. The digest pins the multi-arch index.
+  MUSL_IMAGE: rust:1.98.1-alpine@sha256:7cc1c22d77d9432f7fe012a70e6d3e555af54c2a6832700ed7d553f1769ae89f
+
+# As on GitHub (PM M539): on main the run under way finishes while only the newest push's waits,
+# replacing any that waited before it; a run asked for by hand has a group of its own.
+concurrency:
+  group: ci-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.ref }}
+
 jobs:
   format:
-    runs-on: [k8s]
-    toolchain: rust
-    resources: { cpu: "1", memory: 2Gi }
-    timeout-minutes: 20
-    env:
-      CARGO_INCREMENTAL: "0"
-      CARGO_BUILD_JOBS: "1"
+    runs-on: self-hosted
+    requires: ["os in [linux, macos]", "tools.cargo", "tools.python3"]
     steps:
-      - run: rustup toolchain install "$TOOLCHAIN" --profile minimal --component rustfmt
+      - run: python3 scripts/check-development-policy
+      # Only the pinned zig compiles shards' C (scripts/zig-pin), checked with stand-ins.
+      - run: scripts/zig-pin-check
+      - run: scripts/retry 5 30 rustup toolchain install "$TOOLCHAIN" --profile minimal --component rustfmt
       - run: cargo fmt --all --check
 
-  # The vendored crates are what crates.io publishes, file for file (vendor/README.md).
+  # The vendored crates are what crates.io publishes, file for file (vendor/README.md): curl, jq,
+  # tar and diff, which kiln's Linux and macOS runners have.
   vendor:
-    runs-on: [k8s]
-    image: docker.io/library/debian:bookworm
-    resources: { cpu: "1", memory: 1Gi }
-    timeout-minutes: 20
+    runs-on: self-hosted
+    requires: ["os in [linux, macos]"]
     steps:
-      - name: curl and jq (preinstalled on GHA's runner)
-        run: apt-get update -qq && apt-get install -y -qq --no-install-recommends ca-certificates curl jq >/dev/null
       - run: scripts/vendor-crate --check
 
-  # GHA `native`, x86_64-unknown-linux-gnu lane, its lint half: every target is linted.
+  # The dependency graph against RustSec's advisories, and the exceptions' expiry (deny.toml), with
+  # cargo-deny's published build for Linux on x86_64 and Python 3.11's tomllib.
+  advisories:
+    runs-on: self-hosted
+    requires: ["os == linux && arch == x86_64", "tools.cargo", "tools.python3 >= 3.11"]
+    steps:
+      - run: scripts/retry 5 30 rustup toolchain install "$TOOLCHAIN" --profile minimal
+      - name: cargo-deny 0.20.2, the published build, pinned
+        run: |
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 10 -o "$RUNNER_TEMP/deny.tgz" https://github.com/EmbarkStudios/cargo-deny/releases/download/0.20.2/cargo-deny-0.20.2-x86_64-unknown-linux-musl.tar.gz
+          echo "9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f  $RUNNER_TEMP/deny.tgz" | sha256sum -c
+          tar xzf "$RUNNER_TEMP/deny.tgz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/cargo-deny-0.20.2-x86_64-unknown-linux-musl" >> "$GITHUB_PATH"
+      - run: scripts/advisory-exceptions
+      - run: cargo deny --locked check advisories
+
+  # The parsers of what registries, images, guests and users send, fuzzed for a bounded time each
+  # (fuzz/Cargo.toml). A crash fails the job and prints its input.
+  fuzz:
+    runs-on: self-hosted
+    requires: ["os == linux", "tools.cargo", "disk.free >= 30Gi"]
+    exclusive: true
+    resources: { cpu: 4, memory: 16Gi }
+    timeout-minutes: 45
+    steps:
+      - run: scripts/retry 5 30 rustup toolchain install nightly-2026-09-05 --profile minimal
+      # Built with the pinned stable toolchain: on nightly its locked rustix takes
+      # compiler-internal attributes this nightly no longer has.
+      - run: scripts/retry 5 30 rustup toolchain install "$TOOLCHAIN" --profile minimal
+      # In the runner's tool cache, which lasts from leg to leg (W06-R01), not in its owner's
+      # ~/.cargo/bin.
+      - name: cargo-fuzz 0.13.1
+        run: |
+          cargo +"$TOOLCHAIN" install --locked cargo-fuzz --version 0.13.1 --root "$RUNNER_TOOL_CACHE/cargo-fuzz-0.13.1"
+          echo "$RUNNER_TOOL_CACHE/cargo-fuzz-0.13.1/bin" >> "$GITHUB_PATH"
+      - run: cargo +nightly-2026-09-05 fuzz build
+      - name: Fuzz, 60 s a target
+        run: |
+          for target in $(cargo +nightly-2026-09-05 fuzz list); do
+            if ! cargo +nightly-2026-09-05 fuzz run "$target" -- -max_total_time=60 -rss_limit_mb=2048 -max_len=65536; then
+              for crash in fuzz/artifacts/"$target"/*; do echo "$crash:"; xxd "$crash" | head -64; done
+              exit 1
+            fi
+          done
+
+  # Host threads reach guest memory one at a time (docs/design/architecture.md D29):
+  # ThreadSanitizer and Miri check the tests where they share it. Both need nightly.
+  memory-model:
+    runs-on: self-hosted
+    requires: ["os == linux", "tools.cargo", "disk.free >= 30Gi"]
+    exclusive: true
+    resources: { cpu: 4, memory: 16Gi }
+    timeout-minutes: 45
+    steps:
+      - run: scripts/retry 5 30 rustup toolchain install nightly-2026-09-05 --profile minimal --component rust-src,miri
+      - run: docs/research/measurements/access-guard/check.sh nightly-2026-09-05
+
+  # Every supported target's lints from one macOS host (scripts/lint, CLAUDE.md), arm64 Linux's and
+  # Windows' among them. No GitHub job runs it: its limit is GitHub's default, its use unmeasured.
   lint:
-    name: x86_64-unknown-linux-gnu lints
-    runs-on: [k8s]
-    toolchain: rust
-    resources: { cpu: "4", memory: 8Gi }
-    timeout-minutes: 60
-    env:
-      CARGO_INCREMENTAL: "0"
-      CARGO_PROFILE_DEV_DEBUG: line-tables-only
-      CARGO_PROFILE_TEST_DEBUG: line-tables-only
-      CARGO_BUILD_JOBS: "4"
+    name: every target's lints
+    runs-on: self-hosted
+    requires: ["os == macos && arch == aarch64", "tools.cargo", "disk.free >= 30Gi"]
+    timeout-minutes: 360
     steps:
-      - name: Install pinned Rust
-        # Guest binaries build for every architecture's musl target.
+      - name: Install pinned Rust, for every supported target
         run: |
-          rustup toolchain install "$TOOLCHAIN" --profile minimal --component clippy \
-            --target x86_64-unknown-linux-gnu --target x86_64-unknown-linux-musl --target aarch64-unknown-linux-musl
+          scripts/retry 5 30 rustup toolchain install "$TOOLCHAIN" --profile minimal --component clippy --component rustfmt \
+            $(sed 's/^/--target /' resources/supported-targets.txt)
+      - name: zig
+        run: scripts/install-zig
+      # scripts/lint's other tools: Homebrew's LLVM (clang-cl, llvm-lib), NASM and cargo-xwin where
+      # the runner has them (CLAUDE.md), else pinned copies kept in its tool cache. LLVM 20.1.8 is
+      # GitHub's windows-2025 image's (actions/runner-images' Windows2025-Readme.md).
+      - name: LLVM, NASM and cargo-xwin
+        run: |
+          tools=$RUNNER_TOOL_CACHE/shards-lint
+          mkdir -p "$tools"
+          get() {
+            curl -fsSL --retry 5 --retry-all-errors --retry-delay 10 -o "$RUNNER_TEMP/$2" "$1"
+            echo "$3  $RUNNER_TEMP/$2" | shasum -a 256 -c
+          }
+          if [ ! -x "$(brew --prefix llvm 2>/dev/null)/bin/clang-cl" ]; then
+            llvm=LLVM-20.1.8-macOS-ARM64
+            if [ ! -x "$tools/$llvm/bin/clang-cl" ]; then
+              get "https://github.com/llvm/llvm-project/releases/download/llvmorg-20.1.8/$llvm.tar.xz" llvm.tar.xz a9a22f450d35f1f73cd61ab6a17c6f27d8f6051d56197395c1eb397f0c9bbec4
+              tar -xJf "$RUNNER_TEMP/llvm.tar.xz" -C "$RUNNER_TEMP"
+              rm -rf "${tools:?}/$llvm" && mv "$RUNNER_TEMP/$llvm" "$tools/"
+            fi
+            echo "LLVM_BIN=$tools/$llvm/bin" >> "$GITHUB_ENV"
+          fi
+          if ! command -v nasm >/dev/null; then
+            if [ ! -x "$tools/nasm-3.02/nasm" ]; then
+              get https://www.nasm.us/pub/nasm/releasebuilds/3.02/macosx/nasm-3.02-macosx.zip nasm.zip 4c1bbb09853f5f5ffc9b7832cbc9366c4761bc79ce7ffb148b0e427e5f3fa114
+              rm -rf "${tools:?}/nasm-3.02" && unzip -q "$RUNNER_TEMP/nasm.zip" -d "$tools"
+            fi
+            echo "$tools/nasm-3.02" >> "$GITHUB_PATH"
+          fi
+          if ! command -v cargo-xwin >/dev/null; then
+            cargo install --locked cargo-xwin --version 0.23.1 --root "$tools/cargo-xwin-0.23.1"
+            echo "$tools/cargo-xwin-0.23.1/bin" >> "$GITHUB_PATH"
+          fi
+      - run: scripts/lint
+      # What the leg left on its runner's disk, for its `disk.free` floor.
+      - name: Disk the leg used
+        if: always()
+        run: du -sk target "$RUNNER_TEMP" || true
+
+  # The platform matrix (docs/design/architecture.md D13) on kiln's runners: each target is linted
+  # and tested on its own OS and architecture, every VM test on its host's hypervisor
+  # (SHARDS_REQUIRE_VMS). Limits are GitHub's (PM M560, M619), from runs on its slower runners;
+  # macOS' are its default, as GitHub's macOS runners have no hypervisor and skipped the VM tests
+  # its limits came from: unmeasured on kiln's.
+  native:
+    name: ${{ matrix.target }}
+    runs-on: self-hosted
+    requires: ["${{ matrix.host }}", "tools.cargo", "disk.free >= 30Gi"]
+    exclusive: true
+    resources: { cpu: "${{ matrix.cpu }}", memory: "${{ matrix.memory }}" }
+    timeout-minutes: ${{ matrix.job_minutes }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # macOS 15 is the VMM's floor (.cargo/config.toml).
+          - { target: aarch64-apple-darwin, host: "os == macos && arch == aarch64 && os.version >= 15 && virt.hvf", cpu: 3, memory: 7Gi, tests_minutes: 360, job_minutes: 360 }
+          - { target: x86_64-unknown-linux-gnu, host: "os == linux && arch == x86_64 && virt.kvm", cpu: 4, memory: 16Gi, build_minutes: 34, tests_minutes: 68, job_minutes: 128 }
+          - { target: x86_64-pc-windows-msvc, host: "os == windows && arch == x86_64", cpu: 4, memory: 16Gi, tests_minutes: 156, job_minutes: 179 }
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # kiln starts `bash` by its name on PATH (W06-R05), which on Windows finds WSL's
+      # (System32\bash.exe) before Git's: Git's go first.
+      - name: Git's bash (Windows)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $git = Split-Path (Split-Path (Get-Command git.exe).Source)
+          foreach ($dir in "$git\usr\bin", "$git\ucrt64\bin", "$git\mingw64\bin") {
+            if (Test-Path $dir) { [IO.File]::AppendAllText($env:GITHUB_PATH, "$dir`n") }
+          }
+      - name: Install pinned Rust
+        # Guest binaries build for every architecture's musl target. Every component
+        # rust-toolchain.toml names, here: a cargo proxy that installs one as a later step
+        # starts failed once on a file already there ('bin/cargo-fmt').
+        run: |
+          scripts/retry 5 30 rustup toolchain install "$TOOLCHAIN" --profile minimal --component clippy --component rustfmt \
+            --target ${{ matrix.target }} --target x86_64-unknown-linux-musl --target aarch64-unknown-linux-musl
+      # shards-init's C (AWS-LC, for the in-VM server's TLS) is compiled by zig on every host
+      # (crates/shards/build.rs): 0.16.0, pinned by digest.
+      - name: zig
+        run: scripts/install-zig
+      # AWS-LC's x64 assembly is built from source, never from the objects aws-lc-sys ships
+      # (vendor/README.md), so Windows x64 needs NASM: the official 3.02 build, pinned.
+      - name: NASM (Windows x64)
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        run: |
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 10 -o "$RUNNER_TEMP/nasm.zip" https://www.nasm.us/pub/nasm/releasebuilds/3.02/win64/nasm-3.02-win64.zip
+          echo "161d0bfaff53c2f9e9f3e69fd0672323ebabafd1268976a5cec11be92a19aee7  $RUNNER_TEMP/nasm.zip" | sha256sum -c
+          unzip -q "$RUNNER_TEMP/nasm.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/nasm-3.02" >> "$GITHUB_PATH"
+      - name: Host virtualization (what this runner offers each backend)
+        run: |
+          case "$RUNNER_OS" in
+            # Its CPU and KVM's parameters, a failed VM entry's VMCS kept (scripts/ci/kvm-host).
+            # And what VFIO may pass through, for a test device.
+            Linux)
+              ls -l /dev/kvm 2>&1 || true
+              scripts/ci/kvm-host
+              ls /sys/kernel/iommu_groups 2>&1 | head -5 || true
+              ls /sys/class/mdev_bus 2>&1 || true
+              for m in vfio vfio_pci vfio_iommu_type1 mdev mtty mbochs mdpy; do modinfo -F filename "$m" 2>&1 || true; done
+              grep -E "CONFIG_(VFIO|VFIO_PCI|VFIO_MDEV|SAMPLE_VFIO_MDEV_MTTY|IOMMUFD|VFIO_NOIOMMU)=" "/boot/config-$(uname -r)" 2>&1 || true
+              ;;
+            macOS) sysctl kern.hv_support || true ;;
+            Windows) powershell -NoProfile -Command \
+              "(Get-CimInstance Win32_Processor).Name; (Get-CimInstance Win32_ComputerSystem).HypervisorPresent; (Get-WindowsOptionalFeature -Online -FeatureName HypervisorPlatform).State" || true ;;
+          esac
+      # What this job keeps from run to run is its host's and its kernel's (D261: a record is
+      # data of the host it was learned on, and a new kernel is other software): the runner and
+      # its kernel's version, where GitHub's give their image's (ImageOS, ImageVersion).
+      - name: The runner and its kernel
+        id: image
+        run: |
+          case "$RUNNER_OS" in
+            Windows) kernel=$(cmd //c ver | tr -dc '0-9.') ;;
+            *) kernel=$(uname -r) ;;
+          esac
+          echo "image=$RUNNER_NAME-$kernel" >> "$GITHUB_OUTPUT"
+      # The GPU's renderer (D144, D201, D202), from pinned sources: `shards` then carries
+      # shards-vm-gpu. Built once for each version of its script and patch and of the runner and
+      # its kernel, and kept.
+      - name: The GPU's renderer, as built before
+        id: gpu-kept
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/gpu-libs
+          key: gpu-libs-${{ steps.image.outputs.image }}-${{ hashFiles('scripts/gpu-libs', 'resources/gpu/**') }}
+      # Its build on Windows takes Python 3.10 or later and LLVM's clang-cl (scripts/gpu-libs),
+      # which GitHub's windows-2025 image carries (Python 3.12.10, LLVM 20.1.8: actions/
+      # runner-images' Windows2025-Readme.md) and kiln's Windows runner has none of: those, by
+      # digest, kept in the runner's tool cache. Python's own lzma unpacks LLVM.
+      - name: Python and LLVM for the GPU's renderer (Windows)
+        if: runner.os == 'Windows' && steps.gpu-kept.outputs.cache-hit != 'true'
+        run: |
+          tools=$RUNNER_TOOL_CACHE/shards-gpu
+          mkdir -p "$tools"
+          get() {
+            curl -fsSL --retry 5 --retry-all-errors --retry-delay 10 -o "$RUNNER_TEMP/$2" "$1"
+            echo "$3  $RUNNER_TEMP/$2" | sha256sum -c
+          }
+          python=$tools/python-3.12.10/tools
+          if [ ! -x "$python/python.exe" ]; then
+            get https://api.nuget.org/v3-flatcontainer/python/3.12.10/python.3.12.10.nupkg python.zip 0eb85c2dfccccf1b17352de4c397f69194035b7d37149eacc16f1147d93de3b8
+            unzip -q "$RUNNER_TEMP/python.zip" -d "$RUNNER_TEMP/python-3.12.10"
+            rm -rf "${tools:?}/python-3.12.10" && mv "$RUNNER_TEMP/python-3.12.10" "$tools/"
+          fi
+          llvm=clang+llvm-20.1.8-x86_64-pc-windows-msvc
+          if [ ! -x "$tools/$llvm/bin/clang-cl.exe" ]; then
+            get "https://github.com/llvm/llvm-project/releases/download/llvmorg-20.1.8/$llvm.tar.xz" llvm.tar.xz f229769f11d6a6edc8ada599c0cda964b7dee6ab1a08c6cf9dd7f513e85b107f
+            "$python/python.exe" -I -c 'import sys, tarfile; tarfile.open(sys.argv[1]).extractall(sys.argv[2], filter="data")' "$RUNNER_TEMP/llvm.tar.xz" "$RUNNER_TEMP"
+            rm -rf "${tools:?}/$llvm" && mv "$RUNNER_TEMP/$llvm" "$tools/"
+          fi
+          echo "$python" >> "$GITHUB_PATH"
+          echo "$tools/$llvm/bin" >> "$GITHUB_PATH"
+      - name: The GPU's renderer
+        run: |
+          if [ "${{ steps.gpu-kept.outputs.cache-hit }}" != true ]; then
+            scripts/gpu-libs "$RUNNER_TEMP/gpu-libs"
+          fi
+          echo "SHARDS_GPU_LIBS=$RUNNER_TEMP/gpu-libs" >> "$GITHUB_ENV"
       - name: Lints (production code never panics; clippy.toml exempts tests)
-        run: cargo clippy --locked --workspace --all-targets --target x86_64-unknown-linux-gnu -- -D warnings
-
-  # GHA `native`, x86_64-unknown-linux-gnu lane, its test half: VM tests boot real guests, so
-  # they run where /dev/kvm is.
-  test:
-    name: x86_64-unknown-linux-gnu tests (KVM)
-    runs-on: [baremetal]
-    timeout-minutes: 60
-    steps:
-      - name: Install pinned Rust
-        run: |
-          rustup toolchain install "$TOOLCHAIN" --profile minimal --component clippy \
-            --target x86_64-unknown-linux-gnu --target x86_64-unknown-linux-musl --target aarch64-unknown-linux-musl
-      - name: Host virtualization (what this host offers each backend)
-        run: ls -l /dev/kvm 2>&1 || true
-      # GHA runs `sudo chmod 666 /dev/kvm`; this host's /dev/kvm is already open to the agent.
+        run: cargo clippy --locked --workspace --all-targets --target ${{ matrix.target }} -- -D warnings
+      - name: Lints of the GPU's renderer
+        run: cargo clippy --locked -p shards-vmm --features gpu --all-targets --target ${{ matrix.target }} -- -D warnings
+      # GitHub's runners open /dev/kvm and start the user's systemd manager with sudo; kiln's
+      # Linux runners must have both already.
       - name: KVM access (Linux)
+        if: runner.os == 'Linux'
         run: test -r /dev/kvm && test -w /dev/kvm
+      # The runner user's systemd manager, as a login has one (D183): `--cgroup-parent`'s test
+      # makes microVMs under its slices, on its bus.
+      - name: User manager (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          bus="/run/user/$(id -u)/bus"
+          ls -l "$bus"
+          echo "XDG_RUNTIME_DIR=/run/user/$(id -u)" >> "$GITHUB_ENV"
+      # What the tests' judge learned from this host's runs of this target (D261): its records
+      # alone, the newest kept restored here, and kept again under this run's own key once the
+      # tests end (`The judge's records, kept`), as a key once kept is never written again.
+      - name: The judge's records
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target/judge-records-kept
+          key: judge-records-${{ steps.image.outputs.image }}-${{ runner.arch }}-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: judge-records-${{ steps.image.outputs.image }}-${{ runner.arch }}-${{ matrix.target }}-
+      # Put in place for the tests, which write it as they run; the cache's copy kept apart
+      # (`The judge's records, staged`).
+      - name: The judge's records, in place
+        run: mkdir -p target/judge-records && if [ -d target/judge-records-kept ]; then cp -a target/judge-records-kept/. target/judge-records/; fi
+      # Where the job's build of the tests has a limit of its own (`build_minutes`), they are
+      # built here; the tests' step then builds nothing.
+      - name: Build the tests
+        if: matrix.build_minutes
+        timeout-minutes: ${{ matrix.build_minutes }}
+        run: cargo test --locked --workspace --profile test-release --no-run --target ${{ matrix.target }}
+      # Where the runner offers its backend's hypervisor, every VM test must run: one that cannot
+      # fails rather than skips (tests/common, SHARDS_REQUIRE_VMS). Every test binary runs,
+      # whatever fails before it.
       - name: Tests
-        timeout-minutes: 30
-        run: cargo test --locked --workspace --release --target x86_64-unknown-linux-gnu
+        timeout-minutes: ${{ matrix.tests_minutes }}
+        run: |
+          case "${{ matrix.target }}" in
+            aarch64-apple-darwin) export SHARDS_REQUIRE_VMS=1 ;;
+            # And on Linux, the user's systemd manager (D183).
+            x86_64-unknown-linux-gnu) export SHARDS_REQUIRE_VMS=1 SHARDS_REQUIRE_USER_MANAGER=1 ;;
+            # And shards-api's judge says what each look that found a VM process idle saw of its
+            # threads (SHARDS_JUDGE_TRACE), so a stall cut on WHP leaves its evidence.
+            x86_64-pc-windows-msvc) export SHARDS_REQUIRE_VMS=1 SHARDS_JUDGE_TRACE=1 ;;
+          esac
+          if [ "${{ matrix.target }}" = x86_64-unknown-linux-gnu ]; then
+            scripts/ci/hang-watch.sh "$RUNNER_TEMP/hangs" &
+            watcher=$!
+          fi
+          status=0
+          cargo test --locked --workspace --profile test-release --no-fail-fast --target ${{ matrix.target }} || status=$?
+          if [ -n "${watcher:-}" ]; then kill "$watcher" 2>/dev/null || true; fi
+          exit "$status"
+      # Kept wherever the tests ended, passed, failed or out of time, but not in a cancelled run
+      # (D261): a record holds only waits that were answered. Copied whole and renamed into place
+      # first, for the cache to read a tree no process writes (CI 44164945050).
+      - name: The judge's records, staged
+        if: ${{ !cancelled() }}
+        run: |
+          rm -rf target/judge-records-kept.new && mkdir -p target/judge-records
+          cp -a target/judge-records target/judge-records-kept.new || echo "records replaced as they were copied are left out"
+          rm -rf target/judge-records-kept && mv target/judge-records-kept.new target/judge-records-kept
+      - name: The judge's records, kept
+        if: ${{ !cancelled() }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target/judge-records-kept
+          key: judge-records-${{ steps.image.outputs.image }}-${{ runner.arch }}-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: What hung tests' processes were doing
+        if: ${{ !cancelled() && matrix.target == 'x86_64-unknown-linux-gnu' }}
+        run: |
+          for f in $(find "$RUNNER_TEMP/hangs" -type f 2>/dev/null | sort); do
+            echo "::group::$f"
+            cat "$f"
+            echo "::endgroup::"
+          done
+      - name: Tests of the GPU's renderer
+        timeout-minutes: 15
+        run: |
+          cargo test --locked -p shards-vmm --features gpu --profile test-release --target ${{ matrix.target }} gpu::
+      # The stack guards are release's (crates/rego), measured on release, whose fat LTO puts more
+      # in each frame than test-release does (M159).
+      - name: Stack guards, on release
+        if: ${{ !cancelled() }}
+        timeout-minutes: 15
+        run: cargo test --locked --release -p shards-rego --test builtins --test deep --test depth --target ${{ matrix.target }}
+      # A process the seccomp filter ended with its SIGSYS blocked says nothing; the kernel logs
+      # the syscall it refused. Nor does one the OOM killer ended, nor a VM whose entry failed.
+      - name: What the kernel logged of seccomp refusals, OOM kills and failed VM entries
+        if: failure() && runner.os == 'Linux'
+        run: |
+          sudo -n dmesg | grep -iE 'seccomp|type=1326|out of memory|oom-kill|killed process' | tail -60 || true
+          sudo -n dmesg | grep -E 'kvm' || true
+          free -m || true
+      - name: Disk the leg used
+        if: always()
+        run: du -sk target "$RUNNER_TEMP" || true
 
+  # GitHub's `musl` jobs on x86_64: the tests in one leg; the lints, the release build whose
+  # executable must be static and the stack guards in another (M156, M187, M560). Each runs in the
+  # pinned Alpine image (scripts/ci/alpine) under the runner's Docker, with its /dev/kvm. Limits
+  # are GitHub's (M235, M560, M619).
   musl:
-    name: x86_64-unknown-linux-musl
-    runs-on: [baremetal]
-    timeout-minutes: 60
+    name: x86_64-unknown-linux-musl${{ matrix.part == 'release' && ' release' || '' }}
+    runs-on: self-hosted
+    requires: ["os == linux && arch == x86_64 && virt.kvm", "executors has docker", "disk.free >= 30Gi"]
+    exclusive: true
+    resources: { cpu: 4, memory: 16Gi }
+    timeout-minutes: ${{ matrix.job_minutes }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { part: test, build_minutes: 62, tests_minutes: 64, job_minutes: 134 }
+          - { part: release, build_minutes: 60, job_minutes: 70 }
     env:
       TARGET: x86_64-unknown-linux-musl
+      MUSL_CI: ${{ matrix.part }}
     steps:
-      - name: Host virtualization (what this host offers each backend)
-        run: ls -l /dev/kvm 2>&1 || true
-      - name: Lint, test and build on the native architecture, in Alpine
-        timeout-minutes: 45
+      - name: Host virtualization (what this runner offers each backend)
         run: |
-          # VM tests need the host's /dev/kvm inside the container, where they run as root.
-          kvm=""
-          if [ -e /dev/kvm ]; then kvm="--device /dev/kvm"; fi
-          # GHA builds in the bind-mounted checkout, then runs `sudo chown -R` on what root wrote.
-          # The agent has no sudo: the container builds its own copy of the checkout and hands
-          # back only the executable, into a directory the agent owns, so nothing it cannot
-          # delete is left behind, even when the run is cancelled (--init: the container then
-          # stops with its client).
-          mkdir -p musl-out
-          docker run --rm --init $kvm -v "$PWD:/src:ro" -v "$PWD/musl-out:/out" -e TARGET \
-            -e CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=cc \
-            -e CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=cc \
-            "$MUSL_IMAGE" sh -eu -c '
-              mkdir -p /work && cp -a /src/. /work/ && cd /work
-              apk add --no-cache build-base curl
-              rustup component add clippy
-              cargo clippy --locked --workspace --all-targets --target "$TARGET" -- -D warnings
-              cargo test --locked --workspace --release --target "$TARGET"
-              cargo build --locked --release -p shards --target "$TARGET"
-              cp "target/$TARGET/release/shards" /out/shards
-            '
+          ls -l /dev/kvm 2>&1 || true
+          scripts/ci/kvm-host
+      # The test job's build, and the release job's whole part (scripts/ci/alpine).
+      - name: ${{ matrix.part == 'test' && 'Build the tests, in Alpine' || 'On the native architecture, in Alpine' }}
+        timeout-minutes: ${{ matrix.build_minutes }}
+        env:
+          MUSL_CI: ${{ matrix.part == 'test' && 'test-build' || matrix.part }}
+        run: scripts/ci/alpine
+      - name: The runner and its kernel
+        if: matrix.part == 'test'
+        id: image
+        run: echo "image=$RUNNER_NAME-$(uname -r)" >> "$GITHUB_OUTPUT"
+      # The judge's records, restored and kept as the glibc job's are (`native`, D261). The tests
+      # in Alpine keep them in this checkout's target/ as its owner (scripts/musl-ci).
+      - name: The judge's records
+        if: matrix.part == 'test'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target/judge-records
+          key: judge-records-${{ steps.image.outputs.image }}-${{ runner.arch }}-${{ env.TARGET }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: judge-records-${{ steps.image.outputs.image }}-${{ runner.arch }}-${{ env.TARGET }}-
+      - name: Tests, in Alpine
+        if: matrix.part == 'test'
+        timeout-minutes: ${{ matrix.tests_minutes }}
+        run: scripts/ci/alpine
+      - name: The judge's records, kept
+        if: ${{ !cancelled() && matrix.part == 'test' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target/judge-records
+          key: judge-records-${{ steps.image.outputs.image }}-${{ runner.arch }}-${{ env.TARGET }}-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: What hung tests' processes were doing
+        if: ${{ !cancelled() && matrix.part == 'test' }}
+        run: |
+          for f in $(find "$RUNNER_TEMP/hangs" -type f 2>/dev/null | sort); do
+            echo "::group::$f"
+            cat "$f"
+            echo "::endgroup::"
+          done
+      - name: What the kernel logged of seccomp refusals, OOM kills and failed VM entries
+        if: failure()
+        run: |
+          sudo -n dmesg | grep -iE 'seccomp|type=1326|out of memory|oom-kill|killed process' | tail -60 || true
+          sudo -n dmesg | grep -E 'kvm' || true
+          free -m || true
       - name: The executable is static
+        if: matrix.part == 'release'
         run: |
-          bin="musl-out/shards"
+          bin="target/$TARGET/release/shards"
           if readelf --program-headers "$bin" | grep -q INTERP; then
             echo "$bin requests a program interpreter"; exit 1
           fi
           if readelf --dynamic "$bin" | grep -q NEEDED; then
             echo "$bin needs shared libraries"; exit 1
           fi
+      - name: Disk the leg used
+        if: always()
+        run: du -sk target "$RUNNER_TEMP" || true
