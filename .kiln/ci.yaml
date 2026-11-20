@@ -227,6 +227,13 @@ jobs:
           foreach ($dir in "$git\usr\bin", "$git\ucrt64\bin", "$git\mingw64\bin") {
             if (Test-Path $dir) { [IO.File]::AppendAllText($env:GITHUB_PATH, "$dir`n") }
           }
+      # kiln gives a leg's steps a TMPDIR in its own temp (W02-R06), 66 characters deep on a Mac,
+      # where the tests' sockets beneath it outgrow sockaddr_un's 104 bytes ("path must be shorter
+      # than SUN_LEN", run 01a1f6c6cc317361a2f470d314c8e5f0). On macOS the leg takes the user's
+      # temporary directory, 49 characters, as GitHub's macOS runners and a Mac's login give it.
+      - name: TMPDIR (macOS)
+        if: runner.os == 'macOS'
+        run: echo "TMPDIR=$(getconf DARWIN_USER_TEMP_DIR)" >> "$GITHUB_ENV"
       - name: Install pinned Rust
         # Guest binaries build for every architecture's musl target. Every component
         # rust-toolchain.toml names, here: a cargo proxy that installs one as a later step
