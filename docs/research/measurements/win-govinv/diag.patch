@@ -1,0 +1,429 @@
+# PM M621's diagnostic (diag6): one watched spinner and no other normal thread on CPU 28, 10 registrations a process, each one's ask and the governor's answer stamped (RDTSC), and the spinner's and the registering thread's SYSTEM_THREAD_INFORMATION read by that thread where its wait returned while the spinner spun.
+# Prints TRY, DIAG, SNAPS and LASTSNAP lines with --nocapture; x86-64 alone.
+--- a/crates/vmm/src/platform/windows_thread.rs
++++ b/crates/vmm/src/platform/windows_thread.rs
+@@ -299,6 +299,54 @@
+ /// waits on a thread it watches does not add to.
+ #[cfg(test)]
+ static LOOKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
++/// DIAG (scratch): the last Watch ask's TSC stamps and processors.
++#[cfg(test)]
++static DIAG: [std::sync::atomic::AtomicU64; 28] = [const { std::sync::atomic::AtomicU64::new(0) }; 28];
++/// DIAG (scratch): snapshots taken while the spinner spins.
++#[cfg(test)]
++static DIAG_SNAPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
++/// DIAG (scratch): the spinner's handle (THREAD_QUERY_INFORMATION), and whether it spins.
++#[cfg(test)]
++static DIAG_SPINNER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
++#[cfg(test)]
++static DIAG_SPIN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
++#[cfg(test)]
++#[link(name = "ntdll")]
++unsafe extern "system" {
++    fn NtQueryInformationThread(h: HANDLE, class: u32, info: *mut core::ffi::c_void, len: u32, ret: *mut u32) -> i32;
++}
++/// DIAG (scratch): ThreadSystemThreadInformation (40): status, Priority, BasePriority,
++/// ContextSwitches, ThreadState, WaitReason, WaitTime.
++#[cfg(test)]
++fn diag_thread(h: HANDLE) -> [u64; 7] {
++    let mut b = [0u8; 0x50];
++    let mut ret = 0u32;
++    // SAFETY: a thread handle, and a buffer of SYSTEM_THREAD_INFORMATION's size.
++    let st = unsafe { NtQueryInformationThread(h, 40, b.as_mut_ptr().cast(), 0x50, &raw mut ret) };
++    let rd = |o: usize| u64::from(u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]));
++    [u64::from(st as u32), rd(0x38), rd(0x3C), rd(0x40), rd(0x44), rd(0x48), rd(0x18)]
++}
++/// DIAG (scratch): the governor's last wait's entry and return, and its last APC.
++#[cfg(test)]
++static PEND: [std::sync::atomic::AtomicU64; 3] = [const { std::sync::atomic::AtomicU64::new(0) }; 3];
++#[cfg(test)]
++fn diag_now() -> u64 {
++    // SAFETY: RDTSC.
++    unsafe { std::arch::x86_64::_rdtsc() }
++}
++#[cfg(test)]
++fn diag_cpu() -> u64 {
++    // SAFETY: no preconditions.
++    u64::from(unsafe { windows_sys::Win32::System::Threading::GetCurrentProcessorNumber() })
++}
++#[cfg(test)]
++fn diag_put(a: &[std::sync::atomic::AtomicU64], i: usize, v: u64) {
++    a[i].store(v, std::sync::atomic::Ordering::Relaxed);
++}
++#[cfg(test)]
++fn diag_get(a: &[std::sync::atomic::AtomicU64], i: usize) -> u64 {
++    a[i].load(std::sync::atomic::Ordering::Relaxed)
++}
+ 
+ thread_local! {
+     /// The asks lent to the governor's thread and not yet answered, put here by their APCs
+@@ -405,10 +453,16 @@
+             Some(Err(e)) => return Err(e.clone()),
+             None => return Err("the priority governor has not started".into()),
+         };
++        #[cfg(test)]
++        let diag = matches!(what, What::Watch(_));
+         self.what = Some(what);
+         self.answer = None;
+         let answered = self.answered.0.as_raw_handle();
+         let asking = Box::into_raw(self);
++        #[cfg(test)]
++        if diag {
++            diag_put(&DIAG, 0, diag_now());
++        }
+         // SAFETY: the governor's thread's handle, which its JoinHandle holds open for as long
+         // as the process runs, with all access (CreateThread), THREAD_SET_CONTEXT as
+         // QueueUserAPC needs among it; `lent` takes the ask once, as the APC runs.
+@@ -418,6 +472,11 @@
+             drop(unsafe { Box::from_raw(asking) });
+             return Err(format!("QueueUserAPC: {e}"));
+         }
++        #[cfg(test)]
++        if diag {
++            diag_put(&DIAG, 1, diag_now());
++            diag_put(&DIAG, 2, diag_cpu());
++        }
+         // SAFETY: the event the ask holds, open while it is lent.
+         if unsafe { WaitForSingleObject(answered, INFINITE) } != WAIT_OBJECT_0 {
+             return Err(format!(
+@@ -425,6 +484,26 @@
+                 io::Error::last_os_error()
+             ));
+         }
++        #[cfg(test)]
++        if diag {
++            diag_put(&DIAG, 3, diag_now());
++            diag_put(&DIAG, 4, diag_cpu());
++            let spinner = DIAG_SPINNER.load(std::sync::atomic::Ordering::Relaxed);
++            if spinner != 0 && DIAG_SPIN.load(std::sync::atomic::Ordering::Relaxed) {
++                let t = diag_thread(std::ptr::with_exposed_provenance_mut(spinner));
++                // SAFETY: the calling thread's pseudo-handle.
++                let me = diag_thread(unsafe { GetCurrentThread() });
++                for (i, v) in t.iter().enumerate() {
++                    diag_put(&DIAG, 12 + i, *v);
++                }
++                for (i, v) in me.iter().enumerate() {
++                    diag_put(&DIAG, 20 + i, *v);
++                }
++                diag_put(&DIAG, 27, diag_cpu());
++                diag_put(&DIAG, 19, diag_now());
++                DIAG_SNAPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
++            }
++        }
+         // SAFETY: signalled once answered: the governor is done with it, and it is this
+         // thread's again, as Box::into_raw left it.
+         let mut asking = unsafe { Box::from_raw(asking) };
+@@ -497,6 +576,8 @@
+ /// thread runs for as long as the process: its thread-locals are never destroyed, which
+ /// alone would end `with` in a panic.
+ extern "system" fn lent(asking: usize) {
++    #[cfg(test)]
++    diag_put(&PEND, 2, diag_now());
+     LENT.with(|lent| {
+         let mut asks = lent.take();
+         asks.push(asking);
+@@ -550,8 +631,13 @@
+ /// Waits for `object` alertably (WaitForSingleObjectEx), so that the APC of an ask lent to
+ /// this thread ends the wait as it runs.
+ fn wait_alertably(object: HANDLE) -> Woke {
++    #[cfg(test)]
++    diag_put(&PEND, 0, diag_now());
+     // SAFETY: a handle its caller holds open, waited on.
+-    match unsafe { WaitForSingleObjectEx(object, INFINITE, 1) } {
++    let woke = unsafe { WaitForSingleObjectEx(object, INFINITE, 1) };
++    #[cfg(test)]
++    diag_put(&PEND, 1, diag_now());
++    match woke {
+         WAIT_OBJECT_0 => Woke::Signalled,
+         WAIT_IO_COMPLETION => Woke::Asked,
+         other => Woke::Failed(format!(
+@@ -639,11 +725,25 @@
+             // SAFETY: an ask its asker lent this thread alone (`Asking::ask`), which it
+             // touches again only once signalled, below.
+             let asking = unsafe { &mut *std::ptr::with_exposed_provenance_mut::<Asking>(asking) };
++            #[cfg(test)]
++            let diag = matches!(asking.what, Some(What::Watch(_)));
++            #[cfg(test)]
++            if diag {
++                diag_put(&DIAG, 5, diag_get(&PEND, 2));
++                diag_put(&DIAG, 6, diag_get(&PEND, 0));
++                diag_put(&DIAG, 7, diag_get(&PEND, 1));
++                diag_put(&DIAG, 8, diag_now());
++                diag_put(&DIAG, 11, diag_cpu());
++            }
+             let answer = match asking.what.take() {
+                 Some(What::Watch(watched)) => self.watch(watched),
+                 Some(What::Leave(id)) => self.let_go(id),
+                 None => Err("an ask of nothing".into()),
+             };
++            #[cfg(test)]
++            if diag {
++                diag_put(&DIAG, 9, diag_now());
++            }
+             let answered = asking.answered.0.as_raw_handle();
+             asking.answer = Some(answer);
+             // SAFETY: the asker's event, open while its ask is lent; the ask, its asker's again
+@@ -654,6 +754,10 @@
+                     io::Error::last_os_error()
+                 );
+             }
++            #[cfg(test)]
++            if diag {
++                diag_put(&DIAG, 10, diag_now());
++            }
+         }
+     }
+ 
+@@ -1208,19 +1312,6 @@
+         assert_ne!(set, 0, "{}", io::Error::last_os_error());
+     }
+ 
+-    /// Sets thread `id` of this process at `priority`, from another thread.
+-    fn set_priority_of(id: u32, priority: THREAD_PRIORITY) {
+-        // SAFETY: opens thread `id` to set its priority alone.
+-        let handle = unsafe { OpenThread(THREAD_SET_LIMITED_INFORMATION, 0, id) };
+-        assert!(!handle.is_null(), "{}", io::Error::last_os_error());
+-        // SAFETY: the handle just opened, with the right to set its priority.
+-        let set = unsafe { SetThreadPriority(handle, priority) };
+-        let error = io::Error::last_os_error();
+-        // SAFETY: the handle just opened, closed once.
+-        unsafe { CloseHandle(handle) };
+-        assert_ne!(set, 0, "{error}");
+-    }
+-
+     /// An auto-reset event, not signalled.
+     fn event() -> OwnedHandle {
+         // SAFETY: an unnamed auto-reset event, not signalled.
+@@ -1230,82 +1321,94 @@
+         unsafe { OwnedHandle::from_raw_handle(event) }
+     }
+ 
+-    /// Do: on one CPU, two watched spinners that this thread sets back at normal priority once
+-    /// the governor has lowered them (the governor sets a thread only as its level changes), so
+-    /// that their pool is charged all of the CPU they hold and stays a period in debt however long
+-    /// they hold it; then a thread there registers, woken above normal and set back at normal once
+-    /// it has the CPU, the spinners ready behind it. Expect the governor to look on at the
+-    /// period's pace while the registering thread is starved, and its registration to complete:
+-    /// the thread lowered by the governor before it runs again. Two, so that a normal thread is
+-    /// ready on the CPU whenever the other leaves it: beside one, the registering thread, lowered,
+-    /// now and then had the CPU while that one was ready at 8 or chosen to run next, last switched
+-    /// out at a dispatch interrupt (WrDispatchInt), in 8 of 1,850 registrations on jupiter, 5 of
+-    /// them run through (PM M621). Their boost on waking is off, so that the registering thread,
+-    /// answered, stays below them; this thread is off their CPU, where it would wait behind them.
+-    /// A thread that lowered itself as it registered, holding the governor's lock, as until
+-    /// 2026-11-19, kept the governor from every look while the CPU was the spinners': 2,743 ms of
+-    /// a 3 s window on windows-2022 and 2,892 on windows-2025 (windows-lower run 44596604981).
++    /// Do: on one CPU, a watched spinner that its program sets back at normal priority once the
++    /// governor has lowered it (the governor sets a thread only as its level changes), so that
++    /// its pool is charged all of the CPU it holds and stays a period in debt however long it
++    /// holds it; then a thread there registers, woken above normal and set back at normal once it
++    /// has the CPU, the spinner ready behind it. Expect the governor to look on at the period's
++    /// pace while the registering thread is starved, and its registration to complete: the
++    /// thread lowered by the governor before it runs again. Their boost on waking is off, so that
++    /// the registering thread, answered, stays below the spinner; this thread is off their CPU,
++    /// where it would wait behind them. A thread that lowered itself as it registered, holding
++    /// the governor's lock, as until 2026-11-19, kept the governor from every look while the CPU
++    /// was the spinner's: 2,743 ms of a 3 s window on windows-2022 and 2,892 on windows-2025
++    /// (windows-lower run 44596604981).
+     #[test]
+     fn a_thread_starved_as_it_registers_stops_no_look() {
+         // The looks due while it is starved: one a period, each allowed a period late. Fewer than
+         // two could be a look under way as it registered.
+         const DUE: u64 = 4;
+-        const SPINNERS: usize = 2;
+-        let Some(cpu) = next_to_last_cpu() else {
++        // Registrations tried, the first starved judged: Windows now and then runs a thread
++        // lowered beside a ready one of its CPU first (a lowering's switch 0.2 s late at p99, PM
++        // M620), leaving no starved registration to judge, 3 tries of 140 here (PM M621).
++        const TRIES: usize = 10;
++        let Some(cpu) = Some(1usize << 28) else {
+             println!("SKIP: this process may run on one CPU alone");
+             return;
+         };
+         pin(process_cpus() & !cpu);
+         let spinning = AtomicBool::new(true);
++        let normal = AtomicBool::new(false);
+         let registering = AtomicBool::new(false);
+         let returned = AtomicBool::new(false);
+         let go = event();
+-        let (period, looked, waited, level, starved, (registered, level_once_run)) =
+-            std::thread::scope(|s| {
+-                let stop = Stop(&spinning);
+-                let (spinning, registering, returned, go) = (&spinning, &registering, &returned, &go);
+-                let (spinner_tx, spinner_rx) = mpsc::channel();
+-                for _ in 0..SPINNERS {
+-                    let spinner_tx = spinner_tx.clone();
+-                    s.spawn(move || {
+-                        // SAFETY: the calling thread's pseudo-handle.
+-                        assert_ne!(unsafe { SetThreadPriorityBoost(GetCurrentThread(), 1) }, 0);
+-                        pin(cpu);
+-                        let watch = raise_current().unwrap().unwrap();
+-                        // SAFETY: no preconditions.
+-                        spinner_tx.send(unsafe { GetCurrentThreadId() }).unwrap();
+-                        while spinning.load(Ordering::Relaxed) {
+-                            std::hint::spin_loop();
+-                        }
+-                        drop(watch);
+-                    });
++        let (tsc0, i0) = (diag_now(), Instant::now());
++        let (period, tries) = std::thread::scope(|s| {
++            let stop = Stop(&spinning);
++            let (spinning, normal, registering, returned, go) =
++                (&spinning, &normal, &registering, &returned, &go);
++            let (spinner_tx, spinner_rx) = mpsc::channel();
++            let (normal_tx, normal_rx) = mpsc::channel();
++            s.spawn(move || {
++                // SAFETY: the calling thread's pseudo-handle.
++                assert_ne!(unsafe { SetThreadPriorityBoost(GetCurrentThread(), 1) }, 0);
++                pin(cpu);
++                let watch = raise_current().unwrap().unwrap();
++                // SAFETY: no preconditions.
++                spinner_tx.send(unsafe { GetCurrentThreadId() }).unwrap();
++                while !normal.load(Ordering::Relaxed) {
++                    std::hint::spin_loop();
+                 }
+-                let spinners: Vec<u32> = (0..SPINNERS).map(|_| spinner_rx.recv().unwrap()).collect();
+-                // Their pool's credit, a period of the CPU, loses half a look at each look that
+-                // charges it all of the CPU (`a_look_charged_its_whole_period_keeps_a_thread_raised`):
+-                // none by its fourth look, its first coming before they have run a period.
+-                wait_looks(5);
+-                for spinner in &spinners {
+-                    assert_eq!(
+-                        priority_of(*spinner),
+-                        LOWERED,
+-                        "the spinners alone on their CPU were not lowered"
+-                    );
++                set_own(THREAD_PRIORITY_NORMAL);
++                normal_tx.send(()).unwrap();
++                while spinning.load(Ordering::Relaxed) {
++                    std::hint::spin_loop();
+                 }
+-                // From this thread, both at once: one set back by its own program would starve the
+-                // other, still lowered, before it could set itself.
+-                for spinner in &spinners {
+-                    set_priority_of(*spinner, THREAD_PRIORITY_NORMAL);
+-                }
+-                // Two looks more of all of its CPU: their pool at its floor, a period in debt.
+-                wait_looks(2);
+-                let period = period().unwrap();
+-                let window = period * 2 * u32::try_from(DUE).unwrap();
++                drop(watch);
++            });
++            let spinner = spinner_rx.recv().unwrap();
++            {
++                use windows_sys::Win32::System::Threading::THREAD_QUERY_INFORMATION;
++                // SAFETY: opens the spinner to query it.
++                let h = unsafe { OpenThread(THREAD_QUERY_INFORMATION, 0, spinner) };
++                assert!(!h.is_null());
++                DIAG_SPINNER.store(h.expose_provenance(), Ordering::Relaxed);
++            }
++            // The spinner's credit and its pool's, a period each, lose half a look at each look
++            // that charges it all of one (`a_look_charged_its_whole_period_keeps_a_thread_raised`):
++            // none by its fourth look, its first coming before it has run a period.
++            wait_looks(5);
++            assert_eq!(
++                priority_of(spinner),
++                LOWERED,
++                "the spinner alone on its CPU was not lowered"
++            );
++            normal.store(true, Ordering::Relaxed);
++            normal_rx.recv().unwrap();
++            DIAG_SPIN.store(true, Ordering::Relaxed);
++            // Two looks more of all of its CPU: its pool at its floor, a period in debt.
++            wait_looks(2);
++            let period = period().unwrap();
++            let window = period * 2 * u32::try_from(DUE).unwrap();
++            let mut tries = Vec::new();
++            for _ in 0..TRIES {
++                registering.store(false, Ordering::Relaxed);
++                returned.store(false, Ordering::Relaxed);
+                 let (registering_tx, registering_rx) = mpsc::channel();
+                 let thread = s.spawn(move || {
+                     // SAFETY: the calling thread's pseudo-handle.
+                     assert_ne!(unsafe { SetThreadPriorityBoost(GetCurrentThread(), 1) }, 0);
+-                    // Above the spinners while it waits, so that it has the CPU once woken; then
++                    // Above the spinner while it waits, so that it has the CPU once woken; then
+                     // at normal, as the governor watches a thread from.
+                     set_own(THREAD_PRIORITY_ABOVE_NORMAL);
+                     pin(cpu);
+@@ -1316,11 +1419,14 @@
+                     assert_eq!(woke, WAIT_OBJECT_0);
+                     set_own(THREAD_PRIORITY_NORMAL);
+                     registering.store(true, Ordering::Relaxed);
++                    let t_reg = diag_now();
+                     let watch = raise_current();
+                     // SAFETY: the calling thread's pseudo-handle.
+                     let level = unsafe { GetThreadPriority(GetCurrentThread()) };
++                    let t_ret = diag_now();
+                     returned.store(true, Ordering::Relaxed);
+-                    (watch.map(|watch| watch.is_some()), level)
++                    let d: Vec<u64> = (0..28).map(|i| diag_get(&DIAG, i)).collect();
++                    ((watch.map(|watch| watch.is_some()), level), (t_reg, t_ret, d))
+                 });
+                 let id = registering_rx.recv().unwrap();
+                 // SAFETY: the event the scope holds open.
+@@ -1334,16 +1440,57 @@
+                 }
+                 let (looked, waited, level) = (looks() - from, began.elapsed(), priority_of(id));
+                 let starved = !returned.load(Ordering::Relaxed);
+-                // The registering thread, starved, runs once the spinners stop.
+-                drop(stop);
+-                (period, looked, waited, level, starved, thread.join().unwrap())
+-            });
++                tries.push((looked, waited, level, starved, thread));
++            }
++            // A try's thread run already may be starved again, past its registration: each is
++            // joined once the spinner has stopped.
++            DIAG_SPIN.store(false, Ordering::Relaxed);
++            drop(stop);
++            let tries: Vec<_> = tries
++                .into_iter()
++                .map(|(looked, waited, level, starved, thread)| {
++                    (looked, waited, level, starved, thread.join().unwrap())
++                })
++                .collect();
++            (period, tries)
++        });
++        let per_us = (diag_now() - tsc0) as f64 / i0.elapsed().as_secs_f64() / 1e6;
++        for (i, t) in tries.iter().enumerate() {
++            println!("TRY {i} looks={} waited={:?} level={} {}", t.0, t.1, t.2, if t.3 { "starved" } else { "RUN" });
++        }
++        println!("SNAPS {}", DIAG_SNAPS.load(Ordering::Relaxed));
++        let last = (0..28).map(|i| diag_get(&DIAG, i)).collect::<Vec<u64>>();
++        if DIAG_SNAPS.load(Ordering::Relaxed) > 0 {
++            println!(
++                "LASTSNAP spinner: st={:#x} prio={} base={} cs={} state={} wait={} | runner: st={:#x} prio={} base={} cs={} state={} wait={} cpu={}",
++                last[12], last[13], last[14], last[15], last[16], last[17],
++                last[20], last[21], last[22], last[23], last[24], last[25], last[27]
++            );
++        }
++        let count = tries.len();
++        let (looked, waited, level, starved, ((registered, level_once_run), (t_reg, t_ret, d))) =
++            tries.into_iter().last().unwrap();
++        let us = |t: u64| (t as i128 - d[0] as i128) as f64 / per_us;
++        println!(
++            "DIAG {} looks={looked} tsc/us={per_us:.1} | a1={:.2} a3={:.2} cpuA={}/{} | gE={:.2} gR={:.2} gL={:.2} gS={:.2} g1={:.2} g2={:.2} cpuG={} | reg={:.2} ret={:.2} | spin_cpu_mask={cpu:#x}",
++            if starved { "starved" } else { "RUN" },
++            us(d[1]), us(d[3]), d[2], d[4],
++            us(d[6]), us(d[7]), us(d[5]), us(d[8]), us(d[9]), us(d[10]), d[11],
++            us(t_reg), us(t_ret),
++        );
++        if d[19] != 0 {
++            println!(
++                "SNAP at={:.2} st={:#x} prio={} base={} cs={} state={} wait={} waittime={}",
++                us(d[19]), d[12], d[13], d[14], d[15], d[16], d[17], d[18]
++            );
++        }
+         let said = format!(
+-            "{looked} looks in {waited:?} at a period of {period:?}; the registering thread at \
+-             {level}, {}; registered {registered:?}, at {level_once_run} once it ran",
++            "try {count} of {TRIES}: {looked} looks in {waited:?} at a period of {period:?}; the \
++             registering thread at {level}, {}; registered {registered:?}, at {level_once_run} once \
++             it ran",
+             if starved { "starved" } else { "run" }
+         );
+-        assert!(starved, "the registering thread was not starved: {said}");
++        assert!(starved, "no registering thread starved: {said}");
+         assert_eq!(
+             level, LOWERED,
+             "the registration did not lower its thread: {said}"

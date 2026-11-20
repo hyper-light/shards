@@ -16646,6 +16646,82 @@ GetThreadTimes steps); windows-2025 passed.
   their lowered priority with no boost above it. Open: what runs a lowered thread there beside a
   ready normal one, measured next (#36).
 
+**2026-11-19, the governor alone sets the threads it watches, and waits on none of them (#36;
+windows-lower run 44596604981; PM M621).** With `SHARDS_LOG=debug` the bound's test showed the
+governor making no look for 2,743 ms of its 3 s window on windows-2022 and 2,892 ms on
+windows-2025: a spinner pinned beside the normal one registered while their pool had no credit
+(the pool's line "after 80 us"), set itself Lowered under the governor's lock (`WATCHED`), fell
+below the normal spinner at once and held the lock until the spinner stopped or Windows'
+starvation boost lifted it, no watched thread's level changing meanwhile; GitHub harness rounds
+took 8 to 15 s where 3 were asked. A thread let go of took the same lock at its level, and a
+thread registering at normal priority could be kept from it by raised vCPUs that only the waiting
+governor would lower: an overshoot without bound.
+- *Decision.* The governor alone sets the priority of a thread it watches, from
+  THREAD_PRIORITY_TIME_CRITICAL, and its state is its own, under no lock. A thread lends its ask
+  (to be watched: its duplicated handle, ID, CPU time and when read, and CPUs; to be let go of:
+  its ID) to the governor's thread with an APC (QueueUserAPC, which the kernel queues to that
+  thread to run in its next alertable wait, first in first out: Microsoft, Asynchronous Procedure
+  Calls) and waits for the answer on an event of its own (SetEvent). The governor decides a new
+  thread's level as `raise_current` did, sets it and answers; it lets a thread go by setting it
+  back at normal and dropping its entry. No look under way sets a thread that has asked to leave,
+  and nothing a governed thread holds is waited on. The governor's waits are alertable: on a
+  high-resolution waitable timer for each look (CreateWaitableTimerExW's
+  CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, the clock std's sleep waits on), on asks alone while it
+  watches none, and before its first look on g's measure, which runs at normal priority on a
+  thread of its own so that no ask waits for it. Lateness is taught (`granule::LATE`) only by a
+  wait its timer ended, never by one an ask ended.
+- *Leaving through the governor.* A thread raising itself to TIME_CRITICAL to take the lock and
+  restoring NORMAL after leaves its own last word on its level racing the governor's: a look
+  between them sets it, and the thread's restore undoes the look.
+- *Alternatives refused.* std's channel with `recv_timeout`: its wait is WaitOnAddress with a
+  timeout in whole milliseconds rounded up (std 1.98's `thread::park_timeout`, `dur2timeout`),
+  which ends on the system's clock ticks (15.625 ms on the runners, PM M620), where
+  `thread::sleep` waits on a high-resolution timer; and its receiver waits on its senders,
+  spinning on a slot one has claimed and not yet written (`sync/mpmc/list.rs`, `wait_write`) and
+  taking the waker's mutex its senders take (`sync/mpmc/waker.rs`), so that the governor would
+  again wait on a thread it had just lowered: PM M621 found a lowered thread starved within the
+  microseconds it held the lock.
+- *Costs.* An ask is an APC queued, an event set and a wait: in a diagnostic build on jupiter the
+  asker was lowered and answered 17.9 µs after its QueueUserAPC began at p50, 23.8 at p90, 31.9 at
+  p99 and 39.0 at most, n 450 (PM M621); the first registration of a process waits for the
+  governor's thread to start (unmeasured; R14's timings, ROOT's). g's measure is a
+  thread of its own for as long as the measure. A wait that cannot fail on the event its asker
+  holds leaves the ask lent if it does, never freed under the governor. Owed, unchanged: the
+  governor still allocates (its looks' sets) and logs (the sink's lock) at TIME_CRITICAL, where a
+  thread it has lowered may hold the heap's or the sink's lock.
+- *Tested.* `platform::windows_thread::tests::a_thread_starved_as_it_registers_stops_no_look` counts
+  the governor's looks (test-only `LOOKS`): two watched spinners, lowered and then set back at
+  normal by the test, keep their CPU's pool a period in debt however long they hold the CPU, and a
+  thread registering there, the spinners queued behind it, is starved; the governor must look on at
+  the period's pace meanwhile, 4 looks within 8 periods, and the registration lower the thread.
+  Two, as one left the starving to Windows' dispatcher: beside one spinner, the registering thread,
+  lowered and answered 12.5 to 39.0 µs after it asked, now and then had the CPU while the spinner
+  was ready at priority 8 or chosen to run next, last switched out at a dispatch interrupt
+  (WrDispatchInt), itself running at 7 with no boost: 8 of 1,850 registrations on jupiter, 5 of
+  them run through, the governor looking on in each; beside two, 1 of 800 had the CPU and none ran
+  through (PM M621). The test sets both back at normal itself: a spinner that did so as it saw a
+  flag left the other, still lowered, unable to see it. Red on main (its file with the test,
+  `docs/research/measurements/win-govinv/red.patch`), in WMI's processes on jupiter: 10 of 10, "the
+  governor stopped looking: 0 looks in 250.4 to 252.0 ms at a period of 31.25ms; the registering
+  thread at -1, starved; registered Ok(true), at -1 once it ran". Green with the change: the test 20
+  of 20; `platform::windows_thread` 10 runs, 9 all green, the bound's test and
+  `a_thread_that_waits_between_its_runs_stays_raised` failing together in the tenth. The bound's
+  failure: the three ran 4,750,336,064 of the window's 8,983,894,995 counter ticks (52.9%) against
+  its bound's 4,679,085,252 (52.1%), where GetThreadTimes charged them 1.515625 s of 3.0004 s,
+  within the bound's 1.5627 s: governed for the whole window now, where main's registrations stopped
+  the governor for most of it, they ran past what the governor's clock charged them, M620's open
+  question; the same file's test before its comment was corrected, 10 runs, failed it 3 times, at
+  53.4% to 53.8%. The waiting test's: lowered at its seventh sample of one each 10 ms, for six, on
+  its cold credit, a 2 ms period's (the module's doc), as main's own failed it 2 times in 10.
+- *jupiter.* Processes kiln starts there run at BELOW_NORMAL_PRIORITY_CLASS and raise no thread
+  above THREAD_PRIORITY_NORMAL, their own or another's, nor their class: SetThreadPriority and
+  SetPriorityClass answer success and change nothing, lowering takes. The governor there never
+  reaches TIME_CRITICAL, and main's module tests fail 2 of its 8, the change's the same 2; a
+  process WMI creates (Win32_Process.Create) runs at normal class and raises as documented, so
+  the runs above were made as its (PM M621). Owed, ROOT's: CI's windows-2022, windows-2025 and
+  windows-11-arm, the bound's test now governed for its whole window; R14 timings of an ask and a
+  look; the seven-target lint.
+
 **The priority governor's period and credit (platform-11, 2026-11-14).** `PERIOD` (100 ms,
 the hold's old period) is gone: each look's period is D191's for one thread held to half a
 CPU (`HALF`, 500 milli-CPU: the most a fair scheduler gives a thread that contends for its CPU

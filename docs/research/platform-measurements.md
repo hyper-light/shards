@@ -26602,3 +26602,108 @@ the counts are a process's, not a thread's. n is one run of each child.
   whose cycle counter was not measured here, keeps GetThreadTimes' steps. On windows-2022, beside
   busy threads, the three still ran past the bound in two rounds of five, cycles run while their
   sampled priority was the lowered one, with no boost above it: open, measured next.
+
+### M621. A thread registering with the Windows priority governor, starved while it held the governor's lock (D191; windows-lower run 44596604981; jupiter)
+
+- **Question.** Why did the bound's test's governor make no look for most of its 3 s window on the
+  Server runners, can a unit test show it on demand, and what runs that test's starved
+  registering thread now and then?
+- **Method.** (1) windows-lower run 44596604981: p/gov-ab 121ff23123 (main with a debug line for
+  each thread in `Governed::look`, and `crate::log::init` in the bound's test), `SHARDS_LOG=debug`,
+  windows-2022 and windows-2025, 10 runs each. (2) jupiter (Windows 10.0.26200, AMD Ryzen AI MAX+
+  395, 32 CPUs, virtualization-based security on), main 1f116bedb5 with
+  `a_thread_starved_as_it_registers_stops_no_look` (lanes/govinv/red.patch), its scenes timed with
+  diagnostic prints: the registering thread's level after `raise_current` and its time in it, and
+  when the thread beside it first ran (GetCurrentProcessorNumber, QueryThreadCycleTime); first in
+  processes kiln starts, then in processes WMI creates (`Invoke-CimMethod -ClassName Win32_Process
+  -MethodName Create` with the test binary's command line,
+  `docs/research/measurements/win-govinv/wmi-run.sh`), each run of the test binary its own process.
+  (3) The change with diagnostics (`win-govinv/diag.patch`, its last form): each registration's
+  QueueUserAPC and wait, and the governor's wait, APC, SetThreadPriority and SetEvent stamped
+  (RDTSC, 2,994.2 ticks a µs), and, where a registering thread's wait returned while the spinner
+  beside it spun, the spinner's and its own SYSTEM_THREAD_INFORMATION (NtQueryInformationThread,
+  ThreadSystemThreadInformation) read by that thread: 450 processes of one registration on CPU 30,
+  then 60 of ten there and 80 of ten on CPU 28 (beside another test process on CPU 30). (4) The
+  test's scene with two watched spinners, 80 processes of ten registrations (`win-govinv/
+  tries.patch`), each ask whose wait returned while they spun counted.
+- **Results.**
+  - (1) windows-2022: the pool's line at 257,654 µs, "after 80 us: credit -15344 us, charged 0 us,
+    now -15304 us", then none until 3,000,736 µs, 2,743 ms on; windows-2025: "after 85 us" at
+    108,831 µs, then none until 3,000,853 µs, 2,892 ms on. The looks then went on with every thread
+    raised. The 80 µs is a registration's (`raise_current` charges its pool nothing); the thread
+    that made it had set itself Lowered and held the lock.
+  - (2) Under kiln, main with the test: whether the registering thread is starved holding the lock
+    turns on a thread of its priority taking the CPU within the microseconds it holds the lock
+    after it lowers itself. A normal thread just woken onto the CPU by WaitOnAddress or SetEvent,
+    by the registering thread or by another, took it 11 of 43 times (1/3, 5/6, 3/10, 1/12, and 1/12
+    with 2 ms between its wake and the registration; when it did not, it first ran 20 to 460 µs
+    later, once the registration had let the lock go); the registering thread woken by its wake
+    boost, 0 of 12 (lowered, it kept the boost at the normal thread's level); a normal thread that
+    had run on the CPU and was queued there again by a quantum's end or its own yield (Sleep(0)),
+    12/12, 12/12, 11/12, 8/12 and 12/12 in five arrangements (three of the 8/12's misses with the
+    test's own thread stalled, (4)). The bound's test's spinners share their CPU so. The test with
+    one spinner: 10 runs, 9 "the governor stopped looking: 0 looks in ~250 ms at a period of
+    31.25ms; the registering thread at -1, starved", 1 not its scene (lanes/govinv/red-main.txt).
+    In WMI's processes: 10 of 10 "the governor stopped looking" (lanes/govinv/red-wmi.txt).
+  - (3) Processes kiln starts on jupiter run at BELOW_NORMAL_PRIORITY_CLASS, in a job whose one limit
+    is KILL_ON_JOB_CLOSE and not in background mode (PROCESS_MODE_BACKGROUND_END: error 403): there
+    SetThreadPriority above THREAD_PRIORITY_NORMAL (+1, +2 and 15, of the calling thread or of
+    another, and from a thread at 15) and SetPriorityClass(NORMAL_PRIORITY_CLASS) answer success and
+    change nothing, and lowering takes, back up to normal too. So the governor runs at normal there,
+    and main's own `platform::windows_thread` tests fail 2 of 9 (`a_thread_run_long_is_lowered_
+    and_raised_again_as_it_waits` and `a_thread_that_waits_between_its_runs_stays_raised`, "left:
+    0, right: 1") in 2 runs of 2. A process Win32_Process.Create makes runs at
+    NORMAL_PRIORITY_CLASS, in a job that lets it break away, and raises as documented. A loop of
+    such processes outlives a kiln run stopped under it: one left running put a test's spinners on
+    CPU 30 for 50 minutes, and the runs it overlapped are not counted here.
+  - (4) A thread of the test's own, unpinned, drawn onto its spinners' CPU while one of them yielded,
+    waited 71 to 200 s there behind a pinned spinner of its priority: the test pins its thread off
+    that CPU.
+  - (5) The change's answer, µs from the registering thread's QueueUserAPC, n 450 (3): the APC ran
+    at p50 10.7, p90 13.9, p99 21.5, max 31.0; the thread was lowered by 16.2 / 21.9 / 29.8 / 37.4
+    and answered by 17.9 / 23.8 / 31.9 / 39.0, its own QueueUserAPC returning at 4.6 / 5.3 / 6.7 /
+    10.2; the governor was in its wait at each ask.
+  - (6) Beside one spinner, the registering thread, lowered and answered, had the CPU while the
+    spinner spun in 8 of 1,850 registrations and ran through its registration in 5, its wait
+    returning 89,781 and 92,899 µs after its ask in the two stamped, not as it was answered; once it
+    returned at 22,808 µs and ran again only once the spinner stopped. Read by it as its wait
+    returned: the spinner Ready (state 1) at priority 8 twice and Standby (3, chosen to run next)
+    once, last switched out at a dispatch interrupt (WaitReason 31, WrDispatchInt) each time, and
+    the registering thread Running at priority 7, base 7, no boost, in each of the three it read;
+    a fourth read came after the spinner had ended.
+  - (7) Two watched spinners, both set back at normal by their own program as each saw a flag: the
+    first set back starved the other, still lowered, before it saw it, until that one was given the
+    CPU; a process took 4 to 38 s. Set back by the test's thread instead, one registration a process: the
+    test 20 of 20 (0.35 to 0.41 s), red on main 10 of 10 (`win-govinv/red.patch`'s form); 80
+    processes of ten (4): 800 of 800 starved, 1 had the CPU while they spun and none ran through.
+  - (8) The final test (two spinners), in WMI's processes on jupiter: red on main 10 of 10, "the
+    governor stopped looking: 0 looks in 250.4 to 252.0 ms ... the registering thread at -1,
+    starved; registered Ok(true), at -1 once it ran"; green, the test 20 of 20 and
+    `platform::windows_thread` 10 runs, 9 all green, the tenth failing the bound's test (the three at
+    52.9% of the window's counter ticks against its bound's 52.1%, GetThreadTimes charging them
+    1.515625 s of 3.0004 s, within its 1.5627 s) and `a_thread_that_waits_between_its_runs_stays_
+    raised` (lowered on its cold credit for six samples). Before the test's comment was corrected,
+    the same code 10 runs: the bound's test failed 3 times (53.4% to 53.8%), the waiting test none.
+    Main's own, 10 runs: the bound's test 10 of 10, the waiting test 8 of 10, lowered at the same
+    point (lanes/govinv/main-pure-module-wmi.txt). Raw logs: jupiter's synced tree,
+    `target/govinv-evidence/`; their summary, lanes/govinv/diag3/RESULTS.txt.
+- **Reading.** A thread that lowered itself under the governor's lock held the lock for microseconds,
+  and a ready thread of its CPU at the priority it left took the CPU in them where that thread had
+  been queued there by the CPU's own turns, as threads sharing a CPU are; the governor then waited
+  on the lock for as long as the CPU was the other's, every watched thread's level frozen. A raised
+  thread on the CPUs of a thread registering at normal priority starves it the same way. std's
+  channel would not remove the wait: its receiver spins on a slot its sender has claimed and not
+  written, and takes the waker's mutex its senders take. With the change the governor answers in
+  tens of µs and waits on no asker. A registering thread starved beside one normal thread is not
+  always starved: Windows' dispatcher now and then gives its CPU to the ready thread of priority 7
+  while the one of priority 8 there, just switched out at a dispatch interrupt, is ready or chosen
+  to run next, at no boost; with a second thread of priority 8 ready there, it did so once in 800
+  and the registration never ran through. The bound's test, governed for its whole window, now
+  shows M620's open question on jupiter too: the three run past what the governor's clock charges
+  them.
+- **Consequence.** D191 amended 2026-11-19: the governor alone sets the priority of a thread it
+  watches, from THREAD_PRIORITY_TIME_CRITICAL; asks to be watched and let go of reach its thread by
+  APC and are answered on the asker's event; it waits on its high-resolution timer, on asks, or on
+  g's measure, now a thread of its own. The test starves its registering thread behind two normal
+  threads, so that one is ready whenever the other leaves the CPU, and judges one registration.
+  jupiter's priority evidence is taken in processes WMI creates.
