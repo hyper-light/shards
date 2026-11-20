@@ -8,7 +8,8 @@
 //! - The VM process (`shards-vm`) and the network process (`shards-net`), which `shards`
 //!   writes out once per build and starts (src/helpers.rs). Built by a nested cargo for
 //!   this target and profile into `target/helpers`, kept between builds, on Linux static
-//!   (musl) whatever C library `shards` links (PM M281); on macOS the VM
+//!   (musl) whatever C library `shards` links (PM M281), on Windows with MSVC's C runtime
+//!   linked in whatever `shards` links (D36); on macOS the VM
 //!   process signed with its App Sandbox entitlements first, so that its signature travels
 //!   inside `shards`. `SHARDS_HELPERS_DIR` names prebuilt ones; `SHARDS_HELPERS=skip`
 //!   carries none, for check builds of other targets (scripts/lint), and such a `shards`
@@ -420,6 +421,14 @@ fn compile_helpers(out: &mut impl io::Write) -> Result<PathBuf, String> {
         // The network process's AWS-LC (D242) is C, compiled as the init's is.
         zig_c(&mut command, &root, &target);
     }
+    // On Windows they carry MSVC's C runtime, whatever `shards` itself links, as on Linux they
+    // are musl's: no Visual C++ redistributable is installed beside `shards` (D36).
+    if target.ends_with("-pc-windows-msvc") {
+        command.env(
+            "CARGO_ENCODED_RUSTFLAGS",
+            rustflags_with("-Ctarget-feature=+crt-static")?,
+        );
+    }
     command
         .current_dir(&root)
         .args([
@@ -459,6 +468,20 @@ fn compile_helpers(out: &mut impl io::Write) -> Result<PathBuf, String> {
         return Err(message);
     }
     Ok(target_dir.join(&target).join(dir_name))
+}
+
+/// The outer build's rustflags for this target, as cargo hands them to its build scripts
+/// (CARGO_ENCODED_RUSTFLAGS, which a nested cargo takes in place of its configuration's), and
+/// `flag` after them.
+fn rustflags_with(flag: &str) -> Result<String, String> {
+    let outer = match env::var("CARGO_ENCODED_RUSTFLAGS") {
+        Ok(flags) => flags,
+        Err(env::VarError::NotPresent) => String::new(),
+        Err(e) => return Err(format!("CARGO_ENCODED_RUSTFLAGS: {e}")),
+    };
+    let mut flags: Vec<&str> = outer.split('\x1f').filter(|f| !f.is_empty()).collect();
+    flags.push(flag);
+    Ok(flags.join("\x1f"))
 }
 
 /// AWS-LC's C for a musl `triple` (the init's TLS, AGENTFILE_ARCH.md §12 answer 18; the
@@ -561,6 +584,14 @@ fn compile_gpu_helper(out: &mut impl io::Write, libs: &Path) -> Result<PathBuf, 
         .args(["--target", &target, "--target-dir"])
         .arg(&target_dir)
         .env("SHARDS_GPU_LIBS", libs);
+    // Windows' carries MSVC's C runtime, as the other helpers do (D36); the Vulkan loader it
+    // opens as it starts, a DLL of the GPU's driver, brings its own.
+    if target.ends_with("-pc-windows-msvc") {
+        command.env(
+            "CARGO_ENCODED_RUSTFLAGS",
+            rustflags_with("-Ctarget-feature=+crt-static")?,
+        );
+    }
     // musl's GPU's VM process, built on a musl host (Alpine), links that host's musl
     // dynamically, as glibc's does glibc (D201): a static program has no dlopen(3) of a
     // host's Vulkan driver. So musl's static default is turned off for it alone
@@ -569,14 +600,10 @@ fn compile_gpu_helper(out: &mut impl io::Write, libs: &Path) -> Result<PathBuf, 
     // where no linker is named for it already (.cargo/config.toml names rust-lld for musl's
     // static guests).
     if target.ends_with("-unknown-linux-musl") {
-        let mut flags: Vec<String> = env::var("CARGO_ENCODED_RUSTFLAGS")
-            .unwrap_or_default()
-            .split('\x1f')
-            .filter(|f| !f.is_empty())
-            .map(String::from)
-            .collect();
-        flags.push("-Ctarget-feature=-crt-static".into());
-        command.env("CARGO_ENCODED_RUSTFLAGS", flags.join("\x1f"));
+        command.env(
+            "CARGO_ENCODED_RUSTFLAGS",
+            rustflags_with("-Ctarget-feature=-crt-static")?,
+        );
         let linker = format!(
             "CARGO_TARGET_{}_LINKER",
             target.to_ascii_uppercase().replace('-', "_")
