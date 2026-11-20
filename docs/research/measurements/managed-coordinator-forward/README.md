@@ -34,7 +34,7 @@ deadline path; it is not a throughput result. The buffer mutations establish
 that actual slot contents reach the other leg rather than synthesized replies.
 The hook cases establish a meaningful bypass witness rather than a missing log.
 
-`raw-7ee6/root-managed-forward-guards-7ee6-v2/driver.py` is the exact executed
+`raw-7ee6/guards-v2/driver.py` is the exact executed
 guard driver, SHA256
 `bf44be181b162eba93239bb7363b4837b423dfa38f0e3d6ca68a190ef28b780c`.
 Per-case source patches, actual guest hashes, commands, selected environment,
@@ -128,3 +128,11 @@ unrun hardware remain explicit. R08/R14 distributions, costs and comparisons
 remain coordinator work. R15 scoped implementers supplied source/light checks;
 root performed all live campaigns/review/integration. R16 preserves data,
 evidence, active caches and the paused VM; no host privilege change occurred.
+
+## Paths
+
+Shortened 2026-11-19, so that a Windows checkout holds every path (`scripts/lint` refuses
+one over 144 characters): run directories dropped the words their folder already says, and
+each case directory names its guest program's records `guest.*`. [renamed.tsv](renamed.tsv)
+gives each moved file the path its run wrote, which the manifests, checksums and logs here
+name; every file keeps its bytes.

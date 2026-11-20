@@ -12,7 +12,7 @@ Fedora KVM r398, exact combined source
 `7beb88056fe1ebd4c40179544452afbc172769f1`: all eight cases pass, IPv4/IPv6 ×
 local-to-peer/forward × connected/unconnected. Two TCP local regressions pass too.
 The experimental kernel/config identities, actual commands, inputs, guest stdout
-and host assertions are retained under `linux/root-managed-udp-7beb-v1`.
+and host assertions are retained under `linux/udp-v1`.
 
 Each UDP case actually exchanges a binary datagram and a zero-length datagram
 before and after interception. Both workers join. The backend retains exactly
@@ -57,7 +57,7 @@ observed start as `DifferentStart`. Every mutation has its own patch, rebuilt
 `fresh: false` executable identity and raw output; immutable binaries stay remote.
 `restored.diff` is empty and both original source hashes are retained.
 Closing ordinary API library and simulator suites pass after restoration.
-Raw: `mutations/root-proc-public-mutations-4674-v1`.
+Raw: `mutations/proc-public-v1`.
 
 Coordinator replay, in an exclusively owned Linux checkout and private target:
 
@@ -182,7 +182,7 @@ in `combined/root-managed-combined-real-4674-v1`.
 Root r441 runs12 native socket pair cases on the same source: IPv4/IPv6 × TCP,
 unconnected UDP and connected UDP × binary/empty payload. All12 actual guest
 observations pass, including TCP half-close behavior, with no skips. Raw records
-are in `native-sockets/root-managed-native-sockets-4674-v1`. These are native
+are in `native-sockets/sockets-v1`. These are native
 compatibility regressions after the receive-wrapper change; their identity
 records explicitly say interception is unverified. They do not add12 mediation
 proofs or settle the unrun UDP loopback/self interception cases.
@@ -203,7 +203,7 @@ make an extra attempt or weaken admission. Both production manager and actor
 source files are restored byte-identically, the final diff is empty, and actual
 recovery and held-population cancellation pass again. Raw source patches,
 commands, inputs, typed failure and restoration hashes are under
-`task-limit/root-managed-task-limit-mutation-2502-v1`. Replay uses the adjacent
+`task-limit/mutation-v1`. Replay uses the adjacent
 coordinator-only `task-limit-mutation.py` in an exclusively owned Linux checkout,
 private target and the retained explicit environment. The recorded driver is
 immutable; its nonidentical-patch assertion is simplified in the replay source.
@@ -262,3 +262,11 @@ AWS-LC's compiler-feature probe warning remains in the unmodified successful
 build logs. No host admin, Defender, firewall, trust or global tool setting changed.
 This gate covers neither the full suite nor Windows ARM, managed capture or the
 experimental network mechanisms. The Windows ARM VM remains paused.
+
+## Paths
+
+Shortened 2026-11-19, so that a Windows checkout holds every path (`scripts/lint` refuses
+one over 144 characters): run directories dropped the words their folder already says, and
+each case directory names its guest program's records `guest.*`. [renamed.tsv](renamed.tsv)
+gives each moved file the path its run wrote, which the manifests, checksums and logs here
+name; every file keeps its bytes.

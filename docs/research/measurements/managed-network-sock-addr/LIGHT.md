@@ -10,15 +10,15 @@ f5cec365/d634 policy receipt; R01–R16 accounting and runtime obligations are i
 
 |Kiln job|Actual result|Retained directory under light/|
 |---|---|---|
-|r120|Compiler101: extraction module layout missing intercept; no tests ran|managed-network-sock-addr-proof-v1|
-|r121|Compiler101: missing historical golden include and new source type inference|managed-network-sock-addr-proof-v2|
-|r122|23 GNU units0;23 musl units0; GNU clippy101 private-interface/collapsible-if|managed-network-sock-addr-proof-v3|
-|r123|23 GNU units0;23 musl units0; GNU/musl clippy -Dwarnings0|managed-network-sock-addr-proof-v4|
+|r120|Compiler101: extraction module layout missing intercept; no tests ran|proof-v1|
+|r121|Compiler101: missing historical golden include and new source type inference|proof-v2|
+|r122|23 GNU units0;23 musl units0; GNU clippy101 private-interface/collapsible-if|proof-v3|
+|r123|23 GNU units0;23 musl units0; GNU/musl clippy -Dwarnings0|proof-v4|
 |r124|Extracted host compile101: assertion separator swallowed by comment; no tests|managed-network-sock-addr-host-red-v1|
 |r125|Extracted host compile101 E0308: Run.status Option<i32> versus integer0; no tests|managed-network-sock-addr-host-red-v2|
 |r126|Extracted host compile0, exactly1 record-parser unit0; actual common helpers NOT compiled/run|managed-network-sock-addr-host-green-v1|
-|r127|GNU and musl explicit panic/unsafe lint commands101: second mount lacked adjacent SAFETY comment. Wrapper exit0 is NOT a passing lint result; both .status files101|managed-network-sock-addr-proof-v4/*-panic.*|
-|r128|Final23 GNU units0;23 musl units0; GNU/musl panic/unsafe lint subset0|managed-network-sock-addr-proof-v5|
+|r127|GNU and musl explicit panic/unsafe lint commands101: second mount lacked adjacent SAFETY comment. Wrapper exit0 is NOT a passing lint result; both .status files101|proof-v4/*-panic.*|
+|r128|Final23 GNU units0;23 musl units0; GNU/musl panic/unsafe lint subset0|proof-v5|
 |r129 and packaging followup|Archive creation/read-only private evidence packaging only; no functional tests|transfer.json and SHA256SUMS.json|
 
 The source-linked helper includes all actual managed_network modules and the actual

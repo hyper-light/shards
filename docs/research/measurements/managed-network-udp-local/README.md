@@ -157,3 +157,11 @@ classes remain required/unverified, never waived by a setup failure.
 | R11/R12 | Shared v4/v6 native implementation; GNU/musl light only. Full seven-target/real KVM/HVF/WHP gates owed. macOS arm64 only; paused Windows ARM untouched. |
 | R13 | Minimal finite role extension and diagnostic; no fallback or reclassification of local requirements. |
 | R15/R16 | Implementer source/light only, no children/main merge/audits/heavy/rootcache/host admin. Fresh private dirs, preserved sources/evidence/binaries, admitted envelope, Mac above30GiB. |
+
+## Paths
+
+Shortened 2026-11-19, so that a Windows checkout holds every path (`scripts/lint` refuses
+one over 144 characters): run directories dropped the words their folder already says, and
+each case directory names its guest program's records `guest.*`. [renamed.tsv](renamed.tsv)
+gives each moved file the path its run wrote, which the manifests, checksums and logs here
+name; every file keeps its bytes.

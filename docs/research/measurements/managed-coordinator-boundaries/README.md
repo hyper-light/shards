@@ -218,3 +218,10 @@ classified in WHITESPACE.json. No safety or rule weakening closes these failures
 Remaining actual gates include notification/worker/readiness failures, concurrent
 revocation and expiry; normal-tenant final terminal metadata and concurrent outcome ordering; other native hardware and comparable cost. Full hard budgets, mandatory routes,
 effect broker, native harness adapters/credentials and generations remain open.
+
+## Paths
+
+Shortened 2026-11-19, so that a Windows checkout holds every path (`scripts/lint` refuses
+one over 144 characters): each case directory names its guest program's records `guest.*`.
+[renamed.tsv](renamed.tsv) gives each moved file the path its run wrote, which the
+manifests, checksums and logs here name; every file keeps its bytes.

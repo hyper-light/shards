@@ -189,3 +189,10 @@ No authority/compatibility requirement is waived by this experiment.
 
 The later fixture-only missing-/tmp reproduction and minimal parent preparation are
 recorded in [MOUNT-PARENT.md](MOUNT-PARENT.md); runtime after-results remain owed.
+
+## Paths
+
+Shortened 2026-11-19, so that a Windows checkout holds every path (`scripts/lint` refuses
+one over 144 characters): run directories dropped the words their folder already says.
+[renamed.tsv](renamed.tsv) gives each moved file the path its run wrote, which the
+manifests, checksums and logs here name; every file keeps its bytes.

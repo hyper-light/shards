@@ -5,7 +5,7 @@ rules SHA256 d634fcb944959ce1e40a9277d12b0905fcfcebf82d9da9832e826f790a349242.
 Root r445, exact combined6e3d4cd3697aa46ac603e7e591dee30dd489733a, runs ten fresh
 KVM guests on Fedora GNU amd64 with the retained experimental kernel. Actual
 commands, source hashes, toolchain/kernel/config identities, inputs, output and
-status are under `coordinator-6e3d/root-managed-udp-local-6e3d-v1`.
+status are under `coordinator-6e3d/udp-local-v1`.
 
 ## Live red, not an accepted compatibility limit
 
