@@ -1,0 +1,59 @@
+# PM M621: the test's scene, 10 registrations a process, counting the asks whose wait returned while the spinners spun (RAN).
+# Prints TRY and RAN lines with --nocapture.
+--- a/crates/vmm/src/platform/windows_thread.rs
++++ b/crates/vmm/src/platform/windows_thread.rs
+@@ -299,6 +299,11 @@
+ /// waits on a thread it watches does not add to.
+ #[cfg(test)]
+ static LOOKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
++/// DIAG (scratch): whether the scene's spinners spin, and the asks whose wait returned meanwhile.
++#[cfg(test)]
++static DIAG_SPIN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
++#[cfg(test)]
++static DIAG_RAN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+ 
+ thread_local! {
+     /// The asks lent to the governor's thread and not yet answered, put here by their APCs
+@@ -424,6 +429,10 @@
+                 "waiting on the priority governor: {}",
+                 io::Error::last_os_error()
+             ));
++        }
++        #[cfg(test)]
++        if DIAG_SPIN.load(std::sync::atomic::Ordering::Relaxed) {
++            DIAG_RAN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+         }
+         // SAFETY: signalled once answered: the governor is done with it, and it is this
+         // thread's again, as Box::into_raw left it.
+@@ -1301,6 +1310,11 @@
+                 wait_looks(2);
+                 let period = period().unwrap();
+                 let window = period * 2 * u32::try_from(DUE).unwrap();
++                DIAG_SPIN.store(true, Ordering::Relaxed);
++                let mut all = Vec::new();
++                for _ in 0..10 {
++                registering.store(false, Ordering::Relaxed);
++                returned.store(false, Ordering::Relaxed);
+                 let (registering_tx, registering_rx) = mpsc::channel();
+                 let thread = s.spawn(move || {
+                     // SAFETY: the calling thread's pseudo-handle.
+@@ -1334,9 +1348,18 @@
+                 }
+                 let (looked, waited, level) = (looks() - from, began.elapsed(), priority_of(id));
+                 let starved = !returned.load(Ordering::Relaxed);
++                all.push((looked, waited, level, starved, thread));
++                }
++                DIAG_SPIN.store(false, Ordering::Relaxed);
+                 // The registering thread, starved, runs once the spinners stop.
+                 drop(stop);
+-                (period, looked, waited, level, starved, thread.join().unwrap())
++                let all: Vec<_> = all.into_iter().map(|(a, b, c, d, t)| (a, b, c, d, t.join().unwrap())).collect();
++                for (i, t) in all.iter().enumerate() {
++                    println!("TRY {i} looks={} waited={:?} level={} {} registered={:?} once={}", t.0, t.1, t.2, if t.3 { "starved" } else { "RUN" }, (t.4).0, (t.4).1);
++                }
++                println!("RAN {}", DIAG_RAN.load(Ordering::Relaxed));
++                let (looked, waited, level, starved, joined) = all.into_iter().last().unwrap();
++                (period, looked, waited, level, starved, joined)
+             });
+         let said = format!(
+             "{looked} looks in {waited:?} at a period of {period:?}; the registering thread at \
