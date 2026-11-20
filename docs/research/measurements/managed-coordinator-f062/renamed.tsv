@@ -1,6 +1,33 @@
 # Shortened 2026-11-19 so that a Windows checkout holds every path (scripts/lint).
 # Each line: a file's path here, then the path its run wrote, which this folder's
 # manifests, checksums and logs name. Its bytes are the run's.
+matrix-338b/seven-target-338b-v3/checkout.log	matrix-338b/root-managed-seven-target-338b-v3/checkout.log
+matrix-338b/seven-target-338b-v3/command.txt	matrix-338b/root-managed-seven-target-338b-v3/command.txt
+matrix-338b/seven-target-338b-v3/disk.txt	matrix-338b/root-managed-seven-target-338b-v3/disk.txt
+matrix-338b/seven-target-338b-v3/fetch.log	matrix-338b/root-managed-seven-target-338b-v3/fetch.log
+matrix-338b/seven-target-338b-v3/final-status.txt	matrix-338b/root-managed-seven-target-338b-v3/final-status.txt
+matrix-338b/seven-target-338b-v3/final-tracked.diff	matrix-338b/root-managed-seven-target-338b-v3/final-tracked.diff
+matrix-338b/seven-target-338b-v3/gate-source.sha256	matrix-338b/root-managed-seven-target-338b-v3/gate-source.sha256
+matrix-338b/seven-target-338b-v3/lint.exit	matrix-338b/root-managed-seven-target-338b-v3/lint.exit
+matrix-338b/seven-target-338b-v3/lint.log	matrix-338b/root-managed-seven-target-338b-v3/lint.log
+matrix-338b/seven-target-338b-v3/preflight-metadata.json	matrix-338b/root-managed-seven-target-338b-v3/preflight-metadata.json
+matrix-338b/seven-target-338b-v3/rustc-after.txt	matrix-338b/root-managed-seven-target-338b-v3/rustc-after.txt
+matrix-338b/seven-target-338b-v3/source.txt	matrix-338b/root-managed-seven-target-338b-v3/source.txt
+matrix-338b/seven-target-338b-v3/stages.json	matrix-338b/root-managed-seven-target-338b-v3/stages.json
+matrix-338b/seven-target-338b-v3/status.txt	matrix-338b/root-managed-seven-target-338b-v3/status.txt
+matrix-338b/seven-target-f062-v1/checkout.log	matrix-338b/root-managed-seven-target-f062-v1/checkout.log
+matrix-338b/seven-target-f062-v1/command.txt	matrix-338b/root-managed-seven-target-f062-v1/command.txt
+matrix-338b/seven-target-f062-v1/disk.txt	matrix-338b/root-managed-seven-target-f062-v1/disk.txt
+matrix-338b/seven-target-f062-v1/fetch.log	matrix-338b/root-managed-seven-target-f062-v1/fetch.log
+matrix-338b/seven-target-f062-v1/lint.exit	matrix-338b/root-managed-seven-target-f062-v1/lint.exit
+matrix-338b/seven-target-f062-v1/lint.log	matrix-338b/root-managed-seven-target-f062-v1/lint.log
+matrix-338b/seven-target-f062-v1/preserved-untracked/.DS_Store	matrix-338b/root-managed-seven-target-f062-v1/preserved-untracked/.DS_Store
+matrix-338b/seven-target-f062-v1/preserved-untracked/crates/.DS_Store	matrix-338b/root-managed-seven-target-f062-v1/preserved-untracked/crates/.DS_Store
+matrix-338b/seven-target-f062-v1/preserved-untracked/docs/.DS_Store	matrix-338b/root-managed-seven-target-f062-v1/preserved-untracked/docs/.DS_Store
+matrix-338b/seven-target-f062-v1/preserved-untracked/docs/research/.DS_Store	matrix-338b/root-managed-seven-target-f062-v1/preserved-untracked/docs/research/.DS_Store
+matrix-338b/seven-target-f062-v1/source.txt	matrix-338b/root-managed-seven-target-f062-v1/source.txt
+matrix-338b/seven-target-f062-v1/status.txt	matrix-338b/root-managed-seven-target-f062-v1/status.txt
+matrix-338b/seven-target-f062-v1/untracked-metadata.json	matrix-338b/root-managed-seven-target-f062-v1/untracked-metadata.json
 mount-fs-mutation-v1/command.json	root-managed-mount-fs-mutation-f062-v1/command.json
 mount-fs-mutation-v1/driver.exit	root-managed-mount-fs-mutation-f062-v1/driver.exit
 mount-fs-mutation-v1/driver.log	root-managed-mount-fs-mutation-f062-v1/driver.log

@@ -192,7 +192,8 @@ recorded in [MOUNT-PARENT.md](MOUNT-PARENT.md); runtime after-results remain owe
 
 ## Paths
 
-Shortened 2026-11-19, so that a Windows checkout holds every path (`scripts/lint` refuses
-one over 144 characters): run directories dropped the words their folder already says.
+Shortened 2026-11-19, so that a Windows checkout holds every path (`scripts/lint` refuses a
+path over 144 characters or a directory over 129): run directories dropped the words their
+folder already says, and each proof's copy of the source, `light/proof-v*/source`, is `src`.
 [renamed.tsv](renamed.tsv) gives each moved file the path its run wrote, which the
 manifests, checksums and logs here name; every file keeps its bytes.
