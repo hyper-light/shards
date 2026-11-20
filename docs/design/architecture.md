@@ -3528,6 +3528,23 @@ one CLI.
   are linked by rust-lld, as the init's are, so a host needs no toolchain of its own for
   them; the network code reads `resolv.conf` itself, and no helper uses the C library's
   resolver.
+- *Amended 2026-11-19 (ROOT's Windows-consumer slice):* on Windows every executable links
+  MSVC's C runtime in. Rust's `*-pc-windows-msvc` targets link it as DLLs unless the
+  `crt-static` feature is on (the Reference's "Static and dynamic C runtimes"), so main's
+  `shards.exe`, `shards-vm.exe` and `shards-net.exe` (9e649df34e, jupiter, dumpbin) imported
+  `VCRUNTIME140.dll`, which Visual C++'s redistributable installs, and 9, 5 and 9 of the
+  UCRT's `api-ms-win-crt-*` sets: a second thing to install. `.cargo/config.toml` turns
+  `+crt-static` on for both MSVC targets, and `build.rs` adds it to the helpers' nested
+  builds whatever the outer build's flags, as Linux's are musl's. C follows the flag: cc-rs
+  (1.5.1) and AWS-LC's CMake path compile `/MT` where `CARGO_CFG_TARGET_FEATURE` holds
+  `crt-static` (main's AWS-LC asked for `MSVCRT` 250 times), and `scripts/gpu-libs` compiles
+  the renderer, libepoxy and the identity bridge `-Db_vscrt=mt`, replacing 1f86d092's `/MD`,
+  since one link takes one runtime. Each executable holds its own copy (libcmt, libvcruntime,
+  libucrt; Microsoft's "C runtime (CRT) and C++ standard library (STL) .lib files"): a fix to
+  it reaches users in a build of shards, not through the redistributable's servicing, and
+  Microsoft's caution about several runtimes in one process is about runtime objects passed
+  between images, which shards' processes pass none of.
+  [windows-crt record](../research/measurements/windows-crt/README.md).
 - **The VM process's size, 2026-11-11 to 11-17.** CI's Firecracker comparison read the VM
   process's file-backed memory (`rss_file`, `pss_file`) worse than Firecracker's from
   78753d965 on, on every runner CPU (Envelope, row 11): its text mapped grew from

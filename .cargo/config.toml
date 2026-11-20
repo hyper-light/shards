@@ -22,3 +22,13 @@ linker = "rust-lld"
 
 [target.x86_64-unknown-linux-musl]
 linker = "rust-lld"
+
+# Windows executables carry MSVC's C runtime (libcmt, libvcruntime, libucrt) rather than
+# import vcruntime140.dll, which Visual C++'s redistributable installs, and the UCRT's DLLs:
+# `shards` stays the one file to install (D36). C follows: cc-rs (1.5.1, src/lib.rs) and
+# aws-lc-sys's CMake builder compile /MT where CARGO_CFG_TARGET_FEATURE holds crt-static.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-Ctarget-feature=+crt-static"]
+
+[target.aarch64-pc-windows-msvc]
+rustflags = ["-Ctarget-feature=+crt-static"]
