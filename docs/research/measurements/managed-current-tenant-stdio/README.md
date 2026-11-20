@@ -115,3 +115,11 @@ goal/autoplanning/main merge, ROOT reviews/integrates. R16: existing local workt
 local floor223GB observed, no local target/cache; fresh admitted private Linux
 paths only, all old/frozen/protected originals preserved. Full management/lane
 closure remains OPEN and requires ROOT release.
+
+## Paths
+
+Shortened 2026-11-19, so that a Windows checkout holds every path (`scripts/lint` refuses a
+path over 144 characters or a directory over 129): `raw-minimum-before/live-minimum-v3` is
+`raw-minimum-before/live-v3`, and `raw-caption-after/live-caption-v3` is
+`raw-caption-after/live-v3`. [renamed.tsv](renamed.tsv) gives each moved file the path its
+run wrote, which the commands, manifests and logs here name; every file keeps its bytes.
