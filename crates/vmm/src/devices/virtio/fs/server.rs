@@ -2629,9 +2629,9 @@ fn owner_control(body: &[u8], ext: bool) -> Option<&[u8]> {
 }
 
 /// A SETXATTR's arguments: `fuse_setxattr_in`, then the name and the value. In its extended
-/// form, which a guest's kernel sends every SETXATTR in once its session took
-/// FUSE_SETXATTR_EXT (v6.18 fs/fuse/xattr.c `fuse_setxattr`; D290), its own flags and a
-/// padding word follow its size and flags.
+/// form, which a guest's kernel sends once its session took FUSE_SETXATTR_EXT (v6.18
+/// fs/fuse/xattr.c `fuse_setxattr`; D290), its own flags and a padding word follow its size
+/// and flags.
 struct SetXattr<'a> {
     flags: u32,
     setxattr_flags: u32,
@@ -2639,7 +2639,15 @@ struct SetXattr<'a> {
     value: &'a [u8],
 }
 
+/// `body` read as the SETXATTR it is: in its extended form where its session took it (`ext`),
+/// unless its guest's kernel made it before it read INIT's reply, which it sends in the
+/// short form all the same (`fuse_setxattr` sizes it by `setxattr_ext` as it builds it, and
+/// virtiofs's mount asks INIT in the background: fs/fuse/inode.c `fuse_send_init`; init's
+/// owner word, set as its share is mounted, is one). The two are told apart by bytes 12 to
+/// 16: the extended form's padding, zeros; the short form's name's fifth to eighth bytes,
+/// one of which is not zero in any name the server takes (`namespaced`).
 fn setxattr_args(body: &[u8], ext: bool) -> Result<SetXattr<'_>, Errno> {
+    let ext = ext && body.get(12..16) == Some(&[0u8; 4][..]);
     let mut a = Args(body);
     let size = a.u32()?;
     let flags = a.u32()?;
@@ -5879,6 +5887,56 @@ mod tests {
         let (_, uid, gid) = owned(&s, ROOT, "host.txt");
         assert_eq!((uid, gid), (1000, 1001));
         assert_eq!(getxattr_of(&s, ROOT, shards_abi::SHARE_OWNER_XATTR).0, -ENODATA);
+    }
+
+    /// D290: a SETXATTR its guest's kernel made before it read INIT's reply comes in the short
+    /// form, though the session took FUSE_SETXATTR_EXT: `fuse_setxattr` sizes the request by
+    /// `setxattr_ext` as it builds it, then waits for the reply, which virtiofs's mount asks
+    /// in the background (v6.18 fs/fuse/xattr.c; fs/fuse/inode.c `fuse_send_init`), and init
+    /// sets its owner word as soon as the share is mounted. Each form is read as it is: the
+    /// word is taken, and a guest's own attribute in either form is set by its own name.
+    #[test]
+    fn a_setxattr_made_before_init_was_answered_is_read_in_its_short_form() {
+        let (path, s) = dir();
+        std::fs::write(path.join("host.txt"), "hi").unwrap();
+        negotiate(&s, init::ACL_FLAGS);
+        let short = answer(&s, &req(op::SETXATTR, ROOT, 0, &owner_word("1000:1001"))).0;
+        let (_, uid, gid) = owned(&s, ROOT, "host.txt");
+        assert_eq!((short, uid, gid), (0, 1000, 1001), "the owner word, short");
+        let f = found(&s, ROOT, "host.txt");
+        for (n, ext) in [("user.short", None), ("user.extended", Some(0))] {
+            let set = setxattr_of(n, b"v", ext);
+            assert_eq!(answer(&s, &req(op::SETXATTR, f, 0, &set)).0, 0, "{n}");
+            assert_eq!(getxattr_of(&s, f, n), (0, b"v".to_vec()), "{n}");
+        }
+    }
+
+    /// D290 with D38, in its guest's order: its kernel's INIT asking every flag (as 6.18's
+    /// `fuse_new_init` asks the three among many), init's owner word in the form that session
+    /// takes, then a run of user 1000 makes a directory in the share's root, as a bind's run
+    /// does: its root is that user's, and the directory is made, its mode masked by the
+    /// umask the kernel left the server.
+    #[test]
+    fn a_run_users_directory_is_made_in_a_root_inits_word_gave_it() {
+        let (path, s) = dir();
+        negotiate(&s, u32::MAX);
+        let mut word = owner_word("1000:1000");
+        word.splice(8..8, [0u8; 8]);
+        assert_eq!(answer(&s, &req(op::SETXATTR, ROOT, 0, &word)).0, 0);
+        let (e, attr) = answer(&s, &req(op::GETATTR, ROOT, 1000, &[0u8; 16]));
+        assert_eq!(e, 0);
+        let word_at = |at: usize| u32::from_le_bytes(attr[16 + at..16 + at + 4].try_into().unwrap());
+        assert_eq!((word_at(68), word_at(72)), (1000, 1000), "the root's owner");
+        let mut mkdir = [0o777u32, 0o022]
+            .iter()
+            .flat_map(|w| w.to_le_bytes())
+            .collect::<Vec<u8>>();
+        mkdir.extend(name("out"));
+        assert_eq!(answer(&s, &req(op::MKDIR, ROOT, 1000, &mkdir)).0, 0);
+        let (out, uid, gid) = owned(&s, ROOT, "out");
+        assert_eq!((uid, gid), (1000, 1000));
+        assert_eq!(mode_to_guest(&s, out) & 0o777, 0o755);
+        assert!(path.join("out").is_dir());
     }
 
     /// D290: a directory the server may search alone (memory-19) takes no access ACL, as it

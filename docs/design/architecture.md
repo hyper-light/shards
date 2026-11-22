@@ -45828,7 +45828,11 @@ left enforcing it, FUSE_POSIX_ACL, for later.
   guest took (`State::negotiated`), last in its saved tables, so a restored guest, which sends no
   INIT, is answered as its kernel expects; tables saved before it read as none. Tables a newer
   server saved are refused by an older one, as any longer tables are.
-- SETXATTR is read in the form its session took (`setxattr_args`), init's owner word (D38) too.
+- SETXATTR is read in the form its guest's kernel built it in (`setxattr_args`), init's owner
+  word (D38) too: the extended form once the session took FUSE_SETXATTR_EXT, but the short form
+  for a request the kernel made before it read INIT's reply, which it sends so all the same. The
+  extended form's padding (bytes 12 to 16) is zeros, where the short form holds its name's fifth
+  to eighth bytes, one of which is not zero in any name the server takes (`namespaced`).
 - `system.posix_acl_access`: a value Linux would refuse is refused as Linux refuses it
   (`acl::Acl::parse`); the empty ACL removes the kept one, the mode as it is; any other sets the
   mode's three classes from it, set-group-ID cleared where the kernel says KILL_SGID, and is kept
@@ -45863,6 +45867,30 @@ left enforcing it, FUSE_POSIX_ACL, for later.
   for `(-EINVAL, false)`.
 - And its moved `#[allow(clippy::too_many_arguments)]` left `chmod` refused by clippy.
 
+**Its first real-VM runs** (KVM, adacachy, Linux 7.2, the coordinator's, 2026-11-22): boot.rs'
+ACL test passed, but containers.rs `a_binds_host_files_are_its_runs_users` failed at its first
+run, `-u 1000:1000 -v DIR:/work`: `mkdir:/work/out: Permission denied`, where main passes it.
+- *Why.* Init's owner word came in the short form after all. virtiofs's mount asks INIT in the
+  background (v6.18 fs/fuse/virtio_fs.c `virtio_fs_fill_super`, fs/fuse/inode.c `fuse_send_init`:
+  `fuse_simple_background`), so mount(2) returns before the guest's kernel has read the reply,
+  and `fuse_setxattr` sizes its request by `setxattr_ext` as it builds it, before it waits for
+  that reply (fs/fuse/xattr.c). Init sets its word at once after the mount, so the word left in
+  the short form; the server, which had taken FUSE_SETXATTR_EXT, read it as extended, found the
+  name `shards.owner`, refused it (EOPNOTSUPP, which init lets go), and the share's root stayed
+  root's. boot.rs' ACL test sets its ACLs long after its mount, in the extended form; and
+  containers.rs' fresh-volume test passed, its top owned through init's chown (PM M249), not
+  through the word.
+- *Fixed* by reading each SETXATTR in the form it came in (the decision above). Red first:
+  `server::tests::a_setxattr_made_before_init_was_answered_is_read_in_its_short_form` saw
+  `(-95, 0, 0)` for `(0, 1000, 1001)`, the real run's refusal; and
+  `a_run_users_directory_is_made_in_a_root_inits_word_gave_it` holds the run's order (INIT with
+  every flag asked, the word, a GETATTR of the root, a mkdir as uid 1000). Both pass on macOS and
+  on Linux (CachyOS 7.2.9), with the whole module.
+- *Left as it is:* a CREATE, MKNOD or MKDIR made before the kernel read INIT's reply comes with
+  its mode masked by the kernel (`fc->dont_mask` was not yet set), which the server masks again,
+  to the same mode; under a directory's default ACL such a node keeps less than Linux would give
+  it, never more. Init makes nothing in a share before it has read from it.
+
 **Tests (light, R15).** `acl::tests` (4: a round trip and its mode, Linux's refusals, a chmod
 shown, a default's gift); `server::tests::an_access_acl_sets_the_mode_and_is_shown_from_it`,
 `a_default_acl_gives_what_is_made_in_it_in_place_of_the_umask`,
@@ -45885,9 +45913,10 @@ x86_64-pc-windows-msvc, `-D warnings -A clippy::never_loop` (main's alone, D289'
 shards --no-run --target aarch64-apple-darwin` exit 0, tests/boot.rs and tests/slates_fs.rs among
 its 53 executables.
 
-**Owed** (the coordinator's: R09-R11, R14, R15): the real-VM test on Hypervisor.framework and KVM,
-and on WHP, whose share process serves with this server (server_windows.rs); the seven targets'
-lint (`scripts/lint`); R14, unmeasured: each make's read of its directory's default ACL (one
+**Owed** (the coordinator's: R09-R11, R14, R15): boot.rs' ACL test and containers.rs
+`a_binds_host_files_are_its_runs_users` again on KVM, and both on Hypervisor.framework and on WHP,
+whose share process serves with this server (server_windows.rs); the seven targets' lint
+(`scripts/lint`); R14, unmeasured: each make's read of its directory's default ACL (one
 fgetxattr, and an allocation for its name) and each access ACL's read shown from the mode.
 
 
