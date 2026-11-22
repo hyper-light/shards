@@ -1,0 +1,37 @@
+# flock-kill (PM M623): Apple M5 Max, 18 CPUs, macOS 26.4.1, root:xnu-12377.101.15~1/RELEASE_ARM64_T6050, rustc 1.98.1, tree 54291fd13
+# rustc -O --edition 2024 main.rs -o target/flock-kill; target/flock-kill DIR 200 FILLER THREADS (DIR a fresh mktemp -d each run)
+# The first four runs: FILLER 0, THREADS 0 each.
+== 2026-11-22T21:46:54Z load 43.05 52.09 52.85
+observer=stopping rounds=200 filler=0 threads=0 home_lock_still_held=0
+observer=exit rounds=200 filler=0 threads=0 home_lock_still_held=194
+exit=0
+== 2026-11-22T21:47:01Z load 40.08 51.32 52.57
+observer=stopping rounds=200 filler=0 threads=0 home_lock_still_held=0
+observer=exit rounds=200 filler=0 threads=0 home_lock_still_held=196
+exit=0
+== 2026-11-22T21:47:06Z load 37.75 50.65 52.33
+observer=stopping rounds=200 filler=0 threads=0 home_lock_still_held=0
+observer=exit rounds=200 filler=0 threads=0 home_lock_still_held=200
+exit=0
+== 2026-11-22T21:47:11Z load 37.85 50.46 52.25
+observer=stopping rounds=200 filler=0 threads=0 home_lock_still_held=0
+observer=exit rounds=200 filler=0 threads=0 home_lock_still_held=193
+exit=0
+no children left
+== 2026-11-22T21:47:39Z load 36.77 48.98 51.65
+observer=stopping rounds=200 filler=256 threads=0 home_lock_still_held=196
+observer=exit rounds=200 filler=256 threads=0 home_lock_still_held=200
+exit=0
+== 2026-11-22T21:48:57Z load 48.71 50.33 51.96
+observer=stopping rounds=200 filler=0 threads=64 home_lock_still_held=0
+observer=exit rounds=200 filler=0 threads=64 home_lock_still_held=196
+exit=0
+== 2026-11-22T21:49:05Z load 48.12 50.17 51.88
+observer=stopping rounds=200 filler=256 threads=64 home_lock_still_held=158
+observer=exit rounds=200 filler=256 threads=64 home_lock_still_held=200
+exit=0
+== 2026-11-22T21:50:20Z load 40.81 47.55 50.75
+observer=stopping rounds=200 filler=1024 threads=0 home_lock_still_held=198
+observer=exit rounds=200 filler=1024 threads=0 home_lock_still_held=200
+exit=0
+no children left

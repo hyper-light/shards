@@ -1961,6 +1961,152 @@ mod tests {
         free
     }
 
+    /// How the killed daemon of [`a_stop_returns_once_a_killed_daemon_has_let_go_of_its_home`]
+    /// stands as its stop finds it: its stopping lock and its slot let go of, its home's lock
+    /// not yet. The kernel lets a killed process's locks go only as it closes its descriptors,
+    /// from the highest down (XNU's `fdt_invalidate`), once its exit has begun: the home's
+    /// lock, the first it took, among the last. kiln's sweep killed managed_output's HVF
+    /// daemon so as it stopped, at 54291fd13.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Killed {
+        /// Closed as it took the stop, killed ending its runs: its stopping lock let go of,
+        /// its name left.
+        Closing,
+        /// Closed before the stop came, killed so: no slot.
+        Closed,
+        /// Killed serving as it took the stop: its slot's session ended, unanswered.
+        Asked,
+        /// Killed serving before the stop came: no slot, no stopping lock.
+        Unasked,
+    }
+
+    /// How a killed daemon's records show it ([`Killed`]): gone, as macOS shows one from its
+    /// exit's beginning (`proc_prepareexit` stamps the exit `Named::lives` reads); or living,
+    /// as Linux and Windows show one until its descriptors have closed.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Shown {
+        Gone,
+        Living,
+    }
+
+    /// A daemon's record, `daemon.pid`'s and `daemon.stopping`'s, as `shown`: this process,
+    /// which lives, or its ID with a start not its own, a process that no longer lives.
+    fn record(shown: Shown) -> String {
+        let me = shards_ipc::this_process().unwrap();
+        if shown == Shown::Living {
+            return me;
+        }
+        let me = shards_ipc::Named::parse(&me).unwrap();
+        let gone = shards_ipc::Named {
+            start: me.start.wrapping_add(1),
+            ..me
+        };
+        assert!(!gone.lives());
+        format!("{} {}\n", gone.pid, gone.start)
+    }
+
+    /// `stop daemon` returns once a killed daemon has let go of its home, which its kernel
+    /// does last: before, it took the daemon's stopping lock let go of, its slot's end or its
+    /// exit's beginning for that, and returned while the home's lock was still held. The
+    /// stand-in daemon is this process, as in
+    /// [`a_stop_returns_once_its_daemon_has_let_go_of_its_home`]: it holds the home's lock
+    /// through a file of its own until its kernel would have closed the killed daemon's
+    /// descriptor of it, and serves real slots.
+    #[test]
+    fn a_stop_returns_once_a_killed_daemon_has_let_go_of_its_home() {
+        let mut wrong = Vec::new();
+        for (how, shown) in [
+            (Killed::Closing, Shown::Gone),
+            (Killed::Closing, Shown::Living),
+            (Killed::Closed, Shown::Gone),
+            (Killed::Closed, Shown::Living),
+            (Killed::Asked, Shown::Gone),
+            (Killed::Unasked, Shown::Gone),
+        ] {
+            let home = shards_testdir::TempDir::new("stop-killed").unwrap();
+            let held = locked(&home.join("daemon.lock"));
+            let named = record(shown);
+            std::fs::write(home.join(shards_ipc::PID), &named).unwrap();
+            let exit = matches!(how, Killed::Closing | Killed::Closed).then(|| {
+                std::fs::write(home.join(shards_ipc::STOPPING), &named).unwrap();
+                locked(&home.join(shards_ipc::STOPPING_LOCK))
+            });
+            // Its stopping lock let go of before its home's, its name left.
+            if let Some(exit) = &exit {
+                let _ = exit.unlock();
+            }
+            let mut requests = matches!(how, Killed::Closing | Killed::Asked)
+                .then(|| shards_ipc::slots::Requests::open(&home).unwrap());
+            let slots: Vec<_> = requests
+                .iter_mut()
+                .map(|requests| {
+                    let slot = requests.make(false).unwrap();
+                    requests.offer(slot.number(), false).unwrap();
+                    slot
+                })
+                .collect();
+            let stoppers: Vec<_> = slots.iter().map(|slot| slot.stopper().unwrap()).collect();
+            let at = home.to_path_buf();
+            // Its stop taken, and its session ended unanswered as its kernel closes it.
+            let serving = std::thread::spawn(move || serve(slots, requests, Stand::Ends, &at));
+            let (said, returned) = std::sync::mpsc::channel();
+            let at = home.to_path_buf();
+            // Its own thread, not joined: a stop that never returned fails the case below.
+            std::thread::spawn(move || {
+                let status = stop_at(&at, &at);
+                let _ = said.send((status, lock_free(&at)));
+            });
+            let early = returned.recv_timeout(RETURNS_WITHIN);
+            if let Ok((status, free)) = &early {
+                wrong.push(format!(
+                    "{how:?}, {shown:?}: returned {status:?} while its daemon held its home (free: {free})"
+                ));
+            }
+            for stopper in &stoppers {
+                let _ = stopper.stop();
+            }
+            let (_, requests) = serving.join().unwrap();
+            // Its descriptor of the home's lock closed, the kernel's last.
+            let _ = held.unlock();
+            if early.is_err() {
+                match returned.recv_timeout(RETURNS_WITHIN) {
+                    Ok((Ok(()), true)) => {}
+                    Ok((status, free)) => {
+                        wrong.push(format!("{how:?}, {shown:?}: returned {status:?}, free: {free}"))
+                    }
+                    Err(e) => wrong.push(format!("{how:?}, {shown:?}: not returned once let go: {e}")),
+                }
+            }
+            drop((held, exit, requests));
+        }
+        assert!(wrong.is_empty(), "{wrong:#?}");
+    }
+
+    /// A stop whose killed daemon's home another daemon has taken since returns at once: that
+    /// one holds the home's lock, named in `daemon.pid` and living, and a stop never waits on
+    /// a next daemon's lock (D185). The stand-in successor is this process, its slots yet to
+    /// come; the killed daemon closed, its stopping record and lock left, the lock let go of.
+    #[test]
+    fn a_stop_waits_on_no_daemon_that_took_a_killed_ones_home() {
+        let home = shards_testdir::TempDir::new("stop-taken").unwrap();
+        std::fs::write(home.join(shards_ipc::STOPPING), record(Shown::Gone)).unwrap();
+        let left = locked(&home.join(shards_ipc::STOPPING_LOCK));
+        let _ = left.unlock();
+        let held = locked(&home.join("daemon.lock"));
+        std::fs::write(home.join(shards_ipc::PID), record(Shown::Living)).unwrap();
+        let (said, returned) = std::sync::mpsc::channel();
+        let at = home.to_path_buf();
+        // Its own thread, not joined: a stop that never returned fails the test below.
+        std::thread::spawn(move || {
+            let status = stop_at(&at, &at);
+            let _ = said.send((status, lock_free(&at)));
+        });
+        let outcome = returned.recv_timeout(RETURNS_WITHIN);
+        let _ = held.unlock();
+        assert_eq!(outcome, Ok((Ok(()), false)), "the successor's lock waited on");
+        drop((held, left));
+    }
+
     /// `stop daemon` asks again a daemon that answered it without taking it, once, and fails
     /// naming it when that same daemon, as itself, answers so again: nothing changed between,
     /// so no answer of its to come is progress. A count of asks bounded it before (RESTARTS),
