@@ -4055,7 +4055,9 @@ microVM as virtio-fs shares (virtio 1.3 §5.11; Linux fs/fuse/virtio_fs.c):
   writes a slates volume, and one maps a slates file through its window, its fsynced
   stores in the volume at slates' first read and slates' write of the file in its map. An
   orchestrator's image run takes one too (D287: `ImageSpec::served`), in the share slot after
-  its own shares', with a DAX window where its shares have one.
+  its own shares', with a DAX window where its shares have one. A direct restore takes them as
+  `run` does, one for each of its snapshot's shares, each given its saved tables before the
+  guest runs (D289).
   - **On Windows** (`shards run vm --kernel … --slates-fs-handle V`): the stream is a duplex
     named pipe, since AF_UNIX makes no pair without a socket file and the pipe loses
     nothing at its writer's exit (PM M340).
@@ -4065,7 +4067,7 @@ microVM as virtio-fs shares (virtio 1.3 §5.11; Linux fs/fuse/virtio_fs.c):
       inherited handle stays inheritable and a spawn by std would hand it on. It gives V to
       the VM through its grants as `slates-fs-<i>`, in order, and names it with
       `--slates-fs`, as `--net`'s handles are given. No handle's value crosses as a flag.
-      `shards restore` takes none, as Unix's takes no `--slates-fs-fd`.
+      `shards restore` takes them as `run` does, as Unix's takes `--slates-fs-fd` (D289).
     - **The VM.** It takes each pipe from its grants by name, once, beside no `--warm` or
       `--shares`, as on Unix. Its device reads and writes the pipe as it does the socket,
       blocking, one request at a time. Every call is an overlapped one waited for at once
@@ -45662,6 +45664,95 @@ answered by the successor and its DAX reads unchanged; the seven targets' lint (
 Linux's sequenced-packet channel run (the unit tests take that branch on Linux alone); Windows
 (not built). Not reproduced live before building: the loss is by construction (no layer took
 the channel), the fix's own tests stand in until the live run.
+
+### D289. A direct restore given its snapshot's served shares' streams: `shards restore … --slates-fs-fd`, as `run` takes them (built: the VM process and the CLI, unit-tested on macOS arm64; real-VM runs owed)
+
+**Asked.** kiln goal 92, Shards' owed item 6, which kiln carried as its recorded change
+`vendor/patches/shards/0003-a-restored-microvm-is-given-its-served-shares-streams.patch` (on its
+copy of Shards b8fd01284e) until Shards took it. A share another server serves reached a direct
+boot (D38: `--slates-fs-fd`, on Windows `--slates-fs-handle`), but `shards restore` refused both,
+so a guest restored from a direct run's snapshot kept its share's device with no server: each
+request it made there failed, and what it held open there across the save was lost to it.
+
+**What there is.**
+- A snapshot keeps each share's server tables in its device's state, and the restored device
+  gives them to the server its slot is given before it asks anything, before the guest's vCPUs
+  run (D176 part 5: `Slot::attach` sends them as a RESTORE control frame, then asks for each DAX
+  range its window had again, zeros where its file reaches no more).
+- A restore makes a slot for each of its snapshot's shares as it reads the snapshot
+  (`restore_reported`, `SHARES`), and the device's state puts the saved tables in it (`pending`).
+  A daemon's restore fills the slots as its run arrives (`warm::shared`); a direct one had
+  nothing to fill them with.
+- `run` takes its served streams as it parses (`served_shares`): on Unix a socket its spawner
+  handed it, never stdio and never the `--grants` socket, each once; on Windows a pipe named in
+  its grants, taken once.
+
+**Alternatives** (R02).
+1. *Refuse, as before*: the hole asked about.
+2. *Give the streams once the guest runs again*: its first requests on the share would reach a
+   server that knows none of its nodes, so its open files and working directory there would be
+   stale (D176 part 5 orders the tables first). Not taken.
+3. *Fill the slots before the restore, as `run` fills new ones*: a slot's tables come from the
+   device's state as the restore reads it (`pending`), and `Slot::attach` sends them on the
+   stream it is given, so a stream given before the restore would never take them. Not taken.
+4. *The restore held, each share given its stream, then the guest let go.* Taken: the order
+   established implementations keep for a device whose state another process holds. QEMU's
+   vhost-user protocol loads a back-end's state while "the VM guest is stopped, and the
+   vhost-user device is suspended", and starts its rings after (docs/interop/vhost-user.rst,
+   "Migrating back-end state": `VHOST_USER_PROTOCOL_F_DEVICE_STATE`, bit 19, and
+   `VHOST_USER_SET_DEVICE_STATE_FD`; qemu 7bb83375c7). Cloud Hypervisor restores a VM paused,
+   given new descriptors for each device its caller's made (`net_fds`, each named for its
+   device), and resumes it after (docs/snapshot_restore.md, cloud-hypervisor 90ded1a53f).
+5. *Some shares given, the rest left unserved*: a direct restore has no daemon to serve them
+   later, so its guest would keep a share no server answers. Not taken: as many streams as the
+   snapshot has shares, or none (the restore as before).
+
+**Decision.**
+- `shards restore DIR … --slates-fs-fd FD`, repeatable (on Windows `--slates-fs-handle V`,
+  handed to the VM through its grants as `slates-fs-<i>` and named with `--slates-fs`, as `run`'s
+  is): the VM process takes the streams as `run` does, through the same function
+  (`vm_run::served_streams`), restores the VM held, gives the snapshot's shares the streams in
+  order, and lets the guest run unless `--hold` holds it. A count other than the snapshot's
+  shares' stops the VM before any vCPU ran, and is refused, naming both counts. Never beside
+  `--warm` or `--resume`: a daemon's VM is given its shares by its daemon.
+- `run` and the restore share that taking (R12). kiln's change took the streams with a copy of
+  `run`'s that left out the refusal of the `--grants` socket on Unix; shared, a `--slates-fs-fd`
+  naming the VM's grants socket is refused as given twice rather than its descriptor owned
+  twice.
+- No literal (R03).
+
+**Tests (light, R15).**
+- `vm_run::tests::a_restore_takes_its_snapshots_served_shares_streams` (shards-vm, Unix): the
+  descriptors kept in order; one that is no descriptor, and one beside `--warm`, refused.
+- `vm_run::tests::a_served_share_takes_its_socket_once` (shards-vm, Unix): `run`'s checks,
+  through the shared taking.
+- `cli::served_pipes_tests::a_restore_takes_a_served_shares_pipe_by_name_as_run_does` (shards,
+  Windows): to the VM as `slates-fs-0`, named with `--slates-fs`, its snapshot directory kept.
+- Real VM: tests/slates_fs.rs
+  `a_restored_microvm_keeps_its_slates_share_through_the_stream_its_restore_is_given` (Unix, with
+  `SLATES_BIN`): a guest saved with `--snapshot-then stop` holding a file open on its slates
+  volume, then restored directly with a fresh attachment, appends through that file and writes
+  another, and slates reads both; its guest is testguest's `slates_fs_restore`.
+
+**Evidence** (macOS 26.4.1 arm64, Apple M5 Max, rustc 1.98.1, debug, on b8fd01284e):
+`SHARDS_HELPERS=skip cargo clippy --workspace --all-targets --target aarch64-apple-darwin -- -D
+warnings` exit 0, no warnings; the guest's scenario by `cargo clippy -p shards-testguest
+--all-targets --target aarch64-unknown-linux-musl -- -D warnings` (zig's C, as scripts/lint
+builds it) exit 0, no warnings; `cargo fmt --all --check` clean; `cargo test -p shards-vm-process
+--bin shards-vm -- --exact vm_run::tests::a_restore_takes_its_snapshots_served_shares_streams
+vm_run::tests::a_served_share_takes_its_socket_once` 2 passed. Mutation: the restore's
+`--slates-fs-fd` arm taken out, as main parses it, failed
+`a_restore_takes_its_snapshots_served_shares_streams` at its first parse with main's `unknown
+argument "--slates-fs-fd"`. Windows x86_64, from this Mac by cargo-xwin: `cargo xwin clippy
+--workspace --all-targets` and `-p shards-vmm --features gpu --all-targets` for
+x86_64-pc-windows-msvc, `-D warnings -A clippy::never_loop`, exit 0, no warnings. The allowance
+is main's alone: `Slot::ask_into` (D288, fs/mod.rs), whose loop never loops on Windows, fails
+`clippy::never_loop` there, so `scripts/lint x86_64-pc-windows-msvc` fails at b8fd01284e itself.
+
+**Owed** (the coordinator's: R09-R11, R14, R15): the real-VM test on Hypervisor.framework and KVM
+with `SLATES_BIN`; a Windows restore's served pipe on WHP, which no real-VM test drives yet
+(slates_fs.rs's is Unix's); the seven targets' lint (`scripts/lint`); the refusal of the grants
+socket is `run`'s, taken by construction, not reproduced live.
 
 
 ## 4. Start path (≤ 5 ms budget)

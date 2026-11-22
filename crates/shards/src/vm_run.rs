@@ -92,8 +92,8 @@ const RUN_USAGE: &str = "usage: shards run vm --kernel PATH [--initrd PATH | --i
                 VIRTIO_IOMMU. Not with --snapshot-dir.
   Console escape: Ctrl-A x stops the VM.";
 
-const RESTORE_USAGE: &str = "usage: shards restore vm DIR [--hold] [--vsock PATH] [--no-console [--console-said N]] [--gpu] [--backing PATH[:ro]]... [--layer PATH [--layer-cloned GENERATION]] [--snapshot-dir DIR [--snapshot-then stop|resume]]
-       shards restore vm DIR [--hold] [--backing PATH[:ro]]... [--layer PATH [--layer-cloned GENERATION]] [WORKLOAD OPTIONS] -- COMMAND [ARG...]
+const RESTORE_USAGE: &str = "usage: shards restore vm DIR [--hold] [--vsock PATH] [--no-console [--console-said N]] [--gpu] [--backing PATH[:ro]]... [--slates-fs-fd FD]... [--layer PATH [--layer-cloned GENERATION]] [--snapshot-dir DIR [--snapshot-then stop|resume]]
+       shards restore vm DIR [--hold] [--backing PATH[:ro]]... [--slates-fs-fd FD]... [--layer PATH [--layer-cloned GENERATION]] [WORKLOAD OPTIONS] -- COMMAND [ARG...]
        shards restore vm DIR [--working-set FD [--record-until FD]] ...
        shards restore vm DIR --warm FD [--backing PATH[:ro]]... [--layer PATH [--layer-cloned GENERATION]]
        shards restore vm DIR --resume FD [--backing PATH[:ro]]... [--layer PATH [--layer-cloned GENERATION]]
@@ -118,6 +118,10 @@ const RESTORE_USAGE: &str = "usage: shards restore vm DIR [--hold] [--vsock PATH
                   working set, as soon as a byte or the end arrives on descriptor FD, as a
                   run's ends when its command answers; without a word, a while after the
                   start, as before.
+  --slates-fs-fd: a share another server serves (D38), as `run` takes one: a connected
+                 socket at descriptor FD, given to the snapshot's shares in order before
+                 its guest runs, their saved state sent to that server first; one for each
+                 of the snapshot's shares. On Windows `--slates-fs-handle`.
   --warm: resume at once and connect, then take one command, with the stdio and connection
           of the client it is for, from the daemon on the Unix socket at descriptor FD.
   --resume: DIR is a run's snapshot, its command running already: take its run's stdio,
@@ -518,10 +522,7 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
     let (mut kernel, mut common, mut warm) = (None, Common::new(), None);
     let mut memory_max = None;
     let mut attach = None;
-    #[cfg(unix)]
-    let mut served: Vec<i32> = Vec::new();
-    #[cfg(windows)]
-    let mut served: Vec<String> = Vec::new();
+    let mut served: Vec<Served> = Vec::new();
     // Each word with the value `spec::next_word` gives it, a value only for a flag
     // `spec::RUN_VALUED` lists, as the command line is read ahead of this (cli/shares.rs).
     while let Some((arg, mut given)) = crate::spec::next_word(&mut args) {
@@ -814,6 +815,10 @@ struct Restore {
     /// Where a warm restore writes its GPU report, and its scope (D233): its renderer's as it
     /// rejoins its snapshot's selection.
     gpu_report: Option<GpuReportTarget>,
+    /// The shares other servers serve its snapshot's guest (D38, D289): each a stream its
+    /// spawner handed this process, given to the snapshot's shares in order before its guest
+    /// runs ([`restore_served`]).
+    served: Vec<Served>,
 }
 
 fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String> {
@@ -825,6 +830,7 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String
     let mut working_set_to = None;
     let mut record_until = None;
     let (mut gpu_report, mut gpu_scope) = (None, None);
+    let mut served: Vec<Served> = Vec::new();
     // Each word with the value `spec::next_vm_word` gives it, a value only for a flag
     // `spec::RUN_VALUED` or `spec::RESTORE_VALUED` lists, as the command line is read ahead
     // of this (cli/mod.rs `vm_options`).
@@ -870,6 +876,19 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String
                 }
             }
             "--gpu-report-scope" => report_scope(&text(value("--gpu-report-scope")?)?, &mut gpu_scope)?,
+            // A share another server serves (D38, D289), as `run` takes one: a restored
+            // guest's share is given the stream its spawner hands in, which the snapshot's
+            // saved tables are given before the guest runs (`restore_served`).
+            #[cfg(unix)]
+            "--slates-fs-fd" => {
+                let fd = text(value("--slates-fs-fd")?)?;
+                served.push(
+                    fd.parse::<i32>()
+                        .map_err(|_| format!("--slates-fs-fd: {fd:?} is not a descriptor"))?,
+                );
+            }
+            #[cfg(windows)]
+            "--slates-fs" => served.push(text(value("--slates-fs")?)?),
             // A run's snapshot (D176): served as a warm VM's run is, its command running
             // already.
             "--resume" => {
@@ -900,6 +919,11 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String
             || common.vsock.is_some())
     {
         return Err("--warm takes its command from the daemon: no --hold, --vsock, --snapshot-dir, workload options or command".into());
+    }
+    if warm.is_some() && !served.is_empty() {
+        return Err(format!(
+            "--warm: a daemon's VM is given its shares by its daemon, never {SERVED_FLAG}"
+        ));
     }
     if warm.is_some() && working_set_to.is_some() {
         return Err("--warm hands its working set to the daemon: no --working-set".into());
@@ -964,6 +988,7 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String
         resume,
         said_to: common.said_to.take(),
         gpu_report,
+        served,
     })
 }
 
@@ -2135,6 +2160,7 @@ pub fn restore(args: impl Iterator<Item = OsString>) -> ExitCode {
         resume,
         said_to,
         gpu_report,
+        served,
     } = match parsed(parse_restore(args), RESTORE_USAGE) {
         Ok(restore) => restore,
         Err(code) => return code,
@@ -2187,7 +2213,7 @@ pub fn restore(args: impl Iterator<Item = OsString>) -> ExitCode {
         let slot = &handing;
         let code = serve_workload(cfg.vsock.take(), source, move |vsock| {
             cfg.vsock = Some(vsock);
-            let started = restore_vm(cfg).map_err(vm::StartError::from);
+            let started = restore_served(cfg, &served).map_err(vm::StartError::from);
             if let (Ok((handle, _)), Some(to)) = (&started, to)
                 && let Some(h) = to.hand_after(handle, RECORD_FOR, None)
             {
@@ -2201,7 +2227,7 @@ pub fn restore(args: impl Iterator<Item = OsString>) -> ExitCode {
         return code;
     }
     let (hold, console) = (cfg.hold, cfg.console);
-    let started = restore_vm(cfg).map_err(vm::StartError::from);
+    let started = restore_served(cfg, &served).map_err(vm::StartError::from);
     if hold && let Ok((handle, _)) = &started {
         wait_for_release(handle);
     }
@@ -3167,6 +3193,45 @@ fn restore_vm(cfg: RestoreConfig) -> Result<(Handle, Running), String> {
     restore_reported(cfg, None)
 }
 
+/// [`restore_vm`], its snapshot's shares given the streams `served` names (D38, D289) before
+/// its guest runs: the VM held while each share is given its stream, which the share's saved
+/// tables reach first (`Slot::attach`: their RESTORE, and its DAX window's ranges mapped
+/// again), then let go unless its caller holds it (`--hold`). One stream for each of the
+/// snapshot's shares, in order: a direct restore has no daemon to serve the rest, so a guest
+/// left with a share no server answers is refused before it runs. With none given,
+/// [`restore_vm`] as it was.
+fn restore_served(mut cfg: RestoreConfig, served: &[Served]) -> Result<(Handle, Running), String> {
+    if served.is_empty() {
+        return restore_vm(cfg);
+    }
+    let streams = served_streams(served)?;
+    let held = std::mem::replace(&mut cfg.hold, true);
+    let (handle, running) = restore_vm(cfg)?;
+    let slots = SHARES.get().map(Vec::as_slice).unwrap_or_default();
+    let given = || -> Result<(), String> {
+        if slots.len() != streams.len() {
+            return Err(format!(
+                "{SERVED_FLAG}: its snapshot has {} shares, and {} were given: a direct restore gives each one",
+                slots.len(),
+                streams.len()
+            ));
+        }
+        for (slot, (named, stream)) in slots.iter().zip(streams) {
+            slot.attach(stream)
+                .map_err(|e| format!("{SERVED_FLAG} {named}: {e}"))?;
+        }
+        Ok(())
+    };
+    if let Err(e) = given() {
+        handle.stop();
+        return Err(e);
+    }
+    if !held {
+        handle.release();
+    }
+    Ok((handle, running))
+}
+
 /// [`restore_vm`], its renderer's report written to `report_to` as it rejoins its snapshot's
 /// selection, before any guest vCPU runs (D233), as [`start_reported`]'s boot writes its own.
 fn restore_reported(
@@ -3644,15 +3709,42 @@ fn served_beside_daemon(cfg: &Config, warm: bool, flag: &str) -> Result<(), Stri
     Ok(())
 }
 
-/// The shares other servers serve (`--slates-fs-fd`, D38), after the VM's own: each a
-/// socket its spawner handed this process alone, as it hands `--grants` its, taken once.
-/// A daemon's VM is given its shares by its daemon (`--warm`, `--shares`), never these.
+/// What names a share another server serves (D38): on Unix the descriptor of a socket its
+/// spawner handed in (`--slates-fs-fd`), on Windows the name its spawner gave a pipe in its
+/// grants (`--slates-fs`, PM M340).
 #[cfg(unix)]
-fn served_shares(cfg: &mut Config, served: &[i32], warm: bool) -> Result<(), String> {
+type Served = i32;
+#[cfg(windows)]
+type Served = String;
+#[cfg(unix)]
+const SERVED_FLAG: &str = "--slates-fs-fd";
+#[cfg(windows)]
+const SERVED_FLAG: &str = "--slates-fs";
+
+/// The shares other servers serve (D38), after the VM's own, each given its stream
+/// ([`served_streams`]). A daemon's VM is given its shares by its daemon (`--warm`,
+/// `--shares`), never these.
+fn served_shares(cfg: &mut Config, served: &[Served], warm: bool) -> Result<(), String> {
     if served.is_empty() {
         return Ok(());
     }
-    served_beside_daemon(cfg, warm, "--slates-fs-fd")?;
+    served_beside_daemon(cfg, warm, SERVED_FLAG)?;
+    for (named, stream) in served_streams(served)? {
+        let slot: shards_vmm::devices::virtio::fs::Share = std::sync::Arc::default();
+        slot.attach(stream)
+            .map_err(|e| format!("{SERVED_FLAG} {named}: {e}"))?;
+        cfg.shares.push(slot);
+    }
+    Ok(())
+}
+
+/// The streams of the shares other servers serve, a run's or a restore's (D38, D289), each
+/// with the descriptor that named it: a socket its spawner handed this process alone, as it
+/// hands `--grants` its, each taken once.
+#[cfg(unix)]
+fn served_streams(
+    served: &[Served],
+) -> Result<Vec<(String, shards_vmm::devices::virtio::fs::Stream)>, String> {
     // The socket `--grants` took, where the VM process asks a broker for access.
     let grants = {
         use std::os::fd::AsRawFd as _;
@@ -3663,51 +3755,43 @@ fn served_shares(cfg: &mut Config, served: &[i32], warm: bool) -> Result<(), Str
             return Err(format!("--slates-fs-fd {fd}: given twice"));
         }
     }
-    for &fd in served {
-        let slot: shards_vmm::devices::virtio::fs::Share = std::sync::Arc::default();
-        slot.attach(crate::warm::inherited_socket("--slates-fs-fd", fd)?)
-            .map_err(|e| format!("--slates-fs-fd {fd}: {e}"))?;
-        cfg.shares.push(slot);
-    }
-    Ok(())
+    served
+        .iter()
+        .map(|&fd| crate::warm::inherited_socket("--slates-fs-fd", fd).map(|s| (fd.to_string(), s)))
+        .collect()
 }
 
-/// The shares other servers serve on Windows (`--slates-fs`, D38, PM M340), after the VM's
-/// own: each a pipe its spawner duplicated into this process and named in its grants, taken
-/// from them once, as `--net`'s are. A daemon's VM is given its shares by its daemon, never
-/// these.
+/// [`served_streams`] on Windows (PM M340): each a pipe its spawner duplicated into this
+/// process and named in its grants, taken from them once, as `--net`'s are.
 #[cfg(windows)]
-fn served_shares(cfg: &mut Config, served: &[String], warm: bool) -> Result<(), String> {
+fn served_streams(
+    served: &[Served],
+) -> Result<Vec<(String, shards_vmm::devices::virtio::fs::Stream)>, String> {
     use std::os::windows::io::{FromRawHandle as _, OwnedHandle};
-    if served.is_empty() {
-        return Ok(());
-    }
-    served_beside_daemon(cfg, warm, "--slates-fs")?;
     for (i, name) in served.iter().enumerate() {
         if served.iter().take(i).any(|other| other == name) {
             return Err(format!("--slates-fs {name}: given twice"));
         }
     }
     let mut given = GIVEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    for name in served {
-        let at = given
-            .iter()
-            .position(|(n, h)| n == name && matches!(h, shards_ipc::Handed::Handle(v) if *v != 0))
-            .ok_or_else(|| format!("--slates-fs {name}: no such pipe was given"))?;
-        let shards_ipc::Handed::Handle(value) = given.swap_remove(at).1 else {
-            return Err(format!("--slates-fs {name}: no handle"));
-        };
-        // SAFETY: a handle the spawner duplicated into this process for this share alone,
-        // owned from here on.
-        let pipe = unsafe { OwnedHandle::from_raw_handle(value as std::os::windows::io::RawHandle) };
-        let stream = shards_vmm::platform::ShareStream::from_handle(pipe)
-            .map_err(|e| format!("--slates-fs {name}: {e}"))?;
-        let slot: shards_vmm::devices::virtio::fs::Share = std::sync::Arc::default();
-        slot.attach(stream)
-            .map_err(|e| format!("--slates-fs {name}: {e}"))?;
-        cfg.shares.push(slot);
-    }
-    Ok(())
+    served
+        .iter()
+        .map(|name| {
+            let at = given
+                .iter()
+                .position(|(n, h)| n == name && matches!(h, shards_ipc::Handed::Handle(v) if *v != 0))
+                .ok_or_else(|| format!("--slates-fs {name}: no such pipe was given"))?;
+            let shards_ipc::Handed::Handle(value) = given.swap_remove(at).1 else {
+                return Err(format!("--slates-fs {name}: no handle"));
+            };
+            // SAFETY: a handle the spawner duplicated into this process for this share alone,
+            // owned from here on.
+            let pipe = unsafe { OwnedHandle::from_raw_handle(value as std::os::windows::io::RawHandle) };
+            let stream = shards_vmm::platform::ShareStream::from_handle(pipe)
+                .map_err(|e| format!("--slates-fs {name}: {e}"))?;
+            Ok((name.clone(), stream))
+        })
+        .collect()
 }
 
 /// Takes the socket at descriptor `fd` to ask the spawner for access on.
@@ -4991,6 +5075,29 @@ mod tests {
             reader.join().unwrap();
             assert_eq!(woken.try_recv(), Ok(()), "by a byte: {by_byte}");
         }
+    }
+
+    /// goal 92 (Shards' owed item 6): a restore takes a served share's stream as `run` does
+    /// (`--slates-fs-fd`, D38), each in order, for its snapshot's shares; one that is no
+    /// descriptor, and one beside `--warm` (a daemon gives its VM's shares), are refused.
+    #[test]
+    fn a_restore_takes_its_snapshots_served_shares_streams() {
+        let restore =
+            parse_restore(args(&[b"/t", b"--slates-fs-fd", b"7", b"--slates-fs-fd", b"8"])).unwrap();
+        assert_eq!(restore.served, vec![7, 8]);
+        let e = parse_restore(args(&[b"/t", b"--slates-fs-fd", b"x"]))
+            .err()
+            .unwrap();
+        assert!(
+            e.contains("--slates-fs-fd") && e.contains("not a descriptor"),
+            "{e}"
+        );
+        let e = parse_restore(args(&[b"/t", b"--warm", b"5", b"--slates-fs-fd", b"7"]))
+            .err()
+            .unwrap();
+        assert!(e.contains("--warm") && e.contains("--slates-fs-fd"), "{e}");
+        let bare = parse_restore(args(&[b"/t"])).unwrap();
+        assert!(bare.served.is_empty());
     }
 
     fn args(list: &[&[u8]]) -> impl Iterator<Item = OsString> {

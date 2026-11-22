@@ -317,6 +317,98 @@ fn a_microvm_mounts_reads_and_writes_a_volume_the_slates_daemon_serves() {
     );
 }
 
+/// goal 92 (Shards' owed item 6): `shards restore` gives a restored guest its slates share. Do: start slates' anchor
+/// and a volume holding `hello`; boot a microVM under `slates shards ID --fd 3 -- shards run … --slates-fs-fd 3
+/// --snapshot-dir D --snapshot-then stop`, whose guest mounts the share, writes `before` into `kept` keeping it open,
+/// and asks for its snapshot, stopping the run; then restore it under a fresh attachment, `slates shards ID --fd 3 --
+/// shards restore D --slates-fs-fd 3`. Expect the restored guest to append `after` through the file it kept open, read
+/// `hello` again and write `after-restore`, printing `SHARDS-TEST PASS`; and slates' own read to return
+/// `before\nafter\n` and what it wrote. Before this, a direct restore refused `--slates-fs-fd` and its guest's share
+/// had no server.
+#[cfg(unix)]
+#[test]
+fn a_restored_microvm_keeps_its_slates_share_through_the_stream_its_restore_is_given() {
+    if cannot_run_vms() {
+        eprintln!("SKIP: this host cannot run VMs");
+        return;
+    }
+    let Some(bin) = std::env::var_os("SLATES_BIN") else {
+        eprintln!("SKIP: SLATES_BIN is not set (the built `slates` binary)");
+        return;
+    };
+    let (_anchor, instance, id) = volume(&bin, "shards-fs-restore", &[("hello", HELLO)]);
+    let k = kernel().to_str().unwrap().to_owned();
+    let init = test_guest().to_str().unwrap().to_owned();
+    let scratch = TempDir::new("slates-fs-restore");
+    let snapshot = scratch.join("snapshot");
+    let snapshot = snapshot.to_str().unwrap().to_owned();
+
+    let mut saved = Command::new(&bin);
+    as_tests_run(&mut saved);
+    saved
+        .args(["--instance", &instance, "shards", &id, "--fd", "3", "--"])
+        .arg(shards())
+        .args([
+            "run",
+            "--kernel",
+            &k,
+            "--init",
+            &init,
+            "--slates-fs-fd",
+            "3",
+            "--snapshot-dir",
+            &snapshot,
+            "--snapshot-then",
+            "stop",
+            "--cmdline",
+            "console=hvc0 quiet panic=-1 shards_test=slates_fs_restore",
+        ]);
+    let asked = vec![
+        "slates shards".to_string(),
+        id.clone(),
+        "-- shards run --slates-fs-fd 3 --snapshot-dir".to_string(),
+    ];
+    let run = run_command(saved, &asked);
+    assert_eq!(run.status, Some(0), "the run that saves its snapshot: {run}");
+    assert!(
+        !run.stdout.contains("SHARDS-TEST PASS"),
+        "the saved run stopped at its snapshot: {run}"
+    );
+    let read = slates(&bin, &instance, &["read", &id, "kept"], b"");
+    assert_eq!(
+        read.stdout, b"before\n",
+        "slates reads what the guest wrote before its snapshot: {read:?}"
+    );
+
+    let mut restored = Command::new(&bin);
+    as_tests_run(&mut restored);
+    restored
+        .args(["--instance", &instance, "shards", &id, "--fd", "3", "--"])
+        .arg(shards())
+        .args(["restore", &snapshot, "--slates-fs-fd", "3"]);
+    let asked = vec![
+        "slates shards".to_string(),
+        id.clone(),
+        "-- shards restore --slates-fs-fd 3".to_string(),
+    ];
+    let run = run_command(restored, &asked);
+    assert_eq!(run.status, Some(0), "the restore: {run}");
+    assert!(
+        run.stdout.contains("SHARDS-TEST PASS"),
+        "the restored guest did not write on through its slates share: {run}"
+    );
+    let kept = slates(&bin, &instance, &["read", &id, "kept"], b"");
+    assert_eq!(
+        kept.stdout, b"before\nafter\n",
+        "a file the guest kept open across its snapshot takes its write after the restore: {kept:?}"
+    );
+    let after = slates(&bin, &instance, &["read", &id, "after-restore"], b"");
+    assert_eq!(
+        after.stdout, b"written by a restored shards guest through its slates share\n",
+        "slates reads what the restored guest wrote: {after:?}"
+    );
+}
+
 /// Do: boot the DAX test's microVM, its guest and its file alike, with no DAX window (`--share-window` left off). Expect
 /// the guest to find `big` not DAX and say so (`SHARDS-TEST FAIL /mnt/big is not DAX`), and no `SHARDS-TEST PASS`:
 /// without the window its reads go through FUSE, so the DAX test's map is the window's doing and cannot pass vacuously.

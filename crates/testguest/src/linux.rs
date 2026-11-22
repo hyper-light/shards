@@ -54,6 +54,7 @@ pub fn main() {
             "daemon" => daemon(),
             "e2e" => e2e(),
             "slates_fs" => slates_fs(),
+            "slates_fs_restore" => slates_fs_restore(),
             "share" => share(),
             "slates_fs_dax" => slates_fs_dax(),
             "bpf" => bpf_costs(),
@@ -163,6 +164,57 @@ fn slates_fs() -> Result<(), String> {
         std::fs::read_to_string("/mnt/from-guest").map_err(|e| format!("read /mnt/from-guest: {e}"))?;
     if back != wrote {
         return Err(format!("the share read back {back:?} after writing {wrote:?}"));
+    }
+    Ok(())
+}
+
+/// goal 92 (Shards' owed item 6): a guest's slates share across a save and a direct restore
+/// (`shards restore DIR --slates-fs-fd N`). Mounts `shards0`, reads `/hello`, writes `before`
+/// into `/kept` and syncs it, keeping the file open, then asks for its snapshot
+/// (`--snapshot-then stop`): only a restored guest goes on. Restored, its share served by the
+/// stream the restore was given, it appends `after` through the file it kept open (a handle
+/// of the saved session), reads `/hello` again, and writes `/after-restore`, syncs it and
+/// reads it back. The host reads both through slates' own read. The bytes are
+/// crates/shards/tests/slates_fs.rs's.
+fn slates_fs_restore() -> Result<(), String> {
+    virtiofs("shards0", "/mnt")?;
+    let hello = "hello from slates over shards virtio-fs\n";
+    let got = std::fs::read_to_string("/mnt/hello").map_err(|e| format!("read /mnt/hello: {e}"))?;
+    if got != hello {
+        return Err(format!("slates served {got:?}, expected {hello:?}"));
+    }
+    let mut kept = std::fs::File::create("/mnt/kept").map_err(|e| format!("create /mnt/kept: {e}"))?;
+    kept.write_all(b"before\n")
+        .map_err(|e| format!("write /mnt/kept: {e}"))?;
+    shards_durable::all(&kept).map_err(|e| format!("fsync /mnt/kept: {e}"))?;
+    let control = ControlPage::map()?;
+    control.write(shards_abi::control::SNAPSHOT, shards_abi::control::SNAPSHOT_NOW);
+    // A restored guest goes on here: the run that saved it stopped with its snapshot.
+    control.write(shards_abi::control::MARKER, shards_abi::marker::RESUMED);
+    let generation = control.read(shards_abi::control::GENERATION);
+    let _ = writeln!(io::stdout(), "SHARDS-TEST INFO restored generation={generation}");
+    kept.write_all(b"after\n")
+        .map_err(|e| format!("write /mnt/kept after the restore: {e}"))?;
+    shards_durable::all(&kept).map_err(|e| format!("fsync /mnt/kept after the restore: {e}"))?;
+    let again = std::fs::read_to_string("/mnt/hello")
+        .map_err(|e| format!("read /mnt/hello after the restore: {e}"))?;
+    if again != hello {
+        return Err(format!("restored, slates served {again:?}, expected {hello:?}"));
+    }
+    let wrote = "written by a restored shards guest through its slates share\n";
+    {
+        let mut file = std::fs::File::create("/mnt/after-restore")
+            .map_err(|e| format!("create /mnt/after-restore: {e}"))?;
+        file.write_all(wrote.as_bytes())
+            .map_err(|e| format!("write /mnt/after-restore: {e}"))?;
+        shards_durable::all(&file).map_err(|e| format!("fsync /mnt/after-restore: {e}"))?;
+    }
+    let back =
+        std::fs::read_to_string("/mnt/after-restore").map_err(|e| format!("read /mnt/after-restore: {e}"))?;
+    if back != wrote {
+        return Err(format!(
+            "the restored share read back {back:?} after writing {wrote:?}"
+        ));
     }
     Ok(())
 }

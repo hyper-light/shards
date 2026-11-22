@@ -2203,14 +2203,14 @@ type ServedPipe = (String, std::os::windows::io::BorrowedHandle<'static>);
 /// VM is given each through its grants as `slates-fs-<i>`, in its order, and told the name
 /// with `--slates-fs`, as `--net`'s handles are given: no handle's value crosses as a flag,
 /// since none is known in the child before the spawn duplicates it there. Each must be a
-/// pipe this process holds of its own, given once ([`served_pipe`]). `restore` takes none,
-/// as Unix's takes no `--slates-fs-fd`. `--warm V`, a warm VM's link to the daemon that
+/// pipe this process holds of its own, given once ([`served_pipe`]). `restore` takes them as
+/// `run` does, as Unix's takes `--slates-fs-fd`: its snapshot's shares, each given its stream
+/// before its guest runs (vm_run.rs `restore_served`). `--warm V`, a warm VM's link to the daemon that
 /// serves it its request (D26), as Unix's `--warm FD` names its socket, goes so too, as
 /// [`WARM`], once. What follows `--` is the workload's, kept as it is. The arguments the VM
 /// is given, and the pipes.
 #[cfg(windows)]
 fn served_pipes(args: &[OsString]) -> Result<(Vec<OsString>, Vec<ServedPipe>), String> {
-    let restoring = args.first().is_some_and(|a| a == "restore");
     let mut kept = Vec::with_capacity(args.len());
     let mut pipes: Vec<ServedPipe> = Vec::new();
     let mut values: Vec<usize> = Vec::new();
@@ -2228,11 +2228,6 @@ fn served_pipes(args: &[OsString]) -> Result<(Vec<OsString>, Vec<ServedPipe>), S
                 continue;
             }
         };
-        // Refused under its own name, as Unix's parse_restore refuses --slates-fs-fd, not
-        // under the `--slates-fs` it would become.
-        if restoring && flag == "--slates-fs-handle" {
-            return Err(format!("unexpected argument {arg:?}"));
-        }
         let given = rest
             .next()
             .and_then(|v| v.to_str())
@@ -2419,8 +2414,25 @@ mod served_pipes_tests {
         assert!(!inheritable(&read), "no spawn by std hands it on");
     }
 
-    /// No value, one that is no number, a handle that is no pipe, a pipe given twice, and
-    /// one given to `restore` are each refused, the flag named.
+    /// goal 92 (Shards' owed item 6): `restore` takes a served share's pipe as `run` does, to
+    /// the VM as `slates-fs-0` named with `--slates-fs`, its snapshot directory kept in place:
+    /// a restored guest's share is given its stream, where it was refused.
+    #[test]
+    fn a_restore_takes_a_served_shares_pipe_by_name_as_run_does() {
+        let (read, _write) = std::io::pipe().unwrap();
+        let value = (read.as_raw_handle() as usize).to_string();
+        let (kept, pipes) =
+            served_pipes(&args(&["restore", "/snapshot", "--slates-fs-handle", &value])).unwrap();
+        assert_eq!(
+            kept,
+            args(&["restore", "/snapshot", "--slates-fs", "slates-fs-0"])
+        );
+        assert_eq!(pipes.len(), 1);
+        assert_eq!(pipes[0].0, "slates-fs-0");
+    }
+
+    /// No value, one that is no number, a handle that is no pipe, and a pipe given twice are
+    /// each refused, the flag named.
     #[test]
     fn what_is_no_pipe_it_holds_is_refused() {
         let (read, _write) = std::io::pipe().unwrap();
@@ -2447,10 +2459,6 @@ mod served_pipes_tests {
                     pipe.as_str(),
                 ],
                 "given twice",
-            ),
-            (
-                vec!["restore", "/snapshot", "--slates-fs-handle", pipe.as_str()],
-                "unexpected argument",
             ),
         ] {
             let e = served_pipes(&args(&given)).err().unwrap();
