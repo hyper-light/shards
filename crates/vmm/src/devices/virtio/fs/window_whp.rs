@@ -1628,7 +1628,10 @@ mod tests {
     }
 }
 
+// Its guests run in x86-64's long mode, so they are x86-64 WHP's alone: an arm64 Windows host
+// runs them once it has an AArch64 guest of its own, which is owed (PM M622).
 #[cfg(test)]
 #[cfg(hv = "whp")]
+#[cfg(target_arch = "x86_64")]
 #[path = "window_whp_guest.rs"]
 mod guest;
