@@ -308,16 +308,18 @@ impl Slot {
             .conn
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // One exchange on Windows, whose servers give no resync channel (D288 is Unix's alone):
+        // its failure is its asker's.
+        #[cfg(windows)]
+        return exchange(conn.as_mut().ok_or(io::ErrorKind::NotConnected)?, req, reply);
+        #[cfg(unix)]
         loop {
             let asked = exchange(conn.as_mut().ok_or(io::ErrorKind::NotConnected)?, req, reply);
             match asked {
                 Ok(took) => return Ok(took),
                 // Asked again whole, its unique unchanged, on its server's successor's stream
                 // (D288); a successor that dies too is followed by the next.
-                #[cfg(unix)]
                 Err(failed) => self.resynced(&mut conn, failed)?,
-                #[cfg(windows)]
-                Err(failed) => return Err(failed),
             }
         }
     }
