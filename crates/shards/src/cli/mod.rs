@@ -1347,13 +1347,15 @@ fn said_kept(to: Option<std::os::fd::OwnedFd>) -> Result<(), String> {
     Ok(())
 }
 
-/// Only explicit managed report/lifeline pipes cross the final same-PID exec.
+/// Only explicit managed report/lifeline pipes, and the sockets of the shares other servers
+/// serve (`--slates-fs-fd`, D38, D289), cross the final same-PID exec.
 /// Helper spawn can mark inherited FDs CLOEXEC in this process on Linux; restore
 /// only these named descriptors AFTER all helpers and immediately before exec.
 #[cfg(unix)]
 struct CarriedVmIo {
     report: Option<std::fs::File>,
     lifeline: Option<std::fs::File>,
+    served: Vec<std::os::fd::OwnedFd>,
 }
 
 #[cfg(unix)]
@@ -1362,7 +1364,12 @@ impl CarriedVmIo {
         use shards_abi::gpu::GpuProbeError as Error;
         use std::os::fd::FromRawFd as _;
         let (mut report, mut lifeline) = (None, None);
+        let mut served = Vec::new();
         for (word, value) in vm_options(args) {
+            if word == "--slates-fs-fd" {
+                served.extend(value.and_then(|v| v.to_str()).and_then(|v| v.parse::<i32>().ok()));
+                continue;
+            }
             let slot = if word == "--gpu-report" {
                 &mut report
             } else if word == "--host-lifeline" {
@@ -1415,13 +1422,20 @@ impl CarriedVmIo {
         };
         let report = report.map(|fd| adopt(fd, libc::O_WRONLY)).transpose()?;
         let lifeline = lifeline.map(|fd| adopt(fd, libc::O_RDONLY)).transpose()?;
-        Ok(Self { report, lifeline })
+        Ok(Self {
+            report,
+            lifeline,
+            served: served_sockets(&served),
+        })
     }
 
     fn keep_for_exec(&self) -> Result<(), shards_abi::gpu::GpuProbeError> {
         use std::os::fd::AsRawFd as _;
-        for file in [&self.report, &self.lifeline].into_iter().flatten() {
-            let fd = file.as_raw_fd();
+        let pipes = [&self.report, &self.lifeline]
+            .into_iter()
+            .flatten()
+            .map(|file| file.as_raw_fd());
+        for fd in pipes.chain(self.served.iter().map(|socket| socket.as_raw_fd())) {
             // SAFETY: restore only a live endpoint owned here; helper spawn may
             // have added CLOEXEC. Preserve every unrelated descriptor/flag.
             let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
@@ -1438,11 +1452,45 @@ impl CarriedVmIo {
     }
 }
 
+/// The sockets `--slates-fs-fd` names that its spawner left this process (D38, D289), each
+/// adopted once and kept out of the helpers it starts until [`CarriedVmIo::keep_for_exec`].
+/// A value naming no socket above stdio is left as it is, for the VM process to refuse by
+/// its flag (`vm_run::served_streams`).
+#[cfg(unix)]
+fn served_sockets(named: &[i32]) -> Vec<std::os::fd::OwnedFd> {
+    use std::os::fd::{AsRawFd as _, FromRawFd as _};
+    let mut adopted: Vec<std::os::fd::OwnedFd> = Vec::with_capacity(named.len());
+    for &fd in named {
+        if fd < 3 || adopted.iter().any(|socket| socket.as_raw_fd() == fd) {
+            continue;
+        }
+        // SAFETY: fstat(2) into a zeroed buffer; any descriptor number may be asked about.
+        let mut st: libc::stat = unsafe { std::mem::zeroed() };
+        // SAFETY: as above.
+        if unsafe { libc::fstat(fd, &mut st) } != 0 || st.st_mode & libc::S_IFMT != libc::S_IFSOCK {
+            continue;
+        }
+        // SAFETY: a socket its spawner left this process for the VM it becomes, adopted once
+        // (above) and owned from here on.
+        let socket = unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) };
+        // SAFETY: fcntl(2) on the socket owned here, out of every helper's exec until the
+        // final one; a failure leaves it as it was, inheritable, which its exec needs.
+        unsafe {
+            let flags = libc::fcntl(fd, libc::F_GETFD);
+            if flags >= 0 {
+                libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC);
+            }
+        }
+        adopted.push(socket);
+    }
+    adopted
+}
+
 #[cfg(unix)]
 fn carried_io_failure(why: shards_abi::gpu::GpuProbeError) -> ExitCode {
     let _ = writeln!(
         std::io::stderr(),
-        "carrying explicit VMM report/lifeline pipes: {why}"
+        "carrying explicit VMM report/lifeline pipes and served shares' sockets: {why}"
     );
     ExitCode::FAILURE
 }
@@ -1499,6 +1547,47 @@ mod carried_io_tests {
             ];
             assert!(CarriedVmIo::read(&words).is_err());
         }
+    }
+
+    /// D289: a served share's socket its spawner left this process (`--slates-fs-fd`)
+    /// crosses the final exec as the report pipe does. Linux's spawn marks every descriptor
+    /// close-on-exec before this process's first child (`shards_ipc::spawn`), and a restore
+    /// starts its working set's writer first, so the socket was closed at the exec and the
+    /// VM found another file at its number ("not a socket"). A value naming no socket is
+    /// left as it is, for the VM to refuse by its flag.
+    #[test]
+    fn a_served_shares_socket_crosses_the_final_exec_after_a_helper_marks_it() {
+        let (ours, _peer) = std::os::unix::net::UnixStream::pair().unwrap();
+        let socket = ours.into_raw_fd();
+        let (_reader, not_socket) = std::io::pipe().unwrap();
+        // As a helper's spawn marks every descriptor this process holds.
+        for fd in [socket, not_socket.as_raw_fd()] {
+            // SAFETY: fcntl(2) on descriptors this test holds.
+            assert_eq!(unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) }, 0);
+        }
+        let words: Vec<OsString> = [
+            "restore".to_string(),
+            "/snapshot".into(),
+            "--slates-fs-fd".into(),
+            socket.to_string(),
+            "--slates-fs-fd".into(),
+            not_socket.as_raw_fd().to_string(),
+            "--slates-fs-fd".into(),
+            "x".into(),
+        ]
+        .into_iter()
+        .map(OsString::from)
+        .collect();
+        let carried = CarriedVmIo::read(&words).unwrap();
+        carried.keep_for_exec().unwrap();
+        // SAFETY: fcntl(2) reading the flags of descriptors still open.
+        let flags = |fd| unsafe { libc::fcntl(fd, libc::F_GETFD) } & libc::FD_CLOEXEC;
+        assert_eq!(
+            (flags(socket), flags(not_socket.as_raw_fd())),
+            (0, libc::FD_CLOEXEC),
+            "the socket crosses the exec, the pipe stays as it was"
+        );
+        drop(carried);
     }
 
     /// D232: a restore's own valued flag gives its value as `parse_restore` reads it: a

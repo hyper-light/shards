@@ -45750,10 +45750,33 @@ x86_64-pc-windows-msvc, `-D warnings -A clippy::never_loop`, exit 0, no warnings
 is main's alone: `Slot::ask_into` (D288, fs/mod.rs), whose loop never loops on Windows, fails
 `clippy::never_loop` there, so `scripts/lint x86_64-pc-windows-msvc` fails at b8fd01284e itself.
 
-**Owed** (the coordinator's: R09-R11, R14, R15): the real-VM test on Hypervisor.framework and KVM
-with `SLATES_BIN`; a Windows restore's served pipe on WHP, which no real-VM test drives yet
-(slates_fs.rs's is Unix's); the seven targets' lint (`scripts/lint`); the refusal of the grants
-socket is `run`'s, taken by construction, not reproduced live.
+**Its first real-VM runs** (KVM, adacachy, Linux 7.2, the coordinator's, 2026-11-22) failed the
+test twice over, and both are fixed or named here:
+- *Its socket was lost at the VM's exec on Linux.* With slates 8ce3d615 the restore ended `--slates-fs-fd
+  3: not a socket`. On Linux `shards_ipc::spawn` marks every descriptor the CLI holds above stdio
+  close-on-exec before its first child (`cloexec_inherited`, so that none it inherited reaches a
+  helper), and a restore of a snapshot with no working set starts that writer first
+  (`working_set_writer`): slates' socket was closed at the exec into the VM process, whose next
+  open took its number. The CLI now carries the sockets `--slates-fs-fd` names through that exec
+  as it carries its report and lifeline pipes (`CarriedVmIo`): each adopted once where it is a
+  socket above stdio, kept out of the helpers, and inheritable again just before the exec; any
+  other value is left for the VM process to refuse by its flag. `run` had the same hole beside
+  any helper of its own (`--vsock`'s broker, `--share`'s share process). macOS's spawn closes
+  all but what it names in its child (`POSIX_SPAWN_CLOEXEC_DEFAULT`), so its CLI kept them, and
+  keeps them still. Red first: `cli::carried_io_tests::a_served_shares_socket_crosses_the_final_exec_after_a_helper_marks_it`
+  found the socket still close-on-exec, `(1, 1)` for `(0, 1)`; green after, with the module's
+  three earlier tests.
+- *Its slates kept no share tables.* With Shards' pin, slates f71282e1f6 (`SLATES_REV`,
+  .github/workflows/slates-fs.yml), the save ended `slates keeps no share tables a VM snapshot
+  can carry`: a slates stream answers a snapshot's SAVE with its tables, and takes them back at
+  RESTORE, only since slates 8f5d3275f (2026-11-17, its A-303). The test needs `SLATES_REV` at or
+  after it: origin/agents/g268-slates-rev-bump's ac30fc77a and kiln's 8ce3d615 both hold it.
+
+**Owed** (the coordinator's: R09-R11, R14, R15): the real-VM test on KVM and Hypervisor.framework
+with `SLATES_BIN` built at or after slates 8f5d3275f; a Windows restore's served pipe on WHP,
+which no real-VM test drives yet (slates_fs.rs's is Unix's); the seven targets' lint
+(`scripts/lint`); the refusal of the grants socket is `run`'s, taken by construction, not
+reproduced live.
 
 ### D290. Its own file server enforces a guest's POSIX ACLs: FUSE_POSIX_ACL, with FUSE_DONT_MASK and FUSE_SETXATTR_EXT (built: the server, unit-tested on macOS arm64; real-VM runs owed)
 
