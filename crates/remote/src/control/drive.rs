@@ -1361,7 +1361,9 @@ enum WriteState {
 
 /// A socket lane's writing half: each write taken within the lane's window, which waits for
 /// room as the stream takes what went before; its FIN ([`SocketWriter::shutdown_write`]) or its
-/// abort ([`SocketWriter::abort`]). Let go without either, the lane is abandoned.
+/// abort ([`SocketWriter::abort`]). Let go without either while its way is open, the lane is
+/// abandoned; once its writes are refused (`ConnectionReset`: the socket was cut short), its
+/// reader reads on to the lane's end.
 #[derive(Debug)]
 pub struct SocketWriter {
     lane: u64,
@@ -1463,8 +1465,12 @@ impl std::io::Write for SocketWriter {
 }
 
 impl Drop for SocketWriter {
+    /// A writer let go while its way is open abandons the lane both ways. One whose writes
+    /// were refused or failed leaves the lane's reading to its reader: a cut socket's last
+    /// bytes still come, then the lane's end (D251), and the lane is let go once both ways
+    /// are done, as the driver refused its writing as it told it so.
     fn drop(&mut self) {
-        if self.state == WriteState::Open || matches!(self.state, WriteState::Failed(_)) {
+        if self.state == WriteState::Open {
             self.asks.hand(Ask::Abort { lane: self.lane });
         }
     }
@@ -2308,10 +2314,21 @@ struct SocketLane {
     ask_left: usize,
     /// Its socket's FIN read, or its reader let go: nothing more of it is read.
     read_done: bool,
+    sending: Sending,
+}
+
+/// A socket lane's writing way, as the driver carries it (R04).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Sending {
+    Open,
     /// Its writer asked for its FIN, which goes once what it holds has gone.
-    finishing: bool,
+    Finishing,
     /// Its FIN gone.
-    finished: bool,
+    Finished,
+    /// Its endpoint reads no more of it (STOP_SENDING: the socket was cut short), or its
+    /// stream takes no more: its writer told so, and what it held let go. Its reading goes on
+    /// to the lane's end.
+    Refused,
 }
 
 /// What a stdin's next taken may say (step 5: one record in flight, taken whole).
@@ -2429,7 +2446,7 @@ impl Lane {
                 Err(_) => {
                     // A socket lane's stream that takes no more: its writer is told.
                     if let Carries::Socket(_) = self.carries {
-                        self.make_room(Err(Fault::Revoked));
+                        self.refuse();
                     }
                     return;
                 }
@@ -2449,19 +2466,36 @@ impl Lane {
         self.out.clear();
         self.sent = 0;
         if let Carries::Socket(socket) = &mut self.carries
-            && socket.finishing
-            && !socket.finished
+            && socket.sending == Sending::Finishing
         {
             let _ = io.finish(conn, stream);
-            socket.finished = true;
+            socket.sending = Sending::Finished;
         }
         self.settle();
     }
 
-    /// A socket lane over once both its ways are: its FIN gone and nothing more of it read.
+    /// A socket lane's writing way refused, unless its FIN has gone: its writer told its bytes
+    /// go no more (`Revoked`, `ConnectionReset` at its writes), what it held let go, and the
+    /// lane over once its reading is too.
+    fn refuse(&mut self) {
+        let Carries::Socket(socket) = &mut self.carries else {
+            return;
+        };
+        if socket.sending == Sending::Finished {
+            return;
+        }
+        socket.sending = Sending::Refused;
+        self.out.clear();
+        self.sent = 0;
+        self.make_room(Err(Fault::Revoked));
+        self.settle();
+    }
+
+    /// A socket lane over once both its ways are: its FIN gone or its writing refused, and
+    /// nothing more of it read.
     fn settle(&mut self) {
         if let Carries::Socket(socket) = self.carries
-            && socket.finished
+            && matches!(socket.sending, Sending::Finished | Sending::Refused)
             && socket.read_done
         {
             self.stage = Stage::Over;
@@ -3313,8 +3347,7 @@ impl Drive {
                     unread: 0,
                     ask_left: frame.len(),
                     read_done: false,
-                    finishing: false,
-                    finished: false,
+                    sending: Sending::Open,
                 });
                 let receives = unix::UNREACHED_BYTES.max(REFUSED_BYTES);
                 match Lane::new(
@@ -3353,8 +3386,10 @@ impl Drive {
                     return Ok(());
                 };
                 if let Some(lane) = self.lanes.get_mut(at) {
-                    if let Carries::Socket(socket) = &mut lane.carries {
-                        socket.finishing = true;
+                    if let Carries::Socket(socket) = &mut lane.carries
+                        && socket.sending == Sending::Open
+                    {
+                        socket.sending = Sending::Finishing;
                     }
                     lane.flush(io, conn);
                 }
@@ -3474,9 +3509,10 @@ impl Drive {
             }
             // No handle asks anything of the control lane.
             Carries::Control { .. } => return Ok(()),
-            // A socket's bytes go once it is connected, and none after its FIN was asked for.
+            // A socket's bytes go once it is connected, and none after its FIN was asked for or
+            // its writing refused.
             Carries::Socket(socket) => {
-                if !socket.connected || socket.finishing {
+                if !socket.connected || socket.sending != Sending::Open {
                     return Ok(());
                 }
             }
@@ -3523,16 +3559,15 @@ impl Handler for Drive {
         self.ring();
     }
 
-    fn stopped(&mut self, _io: &mut Io<'_>, _conn: ConnKey, stream: StreamId) {
+    fn stopped(&mut self, io: &mut Io<'_>, _conn: ConnKey, stream: StreamId) {
         // The endpoint reads no more of a lane it refused, ended or finished, whose side here
         // the driver has reset: its own frames, read as they come, say how it ended. A socket
-        // lane's writer that has not sent its FIN is told its bytes go no more (D251).
-        if let Some(lane) = self.lane_of(stream).and_then(|at| self.lanes.get_mut(at))
-            && let Carries::Socket(socket) = lane.carries
-            && !socket.finished
-        {
-            lane.make_room(Err(Fault::Revoked));
+        // lane's writing that has not sent its FIN is refused, as its socket was cut short, and
+        // its reading goes on to the endpoint's FIN after every byte the socket said (D251).
+        if let Some(lane) = self.lane_of(stream).and_then(|at| self.lanes.get_mut(at)) {
+            lane.refuse();
         }
+        self.sweep(io);
         self.ring();
     }
 

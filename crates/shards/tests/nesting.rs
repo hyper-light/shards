@@ -24,8 +24,9 @@
 //!   reach_its_gpu_as_their_rules_and_its_own_say` (box `beyond`);
 //! - AF_VSOCK still refused: `a_granted_workload_still_reaches_no_host_port_over_vsock`.
 //! - D251's cut through the guest's legs, init's hang-up probe and the vsock muxer's `Cut`:
-//!   `a_nested_workloads_socket_cut_mid_stream_resets_its_lane_at_the_controller` (`Ok(0)`
-//!   where `ConnectionReset` is due); a half-close taken for a cut by either:
+//!   `a_nested_workloads_socket_cut_mid_stream_delivers_its_bytes_then_its_end_at_the_controller`
+//!   (a write after the cut taken where `ConnectionReset` is due, on Unix; a byte of the
+//!   answer lost, anywhere); a half-close taken for a cut by either:
 //!   `a_nested_workloads_half_close_ends_its_way_in_order_while_the_controllers_goes_on`.
 
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
@@ -947,16 +948,18 @@ fn told(sockets: &shards_api::control::Sockets, said: &str) -> Vec<u8> {
 
 /// D251's cut, mid-stream, through init's relay, the VM process's vsock muxer and the endpoint
 /// (Windows: `warm.rs`'s `pass` too): the workload reads all its controller sends, answers, and
-/// closes its socket while the controller's way is still open. The controller reads
-/// `ConnectionReset`, never `Ok(0)`, after no byte but a prefix of the answer (a cut promises
-/// none before it), and its write after the cut is refused the same. On Windows it reads every
-/// byte of the answer, then `Ok(0)`: D251's amendment of 2026-11-15 ends a cut there as an end
-/// in order does (`Conn::linger`), as no WinSock AF_UNIX close keeps the bytes its peer has not
-/// read while telling it apart from one (PM M358), an open limit, and a write after it is not
-/// refused there (its *No black hole*). Guards: init's hang-up probe (`ClientCut`), the muxer's
-/// `Cut`, and the endpoint's.
+/// closes its socket while the controller's way is still open. The controller reads every byte
+/// of the answer, then `Ok(0)`, on every OS: every byte a socket said before its cut is its
+/// controller's (D251, amended 2026-11-15 for the guest's legs and 2026-11-22 for the
+/// endpoint, which ends the way down with a FIN after them, never a reset). On Unix the
+/// endpoint sees the cut (the muxer's close, hung up) and refuses the controller's way
+/// (STOP_SENDING): a write after is refused `ConnectionReset`. On Windows the cut reaches the
+/// endpoint as an end in order (`Conn::linger`, as no WinSock AF_UNIX close keeps the bytes its
+/// peer has not read while telling it apart from one, PM M358), and a write after it is not
+/// refused there (its *No black hole*), an open limit. Guards: init's hang-up probe
+/// (`ClientCut`), the muxer's `Cut`, and the endpoint's.
 #[test]
-fn a_nested_workloads_socket_cut_mid_stream_resets_its_lane_at_the_controller() {
+fn a_nested_workloads_socket_cut_mid_stream_delivers_its_bytes_then_its_end_at_the_controller() {
     use std::io::{ErrorKind, Read as _, Write as _};
     if cannot_run_vms() {
         eprintln!("SKIP: this host cannot run VMs");
@@ -970,30 +973,21 @@ fn a_nested_workloads_socket_cut_mid_stream_resets_its_lane_at_the_controller() 
         let ended = lane.read_to_end(&mut rest).map_err(|e| e.kind());
         let mut answer = b"cut.sock\n".to_vec();
         answer.extend(sent.iter().rev());
-        if cfg!(windows) {
+        assert_eq!(
+            ended,
+            Ok(answer.len()),
+            "a socket cut short: every byte, then its end"
+        );
+        assert!(
+            rest == answer,
+            "{} bytes read, not the workload's answer whole",
+            rest.len()
+        );
+        if !cfg!(windows) {
+            // Past the lane's window, so that no write the transport took before the refusal
+            // came passes for one the workload took.
             assert_eq!(
-                ended,
-                Ok(answer.len()),
-                "a socket cut short on Windows: every byte, then its end"
-            );
-            assert!(
-                rest == answer,
-                "{} bytes read, not the workload's answer whole",
-                rest.len()
-            );
-        } else {
-            assert_eq!(
-                ended,
-                Err(ErrorKind::ConnectionReset),
-                "a socket cut short read as its end in order"
-            );
-            assert!(
-                answer.starts_with(&rest),
-                "{} bytes read before the cut are no prefix of the workload's answer",
-                rest.len()
-            );
-            assert_eq!(
-                lane.write_all(b"after").map_err(|e| e.kind()),
+                lane.write_all(sent).map_err(|e| e.kind()),
                 Err(ErrorKind::ConnectionReset),
                 "a write after the cut"
             );

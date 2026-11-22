@@ -14,12 +14,16 @@
 //! - **Its bytes.** After `Connected` the lane is the socket, byte for byte, both ways: each
 //!   way's end is that way's half-close (a FIN; the socket's `shutdown(SHUT_WR)`), and an abort
 //!   either way is the other's (RESET_STREAM or STOP_SENDING; the socket ended both ways).
-//! - **Its cut.** A socket cut short resets the lane, never ending it in order first: one whose
-//!   write fails, whose read fails, or that has hung up as its reads end
-//!   ([`shards_ipc::hung_up`]: its peer gone, not half-closed) while the controller's way is
-//!   open. One that hangs up as the controller's FIN is being written ends in order once the
-//!   writer has shut its writes after all the controller sent, which hangs a Unix socket up
-//!   too, and is cut if a write fails first.
+//! - **Its cut.** A socket cut short ends the lane's way down after every byte it said, with
+//!   their FIN, which delivers them (RFC 9000 §2.4), never a reset, which drops them (§3.2);
+//!   and it refuses the controller's way (STOP_SENDING, §19.5), so that the controller's next
+//!   write fails: a peer's close, as a socket reads it (EOF after the data, a write refused).
+//!   Cut short is a socket whose write fails, whose read fails, or that has hung up as its
+//!   reads end ([`shards_ipc::hung_up`]: its peer gone, not half-closed) while the
+//!   controller's way is open. One that hangs up after the controller's FIN, whose writing
+//!   hangs a Unix socket up too, ends its way in order. Only a stream that refuses the
+//!   endpoint's write, or no memory for what the socket said, resets the lane: nothing whole
+//!   can be delivered then, and a FIN would end the controller's read short as if all had come.
 //! - **Its window.** Each way holds at most the run's admitted window in flight: the endpoint
 //!   reads no more of the controller than its host's writer has room for, and its reader reads
 //!   no more of the socket than the controller has room for, so a stalled reader holds up its
@@ -212,13 +216,18 @@ enum Up {
     End,
 }
 
-/// What the socket's writer and reader tell the endpoint.
+/// What the socket's writer and reader tell the endpoint: the writer `Wrote`, `Shut` or
+/// `WriteFailed`, its last word either of the two; the reader `Read`, then `Ended`, `HungUp`,
+/// `ReadFailed` or `NoMemory`, its last word one of the four.
 #[derive(Debug)]
 enum Said {
     /// The writer wrote so many bytes: room for as many more.
     Wrote(usize),
     /// The writer shut the socket's writes after all the controller sent: its FIN delivered.
     Shut,
+    /// A write failed (EPIPE, ECONNRESET): the socket takes no more of the controller's bytes,
+    /// a cut.
+    WriteFailed,
     /// The reader read these.
     Read(Vec<u8>),
     /// The socket's end of its writes, taking writes still: its peer's half-close.
@@ -227,8 +236,11 @@ enum Said {
     /// cut, unless the controller's FIN has been written to it, which hangs a Unix socket up
     /// as well.
     HungUp,
-    /// A write or read failed: the lane is cut, reset, never ended in order.
-    Failed,
+    /// A read failed: the socket's end, a cut, after every byte it held (a read's error comes
+    /// once its queue is read, POSIX's order; Linux's `unix_stream_read_generic`).
+    ReadFailed,
+    /// The reader had no memory for what the socket says next: none of it can be carried.
+    NoMemory,
 }
 
 /// The controller's way, to the socket, as the endpoint drives it (R04).
@@ -239,18 +251,31 @@ enum Upward {
     Ending,
     /// The socket's writes shut after all the controller sent ([`Said::Shut`]).
     Done,
+    /// The socket was cut short: STOP_SENDING sent where the way was open, and whatever the
+    /// controller still sends is dropped by the transport, which credits it unread (RFC 9000
+    /// §3.5; hyper-quic's `Recv::stop`). Nothing more of it is read.
+    Refused,
 }
 
 /// The socket's way, to the controller, as the endpoint drives it (R04).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Downward {
+    /// Its reader reads on, to the socket's end: after a write that failed too.
     Open,
-    /// It ended hung up while the controller's FIN was being written: an end in order once the
-    /// writer has shut the socket's writes, a cut if a write fails first.
-    Held,
-    /// Its end came in order: the rest goes, then its FIN.
+    /// The socket's reads ended, in order or cut short: the rest goes, then its FIN.
     Ending,
     Done,
+}
+
+/// What a lane's stream owes once its pump has taken what its threads said (R04).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Owed {
+    /// The socket's bytes as far as the stream takes them, and its FIN once its way has ended.
+    Bytes,
+    /// The controller's way refused just now: its STOP_SENDING, then the bytes.
+    Stop,
+    /// The lane's reset (RESET_STREAM and STOP_SENDING): no memory for the socket's bytes.
+    Reset,
 }
 
 /// A connected lane's pump: its socket's writer and reader on threads of their own, and what
@@ -277,6 +302,87 @@ impl Pump {
     /// The socket ended both ways at once: its writer and reader end, and the lane with them.
     fn abort(&self) {
         shards_ipc::end(&self.socket);
+    }
+
+    /// What its writer and reader said, taken in order: the writer's room, the reader's bytes
+    /// queued behind what goes to the controller, and each way's end. What the lane's stream
+    /// owes for it comes back.
+    fn take(&mut self) -> Owed {
+        let mut owed = Owed::Bytes;
+        while let Ok(said) = self.said.try_recv() {
+            let refused = match said {
+                Said::Wrote(n) => {
+                    self.writer_room = self.writer_room.saturating_add(n);
+                    false
+                }
+                Said::Shut => {
+                    self.up = Upward::Done;
+                    false
+                }
+                // Its writes alone end: the reader reads on to the socket's own end, so that what
+                // the socket holds goes too. Ending it both ways here would let that go: a
+                // Windows pipe's clones share one end, which `shards_ipc::end` closes, and XNU
+                // flushes a socket's buffer at SHUT_RD while its peer is connected
+                // (`soshutdownlock_final`'s `sorflush`).
+                Said::WriteFailed => {
+                    let _ = self.socket.shutdown(std::net::Shutdown::Write);
+                    self.refuse()
+                }
+                Said::Read(bytes) => {
+                    // What has gone makes room, so that the lane holds at most its answer and
+                    // the window unsent.
+                    if self.sent > 0 {
+                        self.out.drain(..self.sent.min(self.out.len()));
+                        self.sent = 0;
+                    }
+                    if self.out.try_reserve(bytes.len()).is_err() {
+                        return Owed::Reset;
+                    }
+                    self.out.extend_from_slice(&bytes);
+                    false
+                }
+                Said::Ended => {
+                    self.down = Downward::Ending;
+                    false
+                }
+                // The controller may send on, and the socket takes no more: its peer is gone,
+                // whatever the order its reader and writer would see it in.
+                Said::HungUp if self.up == Upward::Open => self.cut(),
+                // After the controller's way ended: its own FIN written, or its peer gone after
+                // it. Either way every byte the socket said is read.
+                Said::HungUp => {
+                    self.down = Downward::Ending;
+                    false
+                }
+                Said::ReadFailed => self.cut(),
+                Said::NoMemory => return Owed::Reset,
+            };
+            if refused {
+                owed = Owed::Stop;
+            }
+        }
+        owed
+    }
+
+    /// The socket cut short as its reads ended (hung up while the controller's way is open, or
+    /// a read that failed): all its reader read is queued, its way ends after it, the
+    /// controller's way is refused, and the socket is ended both ways, so that a write under
+    /// way fails and the writer ends. Whether the controller's way was open until now.
+    fn cut(&mut self) -> bool {
+        self.abort();
+        self.down = Downward::Ending;
+        self.refuse()
+    }
+
+    /// The socket takes no more of the controller's bytes, unless its writer has written them
+    /// all already (`Done`). Whether the controller's way was open until now, its STOP_SENDING
+    /// then due.
+    fn refuse(&mut self) -> bool {
+        let open = self.up == Upward::Open;
+        if self.up != Upward::Done {
+            self.up = Upward::Refused;
+        }
+        open
     }
 }
 
@@ -658,9 +764,10 @@ impl super::Lanes {
         }
     }
 
-    /// What lane `at`'s writer and reader said, taken: room for the writer, the reader's bytes
-    /// queued and sent as far as the stream takes them, the socket's end in order its FIN once
-    /// all has gone, and a cut the lane's reset, never its FIN first.
+    /// What lane `at`'s writer and reader said, taken ([`Pump::take`]): the reader's bytes sent
+    /// as far as the stream takes them, the socket's way ended by its FIN once all has gone, in
+    /// order or cut short; the controller's way refused (STOP_SENDING) as the socket is cut
+    /// short; and the lane reset only where its bytes cannot all be carried.
     fn socket_said(&mut self, io: &mut Io<'_>, at: usize) {
         let Some(lane) = self.sockets.lanes.get_mut(at) else {
             return;
@@ -669,52 +776,15 @@ impl super::Lanes {
         let Stage::Carrying(pump) = &mut lane.stage else {
             return;
         };
-        let mut cut = false;
-        while let Ok(said) = pump.said.try_recv() {
-            match said {
-                Said::Wrote(n) => pump.writer_room = pump.writer_room.saturating_add(n),
-                Said::Shut => {
-                    pump.up = Upward::Done;
-                    if pump.down == Downward::Held {
-                        pump.down = Downward::Ending;
-                    }
-                }
-                Said::Read(bytes) => {
-                    // What has gone makes room, so that the lane holds at most its answer and
-                    // the window unsent.
-                    if pump.sent > 0 {
-                        pump.out.drain(..pump.sent.min(pump.out.len()));
-                        pump.sent = 0;
-                    }
-                    if pump.out.try_reserve(bytes.len()).is_err() {
-                        cut = true;
-                        break;
-                    }
-                    pump.out.extend_from_slice(&bytes);
-                }
-                Said::Ended => pump.down = Downward::Ending,
-                Said::HungUp => match pump.up {
-                    // The controller may send on, and the socket takes no more: its peer is
-                    // gone, whatever the order its reader and writer would see it in.
-                    Upward::Open => {
-                        cut = true;
-                        break;
-                    }
-                    // This side's own FIN, or its peer gone: the writer's word decides.
-                    Upward::Ending => pump.down = Downward::Held,
-                    Upward::Done => pump.down = Downward::Ending,
-                },
-                Said::Failed => {
-                    cut = true;
-                    break;
-                }
+        match pump.take() {
+            Owed::Bytes => {}
+            Owed::Stop => io.stop(conn, stream),
+            Owed::Reset => {
+                pump.abort();
+                self.sockets.lanes.swap_remove(at);
+                super::end(io, conn, stream);
+                return;
             }
-        }
-        if cut {
-            pump.abort();
-            self.sockets.lanes.swap_remove(at);
-            super::end(io, conn, stream);
-            return;
         }
         while let Some(rest) = pump.out.get(pump.sent..).filter(|r| !r.is_empty()) {
             match io.write(conn, stream, rest) {
@@ -750,11 +820,12 @@ impl super::Lanes {
     }
 
     /// Lane `at` let go once both its ways are done: the socket's writes shut after all the
-    /// controller sent, and its FIN gone; nothing more of the lane is read.
+    /// controller sent, or refused, and its FIN gone; nothing more of the lane is read.
     fn socket_done(&mut self, io: &mut Io<'_>, at: usize) {
-        let done = self.sockets.lanes.get(at).is_some_and(
-            |l| matches!(&l.stage, Stage::Carrying(p) if p.up == Upward::Done && p.down == Downward::Done),
-        );
+        let done = self.sockets.lanes.get(at).is_some_and(|l| {
+            matches!(&l.stage, Stage::Carrying(p)
+                if matches!(p.up, Upward::Done | Upward::Refused) && p.down == Downward::Done)
+        });
         if done {
             let lane = self.sockets.lanes.swap_remove(at);
             io.stop(lane.conn, lane.stream);
@@ -823,7 +894,7 @@ fn tell(said: &mpsc::Sender<Said>, wake: &Sender<()>, what: Said) -> bool {
 }
 
 /// The socket's writer: what the controller sent, written in order, each write's room told
-/// back; its FIN the socket's write side shut, told. A write that fails fails the lane.
+/// back; its FIN the socket's write side shut, told. A write that fails cuts the lane.
 fn write_up(
     socket: &shards_ipc::Stream,
     ups: &mpsc::Receiver<Up>,
@@ -835,7 +906,7 @@ fn write_up(
         match up {
             Up::Bytes(bytes) => {
                 if socket.write_all(&bytes).is_err() {
-                    tell(said, wake, Said::Failed);
+                    tell(said, wake, Said::WriteFailed);
                     return;
                 }
                 if !tell(said, wake, Said::Wrote(bytes.len())) {
@@ -855,8 +926,8 @@ fn write_up(
 }
 
 /// The socket's reader: what the socket says, at most the window unsent at once, each read
-/// told; its end told as a half-close or hung up, as the socket says at once, and a read that
-/// fails the lane's reset.
+/// told; its end told as a half-close or hung up, as the socket says at once, or as a read
+/// that failed; and no memory for the next read told as such.
 fn read_down(
     socket: &shards_ipc::Stream,
     window: usize,
@@ -878,7 +949,7 @@ fn read_down(
         }
         let mut buffer = Vec::new();
         if buffer.try_reserve_exact(free).is_err() {
-            tell(said, wake, Said::Failed);
+            tell(said, wake, Said::NoMemory);
             return;
         }
         buffer.resize(free, 0);
@@ -903,7 +974,7 @@ fn read_down(
             }
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
             Err(_) => {
-                tell(said, wake, Said::Failed);
+                tell(said, wake, Said::ReadFailed);
                 return;
             }
         }
@@ -1164,24 +1235,20 @@ mod tests {
             let listener = listener.try_clone().unwrap();
             move || drop(listener.accept().unwrap())
         });
-        // A cut promises no byte before it (D251), its `Connected` among them: the workload's
-        // hang-up reaches the controller as its connect's answer where the cut came first (CI
-        // 43950458285, aarch64 musl), else on its lane.
-        let connected = answered!(sockets.connect("files.sock"));
+        // A cut delivers every byte before it (D251), its `Connected` among them, though the
+        // workload's hang-up came before the controller read it (CI 43950458285, aarch64 musl,
+        // where the lane's reset dropped it): the controller connects, reads the lane's end
+        // after nothing, and its writes are refused.
+        let mut lane = answered!(sockets.connect("files.sock")).unwrap();
         closer.join().unwrap();
-        match connected {
-            Err(cut) => assert_eq!(cut, Fault::Revoked),
-            Ok(mut lane) => {
-                let sent = pattern(admission(4).window);
-                let wrote = lane.write_all(&sent).and_then(|()| lane.flush());
-                let mut rest = Vec::new();
-                let read = lane.read_to_end(&mut rest);
-                assert!(
-                    wrote.is_err() || read.is_err(),
-                    "a workload gone while the controller sent read as an orderly end: wrote {wrote:?}, read {read:?}"
-                );
-            }
-        }
+        let sent = pattern(admission(4).window);
+        assert_eq!(
+            lane.write_all(&sent).map_err(|e| e.kind()),
+            Err(ErrorKind::ConnectionReset),
+            "a write past the window to a workload gone"
+        );
+        let mut rest = Vec::new();
+        assert_eq!(lane.read_to_end(&mut rest).map_err(|e| e.kind()), Ok(0));
 
         let reader = spawned(move || {
             let (mut conn, _) = listener.accept().unwrap();
@@ -1195,14 +1262,16 @@ mod tests {
         let _ = reader.join().unwrap();
     }
 
-    /// A socket cut short mid-stream resets its lane, never ending it in order: its workload
-    /// gone while the controller's way is open, the controller reads `ConnectionReset`, never
-    /// `Ok(0)` (the Hex lead's Link test, 4 of 4 on macOS). The order is macOS's on every host:
-    /// the workload reads all the controller sent before it closes, so Linux has no byte unread
-    /// to answer ECONNRESET with, and the endpoint's reader sees the socket's end while its
-    /// writer has nothing to write, and no EPIPE to come.
+    /// A socket cut short mid-stream ends its lane after every byte it said and refuses the
+    /// controller's way, never leaving it open as a half-close would: its workload gone while
+    /// the controller's way is open, the controller reads the lane's end, and its next write
+    /// is refused `ConnectionReset` (the Hex lead's Link test, 4 of 4 on macOS, read the cut;
+    /// D251's amendment of 2026-11-22). The order is macOS's on every host: the workload reads
+    /// all the controller sent before it closes, so Linux has no byte unread to answer
+    /// ECONNRESET with, and the endpoint's reader sees the socket hung up while its writer has
+    /// nothing to write, and no EPIPE to come.
     #[test]
-    fn a_socket_cut_short_resets_its_lane_never_ending_it_in_order() {
+    fn a_socket_cut_short_ends_its_lane_after_its_bytes_and_refuses_the_controllers_writes() {
         let dir = shards_testdir::TempDir::new("sk").unwrap();
         let listener = UnixListener::bind(dir.path().join("cut.sock")).unwrap();
         let (vm, hex) = (Identity::generate().unwrap(), Identity::generate().unwrap());
@@ -1232,17 +1301,171 @@ mod tests {
         );
         let mut rest = Vec::new();
         let read = lane.read_to_end(&mut rest).map_err(|e| e.kind());
-        assert_eq!(
-            read,
-            Err(std::io::ErrorKind::ConnectionReset),
-            "a socket cut short read as its end in order"
-        );
+        assert_eq!(read, Ok(0), "a socket cut short read as other than its end");
         assert!(rest.is_empty(), "the workload wrote nothing, read {rest:?}");
+        // Past the window, so that a write the transport took before the refusal came cannot
+        // pass for one taken by the workload.
         assert_eq!(
-            lane.write_all(b"after").map_err(|e| e.kind()),
+            lane.write_all(&sent).map_err(|e| e.kind()),
             Err(std::io::ErrorKind::ConnectionReset),
+            "a write after the cut, taken as if its way were open"
+        );
+    }
+
+    /// The workload's bytes and its cut, for the cases below: a window's worth, which its
+    /// controller's driver reads ahead of its reads, then the line the Hex lead's workload says,
+    /// which waits in the transport behind them until its controller reads.
+    fn said_before_the_cut(window: u32) -> Vec<u8> {
+        let mut said = pattern(window);
+        said.truncate(window as usize);
+        said.extend_from_slice(b"before the cut\n");
+        said
+    }
+
+    /// Writes `bytes` on `lane` until a write is refused, waking on `wake` where it has no room,
+    /// as a controller flooding a lane does: the refusal's kind.
+    fn flooded(wake: &Wake, lane: &mut Socket, bytes: &[u8]) -> ErrorKind {
+        woken(wake, || {
+            loop {
+                match lane.try_write(bytes) {
+                    Ok(_) => {}
+                    Err(e) if e.kind() == ErrorKind::WouldBlock => return Err(e),
+                    Err(e) => return Ok(e.kind()),
+                }
+            }
+        })
+        .unwrap()
+    }
+
+    /// The bytes a socket said before its cut are its controller's, then the lane's end, and
+    /// its controller's writes are refused (D251, amended 2026-11-22: the Hex lead's trace, a
+    /// cut whose reset dropped a line said before it). The workload says a window and a line
+    /// and closes, its controller's way open and its controller reading nothing until its
+    /// writer is refused: the line waits in the transport past what the driver reads ahead,
+    /// where a reset drops it (RFC 9000 §3.2; hyper-quic's `Recv::reset` clears it), and a FIN
+    /// delivers it (§2.4). The socket hangs up as its reads end, with nothing of the
+    /// controller's to fail a write on.
+    #[test]
+    fn a_socket_hung_up_after_its_bytes_delivers_them_then_its_end_and_refuses_the_controller() {
+        let dir = shards_testdir::TempDir::new("sb").unwrap();
+        let listener = UnixListener::bind(dir.path().join("cut.sock")).unwrap();
+        let (vm, hex) = (Identity::generate().unwrap(), Identity::generate().unwrap());
+        let (at, asks, _revoke) = serving(&vm, hex.fingerprint(), admission(4));
+        let _host = host(dir.path().to_owned(), asks);
+        let mut dialed = dial(&hex, vm.fingerprint(), at, admission(4));
+        let sockets = dialed.sockets.take().unwrap();
+        let said = said_before_the_cut(admission(4).window);
+        let workload = spawned({
+            let said = said.clone();
+            move || {
+                let (mut conn, _) = listener.accept().unwrap();
+                conn.write_all(&said).unwrap();
+                // Closed here, its controller's way still open: a cut.
+            }
+        });
+        let mut lane = answered!(sockets.connect("cut.sock")).unwrap();
+        workload.join().unwrap();
+        let refused = woken(&dialed.wake, || match lane.flush() {
+            Ok(()) => Err(ErrorKind::WouldBlock.into()),
+            Err(e) => Ok(e.kind()),
+        });
+        assert_eq!(refused.unwrap(), ErrorKind::ConnectionReset, "the cut's refusal");
+        let mut back = Vec::new();
+        let read = lane.read_to_end(&mut back).map_err(|e| e.kind());
+        assert_eq!(read, Ok(said.len()), "every byte before the cut, then its end");
+        assert!(back == said, "{} bytes read, not the workload's own", back.len());
+        assert_eq!(
+            lane.write_all(&pattern(admission(4).window))
+                .map_err(|e| e.kind()),
+            Err(ErrorKind::ConnectionReset),
             "a write after the cut"
         );
+    }
+
+    /// The same where the workload closes with the controller's flood unread, as the Hex lead's
+    /// workload does after a byte of it: a write fails at the endpoint (EPIPE) and, on Linux, a
+    /// read after the workload's bytes (ECONNRESET, `unix_release_sock`), whichever the host
+    /// says first, or it hangs up. The controller floods until it is refused, reading nothing,
+    /// then reads every byte the workload said, then the lane's end.
+    #[test]
+    fn a_socket_whose_write_or_read_fails_after_its_bytes_delivers_them_then_its_end() {
+        let dir = shards_testdir::TempDir::new("sf").unwrap();
+        let listener = UnixListener::bind(dir.path().join("cut.sock")).unwrap();
+        let (vm, hex) = (Identity::generate().unwrap(), Identity::generate().unwrap());
+        let (at, asks, _revoke) = serving(&vm, hex.fingerprint(), admission(4));
+        let _host = host(dir.path().to_owned(), asks);
+        let mut dialed = dial(&hex, vm.fingerprint(), at, admission(4));
+        let sockets = dialed.sockets.take().unwrap();
+        let said = said_before_the_cut(admission(4).window);
+        let workload = spawned({
+            let said = said.clone();
+            move || {
+                let (mut conn, _) = listener.accept().unwrap();
+                conn.write_all(&said).unwrap();
+                let mut byte = [0u8; 1];
+                conn.read_exact(&mut byte).unwrap();
+                // Closed here, the rest of the flood unread: a cut.
+            }
+        });
+        let mut lane = answered!(sockets.connect("cut.sock")).unwrap();
+        let flood = pattern(admission(4).window);
+        assert_eq!(
+            flooded(&dialed.wake, &mut lane, &flood),
+            ErrorKind::ConnectionReset,
+            "the cut's refusal"
+        );
+        workload.join().unwrap();
+        let mut back = Vec::new();
+        let read = lane.read_to_end(&mut back).map_err(|e| e.kind());
+        assert_eq!(read, Ok(said.len()), "every byte before the cut, then its end");
+        assert!(back == said, "{} bytes read, not the workload's own", back.len());
+    }
+
+    /// A lane split for two threads keeps its reading half's bytes when its writing half, refused
+    /// by the cut, is let go, as a writer thread lets go of its half at its error: the half's
+    /// end is its own way's, and the reader reads every byte, then the lane's end.
+    #[test]
+    fn a_split_lanes_writer_let_go_at_the_cut_leaves_its_reader_every_byte() {
+        let dir = shards_testdir::TempDir::new("sp").unwrap();
+        let listener = UnixListener::bind(dir.path().join("cut.sock")).unwrap();
+        let (vm, hex) = (Identity::generate().unwrap(), Identity::generate().unwrap());
+        let (at, asks, _revoke) = serving(&vm, hex.fingerprint(), admission(4));
+        let _host = host(dir.path().to_owned(), asks);
+        let mut dialed = dial(&hex, vm.fingerprint(), at, admission(4));
+        let sockets = dialed.sockets.take().unwrap();
+        let said = said_before_the_cut(admission(4).window);
+        let workload = spawned({
+            let said = said.clone();
+            move || {
+                let (mut conn, _) = listener.accept().unwrap();
+                conn.write_all(&said).unwrap();
+                let mut byte = [0u8; 1];
+                conn.read_exact(&mut byte).unwrap();
+            }
+        });
+        let lane = answered!(sockets.connect("cut.sock")).unwrap();
+        let (mut reader, mut writer) = lane.split();
+        let flood = pattern(admission(4).window);
+        // The writer's thread floods until it is refused, then lets its half go.
+        let refused = spawned(move || {
+            let refused = loop {
+                if let Err(e) = writer.write_all(&flood) {
+                    break e.kind();
+                }
+            };
+            drop(writer);
+            refused
+        });
+        assert_eq!(
+            refused.join().unwrap(),
+            ErrorKind::ConnectionReset,
+            "the cut's refusal"
+        );
+        workload.join().unwrap();
+        let mut back = Vec::new();
+        let read = reader.read_to_end(&mut back).map_err(|e| e.kind());
+        assert_eq!(read, Ok(said.len()), "every byte before the cut, then its end");
+        assert!(back == said, "{} bytes read, not the workload's own", back.len());
     }
 
     /// A workload's half-close ends its way in order while the controller's goes on, however
@@ -1370,8 +1593,8 @@ mod tests {
         assert_eq!(got.len(), wrote + more, "every byte taken reached the workload");
     }
 
-    /// A socket cut short rings the wake: its reader's try reads `ConnectionReset`, as its read
-    /// does, and its writer's after it too.
+    /// A socket cut short rings the wake: its reader's try reads the lane's end, as its read
+    /// does, and its writer's tries are refused `ConnectionReset`.
     #[test]
     fn a_lanes_fault_rings_its_controllers_wake() {
         let dir = shards_testdir::TempDir::new("sf").unwrap();
@@ -1394,12 +1617,12 @@ mod tests {
         let mut buf = [0u8; 16];
         assert_eq!(
             woken(&dialed.wake, || lane.try_read(&mut buf)).map_err(|e| e.kind()),
-            Err(ErrorKind::ConnectionReset),
+            Ok(0),
             "a cut, read as its read reads it"
         );
         assert_eq!(
-            woken(&dialed.wake, || lane.try_write(b"after")).map_err(|e| e.kind()),
-            Err(ErrorKind::ConnectionReset),
+            flooded(&dialed.wake, &mut lane, b"after"),
+            ErrorKind::ConnectionReset,
             "a write after the cut"
         );
     }
@@ -1821,5 +2044,110 @@ mod tests {
         let (streams, receive, send) = super::added(admission(2)).unwrap();
         assert_eq!(streams, 3);
         assert!(receive >= 2 * 64 * 1024 && send >= 2 * 64 * 1024);
+    }
+
+    /// A carried lane's pump on one end of a socket pair, its answer queued and its threads
+    /// played by the test, which says `said` in order, all in one batch: the pump, the
+    /// socket's peer (the workload), and the threads' channel for what they say after.
+    fn pump_saying(said: Vec<super::Said>) -> (super::Pump, UnixStream, mpsc::Sender<super::Said>) {
+        let (socket, workload) = UnixStream::pair().unwrap();
+        let (to_writer, _) = mpsc::channel();
+        let (to_reader, _) = mpsc::channel();
+        let (tell, heard) = mpsc::channel();
+        for said in said {
+            tell.send(said).unwrap();
+        }
+        let pump = super::Pump {
+            socket,
+            to_writer,
+            writer_room: admission(1).window as usize,
+            said: heard,
+            to_reader,
+            out: super::connected().to_vec(),
+            sent: 0,
+            answer: super::CONNECTED_BYTES,
+            up: super::Upward::Open,
+            down: super::Downward::Open,
+        };
+        (pump, workload, tell)
+    }
+
+    /// Bytes and the socket's cut in one batch (the Hex lead's trace's deterministic form,
+    /// where the cut reset the lane and its bytes never reached the stream), whether the cut is
+    /// a hang-up as the reads end with the controller's way open or a read that failed: the
+    /// bytes are queued behind the answer, the way down ends after them (its FIN, never a
+    /// reset), the controller's way is refused (STOP_SENDING), and the socket is ended both
+    /// ways, its writer's write failing.
+    #[test]
+    fn bytes_then_the_cut_in_one_batch_end_the_way_down_after_them_and_refuse_the_way_up() {
+        use super::{Downward, Owed, Said, Upward};
+        let line = b"before the cut\n";
+        for cut in [Said::HungUp, Said::ReadFailed] {
+            let what = format!("{cut:?}");
+            let (mut pump, mut workload, _) = pump_saying(vec![Said::Read(line.to_vec()), cut]);
+            assert_eq!(pump.take(), Owed::Stop, "{what}: no refusal of the way up first");
+            assert_eq!(pump.out, [&super::connected()[..], line].concat(), "{what}");
+            assert_eq!(
+                (pump.up, pump.down),
+                (Upward::Refused, Downward::Ending),
+                "{what}"
+            );
+            let mut end = Vec::new();
+            assert_eq!(
+                workload.read_to_end(&mut end).unwrap(),
+                0,
+                "{what}: the socket not ended"
+            );
+        }
+    }
+
+    /// A write that fails while the socket's reader reads on refuses the way up and ends the
+    /// socket's writes alone: the reader's bytes after it are queued too, and the way down ends
+    /// at the reader's own end, the workload still heard to its end. A hang-up after the
+    /// controller's way has ended, or was refused, is no cut again.
+    #[test]
+    fn a_failed_write_refuses_the_way_up_and_the_reader_reads_on_to_the_sockets_end() {
+        use super::{Downward, Owed, Said, Upward};
+        let (mut pump, mut workload, tell) =
+            pump_saying(vec![Said::Read(b"before ".to_vec()), Said::WriteFailed]);
+        assert_eq!(pump.take(), Owed::Stop);
+        assert_eq!((pump.up, pump.down), (Upward::Refused, Downward::Open));
+        let mut end = Vec::new();
+        assert_eq!(
+            workload.read_to_end(&mut end).unwrap(),
+            0,
+            "the socket's writes not ended"
+        );
+        workload.write_all(b"the cut\n").unwrap();
+        let mut more = [0u8; 8];
+        (&pump.socket).read_exact(&mut more).unwrap();
+        assert_eq!(&more, b"the cut\n", "the socket's reads ended with its writes");
+        tell.send(Said::Read(more.to_vec())).unwrap();
+        tell.send(Said::HungUp).unwrap();
+        assert_eq!(pump.take(), Owed::Bytes, "a refusal again");
+        assert_eq!(pump.out, [&super::connected()[..], b"before the cut\n"].concat());
+        assert_eq!((pump.up, pump.down), (Upward::Refused, Downward::Ending));
+
+        let (mut pump, _workload, tell) = pump_saying(vec![Said::Read(b"last".to_vec())]);
+        pump.up = Upward::Ending;
+        tell.send(Said::HungUp).unwrap();
+        assert_eq!(
+            pump.take(),
+            Owed::Bytes,
+            "a hang-up after the controller's FIN cut"
+        );
+        assert_eq!((pump.up, pump.down), (Upward::Ending, Downward::Ending));
+        tell.send(Said::Shut).unwrap();
+        assert_eq!(pump.take(), Owed::Bytes);
+        assert_eq!(pump.up, Upward::Done);
+    }
+
+    /// No memory for the socket's bytes resets the lane: a FIN after bytes it could not hold
+    /// would end the controller's read short of them as if all had come.
+    #[test]
+    fn no_memory_for_the_sockets_bytes_resets_the_lane() {
+        use super::{Owed, Said};
+        let (mut pump, _workload, _) = pump_saying(vec![Said::Read(b"held".to_vec()), Said::NoMemory]);
+        assert_eq!(pump.take(), Owed::Reset);
     }
 }

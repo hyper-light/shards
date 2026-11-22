@@ -37749,7 +37749,7 @@ arm64; Hex's image_real with a box of no grants once Hex vendors this.
 **What would falsify it.** A member of such a run reaching anything past the microVM (then a
 network process told no policy is not at `DenyAll`), or one killed for its link.
 
-### D251. A lane to a socket of a run's own command: the agent-control endpoint's socket lane, carried over vsock by shards-init's relay (built: the endpoint, its controller and its controller's wake, the VM process's leg and init's; the run host's endpoint is D252's; its three nesting tests passing on HVF and KVM x86-64, PM M605; on WHP and KVM arm64, and its other real-VM runs, owed)
+### D251. A lane to a socket of a run's own command: the agent-control endpoint's socket lane, carried over vsock by shards-init's relay (built: the endpoint, its controller and its controller's wake, the VM process's leg and init's; the run host's endpoint is D252's; its three nesting tests passing on HVF and KVM x86-64, PM M605; on WHP and KVM arm64, and its other real-VM runs, owed; its cut amended 2026-11-22 to deliver every byte before it, unit-tested, its real-VM runs owed)
 
 **Why.** Hex's node runs under shards-init as the run's own command, its PID 1 kept (kiln plan
 01a1cd8e862e7169a074db3d5fa33f3d, step 39; Hex's `docs/design/node-under-shards-init.md` §5).
@@ -37781,29 +37781,87 @@ Hex's acceptance (its INTERFACE.md and red tests, step11-a-socket-lane) is held 
   no more than the controller has taken. A stalled reader holds up its own lane alone (RFC 9000
   §2.2, §4.1). Each way's end is that way's half-close: a FIN, the socket's
   `shutdown(SHUT_WR)`. An abort either way is the other's: RESET_STREAM or STOP_SENDING; the
-  socket ended with `shards_ipc::end`, as M236 asks of a Mac. A write that fails resets the
-  lane, never ending it in order. The socket's writer and reader run on threads of their own,
-  woken into the endpoint's driver as exec's host is; the endpoint's end ends every socket.
-- *Its cut* (the Hex lead's Link test, 2026-11-13). A socket cut short resets the lane
-  (RESET_STREAM and STOP_SENDING), never its FIN first: its write fails (EPIPE, ECONNRESET),
-  its read fails, or it has hung up as its reads end, its peer gone rather than half-closed.
-  A read's end alone does not tell: a peer's close reads as a half-close's end, and the
-  writer finds EPIPE only at its next write, after the reader's FIN has gone (macOS 4 of 4;
-  on Linux a close that left a byte unread reads ECONNRESET, which resets the lane, and one
-  that left none an end, as on macOS, PM M559). So the reader asks the socket at its end
-  (`shards_ipc::hung_up`: poll(2)'s POLLHUP or POLLERR asked for POLLOUT, which a peer's
-  close sets as it ends the reads, and a half-close never; on Windows the pipe's other end
-  closed, PeekNamedPipe's ERROR_BROKEN_PIPE, where a half-close is a message of no bytes).
-  The endpoint holds each way's state (`Upward`, `Downward`, R04): hung up while the
-  controller's way is open is a cut; hung up while the controller's FIN is being written
-  waits for the writer, whose socket shut after all the controller sent (which hangs a Unix
-  socket up as well) ends the lane in order, and whose failed write cuts it. A socket that
-  cannot say is taken as hung up. Only a half-close, or both ways' ends, close in order. The
-  transport's RST drops what the controller had not read (RFC 9000 §3.2; hyper-quic's
-  `Recv::reset` clears its buffer): a cut promises no byte before it. No wire change: the
-  cut is the stream's reset, `ConnectionReset` at the controller. On Windows a cut WinSock
-  socket (AF_UNIX, the VM process's legs) reads WSAECONNRESET (10054), which std reads as
-  `ConnectionReset`.
+  socket ended with `shards_ipc::end`, as M236 asks of a Mac. A write that fails cuts the lane
+  (*Its cut*). The socket's writer and reader run on threads of their own, woken into the
+  endpoint's driver as exec's host is; the endpoint's end ends every socket.
+- *Its cut* (the Hex lead's Link test, 2026-11-13; amended 2026-11-22, the Hex lead's trace:
+  a cut delivers every byte before it). A socket is cut short when its write fails (EPIPE,
+  ECONNRESET), its read fails, or it has hung up as its reads end while the controller's way
+  is open, its peer gone rather than half-closed. A read's end alone does not tell: a peer's
+  close reads as a half-close's end, and the writer finds EPIPE only at its next write, after
+  the reader's FIN has gone (macOS 4 of 4; on Linux a close that left a byte unread reads
+  ECONNRESET, and one that left none an end, as on macOS, PM M559). So the reader asks the
+  socket at its end (`shards_ipc::hung_up`: poll(2)'s POLLHUP or POLLERR asked for POLLOUT,
+  which a peer's close sets as it ends the reads, and a half-close never; on Windows the
+  pipe's other end closed, PeekNamedPipe's ERROR_BROKEN_PIPE, where a half-close is a message
+  of no bytes). A socket that cannot say is taken as hung up. The endpoint holds each way's
+  state (`Upward`, `Downward`, R04) and takes its threads' words in order (`Pump::take`).
+  - *What a cut does.* The lane's way down ends after every byte the socket said before its
+    cut, with their FIN (`io.finish` once they have gone, as the stream's flow control takes
+    them), never a reset. The controller's way is refused (`Upward::Refused`): STOP_SENDING
+    (`io.stop`, RFC 9000 §19.5), which the controller's driver answers with its RESET_STREAM
+    (§3.5's MUST, net.rs) and tells its writer `Revoked`, so its next write fails
+    `ConnectionReset`, while what it still sends is dropped by the transport and credited
+    unread (hyper-quic's `Recv::stop`). The controller reads every byte, then the lane's end,
+    and its writes fail: a peer's close as a POSIX socket shows it (EOF after the data, EPIPE
+    or ECONNRESET at a write). The lane is let go once its FIN has gone.
+  - *Its socket.* Cut as its reads end (hung up, or a read that failed, whose error comes once
+    the socket's queue is read: POSIX's order, Linux's `unix_stream_read_generic`), the socket
+    is ended both ways (`shards_ipc::end`), so that a write under way fails and the writer
+    ends. Cut by a failed write, it ends its writes alone, and its reader reads on to the
+    socket's own end before the FIN goes, so that what the socket still holds, and a read the
+    reader had in hand, go too, as OpenSSH's `chan_write_failed` shuts a channel's output
+    alone and its input drains on (openssh-portable fa4b2a82, nchan.c lines 308-324). Ending
+    it both ways there loses them: a Windows pipe's clones share one end, which
+    `shards_ipc::end` closes (pipe.rs, `Stream::try_clone`), and XNU flushes a socket's
+    receive buffer at SHUT_RD while its peer is connected (`soshutdownlock_final`'s
+    `sorflush`, xnu f6217f89 bsd/kern/uipc_socket.c line 4343). Measured: `take` mutated to
+    end it both ways, the workload's bytes after the failed write read `UnexpectedEof` on
+    macOS arm64.
+  - *Only two resets.* The lane is reset (RESET_STREAM and STOP_SENDING) only where nothing
+    whole can be delivered: the stream refuses the endpoint's write (`io.write`'s error), or
+    there is no memory for what the socket said (the endpoint's queue, or its reader's buffer,
+    `Said::NoMemory`), where a FIN would end the controller's read short as if all had come.
+  - *Both ways' ends* close in order, as a half-close does. Hung up after the controller's
+    FIN, whose writing hangs a Unix socket up too, the way down ends in order and the writer's
+    word ends the way up (`Shut`; a failed write, refused). The hold that waited for the
+    writer to choose an end in order or a reset (`Downward::Held`) went: both now end the way
+    down with the same FIN.
+  - *Why* (the Hex lead's trace, Hex 3ae12b62 on adacachy, 2026-11-22). The workload wrote
+    "before the cut\n", read a byte of its controller's flood and closed. The endpoint reset
+    its way down with 15 bytes unsent, that line (hyper-quic's `Send::reset` discards what is
+    pending, send.rs lines 100-107 at the pinned e0613f52), and the controller read nothing but
+    `ConnectionReset` ("agent control: Revoked"), in about 9 of 100 runs. Its deterministic
+    form: a `Said::Read` and the cut in one batch, whose bytes never reached the stream. Bytes
+    already sent fare no better: a reset lets the controller's transport drop what its reader
+    had not read (RFC 9000 §3.2, "Sending a RESET_STREAM means that an endpoint cannot
+    guarantee delivery of stream data"; hyper-quic's `Recv::reset` clears its buffer, recv.rs
+    lines 186-218). A FIN delivers what came before it (§2.4's clean termination; §3.2's "Data
+    Recvd", which persists until the data is delivered).
+  - *Not taken: a reliable reset* (RESET_STREAM_AT, draft-ietf-quic-reliable-stream-reset-11),
+    which keeps the reset visible to the reader after the bytes before it. It needs hyper-quic
+    changes at both ends: `Send::reset` discards what is pending, and `Recv::reset` clears what
+    is unread and counts it read for connection credit. FIN and STOP_SENDING carry the same
+    facts with RFC 9000's own frames. What the controller loses is the cut's name alone: a cut
+    and a half-close both read every byte, then the end, and only a cut fails its writes, as a
+    POSIX peer's close and half-close differ.
+  - *The workload's side* (the Hex lead's question, 2026-11-22: on Linux a socket closed with
+    bytes unread gives its peer ECONNRESET, not an end). `shards_ipc::end` is two shutdowns,
+    never a close, and Linux's `unix_shutdown` sets only `sk_shutdown`, on both ends, never
+    `sk_err` (net/unix/af_unix.c, torvalds/linux 2dc60bd99, lines 3220-3265): the workload reads
+    its end, never ECONNRESET, from it. Only a close with a byte unread sets ECONNRESET
+    (`unix_release_sock`, lines 730-745), read after the workload's own queue (lines
+    3001-3013). A lane is let go, in order or after a cut, only once its reader has read to
+    the socket's end, so its socket closes with nothing unread. One abandoned (the
+    controller's STOP_SENDING or abort, its connection gone, the endpoint's end, a reset) may
+    close with bytes unread, as an abort means.
+  - *A read that meets a reset* returns the bytes it took first, the reset the next read's
+    (`net::gather`), as an end comes with its bytes; a reset in their place dropped bytes its
+    stream had counted read. Unreachable through hyper-quic e0613f52, whose `Recv::reset`
+    clears what is unread and whose `StreamsState::received` drops a reset stream's frames
+    (state.rs lines 299-302), so a `Chunks` meets a reset before any chunk; `Chunks` promises
+    no such order, and a reliable reset gives bytes, then the reset.
+  - *Wire.* None changed: no frame, tag or constant.
 - *Its cut through the guest's legs.* Each leg between the workload and the endpoint carries
   the same rule: hung up at a read's end while the other way is open is a cut, carried on as
   both ways ended at once, never as a half-close first. No wire, tag or constant is added.
@@ -37860,9 +37918,10 @@ Hex's acceptance (its INTERFACE.md and red tests, step11-a-socket-lane) is held 
     WinSock AF_UNIX close keeps the bytes its peer has not read while telling it apart from
     an end in order (M358: a close resets wherever the closer holds any of its peer's bytes
     unread or its peer sends after it). So on Windows a cut reaches the VM process's `pass`
-    as end-of-stream, which it carries on as a half-close, and the controller reads `Ok(0)`
-    where Unix reads `ConnectionReset`: *What would falsify it*'s "a socket cut short read as
-    `Ok(0)`" holds on Unix and not on Windows, an open limit until the measurement below.
+    as end-of-stream, which it carries on as a half-close: the controller reads every byte,
+    then `Ok(0)`, as on Unix since the endpoint's amendment of 2026-11-22 (*Its cut*), but its
+    writes are not refused, as the endpoint sees no cut: *What would falsify it*'s refused
+    write holds on Unix and not on Windows, an open limit until the measurement below.
   - *No black hole.* After the guest's close or cut a host's write fails at once on Unix
     (its connection gone on the guest's RST, the socket closed: EPIPE). On Windows it does
     not: the held end reads and drops what the host writes until the host ends its side, and
@@ -37889,8 +37948,14 @@ Hex's acceptance (its INTERFACE.md and red tests, step11-a-socket-lane) is held 
   `wait(patience)` answers `Ok(None)` while it is unanswered, then a `Socket` or a typed
   `Fault`, `Fault::Unreached(errno)` among them (D238's *A lane's ask, waited for within its
   caller's patience*); one let go unanswered is cut as it connects. `Socket` is `Read` and `Write`, with `shutdown_write`, `abort` and `split` (a
-  reader and a writer for two threads). `Ok(0)` comes only at the socket's own FIN; a reset
-  reads as `ConnectionReset`, its `Fault` its source.
+  reader and a writer for two threads). `Ok(0)` comes only at the endpoint's FIN, after every
+  byte the socket said, at its half-close or its cut; a reset reads as `ConnectionReset`, its
+  `Fault` its source. A cut refuses the writer (the endpoint's STOP_SENDING: `Fault::Revoked`,
+  `ConnectionReset` at its writes) while the reader reads on: the driver's writing way is
+  `Sending::Refused` (R04) and the lane is let go once its reading is done too. A writer let
+  go once refused abandons nothing (its drop aborts an open way alone), so a split lane's
+  reader still reads every byte, then the end (amended 2026-11-22; before, that drop aborted
+  the lane and its reader read `ConnectionAborted`).
 - *Its controller's wake* (Hex's ask D-10). A controller drives all its lanes from one thread
   without waiting on any: `SocketReader::try_read` and `SocketWriter::try_write` (and
   `Socket`'s) say `WouldBlock` where nothing has come or the lane has no room, and otherwise
@@ -38072,6 +38137,44 @@ function"), no time chosen.
   Clippy clean: shards-init and shards-testguest for x86_64-unknown-linux-musl (zig CC),
   shards-vmm for x86_64-unknown-linux-gnu (adacachy2), shards-vmm and shards-vm-process on
   macOS and x86_64-pc-windows-msvc (cargo xwin).
+- Its cut amended to deliver (policy df2acf47, implementer; on b8fd01284, Adas-MacBook-Pro-2,
+  macOS 26.4.1 arm64, rustc 1.98.0). Red on b8fd01284's own endpoint, controller and
+  `net.rs`, the new tests alone added: 6 of the unix module's 18 failed.
+  `a_socket_hung_up_after_its_bytes_delivers_them_then_its_end_and_refuses_the_controller` (a
+  window, then the line, then a close) and
+  `a_socket_whose_write_or_read_fails_after_its_bytes_delivers_them_then_its_end` (the same,
+  closed with the controller's flood unread) read `ConnectionReset` where 65,551 bytes, then
+  `Ok(0)`, were due; `a_split_lanes_writer_let_go_at_the_cut_leaves_its_reader_every_byte` read
+  `ConnectionAborted`; the three amended below read `ConnectionReset` where `Ok(0)` was due.
+  Their controller reads nothing until the cut has refused its writer, so the line waits in
+  the transport past what its driver reads ahead (a window), where a reset drops it: red on
+  every run, not on a race. With the endpoint amended and the controller not yet, the split
+  lane's test alone failed (`ConnectionAborted`: the refused writer's drop aborted the lane).
+  Green after: shards-remote's 156 unit tests and `loopback`'s 35; the unix module's 21 and
+  `gather`'s, 30 runs of 30. One batch, as no lane over a transport can order its threads'
+  words, deterministically:
+  `bytes_then_the_cut_in_one_batch_end_the_way_down_after_them_and_refuse_the_way_up` (a
+  `Read`, then `HungUp` or `ReadFailed`),
+  `a_failed_write_refuses_the_way_up_and_the_reader_reads_on_to_the_sockets_end`,
+  `no_memory_for_the_sockets_bytes_resets_the_lane`, and
+  `net::tests::a_reads_bytes_come_before_the_reset_that_follows_them` (scripted chunks).
+  Guards mutated, each restored green: a cut resetting the lane again (`Pump::take`), 8 tests
+  failed; a failed write ending the socket both ways, the reader's test (`UnexpectedEof`,
+  XNU's flush); the way down ended at a failed write, before its reader's end, the same test
+  (`Ending` where `Open` was due); a reset in place of the bytes before it (`gather`), its test.
+  Amended to the contract: `a_reset_either_way_reaches_the_other_side` (its `Connected` always
+  had, then `Ok(0)` and a write refused; CI 43950458285's cut before the answer had dropped
+  it), `a_lanes_fault_rings_its_controllers_wake` (the try reads `Ok(0)`, the writer's tries
+  refused) and `a_socket_cut_short_resets_its_lane_never_ending_it_in_order`, renamed
+  `a_socket_cut_short_ends_its_lane_after_its_bytes_and_refuses_the_controllers_writes`
+  (`Ok(0)`, then a write past the window refused); and the real VMs'
+  `nesting::a_nested_workloads_socket_cut_mid_stream_resets_its_lane_at_the_controller`, renamed
+  `a_nested_workloads_socket_cut_mid_stream_delivers_its_bytes_then_its_end_at_the_controller`
+  (every byte of the answer, then `Ok(0)`, on every OS; on Unix a write past the window
+  refused), unrun here. `scripts/lint aarch64-apple-darwin` clean; `scripts/lint
+  x86_64-pc-windows-msvc` stops at b8fd01284's own `clippy::never_loop` (virtio/fs/mod.rs
+  `Slot::ask_into`), and with that one lint allowed its clippy, the workspace's and vmm's
+  `gpu`, is clean.
 
 **Evidence owed** (ROOT, real VMs).
 - Hex's case (f), `nesting::a_nested_workloads_sockets_are_lanes_of_its_orchestrators_controller`
@@ -38079,12 +38182,15 @@ function"), no time chosen.
 - The lane's throughput and round trip against D238's arm h numbers (control-end's harness).
 - Mutation of the grant's and the name's checks.
 - A cut carried through a real VM (*Its cut through the guest's legs*, built and unit
-  tested): a workload's socket cut mid-stream read as `ConnectionReset` at the controller,
-  and its half-close still as its way's end, on HVF, KVM and WHP
-  (`nesting::a_nested_workloads_socket_cut_mid_stream_resets_its_lane_at_the_controller` and
+  tested): a workload's socket cut mid-stream read as every byte of its answer, then `Ok(0)`,
+  at the controller, its writes refused on Unix, and its half-close still as its way's end, on
+  HVF, KVM and WHP
+  (`nesting::a_nested_workloads_socket_cut_mid_stream_delivers_its_bytes_then_its_end_at_the_controller`,
+  amended and renamed 2026-11-22 and unrun in that form anywhere, and
   `nesting::a_nested_workloads_half_close_ends_its_way_in_order_while_the_controllers_goes_on`,
-  testguest's `nesting ends`; run since on HVF and KVM x86-64, below, and owed on WHP and KVM
-  arm64); and, the muxer being every
+  testguest's `nesting ends`; the cut's under its old contract run on HVF and KVM x86-64,
+  below); and the nesting suite whole on all three, Hex's case (f) with it; and, the muxer
+  being every
   exec's, engine's and MCP member's, their suites on all three. On WHP: a guest connection
   ended both ways at once with its host still writing now loses the host what it had not
   read (no linger); exec's own end is a half-close first, which keeps M358's hold.
@@ -38104,14 +38210,19 @@ KVM x86-64, 14 of 14 on each at the vendor point 4124d8c70 (KVM three runs);
 `a_nested_workloads_socket_cut_mid_stream_resets_its_lane_at_the_controller` and
 `a_nested_workloads_half_close_ends_its_way_in_order_while_the_controllers_goes_on` passed in each
 of M605's runs of it, whose failures (KVM, with 4e0b82699) were other tests'. The rest of the list
-above is owed.
+above is owed. (The cut's test ran there under its old name and contract, `ConnectionReset` at
+the controller's read on Unix.)
 
 **What would falsify it.**
 - A workload reaching a socket outside its root.
 - A lane's bytes reordered or lost.
 - A half-close turned into a full close.
 - A lane held past its window.
-- A socket cut short read as `Ok(0)` at the controller, or a half-close read as a cut.
+- A byte a socket said before its cut missing at its controller, or a lane reset where its
+  stream took every write and the endpoint held every byte.
+- A socket cut short whose controller's writes are still taken past the window (on Unix,
+  and on Windows where the cut reaches the endpoint), or a half-close whose controller's
+  writes are refused.
 
 ### D252. An orchestrator's run binds its own agent-control endpoint, and shards-api carries Shards' controller (built, its members' stdio lanes too; its two nesting tests passing on HVF and KVM x86-64, PM M605; on WHP and KVM arm64, the stdio lanes' run and its other real-VM runs owed)
 
