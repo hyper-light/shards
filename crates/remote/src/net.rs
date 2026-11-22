@@ -1091,32 +1091,9 @@ impl Io<'_> {
             Ok(chunks) => chunks,
             Err(_) => return Ok(Read::Reset),
         };
-        let mut got = Vec::new();
-        let mut ended = false;
-        while got.len() < limit {
-            match chunks.next(limit.saturating_sub(got.len())) {
-                Ok(Some(chunk)) => {
-                    got.try_reserve_exact(chunk.bytes.len())
-                        .map_err(|_| Error::new("no admitted memory for received stream bytes"))?;
-                    got.extend_from_slice(&chunk.bytes);
-                }
-                Ok(None) => {
-                    ended = true;
-                    break;
-                }
-                Err(hyper_quic::ReadError::Blocked) => break,
-                Err(hyper_quic::ReadError::Reset(_)) => {
-                    let _ = chunks.finalize();
-                    return Ok(Read::Reset);
-                }
-            }
-        }
+        let read = gather(limit, |most| chunks.next(most));
         let _ = chunks.finalize();
-        Ok(match (got.is_empty(), ended) {
-            (_, true) => Read::End(got),
-            (false, false) => Read::Bytes(got),
-            (true, false) => Read::Blocked,
-        })
+        read
     }
 
     /// Reads no more of `stream`: its peer is asked to stop sending it (STOP_SENDING), and
@@ -1180,6 +1157,35 @@ impl Io<'_> {
     pub fn is_connected(&mut self, conn: ConnKey) -> bool {
         self.conn(conn).is_ok_and(|c| c.connected && !c.quic.is_closed())
     }
+}
+
+/// What a read of no more than `limit` bytes takes of a stream's chunks, `next` giving each, of at
+/// most what it is asked. Bytes come before whatever ended the read: an end comes with them, as
+/// QUIC lets a stream go once it has given its end, and a reset after them is said by the read
+/// after, which finds the stream gone (`Chunks` lets a stream go as it gives its reset). A
+/// reset said in their place would drop bytes the stream has already counted read.
+fn gather(
+    limit: usize,
+    mut next: impl FnMut(usize) -> Result<Option<hyper_quic::Chunk>, hyper_quic::ReadError>,
+) -> Result<Read, Error> {
+    let mut got = Vec::new();
+    while got.len() < limit {
+        match next(limit.saturating_sub(got.len())) {
+            Ok(Some(chunk)) => {
+                got.try_reserve_exact(chunk.bytes.len())
+                    .map_err(|_| Error::new("no admitted memory for received stream bytes"))?;
+                got.extend_from_slice(&chunk.bytes);
+            }
+            Ok(None) => return Ok(Read::End(got)),
+            Err(hyper_quic::ReadError::Blocked) => break,
+            Err(hyper_quic::ReadError::Reset(_)) if got.is_empty() => return Ok(Read::Reset),
+            Err(hyper_quic::ReadError::Reset(_)) => break,
+        }
+    }
+    Ok(match got.is_empty() {
+        true => Read::Blocked,
+        false => Read::Bytes(got),
+    })
 }
 
 /// `conn` among `conns`, under the number after the last one given; that number.
@@ -2688,6 +2694,58 @@ mod tests {
         // actual result, rather than letting a failed Stop hide that error.
         let _ = sender.send(Command::Stop);
         worker.join().unwrap().unwrap();
+    }
+
+    /// A read takes the bytes a stream gave before its reset, and the reset is the next read's,
+    /// as an end comes with the bytes before it; with no byte before it, the reset is the read's
+    /// own. Each chunk is asked for within the read's limit. The chunks are scripted: hyper-quic
+    /// clears a stream's buffer as its reset comes (`Recv::reset`), so it gives no chunk before
+    /// a reset within one read today.
+    #[test]
+    fn a_reads_bytes_come_before_the_reset_that_follows_them() {
+        use hyper_quic::{Chunk, ReadError, VarInt};
+        let read = |limit: usize, said: Vec<Result<Option<&'static [u8]>, ReadError>>| {
+            let mut said = said.into_iter();
+            gather(limit, |most| match said.next() {
+                Some(Ok(Some(bytes))) => {
+                    assert!(bytes.len() <= most, "a chunk past the {most} bytes asked for");
+                    Ok(Some(Chunk {
+                        offset: 0,
+                        bytes: bytes::Bytes::from_static(bytes),
+                    }))
+                }
+                Some(Ok(None)) => Ok(None),
+                Some(Err(e)) => Err(e),
+                None => Err(ReadError::Blocked),
+            })
+            .unwrap()
+        };
+        let reset = || Err(ReadError::Reset(VarInt::from_u32(0)));
+        let line: &'static [u8] = b"before the cut\n";
+        assert!(matches!(
+            read(64, vec![Ok(Some(line)), reset()]),
+            Read::Bytes(bytes) if bytes == line
+        ));
+        assert!(matches!(
+            read(64, vec![Ok(Some(&line[..6])), Ok(Some(&line[6..])), reset()]),
+            Read::Bytes(bytes) if bytes == line
+        ));
+        assert!(matches!(read(64, vec![reset()]), Read::Reset));
+        assert!(matches!(
+            read(64, vec![Ok(Some(line)), Ok(None)]),
+            Read::End(bytes) if bytes == line
+        ));
+        assert!(matches!(read(64, vec![Ok(None)]), Read::End(bytes) if bytes.is_empty()));
+        assert!(matches!(
+            read(64, vec![Ok(Some(line))]),
+            Read::Bytes(bytes) if bytes == line
+        ));
+        assert!(matches!(read(64, vec![]), Read::Blocked));
+        // The limit taken, nothing more is asked for: the reset after it is the next read's.
+        assert!(matches!(
+            read(6, vec![Ok(Some(&line[..6])), reset()]),
+            Read::Bytes(bytes) if bytes == line[..6]
+        ));
     }
 
     /// A handler that serves nothing, for tests of the driver's own sockets.
