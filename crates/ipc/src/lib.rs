@@ -127,10 +127,20 @@ pub fn deadline_in(dir: &Path, name: &str) -> Option<(std::time::SystemTime, Opt
 }
 
 /// A file a daemon that has closed makes anew and holds locked (flock(2), LockFileEx) until
-/// it has let go of its home's lock: `stop daemon` waits for it by a shared lock, which none
-/// but a closed daemon holds against it, so that no next daemon's lock is waited for. Apart
-/// from [`STOPPING`], whose readers Windows' mandatory locks would refuse.
+/// it has let go of its home's lock in `finish`: `stop daemon` waits for it by a shared lock,
+/// which none but a closed daemon holds against it, so that no next daemon's lock is waited
+/// for. A daemon killed lets go of it as its kernel closes its descriptors, and of its home's
+/// lock ([`LOCK`]) only after. Apart from [`STOPPING`], whose readers Windows' mandatory locks
+/// would refuse.
 pub const STOPPING_LOCK: &str = "daemon.stopping.lock";
+
+/// The home's lock: the file the daemon that serves a home holds locked (flock(2),
+/// LockFileEx, exclusive) from before it names itself in [`PID`] to the last of its exit. A
+/// daemon lets go of it in `finish`; one killed, as its kernel closes the descriptor, which
+/// XNU does after its exit has begun, as [`Named::lives`] shows it there, and after every
+/// descriptor of a higher number, as its stopping lock's and its slots' can be
+/// (`fdt_invalidate` closes from the highest down).
+pub const LOCK: &str = "daemon.lock";
 
 /// What the daemon that holds a home's lock writes in it as it takes it, before it offers
 /// any slot: its process, as [`this_process`] names it.

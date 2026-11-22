@@ -9853,6 +9853,49 @@ descriptors.
   that answers every stop RESTART as itself: asked twice, then named; red before, asked four
   times); and on real VMs by
   `a_stop_while_another_stops_its_daemon_waits_for_its_home_let_go_of` (tests/daemon.rs).
+- **A killed daemon's stop** (2026-11-22). managed_output's
+  `log_lanes_are_refused_typed_where_a_run_keeps_no_log_or_no_copy` on HVF at 54291fd13, load near
+  90, found `stop daemon` returned while its daemon still held `daemon.lock`. kiln's sweep of what
+  agents' commands leave running between their turns had sent that daemon SIGTERM as it stopped
+  (kiln's agent log, 2026-11-22T19:56:41Z: `shards daemon` 52770, its VMs' layers under
+  `shards-tests/52233/unlogged-0`), and a daemon does not handle SIGTERM: it ended without `finish`,
+  whose order alone puts the home's unlock before the stopping lock's. Its kernel let go of both as
+  it closed its descriptors, and XNU does so last of all and from the highest down: it stamps the
+  exit `Named::lives` reads as the exit begins (`proc_prepareexit`), and only the last of the
+  process's threads to end closes its descriptors (`proc_exit`'s `fdt_invalidate`), a flock let go
+  of as its file closes (PM M623, with xnu-12377.101.15's lines). So each word `stop` took for its
+  daemon's letting go could come first: the daemon asked no longer living, from its exit's
+  beginning; and, wherever its descriptor's number is the higher, its stopping lock had (made as
+  it closed) and its slot's end or no slot offered (its FIFOs'). M623's killed child was seen
+  exiting with its first lock still held in 783 of 800 rounds with nothing between the two, and in
+  196 to 200 of 200 with descriptors or threads between; its later lock, on the higher
+  descriptor, was had first in none with nothing between, and in 79% to 99% with descriptors.
+  Now each return that ends on a daemon that has closed or begun to exit (`await_let_go`) looks
+  at the home's lock itself, asked for shared and not waiting: had, or held by a daemon
+  `daemon.pid` names that lives and is not that one, which has taken the home since, it returns;
+  held by that one or by one yet to name itself, it looks again, paced by D215's `pause` of a
+  look's own cost against the wait so far: the kernel's own work, waited out with no bound. The
+  daemon waited on is the one `daemon.stopping` named as its stopping lock was waited for, else
+  the one asked; with no slot and no stopping lock, the one `daemon.pid` names where it lives no
+  more. Not taken: a lock request that waits on `daemon.lock`, which a successor's `take_lock` can
+  be granted first (above); the daemon's exit, which XNU watches only from before it begins
+  (EVFILT_PROC is refused, ESRCH, once `proc_prepareexit` hides the process from `proc_find`) and
+  Linux only from 5.3 (pidfd_open(2)); a stopping lock kept below the home lock's descriptor, an
+  order XNU's teardown gives and Windows' promises none of. Nor here: a daemon that ends on
+  SIGTERM as it ends on `stop daemon`, which would take a swept daemon through `finish`: a
+  decision of its own (R02), and no cure for SIGKILL. Left: Linux shows a process living until
+  its files have closed (`exit_files` before `exit_notify`, warm.rs `own_pidfd`), and Windows
+  until its process is signaled (unmeasured here), so a daemon killed serving that a stop finds
+  with no slot is no daemon that stop waits on (none other is stopped there), and its home's lock
+  goes within the rest of that close; macOS shows it gone, and it is waited on. The home's name
+  for its lock is `shards_ipc::LOCK`. Tests:
+  `a_stop_returns_once_a_killed_daemon_has_let_go_of_its_home` (cli/client.rs: a stand-in killed
+  daemon, this process, holding the home's lock through a file of its own, its records naming a
+  process gone, or living as Linux and Windows show a dying one, in six stands: closed as it took
+  the stop, and found closed, each gone and living; killed asked, and unasked; red with
+  54291fd13's stop at e95720a92, 6 of 6 returned while the home's lock was held) and
+  `a_stop_waits_on_no_daemon_that_took_a_killed_ones_home` (a successor named and living: the
+  stop returns at once, as before).
 - **A request asked again** (2026-11-13, R03). A run's, an exec's and an attach's client
   (`serve`) and a command's (`container`, `ask`, `ask_here`) asked again after a RESTART
   (or, until legacy-audit, a socket a pre-slots build shut unread), within `RESTARTS` (`slots::OFFERED` + 2 = 4): a

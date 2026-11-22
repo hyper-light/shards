@@ -2436,7 +2436,7 @@ fn readable_fd(fd: RawFd) -> bool {
 /// followed by its lock alone. Refused where a daemon of a build from before slots holds it
 /// ([`shards_ipc::PreSlotsDaemon`]).
 fn take_lock(home: &Path) -> Result<Option<File>, String> {
-    let path = home.join("daemon.lock");
+    let path = home.join(shards_ipc::LOCK);
     let file = crate::os::owner_only(
         std::fs::OpenOptions::new()
             .create(true)

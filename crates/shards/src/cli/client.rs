@@ -20,7 +20,7 @@ use std::io::{self, IsTerminal as _, Read, Write};
 use std::path::Path;
 use std::process::ExitCode;
 use std::sync::{Mutex, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use shards_cmdline::term::{EscapeProxy, Read as Typed};
 use shards_ipc::fd::{AsFd, BorrowedFd};
@@ -1084,7 +1084,9 @@ fn answer<'s>(
 /// Asks the daemon of `home` to exit once the runs in hand are handed over, and waits
 /// until it has let go of its home: its slot's end alone, which it holds back until then,
 /// is no word of that where a RESTART or no slot answers, or the slot ends early; the lock
-/// a closed daemon holds until then is ([`await_stopping`], D185).
+/// a closed daemon holds until then is, where it lets go in `finish` ([`await_stopping`],
+/// D185). A daemon killed lets go of nothing itself, and its kernel of its home's lock after
+/// the rest, which that lock alone then says ([`await_let_go`]).
 pub fn stop(home: &Path) -> ExitCode {
     match std::env::set_current_dir(home) {
         Ok(()) => {}
@@ -1119,13 +1121,21 @@ fn stop_at(here: &Path, home: &Path) -> Result<(), NotStopped> {
     loop {
         let client = match slots::take(here, 0) {
             Ok(slots::Taken::Slot(client)) => client,
-            // No slot offered: a daemon that has closed, waited for until it has let go of
-            // its home; none other is stopped here, and one of a build from before slots
-            // that serves the home is refused, never asked ([`shards_ipc::PreSlotsDaemon`]).
+            // No slot offered: a daemon that has closed, or one killed, which its record still
+            // names and which lives no more, waited for until it has let go of its home; none
+            // other is stopped here, and one of a build from before slots that serves the home
+            // is refused, never asked ([`shards_ipc::PreSlotsDaemon`]).
             Ok(slots::Taken::NoDaemon) => {
                 shards_vmm::stage!("stop daemon: no slot offered, awaiting a daemon that stops");
-                await_stopping(here).map_err(NotStopped::Failed)?;
-                shards_vmm::stage!("stop daemon: no daemon holds its stopping lock");
+                let closed = match await_stopping(here).map_err(NotStopped::Failed)? {
+                    Stopping::Closed(closed) => closed,
+                    Stopping::Unclosed => None,
+                };
+                let killed = || Named::read(&here.join(shards_ipc::PID)).filter(|holder| !holder.lives());
+                if let Some(gone) = closed.or_else(killed) {
+                    await_let_go(here, gone).map_err(NotStopped::Failed)?;
+                }
+                shards_vmm::stage!("stop daemon: no daemon that stops holds its home");
                 return shards_ipc::no_pre_slots_daemon(here).map_err(|e| NotStopped::Failed(e.to_string()));
             }
             Ok(slots::Taken::NoTakeLock) => {
@@ -1170,35 +1180,56 @@ fn stop_at(here: &Path, home: &Path) -> Result<(), NotStopped> {
         }
         drop(client);
         shards_vmm::stage!("stop daemon: awaiting its daemon's stopping lock");
-        let closed = await_stopping(here).map_err(NotStopped::Failed)?;
-        shards_vmm::stage!("stop daemon: its stopping lock had, a daemon closed: {closed}");
-        if closed {
+        if let Stopping::Closed(closed) = await_stopping(here).map_err(NotStopped::Failed)? {
+            shards_vmm::stage!("stop daemon: its stopping lock had, awaiting its home's lock");
+            if let Some(gone) = closed.or(asked) {
+                await_let_go(here, gone).map_err(NotStopped::Failed)?;
+            }
             return Ok(());
         }
-        // None closed: the daemon asked has exited, or holds its home still, serving on, the
-        // stop not taken. Asked again, after its answer, where that daemon is another than the
-        // one last asked again; the same one, as itself, would answer the same for ever.
-        let Some(asked) =
-            asked.filter(|asked| asked.lives() && Named::read(&here.join(shards_ipc::PID)) == Some(*asked))
-        else {
-            return Ok(());
-        };
-        again.round(Some(asked)).map_err(NotStopped::Untaken)?;
+        shards_vmm::stage!("stop daemon: no daemon closed");
+        match asked {
+            // Its exit begun (killed), or done.
+            Some(gone) if !gone.lives() => {
+                await_let_go(here, gone).map_err(NotStopped::Failed)?;
+                return Ok(());
+            }
+            // Holding its home still, serving on, the stop not taken: asked again, after its
+            // answer, where that daemon is another than the one last asked again; the same one,
+            // as itself, would answer the same for ever.
+            Some(asked) if Named::read(&here.join(shards_ipc::PID)) == Some(asked) => {
+                again.round(Some(asked)).map_err(NotStopped::Untaken)?;
+            }
+            // Its record removed in `finish`, or another's since: it has let go of its home.
+            _ => return Ok(()),
+        }
     }
 }
 
+/// What a stop's wait on a daemon that has closed came to ([`await_stopping`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Stopping {
+    /// None had closed: no stopping lock.
+    Unclosed,
+    /// One had, and has let go of its stopping lock: the daemon `daemon.stopping` named as
+    /// that lock was waited for, where it named one.
+    Closed(Option<shards_ipc::Named>),
+}
+
 /// Waits until a daemon of the home `here` names that has closed, and ends its runs, has let
-/// go of its home: it holds [`shards_ipc::STOPPING_LOCK`], a file it made anew as it closed,
-/// until it has unlocked the home (daemon.rs `close`, `finish`), and a shared lock of it is
-/// had once it has. No daemon that serves holds it, so this waits on none but one that
-/// stops: never a next daemon's lock of the home. Whether one had closed.
-fn await_stopping(here: &Path) -> Result<bool, String> {
+/// go of [`shards_ipc::STOPPING_LOCK`], a file it made anew as it closed, which a shared lock
+/// of it then has (daemon.rs `close`, `finish`). No daemon that serves holds it, so this
+/// waits on none but one that stops: never a next daemon's lock of the home. `finish` lets
+/// go of it after the home's lock; the kernel of a daemon killed, before ([`await_let_go`]).
+fn await_stopping(here: &Path) -> Result<Stopping, String> {
     let path = here.join(shards_ipc::STOPPING_LOCK);
     let held = match File::open(&path) {
         Ok(held) => held,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Stopping::Unclosed),
         Err(e) => return Err(format!("{}: {e}", path.display())),
     };
+    // Read before the lock is had: `finish` removes it first.
+    let closed = shards_ipc::Named::read(&here.join(shards_ipc::STOPPING));
     held.lock_shared().map_err(|e| {
         format!(
             "waiting for the daemon to let go of its home, {}: {e}",
@@ -1207,7 +1238,73 @@ fn await_stopping(here: &Path) -> Result<bool, String> {
     })?;
     // Let go of before its file closes (M244).
     let _ = held.unlock();
-    Ok(true)
+    Ok(Stopping::Closed(closed))
+}
+
+/// What a look at a home's lock ([`shards_ipc::LOCK`]) found, for a stop waiting on a daemon
+/// ([`await_let_go`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Look {
+    /// Had: none holds it.
+    Free,
+    /// Held by a daemon other than the one waited on, named in `daemon.pid` and living: one
+    /// that has taken the home since.
+    Taken,
+    /// Held by the one waited on, its kernel yet to close its descriptor, or by one yet to
+    /// name itself.
+    Held,
+}
+
+/// Looks at the home `here` names: its lock asked for shared and not waiting, through a file
+/// of this stop's own, `gone` the daemon waited on.
+fn look(here: &Path, gone: shards_ipc::Named) -> Result<Look, String> {
+    let path = here.join(shards_ipc::LOCK);
+    let lock = match File::open(&path) {
+        Ok(lock) => lock,
+        // None ever took the home.
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Look::Free),
+        Err(e) => return Err(format!("{}: {e}", path.display())),
+    };
+    match lock.try_lock_shared() {
+        Ok(()) => {
+            // Let go of before its file closes (M244).
+            let _ = lock.unlock();
+            return Ok(Look::Free);
+        }
+        Err(std::fs::TryLockError::WouldBlock) => {}
+        Err(std::fs::TryLockError::Error(e)) => return Err(format!("{}: {e}", path.display())),
+    }
+    let holder = shards_ipc::Named::read(&here.join(shards_ipc::PID));
+    if holder.is_some_and(|holder| holder != gone && holder.lives()) {
+        return Ok(Look::Taken);
+    }
+    Ok(Look::Held)
+}
+
+/// Waits until `gone`, a daemon that has closed or begun to exit, holds the home `here` names
+/// no more, as the home's lock shows it ([`Look`]). A daemon lets go of that lock in `finish`,
+/// before its stopping lock. A daemon killed lets go of neither: its kernel does, as it
+/// closes its descriptors, on XNU after its exit has begun, which `Named::lives` reads there
+/// (`proc_prepareexit`), and from the highest number down (`fdt_invalidate`), so after its
+/// stopping lock's and its slots' where theirs are the higher (PM M623). Only a lock
+/// request of this stop's own that waits would hear that lock let go of, and a successor's
+/// `take_lock` can be granted it first, leaving the stop waiting on the next daemon (D185);
+/// XNU watches no exit once begun (EVFILT_PROC, ESRCH). So the lock is looked at until it is
+/// let go of, paced by D215's pause of a look's own cost against the wait so far: the kernel's
+/// own work, waited out with no bound (D215).
+fn await_let_go(here: &Path, gone: shards_ipc::Named) -> Result<(), String> {
+    let began = Instant::now();
+    loop {
+        let looked = Instant::now();
+        if look(here, gone)? != Look::Held {
+            return Ok(());
+        }
+        std::thread::sleep(shards_abi::pace::pause(
+            looked.elapsed(),
+            began.elapsed(),
+            Duration::MAX,
+        ));
+    }
 }
 
 /// The VM's timing line, a JSON object, with this client's own peak RSS in KiB as its

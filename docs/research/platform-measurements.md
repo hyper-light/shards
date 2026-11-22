@@ -26766,3 +26766,51 @@ the counts are a process's, not a thread's. n is one run of each child.
   jupiter.
 - **Consequence.** D189: a change to what a window's ranges hold is counted before its lock is let go. The window's other
   claims of its edge cases stand, now through guests.
+
+### M623. A killed process's flock(2) locks go as its descriptors close, after its exit is seen (D185)
+
+- **Question.** managed_output's `log_lanes_are_refused_typed_where_a_run_keeps_no_log_or_no_copy`
+  on HVF at 54291fd13, load near 90, found `stop daemon` returned while its daemon still held
+  `daemon.lock`: kiln's sweep of what agents' commands leave running between their turns had sent
+  that daemon SIGTERM as it stopped (kiln's agent log, 2026-11-22T19:56:41Z, `shards daemon` 52770
+  of `shards-tests/52233/unlogged-0`). A daemon locks its home's lock as it starts and its stopping
+  lock as it closes, and `finish` lets go of the home's first; `stop` took the stopping lock had, or
+  the daemon seen exiting (`Named::lives`), for the home's lock let go of. Killed, which goes first?
+- **Source.** XNU as this Mac runs it (xnu-12377.101.15): `exit1_internal` calls `proc_prepareexit`,
+  then `task_terminate_internal`, "Last thread to terminate will call proc_exit()" (kern_exit.c
+  1752-1762). `proc_prepareexit` keeps the process's rusage, `ri_proc_exit_abstime` stamped, which
+  `proc_pid_rusage` returns from then on (2196-2215; kern_resource.c 3466-3471), and moves it to
+  `zombproc` as `P_REF_DEAD`, "not visible via proc_find" (2259-2269): EVFILT_PROC refuses to watch it
+  (`filt_procattach`, ESRCH; kern_event.c 1095-1110), while `kill(pid, 0)` answers 0, a zombie by
+  `pzfind` (kern_sig.c 1381-1404). `proc_exit` closes its descriptors only after (2299-2384), from the
+  highest down (`fdt_invalidate`, kern_descrip.c 1085-1094), a flock let go of as its file closes
+  (`vn_closefile`, vfs_vnops.c 1883-1900), and posts NOTE_EXIT after that (2701-2702).
+- **Method.** `docs/research/measurements/flock-kill/main.rs`: a child locks `home.lock`, opens
+  FILLER descriptors of /dev/null and starts THREADS sleeping threads, then locks `stopping.lock`,
+  says it is ready and sleeps. The parent, 200 rounds for each of two observers in turn, sends it
+  SIGTERM, which it does not handle, and as its observer fires asks for `home.lock` at once, shared
+  and not waiting: `stopping`, a thread's shared lock of `stopping.lock`, waited for from before the
+  signal; `exit`, the child seen exiting as shards_ipc's `exited` sees it (`ri_proc_exit_abstime`
+  set). The M5 Max of M240 (18 CPUs, macOS 26.4.1), rustc 1.98.1, 2026-11-22, load averages 37 to 53
+  (other sessions, and a cargo build of this tree); raw runs in `flock-kill/runs-2026-11-22.txt`.
+- **Results.** Rounds in which `home.lock` was still held as the observer fired:
+
+  | FILLER | THREADS | rounds | `stopping` | `exit` |
+  |---|---|---|---|---|
+  | 0 | 0 | 800 | 0 | 783 |
+  | 256 | 0 | 200 | 196 | 200 |
+  | 0 | 64 | 200 | 0 | 196 |
+  | 256 | 64 | 200 | 158 | 200 |
+  | 1024 | 0 | 200 | 198 | 200 |
+
+  The exit is seen before the home's lock goes in 783 of 800 rounds with nothing between, 196 of
+  200 with threads alone, and all with filler. The stopping lock, closed just before the home's
+  where nothing lies between them, is had
+  with the home's lock still held in no round; with descriptors between, in 79% to 99%. The counts
+  are what each word shows as it comes: a `stop` that returns on it, then a test that looks at the
+  lock, look later, and see it held less often (one failure in managed_output's runs, at load ~90).
+- **Consequence.** Neither says a killed daemon has let go of its home: its exit is seen first, and
+  its stopping lock is let go of first wherever its descriptor's number is the higher and others lie
+  between, as a daemon's slots, its spawner's link and its runs' sockets can. Only the lock says so.
+  `stop` now looks at it once the daemon it waits on has closed or begun to exit (`await_let_go`,
+  D185 *A killed daemon's stop*).
