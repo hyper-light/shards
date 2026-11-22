@@ -56,6 +56,7 @@ pub fn main() {
             "slates_fs" => slates_fs(),
             "slates_fs_restore" => slates_fs_restore(),
             "share" => share(),
+            "share_acl" => share_acl(),
             "slates_fs_dax" => slates_fs_dax(),
             "bpf" => bpf_costs(),
             // Kernel argv after -- reaches the same native probe parser. Keep PID1
@@ -216,6 +217,136 @@ fn slates_fs_restore() -> Result<(), String> {
             "the restored share read back {back:?} after writing {wrote:?}"
         ));
     }
+    Ok(())
+}
+
+/// An ACL value of `entries` (tag, permission set, id), as `setfacl` sets it
+/// (linux/posix_acl_xattr.h: version 2, then each entry).
+fn acl_value(entries: &[(u16, u16, u32)]) -> Vec<u8> {
+    let mut v = 2u32.to_le_bytes().to_vec();
+    for &(tag, perm, id) in entries {
+        v.extend(tag.to_le_bytes());
+        v.extend(perm.to_le_bytes());
+        v.extend(id.to_le_bytes());
+    }
+    v
+}
+
+fn set_acl(path: &str, name: &str, value: &[u8]) -> Result<(), String> {
+    let (p, n) = (cstr(path)?, cstr(name)?);
+    // SAFETY: setxattr(2) of two NUL-terminated strings and a value of its length.
+    if unsafe { libc::setxattr(p.as_ptr(), n.as_ptr(), value.as_ptr().cast(), value.len(), 0) } != 0 {
+        return Err(format!("setxattr {path} {name}: {}", io::Error::last_os_error()));
+    }
+    Ok(())
+}
+
+/// Whether a process of uid and gid `id` (no other groups) may open `path` for `flags`: its
+/// errno, 0 where it may. Asked in a child, which drops root before it opens.
+fn opened_as(id: u32, path: &str, flags: libc::c_int) -> Result<i32, String> {
+    let p = cstr(path)?;
+    // SAFETY: fork(2); the child calls only async-signal-safe functions, then _exit.
+    let pid = unsafe { libc::fork() };
+    if pid < 0 {
+        return Err(format!("fork: {}", io::Error::last_os_error()));
+    }
+    if pid == 0 {
+        // SAFETY: as above: setgroups, setresgid, setresuid, open, close and _exit alone.
+        unsafe {
+            if libc::setgroups(0, std::ptr::null()) != 0
+                || libc::setresgid(id, id, id) != 0
+                || libc::setresuid(id, id, id) != 0
+            {
+                libc::_exit(250);
+            }
+            let fd = libc::open(p.as_ptr(), flags);
+            if fd >= 0 {
+                libc::close(fd);
+                libc::_exit(0);
+            }
+            libc::_exit(*libc::__errno_location() & 0x7f);
+        }
+    }
+    let mut status = 0;
+    // SAFETY: waitpid(2) on the child forked above.
+    if unsafe { libc::waitpid(pid, &raw mut status, 0) } != pid {
+        return Err(format!("waitpid: {}", io::Error::last_os_error()));
+    }
+    let code = libc::WEXITSTATUS(status);
+    if code == 250 {
+        return Err(format!("the child could not become uid {id}"));
+    }
+    Ok(code)
+}
+
+/// goal 92 (Shards' owed item 2): Shards' own server enforces a guest's POSIX ACLs, as slates
+/// does. Mounts `shards0` (`run --kernel … --share DIR`); as root makes `/mnt/secret` 0600 and
+/// gives it `user::rw- user:1000:r-- group::--- mask::r-- other::---`: its mode reads 0640,
+/// uid 1000 may read it and not write it, uid 2000 may not read it. A directory's default ACL
+/// granting uid 1000 rwx gives a file made in it (mode 0660) an access ACL uid 1000 may write.
+fn share_acl() -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt as _;
+    virtiofs("shards0", "/mnt")?;
+    // Searchable by every uid, so that each one's access is the file's ACL's word alone.
+    std::fs::set_permissions("/mnt", std::fs::Permissions::from_mode(0o755))
+        .map_err(|e| format!("chmod /mnt: {e}"))?;
+    std::fs::write("/mnt/secret", b"for uid 1000 alone\n").map_err(|e| format!("write /mnt/secret: {e}"))?;
+    std::fs::set_permissions("/mnt/secret", std::fs::Permissions::from_mode(0o600))
+        .map_err(|e| format!("chmod /mnt/secret: {e}"))?;
+    let access = acl_value(&[
+        (0x01, 6, u32::MAX),
+        (0x02, 4, 1000),
+        (0x04, 0, u32::MAX),
+        (0x10, 4, u32::MAX),
+        (0x20, 0, u32::MAX),
+    ]);
+    set_acl("/mnt/secret", "system.posix_acl_access", &access)?;
+    let mode = std::fs::metadata("/mnt/secret")
+        .map_err(|e| e.to_string())?
+        .permissions()
+        .mode()
+        & 0o777;
+    if mode != 0o640 {
+        return Err(format!(
+            "/mnt/secret's mode reads {mode:o} after its ACL, not 640"
+        ));
+    }
+    let read = opened_as(1000, "/mnt/secret", libc::O_RDONLY)?;
+    let write = opened_as(1000, "/mnt/secret", libc::O_WRONLY)?;
+    let other = opened_as(2000, "/mnt/secret", libc::O_RDONLY)?;
+    if (read, write, other) != (0, libc::EACCES, libc::EACCES) {
+        return Err(format!(
+            "uid 1000 read errno {read}, write errno {write}; uid 2000 read errno {other}: expected 0, EACCES, EACCES"
+        ));
+    }
+    std::fs::create_dir("/mnt/team").map_err(|e| format!("mkdir /mnt/team: {e}"))?;
+    std::fs::set_permissions("/mnt/team", std::fs::Permissions::from_mode(0o777))
+        .map_err(|e| format!("chmod /mnt/team: {e}"))?;
+    let default = acl_value(&[
+        (0x01, 7, u32::MAX),
+        (0x02, 7, 1000),
+        (0x04, 0, u32::MAX),
+        (0x10, 7, u32::MAX),
+        (0x20, 0, u32::MAX),
+    ]);
+    set_acl("/mnt/team", "system.posix_acl_default", &default)?;
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o660)
+            .open("/mnt/team/made")
+            .map_err(|e| format!("create /mnt/team/made: {e}"))?;
+    }
+    let made = opened_as(1000, "/mnt/team/made", libc::O_WRONLY)?;
+    let stranger = opened_as(2000, "/mnt/team/made", libc::O_RDONLY)?;
+    if (made, stranger) != (0, libc::EACCES) {
+        return Err(format!(
+            "a file made under the default ACL: uid 1000 write errno {made}, uid 2000 read errno {stranger}: expected 0, EACCES"
+        ));
+    }
+    let _ = writeln!(io::stdout(), "SHARE ACL ENFORCED");
     Ok(())
 }
 

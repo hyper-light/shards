@@ -4301,7 +4301,8 @@ microVM as virtio-fs shares (virtio 1.3 §5.11; Linux fs/fuse/virtio_fs.c):
       (`namespaced`). Test: `a_guest_reaches_no_host_attribute_outside_linuxs_namespaces`.
       Red: lanes/redgreen/own-38d-namespaced.patch (macOS and Windows; Linux refused it
       already).
-    - Enforcing the guest's ACLs in the guest (FUSE_POSIX_ACL) is a later piece.
+    - Enforcing the guest's ACLs in the guest (FUSE_POSIX_ACL): D290, its server keeping the
+      mode and the access ACL together, the ACLs still the guest's data in these attributes.
     - Test: `a_guests_acl_is_its_own_data_never_its_host_files_acl` (the guest reads,
       lists and removes what it set; the host file's mode is unchanged, and on Linux its
       ACL; a host file's own ACL is none of the guest's). Red with `system.` left out:
@@ -45753,6 +45754,118 @@ is main's alone: `Slot::ask_into` (D288, fs/mod.rs), whose loop never loops on W
 with `SLATES_BIN`; a Windows restore's served pipe on WHP, which no real-VM test drives yet
 (slates_fs.rs's is Unix's); the seven targets' lint (`scripts/lint`); the refusal of the grants
 socket is `run`'s, taken by construction, not reproduced live.
+
+### D290. Its own file server enforces a guest's POSIX ACLs: FUSE_POSIX_ACL, with FUSE_DONT_MASK and FUSE_SETXATTR_EXT (built: the server, unit-tested on macOS arm64; real-VM runs owed)
+
+**Asked.** kiln goal 92, Shards' owed item 2, which kiln carried as its recorded change
+`vendor/patches/shards/0004-its-own-file-server-enforces-a-guest-s-posix-acls.patch` until Shards
+took it. A guest's `setfacl` on a share Shards' own server serves was kept as the guest's data
+(D38: "A guest's POSIX ACL is its data, never its host file's ACL") and enforced by nothing,
+where slates' server enforces it (its A-302, A-314 and A-378, as kiln's change names them); D38
+left enforcing it, FUSE_POSIX_ACL, for later.
+
+**What there is** (Linux v6.18).
+- *The guest's kernel* takes FUSE_POSIX_ACL from INIT's reply (fs/fuse/inode.c
+  `process_init_reply`: `fc->posix_acl` and `fc->default_permissions`), then checks each access
+  against the access ACL it reads by GETXATTR and leaves the rest to its server: "Fuse userspace
+  is responsible for updating access permissions in the inode, if needed" (fs/fuse/acl.c
+  `fuse_set_acl`). FUSE marks every superblock SB_POSIXACL (`fuse_fill_super_common`), so the
+  VFS never applies the umask: FUSE's create, mknod and mkdir do, unless FUSE_DONT_MASK, under
+  which each sends its mode unmasked and the umask beside it (fs/fuse/dir.c). Under
+  FUSE_SETXATTR_EXT every SETXATTR carries the whole `fuse_setxattr_in`, its `setxattr_flags`
+  after its size and flags (fs/fuse/xattr.c `fuse_setxattr`), `FUSE_SETXATTR_ACL_KILL_SGID` set
+  where the setter is neither in the file's group nor capable (`fuse_set_acl`).
+- *What a disk file system does* (fs/posix_acl.c): an access ACL's set makes the mode and is kept
+  only where it says more than one (`posix_acl_update_mode`, `posix_acl_equiv_mode`); a chmod
+  changes the ACL's owner, mask (else owning group) and other entries (`__posix_acl_chmod_masq`);
+  a directory's default ACL gives what is made in it in place of the umask (`posix_acl_create`,
+  `posix_acl_create_masq`), where none, or EOPNOTSUPP, leaves the umask and any other error fails
+  the make; a value is refused EOPNOTSUPP for another version and EINVAL otherwise
+  (`posix_acl_from_xattr`, `posix_acl_valid`).
+- *The server* keeps the whole `system.` namespace as data, under `user.shards.` on a Linux host
+  and under its own name on macOS and Windows (D38), so a guest's ACL never becomes its host
+  file's; each file's guest mode is its record's (`com.docker.grpcfuse.ownership`, D38).
+
+**Alternatives** (R02).
+1. *The server checks each access against the ACL*: the guest's kernel checks every access
+   itself under `default_permissions` (D38), so a second check would cost each request a read
+   for no refusal the kernel does not already make, and could disagree with it. Not taken.
+2. *The guest's ACL made the host file's* (setfacl on the host): the hole D38 closed, a guest
+   granting host users and groups and the host's kernel acting on the guest's mode. Not taken.
+3. *The kept ACL rewritten at each chmod*, as `posix_acl_chmod` rewrites a disk's: an attribute
+   written at every mode's change. Showing the kept ACL with its owner, mask and other entries
+   taken from the mode as it is read (`Acl::showing`) is the same ACL to the guest, the mode its
+   one source, and its kernel forgets its cached ACLs at each SETATTR (fs/fuse/dir.c
+   `fuse_setattr`). Taken, as slates does (A-314, as kiln's change names it).
+4. *Taken: the three flags, where the guest's kernel asks*, the server keeping the mode and the
+   access ACL together as a disk file system does (above).
+
+**Decision.**
+- INIT offers FUSE_POSIX_ACL, FUSE_DONT_MASK and FUSE_SETXATTR_EXT; a session keeps what its
+  guest took (`State::negotiated`), last in its saved tables, so a restored guest, which sends no
+  INIT, is answered as its kernel expects; tables saved before it read as none. Tables a newer
+  server saved are refused by an older one, as any longer tables are.
+- SETXATTR is read in the form its session took (`setxattr_args`), init's owner word (D38) too.
+- `system.posix_acl_access`: a value Linux would refuse is refused as Linux refuses it
+  (`acl::Acl::parse`); the empty ACL removes the kept one, the mode as it is; any other sets the
+  mode's three classes from it, set-group-ID cleared where the kernel says KILL_SGID, and is kept
+  only where it says more than a mode (a named entry, a mask), else removed. A read shows it with
+  those three from the mode as it is then. A directory the server may search alone (memory-19)
+  takes none (EACCES), as it takes no mode: the set would chmod its host directory.
+- `system.posix_acl_default`: a directory's alone (EACCES otherwise, as Linux's `set_posix_acl`),
+  checked, the empty ACL removing it.
+- What is made in a directory: under its default ACL, the mode keeps only what the default
+  grants, the node takes the default's entries as its access ACL where they say more than its
+  mode, and a new directory the default too (`Acl::given`); with none, or where its host keeps no
+  attributes, the umask the kernel left the server. A default the server cannot read, or one that
+  is no ACL, refuses the make with its error, as Linux's `posix_acl_create` does and D38's owner
+  records fail closed. So nothing is made in a directory the server may only search (EACCES): its
+  host refuses the server the read that would find its default.
+- Without the ACLs negotiated, a guest's ACL stays its data, as before.
+- Literals (R03), none a choice: FUSE's bits (`FUSE_DONT_MASK` 1 << 6, `FUSE_POSIX_ACL` 1 << 20,
+  `FUSE_SETXATTR_EXT` 1 << 29, `FUSE_SETXATTR_ACL_KILL_SGID` 1 << 0: include/uapi/linux/fuse.h);
+  the ACL value's format (version 2, a 4-byte header, 8-byte entries, tags 0x01 to 0x20, `rwx`
+  0x07, `ACL_UNDEFINED_ID` u32::MAX: include/uapi/linux/posix_acl_xattr.h and posix_acl.h).
+
+**Kiln's change, three faults found and fixed** (each reproduced red first, macOS arm64):
+- *Init's owner word was lost.* Under FUSE_SETXATTR_EXT, which the change offered, init's
+  `trusted.shards.owner` comes in the extended form, and `owner_control` read the short one, so
+  the word was kept as data on the share's root and every unrecorded host file stayed root's:
+  `inits_owner_word_is_taken_in_setxattrs_extended_form` saw `(0, 0)` for `(1000, 1001)`.
+- *A searched-only directory's host mode was widened.* A guest's access ACL on it was set,
+  chmodding its host directory from 0111 to 0775: `a_directory_the_server_may_only_search_takes_no_access_acl`
+  saw `(0, 0o775)` for `(-EACCES, 0o111)`.
+- *An unreadable default was the umask.* A default ACL that read as no ACL, or failed to read,
+  was taken as none: `a_default_acl_that_is_no_acl_refuses_what_is_made_in_it` saw `(0, true)`
+  for `(-EINVAL, false)`.
+- And its moved `#[allow(clippy::too_many_arguments)]` left `chmod` refused by clippy.
+
+**Tests (light, R15).** `acl::tests` (4: a round trip and its mode, Linux's refusals, a chmod
+shown, a default's gift); `server::tests::an_access_acl_sets_the_mode_and_is_shown_from_it`,
+`a_default_acl_gives_what_is_made_in_it_in_place_of_the_umask`,
+`a_sessions_acls_are_kept_in_its_saved_tables` (kiln's) and the three above;
+`the_hosts_files_are_the_owner_init_names` restores tables of before it. Real VM: boot.rs
+`a_direct_boots_share_enforces_its_guests_posix_acls`, its guest testguest's `share_acl` (as root
+a 0600 file given `user:1000:r--` reads 0640; uid 1000 reads it and is refused writing it, uid
+2000 is refused reading it; a directory's default ACL gives a file made in it an access ACL uid
+1000 writes through).
+
+**Evidence** (macOS 26.4.1 arm64, Apple M5 Max, rustc 1.98.1, debug, on D289's commit): kiln's
+change applied as recorded, its three faults' tests above failed as quoted and its own three
+passed; with the fixes, `cargo test -p shards-vmm --lib --target aarch64-apple-darwin --
+devices::virtio::fs::` 125 passed, 1 ignored (`window_costs`, a measurement). `SHARDS_HELPERS=skip
+cargo clippy --workspace --all-targets --target aarch64-apple-darwin -- -D warnings`, and
+testguest's for aarch64-unknown-linux-musl, exit 0, no warnings; `cargo fmt --all --check` clean;
+`cargo xwin clippy --workspace --all-targets` and `-p shards-vmm --features gpu --all-targets` for
+x86_64-pc-windows-msvc, `-D warnings -A clippy::never_loop` (main's alone, D289's evidence), exit
+0, no warnings. The real-VM tests compile and link, unrun: `SHARDS_HELPERS=skip cargo test -p
+shards --no-run --target aarch64-apple-darwin` exit 0, tests/boot.rs and tests/slates_fs.rs among
+its 53 executables.
+
+**Owed** (the coordinator's: R09-R11, R14, R15): the real-VM test on Hypervisor.framework and KVM,
+and on WHP, whose share process serves with this server (server_windows.rs); the seven targets'
+lint (`scripts/lint`); R14, unmeasured: each make's read of its directory's default ACL (one
+fgetxattr, and an allocation for its name) and each access ACL's read shown from the mode.
 
 
 ## 4. Start path (≤ 5 ms budget)

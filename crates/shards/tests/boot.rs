@@ -2361,6 +2361,41 @@ fn a_direct_boot_writes_through_a_share_and_not_through_a_read_only_one() {
     assert!(!ro.join("from-guest").exists());
 }
 
+/// goal 92 (Shards' owed item 2: its own server enforces a guest's ACLs as slates does): `run
+/// --kernel … --share DIR`, the guest's kernel taking FUSE_POSIX_ACL from Shards' server. As root the
+/// guest gives a 0600 file `user:1000:r--` and its mode reads 0640; uid 1000 reads it and is refused
+/// writing it, uid 2000 is refused reading it; a directory's default ACL gives a file made in it an
+/// access ACL uid 1000 writes through. Before, the ACL was kept as data and enforced by nothing.
+#[test]
+fn a_direct_boots_share_enforces_its_guests_posix_acls() {
+    if cannot_run_vms() {
+        return;
+    }
+    let dir = common::TempDir::new("share-acl");
+    let shared = dir.join("shared");
+    std::fs::create_dir(&shared).unwrap();
+    let home = dir.join("home");
+    let r = run_shards_env(
+        &["run"],
+        &[
+            "--kernel",
+            kernel().to_str().unwrap(),
+            "--init",
+            test_guest().to_str().unwrap(),
+            "--memory",
+            "256",
+            "--cmdline",
+            "console=hvc0 quiet panic=-1 shards_test=share_acl",
+            "--share",
+            shared.to_str().unwrap(),
+        ],
+        &[("SHARDS_HOME", home.as_os_str())],
+    );
+    assert_eq!(r.status, Some(0), "{r}");
+    assert!(r.stdout.contains("SHARE ACL ENFORCED"), "{r}");
+    assert!(r.stdout.contains("SHARDS-TEST PASS"), "{r}");
+}
+
 /// `run vm --kernel … --share DIR` ended at its deadline leaves nothing it started running:
 /// the harness ends the client alone, as a killed client is ended (TerminateProcess,
 /// SIGKILL), and waits for what is under it to end by itself (`common::run_until`). On
